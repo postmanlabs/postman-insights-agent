@@ -57,12 +57,14 @@ type LearnClient interface {
 	GetSpecDiffTrie(context.Context, akid.APISpecID, akid.APISpecID) (*path_trie.PathTrie, error)
 
 	// Telemetry
-	PostClientPacketCaptureStats(context.Context, akid.ServiceID, string, kgxapi.PostClientPacketCaptureStatsRequest) error
-	PostInitialClientTelemetry(context.Context, akid.ServiceID, string, kgxapi.PostInitialClientTelemetryRequest) error
+	PostClientPacketCaptureStats(context.Context, akid.ServiceID, kgxapi.PostClientPacketCaptureStatsRequest) error
+	PostInitialClientTelemetry(context.Context, akid.ServiceID, kgxapi.PostInitialClientTelemetryRequest) error
 }
 
 type FrontClient interface {
 	GetServices(context.Context) ([]Service, error)
+	GetService(context.Context, akid.ServiceID) (InsightsService, error)
+	GetUser(context.Context) (PostmanUser, error)
 	CreateService(context.Context, string, string) (CreateServiceResponse, error)
 	DaemonHeartbeat(ctx context.Context, daemonName string) error
 

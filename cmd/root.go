@@ -13,22 +13,13 @@ import (
 	flag "github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
-	"github.com/akitasoftware/akita-cli/cmd/internal/apidiff"
 	"github.com/akitasoftware/akita-cli/cmd/internal/apidump"
-	"github.com/akitasoftware/akita-cli/cmd/internal/apispec"
-	"github.com/akitasoftware/akita-cli/cmd/internal/ascii"
 	"github.com/akitasoftware/akita-cli/cmd/internal/ci_guard"
 	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
-	"github.com/akitasoftware/akita-cli/cmd/internal/daemon"
 	"github.com/akitasoftware/akita-cli/cmd/internal/ec2"
 	"github.com/akitasoftware/akita-cli/cmd/internal/ecs"
-	"github.com/akitasoftware/akita-cli/cmd/internal/get"
 	"github.com/akitasoftware/akita-cli/cmd/internal/kube"
-	"github.com/akitasoftware/akita-cli/cmd/internal/learn"
 	"github.com/akitasoftware/akita-cli/cmd/internal/legacy"
-	"github.com/akitasoftware/akita-cli/cmd/internal/login"
-	"github.com/akitasoftware/akita-cli/cmd/internal/nginx"
-	"github.com/akitasoftware/akita-cli/cmd/internal/setversion"
 	"github.com/akitasoftware/akita-cli/pcap"
 	"github.com/akitasoftware/akita-cli/printer"
 	"github.com/akitasoftware/akita-cli/rest"
@@ -54,9 +45,9 @@ var (
 
 var (
 	rootCmd = &cobra.Command{
-		Use:           "postman-lc-agent",
-		Short:         "The Postman Live Collections Agent",
-		Long:          "Documentation is available at https://voyager.postman.com/pdf/live-insights-documentation-postman.pdf",
+		Use:           "postman-insights-agent",
+		Short:         "The Postman Insights Agent",
+		Long:          "Documentation is available at https://learning.postman.com/docs/insights/insights-early-access/",
 		Version:       version.CLIDisplayString(),
 		SilenceErrors: true, // We print our own errors from subcommands in Execute function
 		// Don't print usage after error, we only print help if we cannot parse
@@ -102,7 +93,7 @@ func preRun(cmd *cobra.Command, args []string) {
 	// Somehow, this doesn't appear before "akita --version" (good) or
 	// "akita --help" (less good), only before commands or the usage
 	// information if no command is given.
-	printer.Stdout.Infof("Postman Live Collections Agent %s\n", version.ReleaseVersion())
+	printer.Stdout.Infof("Postman Insights Agent %s\n", version.ReleaseVersion())
 
 	// This is after argument parsing so that rest.Domain is correct,
 	// but won't be called if there is an error parsing the flags.
@@ -270,33 +261,13 @@ func init() {
 
 	// Register subcommands. Most commands that interact with Akita Cloud should
 	// be guarded by ci_guard.
-	rootCmd.AddCommand(ci_guard.GuardCommand(apidiff.Cmd))
 	rootCmd.AddCommand(ci_guard.GuardCommand(apidump.Cmd))
-	rootCmd.AddCommand(ci_guard.GuardCommand(apispec.Cmd))
-	daemon.Cmd.Hidden = true
-	rootCmd.AddCommand(daemon.Cmd)
-	rootCmd.AddCommand(ci_guard.GuardCommand(learn.Cmd))
-	login.Cmd.Hidden = true
-	rootCmd.AddCommand(login.Cmd)
-	rootCmd.AddCommand(ci_guard.GuardCommand(setversion.Cmd))
 
-	// The upload command is disabled until the back end can support it properly.
-	// Keeping its code around until we can resurrect this feature.
-	//
-	// rootCmd.AddCommand(ci_guard.GuardCommand(upload.Cmd))
-
-	rootCmd.AddCommand(ci_guard.GuardCommand(get.Cmd))
 	rootCmd.AddCommand(ecs.Cmd)
-	rootCmd.AddCommand(nginx.Cmd)
 	rootCmd.AddCommand(kube.Cmd)
 	rootCmd.AddCommand(ec2.Cmd)
 
-	// Legacy commands, included for backward compatibility but are hidden.
-	legacy.SessionsCmd.Hidden = true
-	rootCmd.AddCommand(legacy.SessionsCmd)
+	// Legacy command, included for integration tests but is hidden.
 	legacy.SpecsCmd.Hidden = true
 	rootCmd.AddCommand(legacy.SpecsCmd)
-
-	// Special hidden comands
-	rootCmd.AddCommand(ascii.Cmd)
 }

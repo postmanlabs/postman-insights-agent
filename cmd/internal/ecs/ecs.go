@@ -7,13 +7,17 @@ import (
 	"github.com/akitasoftware/akita-cli/rest"
 	"github.com/akitasoftware/akita-cli/telemetry"
 	"github.com/akitasoftware/akita-cli/util"
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
 var (
-	// Mandatory flag: Postman collection id
+	// Postman collection id
 	collectionId string
+
+	// Postman Insights project id
+	projectId string
 
 	// Any of these will be interactively prompted if not given on the command line.
 	// On the other hand, to run non-interactively then all of them *must* be given.
@@ -32,15 +36,15 @@ var (
 
 var Cmd = &cobra.Command{
 	Use:   "ecs",
-	Short: "Add the Postman Live Collections Agent to AWS ECS.",
-	Long:  "The CLI will collect information from you and add the Postman Live Collections Agent container to an ECS Task.",
+	Short: "Add the Postman Insights Agent to AWS ECS.",
+	Long:  "The CLI will collect information from you and add the Postman Insights Agent container to an ECS Task.",
 	// N.B.: this is useless because the root command makes its own determination,
 	// need to return AkitaErr to not show the usage.
 	SilenceUsage: true,
 	RunE:         addAgentToECS,
 }
 
-// 'postman-lc-agent ecs' should default to 'postman-lc-agent ecs add'
+// 'postman-insights-agent ecs' should default to 'postman-insights-agent ecs add'
 var AddToECSCmd = &cobra.Command{
 	Use:          "add",
 	Short:        Cmd.Short,
@@ -51,8 +55,8 @@ var AddToECSCmd = &cobra.Command{
 
 var RemoveFromECSCmd = &cobra.Command{
 	Use:          "remove",
-	Short:        "Remove the Postman Live Collections Agent from AWS ECS.",
-	Long:         "Remove a previously installed Postman container from an ECS Task.",
+	Short:        "Remove the Postman Insights Agent from AWS ECS.",
+	Long:         "Remove a previously installed Postman Insights Agent container from an ECS Task.",
 	SilenceUsage: true,
 	RunE:         removeAgentFromECS,
 
@@ -62,7 +66,11 @@ var RemoveFromECSCmd = &cobra.Command{
 
 func init() {
 	// TODO: add the ability to specify the credentials directly instead of via an AWS profile?
+	Cmd.PersistentFlags().StringVar(&projectId, "project", "", "Your Insights Project ID")
+
 	Cmd.PersistentFlags().StringVar(&collectionId, "collection", "", "Your Postman collection ID")
+	Cmd.Flags().MarkDeprecated("collection", "Use --project instead.")
+
 	Cmd.PersistentFlags().StringVar(&awsProfileFlag, "profile", "", "Which of your AWS profiles to use to access ECS.")
 	Cmd.PersistentFlags().StringVar(&awsRegionFlag, "region", "", "The AWS region in which your ECS cluster resides.")
 	Cmd.PersistentFlags().StringVar(&ecsClusterFlag, "cluster", "", "The name or ARN of your ECS cluster.")
@@ -90,19 +98,33 @@ func init() {
 
 func addAgentToECS(cmd *cobra.Command, args []string) error {
 	// Check for API key
-	_, err := cmderr.RequirePostmanAPICredentials("The Postman Live Collections Agent must have an API key in order to capture traces.")
+	_, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces.")
 	if err != nil {
 		return err
 	}
 
 	// Check collecton Id's existence
-	if collectionId == "" {
-		return errors.New("Must specify the ID of your collection with the --collection flag.")
+	if collectionId == "" && projectId == "" {
+		return errors.New("exactly one of --project or --collection must be specified")
 	}
+
 	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
-	_, err = util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, collectionId)
-	if err != nil {
-		return err
+	if collectionId != "" {
+		_, err = util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, collectionId)
+		if err != nil {
+			return err
+		}
+	} else {
+		var serviceID akid.ServiceID
+		err := akid.ParseIDAs(projectId, &serviceID)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse service ID")
+		}
+
+		_, err = util.GetServiceNameByServiceID(frontClient, serviceID)
+		if err != nil {
+			return err
+		}
 	}
 
 	return RunAddWorkflow()
