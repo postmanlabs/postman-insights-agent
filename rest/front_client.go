@@ -20,6 +20,7 @@ func NewFrontClient(host string, cli akid.ClientID) *frontClientImpl {
 	}
 }
 
+// Deprecated: Replaced with GetService(), will be removed in the future.
 func (c *frontClientImpl) GetServices(ctx context.Context) ([]Service, error) {
 	resp := []Service{}
 	if err := c.Get(ctx, "/v1/services", &resp); err != nil {
@@ -28,12 +29,22 @@ func (c *frontClientImpl) GetServices(ctx context.Context) ([]Service, error) {
 	return resp, nil
 }
 
-func (c *frontClientImpl) GetUser(ctx context.Context) (User, error) {
-	resp := User{}
-	err := c.Get(ctx, "/v1/user", &resp)
+func (c *frontClientImpl) GetService(ctx context.Context, serviceID akid.ServiceID) (InsightsService, error) {
+	var resp InsightsService
+	path := path.Join("/v2/agent/services", akid.String(serviceID))
+	if err := c.Get(ctx, path, &resp); err != nil {
+		return InsightsService{}, err
+	}
+	return resp, nil
+}
+
+func (c *frontClientImpl) GetUser(ctx context.Context) (PostmanUser, error) {
+	resp := PostmanUser{}
+	err := c.Get(ctx, "/v2/agent/user", &resp)
 	return resp, err
 }
 
+// Deprecated: Used in daemon command which is deprecated.
 func (c *frontClientImpl) DaemonHeartbeat(ctx context.Context, daemonName string) error {
 	body := struct {
 		DaemonName string `json:"daemon_name"`
@@ -44,6 +55,7 @@ func (c *frontClientImpl) DaemonHeartbeat(ctx context.Context, daemonName string
 	return c.Post(ctx, "/v1/daemon/heartbeat", body, &resp)
 }
 
+// Deprecated: Used in daemon command which is deprecated.
 func (c *frontClientImpl) LongPollActiveTracesForService(ctx context.Context, daemonName string, serviceID akid.ServiceID, activeTraces []akid.LearnSessionID) (daemon.ActiveTraceDiff, error) {
 	body := struct {
 		DaemonName     string                `json:"daemon_name"`

@@ -54,7 +54,7 @@ func (_ nullClient) Close() error {
 // This should be called once at startup either from the root command or from a subcommand that overrides the default PersistentPreRun.
 func Init(isLoggingEnabled bool) {
 	// Opt-out mechanism
-	disableTelemetry := os.Getenv("AKITA_DISABLE_TELEMETRY") + os.Getenv("POSTMAN_LC_AGENT_DISABLE_TELEMETRY")
+	disableTelemetry := os.Getenv("AKITA_DISABLE_TELEMETRY") + os.Getenv("POSTMAN_INSIGHTS_AGENT_DISABLE_TELEMETRY")
 	if disableTelemetry != "" {
 		if val, err := strconv.ParseBool(disableTelemetry); err == nil && val {
 			printer.Infof("Telemetry disabled via opt-out.\n")
@@ -64,10 +64,10 @@ func Init(isLoggingEnabled bool) {
 	}
 
 	// If unset, will be "" and we'll use the default
-	amplitudeEndpoint := os.Getenv("POSTMAN_LC_AGENT_AMPLITUDE_ENDPOINT")
+	amplitudeEndpoint := os.Getenv("POSTMAN_INSIGHTS_AGENT_AMPLITUDE_ENDPOINT")
 
 	// If unset, will use this hard-coded value.
-	amplitudeKey := os.Getenv("POSTMAN_LC_AGENT_AMPLITUDE_WRITE_KEY")
+	amplitudeKey := os.Getenv("POSTMAN_INSIGHTS_AGENT_AMPLITUDE_WRITE_KEY")
 	if amplitudeKey == "" {
 		amplitudeKey = defaultAmplitudeKey
 	}
@@ -138,10 +138,10 @@ func getDistinctID() string {
 
 			// Use the user ID if no email is present;
 			// this should be fixed in the current backend.
-			return userResponse.ID.String()
+			return fmt.Sprint(userResponse.ID)
 		}
 
-		printer.Infof("Telemetry using temporary ID; /v1/user API call failed: %v\n", err)
+		printer.Infof("Telemetry using temporary ID; GetUser API call failed: %v\n", err)
 		printer.Infof("This error may indicate a problem communicating with the Postman servers,\n")
 		printer.Infof("but the agent will still attempt to send telemetry to Postman support.\n")
 	}
