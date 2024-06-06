@@ -10,8 +10,7 @@ import (
 	"github.com/akitasoftware/go-utils/queues"
 	"github.com/c9s/goprocinfo/linux"
 	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 const (

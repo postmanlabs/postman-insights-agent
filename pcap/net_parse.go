@@ -6,14 +6,13 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
 	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
-	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 // The maximum time we will wait before flushing a connection and delivering

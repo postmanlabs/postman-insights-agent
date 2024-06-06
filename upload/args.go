@@ -3,10 +3,10 @@ package upload
 import (
 	"time"
 
-	"github.com/akitasoftware/akita-cli/plugin"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akiuri"
 	"github.com/akitasoftware/akita-libs/tags"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
 )
 
 type Args struct {

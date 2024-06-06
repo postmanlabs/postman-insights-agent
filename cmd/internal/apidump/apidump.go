@@ -3,20 +3,18 @@ package apidump
 import (
 	"time"
 
-	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
-
 	"github.com/akitasoftware/akita-libs/akid"
-
-	"github.com/akitasoftware/akita-cli/apidump"
-	"github.com/akitasoftware/akita-cli/apispec"
-	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
-	"github.com/akitasoftware/akita-cli/cmd/internal/pluginloader"
-	"github.com/akitasoftware/akita-cli/location"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/telemetry"
-	"github.com/akitasoftware/akita-cli/util"
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/apidump"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/pluginloader"
+	"github.com/postmanlabs/postman-insights-agent/location"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/util"
+	"github.com/spf13/cobra"
 )
 
 var (

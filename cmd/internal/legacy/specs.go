@@ -6,15 +6,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
+	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/jpillora/backoff"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/spf13/cobra"
-
-	"github.com/akitasoftware/akita-libs/akid"
-
-	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
-	"github.com/akitasoftware/akita-cli/rest"
-	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 )
 
 var SpecsCmd = &cobra.Command{

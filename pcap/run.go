@@ -1,17 +1,16 @@
 package pcap
 
 import (
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/trace"
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	akihttp2 "github.com/akitasoftware/akita-libs/akinet/http2"
 	"github.com/akitasoftware/akita-libs/akinet/tls"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 	. "github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
 func Collect(

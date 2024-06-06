@@ -6,12 +6,11 @@ import (
 
 	"github.com/akitasoftware/akita-libs/client_telemetry"
 	"github.com/akitasoftware/go-utils/math"
+	"github.com/postmanlabs/postman-insights-agent/env"
+	"github.com/postmanlabs/postman-insights-agent/pcap"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 	"github.com/spf13/viper"
-
-	"github.com/akitasoftware/akita-cli/env"
-	"github.com/akitasoftware/akita-cli/pcap"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/trace"
 )
 
 // Captures apidump progress.
