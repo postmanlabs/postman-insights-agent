@@ -1,10 +1,11 @@
 package kube
 
 import (
-	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
-	"github.com/pkg/errors"
 	"os"
 	"path/filepath"
+
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 )
 
 // Writes the generated secret to the given file path

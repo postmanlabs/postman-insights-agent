@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 // The Github API asset type, with most fields missing

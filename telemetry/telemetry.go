@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/cfg"
-	"github.com/akitasoftware/akita-cli/consts"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/version"
 	"github.com/akitasoftware/akita-libs/analytics"
 	"github.com/akitasoftware/go-utils/maps"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/version"
 )
 
 var (

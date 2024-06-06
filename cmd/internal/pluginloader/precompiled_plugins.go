@@ -1,9 +1,8 @@
 package pluginloader
 
 import (
-	"github.com/akitasoftware/akita-cli/plugin"
-
-	"github.com/akitasoftware/plugin-flickr"
+	plugin_flickr "github.com/akitasoftware/plugin-flickr"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
 )
 
 // To include a plugin in the Akita CLI build, import the Go package

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/util"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/util"
 )
 
 func Run(args Args) error {

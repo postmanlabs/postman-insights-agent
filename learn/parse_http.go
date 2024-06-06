@@ -15,24 +15,21 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/golang/protobuf/proto"
-
-	"github.com/andybalholm/brotli"
-	"github.com/google/uuid"
-	"github.com/pkg/errors"
-	"golang.org/x/text/encoding/ianaindex"
-	"golang.org/x/text/transform"
-	"gopkg.in/yaml.v2"
-
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
 	"github.com/akitasoftware/go-utils/optionals"
-
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/andybalholm/brotli"
+	"github.com/golang/protobuf/proto"
+	"github.com/google/uuid"
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	"golang.org/x/text/encoding/ianaindex"
+	"golang.org/x/text/transform"
+	"gopkg.in/yaml.v2"
 )
 
 var (

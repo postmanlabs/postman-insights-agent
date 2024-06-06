@@ -3,8 +3,8 @@ package deployment
 import (
 	"os"
 
-	"github.com/akitasoftware/akita-cli/printer"
 	"github.com/akitasoftware/akita-libs/tags"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 // Internal type of the deployment, automatically discovered.

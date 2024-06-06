@@ -2,14 +2,13 @@ package nginx
 
 import (
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/pluginloader"
+	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/integrations/nginx"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/cobra"
-
-	"github.com/akitasoftware/akita-cli/cmd/internal/pluginloader"
-	"github.com/akitasoftware/akita-cli/consts"
-	"github.com/akitasoftware/akita-cli/integrations/nginx"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/telemetry"
 )
 
 var (

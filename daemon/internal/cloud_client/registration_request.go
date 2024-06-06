@@ -1,9 +1,9 @@
 package cloud_client
 
 import (
-	"github.com/akitasoftware/akita-cli/printer"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/daemon"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 // A request for registering a client (middleware) to the daemon.

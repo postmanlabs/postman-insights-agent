@@ -3,15 +3,14 @@ package apispec
 import (
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/akitasoftware/akita-libs/sampled_err"
 	"github.com/google/martian/v3/har"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-
-	hl "github.com/akitasoftware/akita-cli/har_loader"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/trace"
-	"github.com/akitasoftware/akita-libs/akinet"
-	"github.com/akitasoftware/akita-libs/sampled_err"
+	hl "github.com/postmanlabs/postman-insights-agent/har_loader"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
 // Extract witnesses from a local HAR file and send them to the collector.

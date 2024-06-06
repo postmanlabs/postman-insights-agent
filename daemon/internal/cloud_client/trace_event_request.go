@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/akitasoftware/akita-cli/har_loader"
-	"github.com/akitasoftware/akita-cli/printer"
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/postmanlabs/postman-insights-agent/har_loader"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 // A request for sending trace events to the daemon.

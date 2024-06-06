@@ -3,8 +3,8 @@ package rest
 import (
 	"strings"
 
-	"github.com/akitasoftware/akita-cli/cfg"
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 // This global setting identifies which back end to use, and defaults to

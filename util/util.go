@@ -9,14 +9,6 @@ import (
 	"time"
 
 	randomdata "github.com/Pallinder/go-randomdata"
-	"github.com/google/uuid"
-	cache "github.com/patrickmn/go-cache"
-	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/consts"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/telemetry"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/akiuri"
@@ -24,6 +16,13 @@ import (
 	"github.com/akitasoftware/akita-libs/daemon"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/tags"
+	"github.com/google/uuid"
+	cache "github.com/patrickmn/go-cache"
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 var (

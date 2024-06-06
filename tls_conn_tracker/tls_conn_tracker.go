@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/trace"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
 // Collects akinet.TLSClientHello and akinet.TLSServerHello messages and

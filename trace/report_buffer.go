@@ -5,13 +5,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/batcher"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 )
 
 // A report that hasn't yet been processed for upload.

@@ -2,11 +2,10 @@ package trace
 
 import (
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
-
-	"github.com/akitasoftware/akita-cli/printer"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	. "github.com/akitasoftware/akita-libs/visitors"
 	vis "github.com/akitasoftware/akita-libs/visitors/http_rest"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 func obfuscate(m *pb.Method) {

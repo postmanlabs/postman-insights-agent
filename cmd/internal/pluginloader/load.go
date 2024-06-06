@@ -4,9 +4,8 @@ import (
 	go_plugin "plugin"
 
 	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/plugin"
-	"github.com/akitasoftware/akita-cli/plugin/akita"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
+	"github.com/postmanlabs/postman-insights-agent/plugin/akita"
 )
 
 func Load(paths []string) ([]plugin.AkitaPlugin, error) {
