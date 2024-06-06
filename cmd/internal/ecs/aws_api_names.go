@@ -3,7 +3,7 @@ package ecs
 import (
 	"context"
 
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 )
 

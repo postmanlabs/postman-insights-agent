@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/spf13/viper"
 )

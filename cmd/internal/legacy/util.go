@@ -8,7 +8,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akid"
 
-	"github.com/akitasoftware/akita-cli/rest"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 )
 
 func getServiceIDByName(c rest.FrontClient, name string) (akid.ServiceID, error) {

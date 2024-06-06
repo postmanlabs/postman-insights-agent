@@ -9,8 +9,8 @@ import (
 	"github.com/google/martian/v3/har"
 	"github.com/pkg/errors"
 
-	"github.com/akitasoftware/akita-cli/learn"
-	"github.com/akitasoftware/akita-cli/version"
+	"github.com/postmanlabs/postman-insights-agent/learn"
+	"github.com/postmanlabs/postman-insights-agent/version"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/tags"

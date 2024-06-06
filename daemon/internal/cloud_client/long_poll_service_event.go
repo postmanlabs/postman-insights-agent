@@ -3,8 +3,8 @@ package cloud_client
 import (
 	"time"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/util"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/akitasoftware/akita-libs/akid"
 )
 

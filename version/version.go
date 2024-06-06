@@ -6,7 +6,7 @@ import (
 
 	ver "github.com/hashicorp/go-version"
 
-	"github.com/akitasoftware/akita-cli/architecture"
+	"github.com/postmanlabs/postman-insights-agent/architecture"
 )
 
 var (

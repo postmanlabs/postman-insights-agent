@@ -3,9 +3,9 @@ package rest
 import (
 	"runtime"
 
-	"github.com/akitasoftware/akita-cli/env"
-	"github.com/akitasoftware/akita-cli/useragent"
-	"github.com/akitasoftware/akita-cli/version"
+	"github.com/postmanlabs/postman-insights-agent/env"
+	"github.com/postmanlabs/postman-insights-agent/useragent"
+	"github.com/postmanlabs/postman-insights-agent/version"
 )
 
 func GetUserAgent() string {

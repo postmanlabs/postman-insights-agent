@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/batcher"
 	"github.com/akitasoftware/akita-libs/client_telemetry"

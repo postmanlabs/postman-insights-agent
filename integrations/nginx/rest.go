@@ -12,9 +12,9 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 
-	"github.com/akitasoftware/akita-cli/daemon"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/daemon"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/memview"

@@ -5,7 +5,7 @@ import (
 
 	homedir "github.com/mitchellh/go-homedir"
 
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 var (

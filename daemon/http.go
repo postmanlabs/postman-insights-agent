@@ -8,8 +8,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/golang/gddo/httputil/header"
 )
 

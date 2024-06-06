@@ -5,7 +5,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/pkg/errors"
 
-	"github.com/akitasoftware/akita-cli/trace"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	akihttp2 "github.com/akitasoftware/akita-libs/akinet/http2"

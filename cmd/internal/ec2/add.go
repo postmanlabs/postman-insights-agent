@@ -9,9 +9,9 @@ import (
 	"text/template"
 
 	"github.com/AlecAivazis/survey/v2"
-	"github.com/akitasoftware/akita-cli/consts"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/pkg/errors"
 )
 

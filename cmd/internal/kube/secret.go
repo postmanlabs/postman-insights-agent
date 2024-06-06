@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"text/template"
 
-	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/pkg/errors"
 )
 

@@ -1,9 +1,9 @@
 package pluginloader
 
 import (
-	"github.com/akitasoftware/akita-cli/plugin"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
 
-	"github.com/akitasoftware/plugin-flickr"
+//	"github.com/akitasoftware/plugin-flickr"
 )
 
 // To include a plugin in the Akita CLI build, import the Go package
@@ -12,5 +12,5 @@ var PrecompiledPlugins map[string]plugin.AkitaPluginLoader = map[string]plugin.A
 	// Example: "my_plugin" : myplugin.LoadAkitaPlugin,
 
 	// Plugin for transforming Flickr's API into a more REST-like format.
-	"flickr": plugin_flickr.LoadAkitaPlugin,
+//	"flickr": plugin_flickr.LoadAkitaPlugin,
 }

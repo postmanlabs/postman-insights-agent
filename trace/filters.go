@@ -3,7 +3,7 @@ package trace
 import (
 	"regexp"
 
-	"github.com/akitasoftware/akita-cli/learn"
+	"github.com/postmanlabs/postman-insights-agent/learn"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/trackers"

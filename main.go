@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/akitasoftware/akita-cli/cmd"
+	"github.com/postmanlabs/postman-insights-agent/cmd"
 )
 
 func main() {

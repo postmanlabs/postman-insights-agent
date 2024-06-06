@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/akitasoftware/akita-libs/github"
 	"github.com/akitasoftware/akita-libs/tags"
 )

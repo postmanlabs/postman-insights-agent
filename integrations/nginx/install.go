@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 )

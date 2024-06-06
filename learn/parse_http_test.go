@@ -3,7 +3,7 @@ package learn
 import (
 	"bytes"
 	"compress/flate"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"net/http"
 	"strings"
 	"testing"

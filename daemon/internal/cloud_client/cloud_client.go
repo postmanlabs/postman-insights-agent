@@ -3,11 +3,11 @@ package cloud_client
 import (
 	"fmt"
 
-	"github.com/akitasoftware/akita-cli/apispec"
-	"github.com/akitasoftware/akita-cli/plugin"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/trace"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/daemon"
 	"github.com/akitasoftware/akita-libs/sampled_err"

@@ -3,9 +3,9 @@ package cmderr
 import (
 	"errors"
 
-	"github.com/akitasoftware/akita-cli/cfg"
-	"github.com/akitasoftware/akita-cli/env"
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/env"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 // Checks that a user has configured their Postman API key and returned them.

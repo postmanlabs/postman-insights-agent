@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/akitasoftware/akita-cli/har_loader"
-	"github.com/akitasoftware/akita-cli/printer"
+	"github.com/postmanlabs/postman-insights-agent/har_loader"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/akitasoftware/akita-libs/akid"
 )
 

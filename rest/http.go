@@ -13,10 +13,10 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/pkg/errors"
 
-	"github.com/akitasoftware/akita-cli/cfg"
-	"github.com/akitasoftware/akita-cli/consts"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/version"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/version"
 	"github.com/akitasoftware/akita-libs/spec_util"
 )
 

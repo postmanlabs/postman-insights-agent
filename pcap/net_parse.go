@@ -11,8 +11,8 @@ import (
 	"github.com/google/gopacket/reassembly"
 	"github.com/pkg/errors"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/akitasoftware/akita-libs/akinet"
 )
 

@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
-	mockrest "github.com/akitasoftware/akita-cli/rest/mock"
+	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"

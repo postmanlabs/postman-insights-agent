@@ -31,8 +31,8 @@ import (
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
 	"github.com/akitasoftware/go-utils/optionals"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 var (

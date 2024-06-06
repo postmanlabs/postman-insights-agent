@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 
-	hl "github.com/akitasoftware/akita-cli/har_loader"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/trace"
+	hl "github.com/postmanlabs/postman-insights-agent/har_loader"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/sampled_err"
 )
