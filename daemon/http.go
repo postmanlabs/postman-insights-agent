@@ -8,9 +8,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
 	"github.com/golang/gddo/httputil/header"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 )
 
 // Ensures the request body is JSON-encoded. If it is not, returns an

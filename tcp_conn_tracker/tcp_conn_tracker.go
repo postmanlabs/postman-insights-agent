@@ -5,10 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akitasoftware/akita-cli/trace"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/sampled_err"
+	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
 // Collects akinet.TCPPacketMetadata and processes them into summaries. The

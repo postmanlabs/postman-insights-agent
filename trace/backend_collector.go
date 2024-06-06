@@ -6,14 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/learn"
-	"github.com/akitasoftware/akita-cli/plugin"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/telemetry"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -22,6 +14,13 @@ import (
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
 	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/golang/protobuf/proto"
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/learn"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 const (

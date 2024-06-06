@@ -6,16 +6,15 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/mux"
-
-	"github.com/akitasoftware/akita-cli/daemon/internal/cloud_client"
-	"github.com/akitasoftware/akita-cli/har_loader"
-	"github.com/akitasoftware/akita-cli/plugin"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/util"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/daemon"
+	"github.com/gorilla/mux"
+	"github.com/postmanlabs/postman-insights-agent/daemon/internal/cloud_client"
+	"github.com/postmanlabs/postman-insights-agent/har_loader"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/util"
 )
 
 const TRACE_BUFFER_SIZE = 10_000

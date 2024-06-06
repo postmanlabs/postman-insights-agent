@@ -3,8 +3,8 @@ package ecs
 import (
 	"context"
 
-	"github.com/akitasoftware/akita-cli/telemetry"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 // Utility method for: listing a bunch of ARNs, and then looking up their names.

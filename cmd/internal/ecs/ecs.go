@@ -3,18 +3,18 @@ package ecs
 import (
 	"fmt"
 
-	"github.com/akitasoftware/akita-cli/apispec"
-	ecs_cloudformation_utils "github.com/akitasoftware/akita-cli/aws_utils/cloudformation/ecs"
-	ecs_console_utils "github.com/akitasoftware/akita-cli/aws_utils/console/ecs"
-	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/telemetry"
-	"github.com/akitasoftware/akita-cli/util"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
+	ecs_cloudformation_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/cloudformation/ecs"
+	ecs_console_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/console/ecs"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
 )
 

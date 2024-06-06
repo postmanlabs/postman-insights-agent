@@ -3,7 +3,6 @@ package learn
 import (
 	"bytes"
 	"compress/flate"
-	"github.com/akitasoftware/akita-cli/telemetry"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	as "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/viper"
 )
 

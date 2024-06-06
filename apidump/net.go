@@ -12,12 +12,11 @@ import (
 	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/google/gopacket/pcap"
 	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-cli/architecture"
-	"github.com/akitasoftware/akita-cli/consts"
-	"github.com/akitasoftware/akita-cli/env"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/architecture"
+	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/env"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 // An interface that's compatible with net.Interface so we can use mock
