@@ -1,4 +1,4 @@
-module github.com/akitasoftware/akita-cli
+module github.com/postmanlabs/postman-insights-agent
 
 go 1.18
 
