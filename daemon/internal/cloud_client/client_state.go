@@ -1,9 +1,9 @@
 package cloud_client
 
 import (
-	"github.com/akitasoftware/akita-cli/rest"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/daemon"
+	"github.com/postmanlabs/postman-insights-agent/rest"
 )
 
 // Logging state for a single service.

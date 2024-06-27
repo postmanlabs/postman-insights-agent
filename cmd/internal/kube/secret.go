@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"text/template"
 
-	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
-	"github.com/akitasoftware/akita-cli/printer"
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/telemetry"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/cobra"
 )
 

@@ -1,4 +1,4 @@
-module github.com/akitasoftware/akita-cli
+module github.com/postmanlabs/postman-insights-agent
 
 go 1.18
 
@@ -9,7 +9,7 @@ require (
 	github.com/akitasoftware/akita-ir v0.0.0-20220630210013-8926783978fe
 	github.com/akitasoftware/akita-libs v0.0.0-20240415065826-ff8036138dc1
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
-	github.com/akitasoftware/plugin-flickr v0.2.0
+	github.com/akitasoftware/plugin-flickr v0.2.1-0.20240606013137-a06b13dcfce9
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1
 	github.com/aws/aws-sdk-go-v2/config v1.17.10
@@ -80,7 +80,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pelletier/go-toml v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/spf13/afero v1.1.2 // indirect
+	github.com/spf13/afero v1.2.2 // indirect
 	github.com/spf13/cast v1.3.0 // indirect
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect

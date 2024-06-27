@@ -7,12 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
-	"github.com/golang/protobuf/proto"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-
-	mockrest "github.com/akitasoftware/akita-cli/rest/mock"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -21,6 +15,11 @@ import (
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/golang/mock/gomock"
+	"github.com/golang/protobuf/proto"
+	"github.com/google/uuid"
+	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
+	"github.com/stretchr/testify/assert"
 )
 
 var (

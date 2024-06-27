@@ -6,14 +6,12 @@ import (
 	"strconv"
 
 	"github.com/OneOfOne/xxhash"
-	"github.com/akitasoftware/akita-libs/client_telemetry"
-	"github.com/spf13/viper"
-
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
-
-	"github.com/akitasoftware/akita-cli/rest"
-	"github.com/akitasoftware/akita-cli/util"
+	"github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/util"
+	"github.com/spf13/viper"
 )
 
 type Collector interface {
