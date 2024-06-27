@@ -2,6 +2,7 @@ package kube
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/akitasoftware/akita-cli/cfg"
 	"github.com/akitasoftware/akita-cli/cmd/internal/cmderr"
@@ -10,6 +11,7 @@ import (
 	"github.com/akitasoftware/akita-cli/rest"
 	"github.com/akitasoftware/akita-cli/telemetry"
 	"github.com/akitasoftware/akita-cli/util"
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -30,7 +32,7 @@ var (
 	secretInjectFlag string
 
 	// Postman related flags
-	postmanCollectionID string
+	insightsProjectID string
 )
 
 var injectCmd = &cobra.Command{
@@ -38,15 +40,15 @@ var injectCmd = &cobra.Command{
 	Short: "Inject the Postman Insights Agent into a Kubernetes deployment",
 	Long:  "Inject the Postman Insights Agent into a Kubernetes deployment or set of deployments, and output the result to stdout or a file",
 	RunE: func(_ *cobra.Command, args []string) error {
-		if postmanCollectionID == "" {
+		if insightsProjectID == "" {
 			return cmderr.AkitaErr{
-				Err: errors.New("--collection must be specified."),
+				Err: errors.New("--project must be specified."),
 			}
 		}
 
 		// Lookup service *first* (if we are remote) ensuring that collectionId
 		// or projectName is correct and exists.
-		err := lookupService(postmanCollectionID)
+		err := lookupService(insightsProjectID)
 		if err != nil {
 			return err
 		}
@@ -120,7 +122,7 @@ var injectCmd = &cobra.Command{
 
 		// Inject the sidecar into the input file
 		_, env := cfg.GetPostmanAPIKeyAndEnvironment()
-		container = createPostmanSidecar(postmanCollectionID, env)
+		container = createPostmanSidecar(insightsProjectID, env)
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)
 		if err != nil {
@@ -165,8 +167,8 @@ type secretGenerationOptions struct {
 // The image to use for the Postman Insights Agent sidecar
 const akitaImage = "docker.postman.com/postman-insights-agent:latest"
 
-func createPostmanSidecar(postmanCollectionID string, postmanEnvironment string) v1.Container {
-	args := []string{"apidump", "--collection", postmanCollectionID}
+func createPostmanSidecar(insightsProjectID string, postmanEnvironment string) v1.Container {
+	args := []string{"apidump", "--project", insightsProjectID}
 
 	// If a nondefault --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
@@ -240,15 +242,19 @@ func resolveSecretGenerationOptions(flagValue string) secretGenerationOptions {
 	}
 }
 
-// Check if collection exists or not
-func lookupService(postmanCollectionID string) error {
+// Check if service exists or not (and this API key has access).
+func lookupService(insightsProjectID string) error {
+	var serviceID akid.ServiceID
+
+	err := akid.ParseIDAs(insightsProjectID, &serviceID)
+	if err != nil {
+		return fmt.Errorf("Can't parse %q as project ID.", insightsProjectID)
+	}
+
 	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
 
-	_, err := util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, postmanCollectionID)
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err = util.GetServiceNameByServiceID(frontClient, serviceID)
+	return err
 }
 
 func init() {
@@ -280,10 +286,10 @@ func init() {
 	injectCmd.Flags().Lookup("secret").NoOptDefVal = "true"
 
 	injectCmd.Flags().StringVar(
-		&postmanCollectionID,
-		"collection",
+		&insightsProjectID,
+		"project",
 		"",
-		"Your Postman collection ID.")
+		"Your Postman Insights project ID.")
 
 	Cmd.AddCommand(injectCmd)
 }
