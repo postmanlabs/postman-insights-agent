@@ -392,5 +392,5 @@ func init() {
 		100,
 		"Probability that the apidump command will start intercepting traffic.",
 	)
-	_ = Cmd.Flags().MarkHidden("health-check-port")
+	_ = Cmd.Flags().MarkHidden("randomized-start")
 }
