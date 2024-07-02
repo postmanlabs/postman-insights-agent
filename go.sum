@@ -27,10 +27,12 @@ github.com/Pallinder/go-randomdata v1.2.0 h1:DZ41wBchNRb/0GfsePLiSwb0PHZmT67XY00
 github.com/Pallinder/go-randomdata v1.2.0/go.mod h1:yHmJgulpD2Nfrm0cR9tI/+oAgRqCQQixsA8HyRZfV9Y=
 github.com/PuerkitoBio/purell v1.1.1/go.mod h1:c11w/QuzBsJSee3cPx9rAFu61PvFxuPbtSwDGJws/X0=
 github.com/PuerkitoBio/urlesc v0.0.0-20170810143723-de5bf2ad4578/go.mod h1:uGdkoq3SwY9Y+13GIhn11/XLaGBb4BfwItxLd5jeuXE=
-github.com/akitasoftware/akita-ir v0.0.0-20220630210013-8926783978fe h1:0BeBDjLDFPwv2bkk6YuRAPf1r6U4Wby98NHI9+Lddvs=
 github.com/akitasoftware/akita-ir v0.0.0-20220630210013-8926783978fe/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
-github.com/akitasoftware/akita-libs v0.0.0-20240415065826-ff8036138dc1 h1:z2VL5kA1ogtMU92PTzArL+ipGpZLPAWJYY9ent/0BrE=
+github.com/akitasoftware/akita-ir v0.0.0-20240702191148-96a4c6941493 h1:FTTCYUf9W7g5lJQhnl9PKZWSoUNF+18PfqyvcdqWd9Q=
+github.com/akitasoftware/akita-ir v0.0.0-20240702191148-96a4c6941493/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
 github.com/akitasoftware/akita-libs v0.0.0-20240415065826-ff8036138dc1/go.mod h1:kDm2NMNWts5dJHpVMhFznr+G1Hk/zz80l6aOZ+2fPdc=
+github.com/akitasoftware/akita-libs v0.0.0-20240702192331-ea7eb1c0f778 h1:oAcYp5BJ+/MPlnwxQN9SbhSKizebzk9to4z48KTklJk=
+github.com/akitasoftware/akita-libs v0.0.0-20240702192331-ea7eb1c0f778/go.mod h1:6Sndgr4it48KqVRdkdeGoeY5LV3KNYUsdRfEaW6HjOg=
 github.com/akitasoftware/go-utils v0.0.0-20221207014235-6f4c9079488d/go.mod h1:+IOXf7l/QCAQECJzjJwhTp1sBkRoJ6WciZwJezUwBa4=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803 h1:ebIh/EFuaP8GczzMe8EwVID/blSv5Tej6S8NE4xyarQ=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803/go.mod h1:+IOXf7l/QCAQECJzjJwhTp1sBkRoJ6WciZwJezUwBa4=
