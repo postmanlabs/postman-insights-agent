@@ -69,7 +69,10 @@ func applyRandomizedStart() {
 
 	if prob < 100 {
 		printer.Stdout.Infof("Starting trace with probability %d%%.\n", prob)
-		r := rand.Intn(100) // in range [0,100),
+
+		// Pre-1.20, Go does not seed the default Random object :(
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		r := rng.Intn(100) // in range [0,100),
 		// so 1% probability means < 1, not <= 1:
 		if r < prob {
 			return
