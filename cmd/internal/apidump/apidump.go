@@ -62,7 +62,7 @@ func applyRandomizedStart() {
 
 	if env := os.Getenv("POSTMAN_AGENT_RANDOM_START"); env != "" {
 		override, err := strconv.Atoi(env)
-		if err != nil {
+		if err == nil {
 			prob = override
 		}
 	}
