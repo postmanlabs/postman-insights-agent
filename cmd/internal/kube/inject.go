@@ -46,8 +46,7 @@ var injectCmd = &cobra.Command{
 			}
 		}
 
-		// Lookup service *first* (if we are remote) ensuring that collectionId
-		// or projectName is correct and exists.
+		// Lookup service *first* (if we are remote) ensuring that insightsProjectID is correct and exists.
 		err := lookupService(insightsProjectID)
 		if err != nil {
 			return err
