@@ -1,6 +1,9 @@
 package apidump
 
 import (
+	"math/rand"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
@@ -44,7 +47,46 @@ var (
 	maxWitnessSize_bytes    int
 	dockerExtensionMode     bool
 	healthCheckPort         int
+	randomizedStart         int
 )
+
+// This function will either startup apidump normally, or never return, with probability
+// determined by randomizedStart/100.  The value of the command-line flag may be
+// overridden by an environment variable to make it easier to apply.
+// This function should be called as early as possible in case termination of
+// the agent causes deployment problems.
+//
+// Negative values are effectively treated as 0 probability, instead of being validated.
+func applyRandomizedStart() {
+	prob := randomizedStart
+
+	if env := os.Getenv("POSTMAN_AGENT_RANDOM_START"); env != "" {
+		override, err := strconv.Atoi(env)
+		if err == nil {
+			prob = override
+		}
+	}
+
+	if prob < 100 {
+		printer.Stdout.Infof("Starting trace with probability %d%%.\n", prob)
+
+		// Pre-1.20, Go does not seed the default Random object :(
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		r := rng.Intn(100) // in range [0,100),
+		// so 1% probability means < 1, not <= 1:
+		if r < prob {
+			return
+		}
+
+		printer.Stdout.Infof("This agent instance will not begin capturing data.\n")
+
+		// Wait forever
+		select {}
+
+		// Unreachable
+		os.Exit(0)
+	}
+}
 
 var Cmd = &cobra.Command{
 	Use:          "apidump",
@@ -53,6 +95,8 @@ var Cmd = &cobra.Command{
 	SilenceUsage: true,
 	Args:         cobra.ExactArgs(0),
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		applyRandomizedStart()
+
 		traceTags, err := util.ParseTagsAndWarn(tagsFlag)
 		if err != nil {
 			return err
@@ -344,4 +388,12 @@ func init() {
 		"Port to listen on for Docker extension health checks. This is an internal flag used by the Akita Docker extension.",
 	)
 	_ = Cmd.Flags().MarkHidden("health-check-port")
+
+	Cmd.Flags().IntVar(
+		&randomizedStart,
+		"randomized-start",
+		100,
+		"Probability that the apidump command will start intercepting traffic.",
+	)
+	_ = Cmd.Flags().MarkHidden("randomized-start")
 }
