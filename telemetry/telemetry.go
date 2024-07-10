@@ -194,12 +194,6 @@ func getUserIdentity() (string, string, error) {
 	return localUser.Username + "@" + localHost, "", nil
 }
 
-func SetServiceID(id akid.ServiceID) {
-	if serviceID != (akid.ServiceID{}) {
-		serviceID = id
-	}
-}
-
 // Report an error in a particular operation (inContext), including
 // the text of the error.
 func Error(inContext string, e error) {
@@ -311,27 +305,26 @@ func WorkflowStep(workflow string, message string) {
 }
 
 // Report command line flags (before any error checking.)
+// This event will be sent before any other events and only once per agent invocation.
 func CommandLine(command string, commandLine []string) {
-	properties := map[string]any{
-		"command":      command,
-		"command_line": commandLine,
-	}
-
-	// Using regex to fetch serviceID from commandLine, since serviceID is set after this telemetry event
-	// is sent. For other telemetry events, package level serviceID var is used.
-	var serviceID akid.ServiceID
+	// Look for a service ID in the command line, and assign it to package level variable.
 	for _, arg := range commandLine {
 		if serviceIDRegex.MatchString(arg) {
 			err := akid.ParseIDAs(arg, &serviceID)
 			if err != nil {
 				printer.Warningf("Error parsing service ID from command line: %v\n", err)
 			}
-			properties["service_id"] = serviceID
 			break
 		}
 	}
 
-	tryTrackingEvent("Command - Executed", properties)
+	tryTrackingEvent(
+		"Command - Executed",
+		map[string]any{
+			"command":      command,
+			"command_line": commandLine,
+		},
+	)
 }
 
 // Report the platform and version of an attempted integration
@@ -357,8 +350,8 @@ func Shutdown() {
 	}
 }
 
-// Attempts to track an event using the provided event name and properties. It adds the user ID
-// and team ID to the event properties, and then sends the event to the analytics client.
+// Attempts to track an event using the provided event name and properties. It adds the user ID,
+// team ID and service ID to the event properties, and then sends the event to the analytics client.
 // If there is an error sending the event, a warning message is printed.
 func tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
 	// precondition: analyticsClient is initialized

@@ -161,7 +161,6 @@ func checkAPIKeyAndProjectID() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to parse service ID")
 	}
-	telemetry.SetServiceID(serviceID)
 
 	_, err = util.GetServiceNameByServiceID(frontClient, serviceID)
 	if err != nil {

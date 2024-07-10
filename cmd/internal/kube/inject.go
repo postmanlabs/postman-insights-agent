@@ -249,7 +249,6 @@ func lookupService(insightsProjectID string) error {
 	if err != nil {
 		return fmt.Errorf("Can't parse %q as project ID.", insightsProjectID)
 	}
-	telemetry.SetServiceID(serviceID)
 
 	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
 
