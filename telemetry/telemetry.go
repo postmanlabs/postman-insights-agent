@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/analytics"
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
@@ -32,6 +34,9 @@ var (
 	// of getting it only once.
 	userID string
 	teamID string
+
+	serviceID      akid.ServiceID
+	serviceIDRegex = regexp.MustCompile(`^svc_[A-Za-z0-9]{22}$`)
 
 	// Timeout talking to API.
 	// Shorter than normal because we don't want the CLI to be slow.
@@ -106,7 +111,7 @@ func doInit() {
 				IsLoggingEnabled: false,
 			},
 			App: analytics.AppInfo{
-				Name:      "akita-cli",
+				Name:      "postman-insights-agent",
 				Version:   version.ReleaseVersion().String(),
 				Build:     version.GitVersion(),
 				Namespace: "",
@@ -187,6 +192,12 @@ func getUserIdentity() (string, string, error) {
 		return localUser.Username, "", nil
 	}
 	return localUser.Username + "@" + localHost, "", nil
+}
+
+func SetServiceID(id akid.ServiceID) {
+	if serviceID != (akid.ServiceID{}) {
+		serviceID = id
+	}
 }
 
 // Report an error in a particular operation (inContext), including
@@ -301,13 +312,26 @@ func WorkflowStep(workflow string, message string) {
 
 // Report command line flags (before any error checking.)
 func CommandLine(command string, commandLine []string) {
-	tryTrackingEvent(
-		"Command - Executed",
-		map[string]any{
-			"command":      command,
-			"command_line": commandLine,
-		},
-	)
+	properties := map[string]any{
+		"command":      command,
+		"command_line": commandLine,
+	}
+
+	// Using regex to fetch serviceID from commandLine, since serviceID is set after this telemetry event
+	// is sent. For other telemetry events, package level serviceID var is used.
+	var serviceID akid.ServiceID
+	for _, arg := range commandLine {
+		if serviceIDRegex.MatchString(arg) {
+			err := akid.ParseIDAs(arg, &serviceID)
+			if err != nil {
+				printer.Warningf("Error parsing service ID from command line: %v\n", err)
+			}
+			properties["service_id"] = serviceID
+			break
+		}
+	}
+
+	tryTrackingEvent("Command - Executed", properties)
 }
 
 // Report the platform and version of an attempted integration
@@ -344,6 +368,10 @@ func tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
 
 	if teamID != "" {
 		eventProperties.Upsert("team_id", teamID, func(v, newV any) any { return v })
+	}
+
+	if serviceID != (akid.ServiceID{}) {
+		eventProperties.Upsert("service_id", serviceID, func(v, newV any) any { return v })
 	}
 
 	err := analyticsClient.Track(userID, eventName, eventProperties)

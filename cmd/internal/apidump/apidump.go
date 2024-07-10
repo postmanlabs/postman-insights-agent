@@ -120,6 +120,7 @@ var Cmd = &cobra.Command{
 				return errors.Wrap(err, "failed to parse project ID")
 			}
 		}
+		telemetry.SetServiceID(serviceID)
 
 		// Look up existing trace by tags
 		if appendByTagFlag {
