@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/analytics"
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
@@ -32,6 +34,9 @@ var (
 	// of getting it only once.
 	userID string
 	teamID string
+
+	serviceID      akid.ServiceID
+	serviceIDRegex = regexp.MustCompile(`^svc_[A-Za-z0-9]{22}$`)
 
 	// Timeout talking to API.
 	// Shorter than normal because we don't want the CLI to be slow.
@@ -106,7 +111,7 @@ func doInit() {
 				IsLoggingEnabled: false,
 			},
 			App: analytics.AppInfo{
-				Name:      "akita-cli",
+				Name:      "postman-insights-agent",
 				Version:   version.ReleaseVersion().String(),
 				Build:     version.GitVersion(),
 				Namespace: "",
@@ -300,7 +305,16 @@ func WorkflowStep(workflow string, message string) {
 }
 
 // Report command line flags (before any error checking.)
+// This event will be sent before any other events and only once per agent invocation.
 func CommandLine(command string, commandLine []string) {
+	// Look for a service ID in the command line, and assign it to package level variable.
+	for _, arg := range commandLine {
+		if serviceIDRegex.MatchString(arg) {
+			_ = akid.ParseIDAs(arg, &serviceID)
+			break
+		}
+	}
+
 	tryTrackingEvent(
 		"Command - Executed",
 		map[string]any{
@@ -333,8 +347,8 @@ func Shutdown() {
 	}
 }
 
-// Attempts to track an event using the provided event name and properties. It adds the user ID
-// and team ID to the event properties, and then sends the event to the analytics client.
+// Attempts to track an event using the provided event name and properties. It adds the user ID,
+// team ID and service ID to the event properties, and then sends the event to the analytics client.
 // If there is an error sending the event, a warning message is printed.
 func tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
 	// precondition: analyticsClient is initialized
@@ -344,6 +358,10 @@ func tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
 
 	if teamID != "" {
 		eventProperties.Upsert("team_id", teamID, func(v, newV any) any { return v })
+	}
+
+	if serviceID != (akid.ServiceID{}) {
+		eventProperties.Upsert("service_id", serviceID, func(v, newV any) any { return v })
 	}
 
 	err := analyticsClient.Track(userID, eventName, eventProperties)
