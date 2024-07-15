@@ -310,10 +310,7 @@ func CommandLine(command string, commandLine []string) {
 	// Look for a service ID in the command line, and assign it to package level variable.
 	for _, arg := range commandLine {
 		if serviceIDRegex.MatchString(arg) {
-			err := akid.ParseIDAs(arg, &serviceID)
-			if err != nil {
-				printer.Warningf("Error parsing service ID from command line: %v\n", err)
-			}
+			_ = akid.ParseIDAs(arg, &serviceID)
 			break
 		}
 	}
