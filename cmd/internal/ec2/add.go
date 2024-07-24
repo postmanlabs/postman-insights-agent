@@ -47,7 +47,7 @@ func reportStep(stepName string) {
 	telemetry.WorkflowStep("Starting systemd conguration", stepName)
 }
 
-func setupAgentForServer(collectionId string) error {
+func setupAgentForServer(projectID string) error {
 
 	err := checkUserPermissions()
 	if err != nil {
@@ -58,12 +58,12 @@ func setupAgentForServer(collectionId string) error {
 		return err
 	}
 
-	err = configureSystemdFiles(collectionId)
+	err = configureSystemdFiles(projectID)
 	if err != nil {
 		return err
 	}
 
-	err = enablePostmanAgent()
+	err = enablePostmanInsightsAgent()
 	if err != nil {
 		return err
 	}
@@ -75,11 +75,17 @@ func askToReconfigure() error {
 	var isReconfigure bool
 
 	printer.Infof("postman-insights-agent is already present as a systemd service\n")
-	printer.Infof("Helpful commands \n Check status: systemctl status postman-insights-agent \n Disable agent: systemctl disable --now postman-insights-agent \n Check Logs: journalctl -fu postman-insights-agent\n Check env file: cat %s \n Check systemd service file: cat %s \n", envFilePath, serviceFilePath)
+	printer.Infof("Helpful commands\n"+
+		"Check status: systemctl status postman-insights-agent\n"+
+		"Disable agent: systemctl disable --now postman-insights-agent\n"+
+		"Check Logs: journalctl -fu postman-insights-agent\n"+
+		"Check env file: cat %s\n"+
+		"Check systemd service file: cat %s\n",
+		envFilePath, serviceFilePath)
 
 	err := survey.AskOne(
 		&survey.Confirm{
-			Message: "Overwrite old API key and Collection ID values in systemd configuration file with current values?",
+			Message: "Overwrite old API key and Project ID values in systemd configuration file with current values?",
 			Default: true,
 			Help:    "Any edits made to systemd configuration files will be over-written.",
 		},
@@ -119,7 +125,7 @@ func checkReconfiguration() error {
 	if strings.Contains(string(out), enabled) {
 		return askToReconfigure()
 	}
-	return errors.Errorf("The systemctl is-enabled command produced output this tool doesn't recognize: %q.\nPlease send this log message to %s for assistance\n", string(out), consts.SupportEmail)
+	return errors.Errorf("The systemctl is-enabled command produced output the agent doesn't recognize: %q.\nPlease send this log message to %s for assistance\n", string(out), consts.SupportEmail)
 
 }
 
@@ -155,7 +161,7 @@ func checkSystemdExists() error {
 	return nil
 }
 
-func configureSystemdFiles(collectionId string) error {
+func configureSystemdFiles(projectID string) error {
 	message := "Configuring systemd files"
 	printer.Infof(message + "\n")
 	reportStep(message)
@@ -165,8 +171,7 @@ func configureSystemdFiles(collectionId string) error {
 		return err
 	}
 
-	// Write collectionId and postman-api-key to go template file
-
+	// Write projectID and Postman API Key to go template file
 	tmpl, err := template.ParseFS(envFileFS, envFileTemplateName)
 	if err != nil {
 		return errors.Wrapf(err, "systemd env file parsing failed")
@@ -174,10 +179,10 @@ func configureSystemdFiles(collectionId string) error {
 
 	data := struct {
 		PostmanAPIKey string
-		CollectionId  string
+		ProjectID     string
 	}{
 		PostmanAPIKey: os.Getenv("POSTMAN_API_KEY"),
-		CollectionId:  collectionId,
+		ProjectID:     projectID,
 	}
 
 	// Ensure /etc/default exists
@@ -216,7 +221,7 @@ func configureSystemdFiles(collectionId string) error {
 }
 
 // Starts the Postman Insights Agent as a systemd service
-func enablePostmanAgent() error {
+func enablePostmanInsightsAgent() error {
 	message := "Enabling postman-insights-agent as a service"
 	reportStep(message)
 	printer.Infof(message + "\n")
@@ -230,7 +235,7 @@ func enablePostmanAgent() error {
 	cmd = exec.Command("systemctl", []string{"enable", "--now", serviceFileName}...)
 	_, err = cmd.CombinedOutput()
 	if err != nil {
-		return errors.Wrapf(err, "faild to run systemctl enable --now")
+		return errors.Wrapf(err, "failed to run systemctl enable --now")
 	}
 	printer.Infof("Postman Insights Agent enabled as a systemd service. Please check logs using the below command \n")
 	printer.Infof("journalctl -fu postman-insights-agent \n")
