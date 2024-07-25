@@ -14,7 +14,7 @@
 
 - Log in as root user, or use `sudo su` to enable root before running the below command
 ```
-POSTMAN_API_KEY=<postman-api-key> postman-insights-agent setup --collection <postman-collectionID>
+POSTMAN_API_KEY=<postman-api-key> postman-insights-agent ec2 --project <postman-insights-project-id>
 ```
 
 To check the status or logs please use

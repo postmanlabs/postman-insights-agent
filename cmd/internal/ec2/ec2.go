@@ -3,24 +3,28 @@ package ec2
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
-	"github.com/postmanlabs/postman-insights-agent/rest"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
-	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
 )
 
 var (
-	// Mandatory flag: Postman collection id
-	collectionId string
+	// Postman Insights project id
+	projectID string
 )
 
 var Cmd = &cobra.Command{
-	Deprecated:   "This is no longer supported and might be removed in a future release.",
+	Use:          "ec2",
+	Short:        "Add the Postman Insights Agent to the EC2 server.",
+	Long:         "The CLI will add the Postman Insights Agent as a systemd service to your current EC2 server.",
+	SilenceUsage: true,
+	RunE:         addAgentToEC2,
+}
+
+// 'postman-insights-agent ec2' should default to 'postman-insights-agent ec2 setup'
+var SetupInEC2Cmd = &cobra.Command{
 	Use:          "setup",
-	Short:        "Add the Postman Insights Agent to the current server.",
-	Long:         "The CLI will add the Postman Insights Agent as a systemd service to your current server.",
+	Short:        Cmd.Short,
+	Long:         Cmd.Long,
 	SilenceUsage: true,
 	RunE:         addAgentToEC2,
 }
@@ -37,30 +41,21 @@ var RemoveFromEC2Cmd = &cobra.Command{
 }
 
 func init() {
-	Cmd.PersistentFlags().StringVar(&collectionId, "collection", "", "Your Postman collection ID")
-	Cmd.MarkPersistentFlagRequired("collection")
+	Cmd.PersistentFlags().StringVar(&projectID, "project", "", "Your Insights Project ID")
+	Cmd.MarkPersistentFlagRequired("project")
 
+	Cmd.AddCommand(SetupInEC2Cmd)
 	Cmd.AddCommand(RemoveFromEC2Cmd)
 }
 
 func addAgentToEC2(cmd *cobra.Command, args []string) error {
-	// Check for API key
-	_, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces.")
+	// Check if the API key and Insights project ID are valid
+	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectID)
 	if err != nil {
 		return err
 	}
 
-	// Check collecton Id's existence
-	if collectionId == "" {
-		return errors.New("Must specify the ID of your collection with the --collection flag.")
-	}
-	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
-	_, err = util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, collectionId)
-	if err != nil {
-		return err
-	}
-
-	return setupAgentForServer(collectionId)
+	return setupAgentForServer(projectID)
 }
 
 func removeAgentFromEC2(cmd *cobra.Command, args []string) error {
