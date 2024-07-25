@@ -3,7 +3,6 @@ package ecs
 import (
 	"fmt"
 
-	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
@@ -12,9 +11,6 @@ import (
 	ecs_cloudformation_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/cloudformation/ecs"
 	ecs_console_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/console/ecs"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
-	"github.com/postmanlabs/postman-insights-agent/rest"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
-	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
 )
 
@@ -141,37 +137,9 @@ func init() {
 	Cmd.AddCommand(RemoveFromECSCmd)
 }
 
-// Checks that an API key and a project ID are provided, and that the API key is
-// valid for the project ID.
-func checkAPIKeyAndProjectID() error {
-	// Check for API key.
-	_, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces.")
-	if err != nil {
-		return err
-	}
-
-	// Check that project ID is provided.
-	if projectId == "" {
-		return errors.New("--project must be specified")
-	}
-
-	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
-	var serviceID akid.ServiceID
-	err = akid.ParseIDAs(projectId, &serviceID)
-	if err != nil {
-		return errors.Wrap(err, "failed to parse service ID")
-	}
-
-	_, err = util.GetServiceNameByServiceID(frontClient, serviceID)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func addAgentToECS(cmd *cobra.Command, args []string) error {
-	err := checkAPIKeyAndProjectID()
+	// Check if the API key and Insights project ID are valid
+	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId)
 	if err != nil {
 		return err
 	}
@@ -184,7 +152,7 @@ func removeAgentFromECS(cmd *cobra.Command, args []string) error {
 }
 
 func printCloudFormationFragment(cmd *cobra.Command, args []string) error {
-	err := checkAPIKeyAndProjectID()
+	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId)
 	if err != nil {
 		return err
 	}
@@ -211,7 +179,7 @@ func printCloudFormationFragment(cmd *cobra.Command, args []string) error {
 }
 
 func printECSTaskDefinition(cmd *cobra.Command, args []string) error {
-	err := checkAPIKeyAndProjectID()
+	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId)
 	if err != nil {
 		return err
 	}

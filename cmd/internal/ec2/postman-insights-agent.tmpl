@@ -1,25 +1,26 @@
 # Add your Postman API key below. For example:
 #
-#   POSTMAN_API_KEY=PMAC-XXXXXXX
+#   POSTMAN_API_KEY=PMAK-XXXXXXX
 #
 # This is required.
 
 POSTMAN_API_KEY={{.PostmanAPIKey}}
 
 
-# Add your your Postman Collection ID. 
-#This is required.
+# Add your your Postman Project ID. 
+#
+#   PROJECT_ID=svc_XXXXXXX
+#
+# This is required.
 
-COLLECTION_ID={{.CollectionId}}
-
-# For example,
-#   COLLECTION_ID=1234567-890abcde-f123-4567-890a-bcdef1234567
+PROJECT_ID={{.ProjectID}}
 
 
 # INTERFACES is optional. If left blank, the agent will listen on all available
 # network interfaces.
 #
 # FILTER is optional. If left blank, no packet-capture filter will be applied.
+# 
 # For example
 #   INTERFACES=lo,eth0,eth1
 #   FILTER="port 80 or port 8080"
