@@ -43,8 +43,6 @@ github.com/akitasoftware/martian/v3 v3.0.1-0.20210608174341-829c1134e9de/go.mod 
 github.com/akitasoftware/objecthash-proto v0.0.0-20211020004800-9990a7ea5dc0/go.mod h1:5/6U7s9Kj5GXRZBiQejikd06mPYYWC+C1RoO8ehvifs=
 github.com/akitasoftware/objecthash-proto v0.0.0-20211020162104-173a34b1afb0 h1:moMrhfDCjrBbuIVBmmjhnm0eTWfJyk4S0HEXxR7YO9k=
 github.com/akitasoftware/objecthash-proto v0.0.0-20211020162104-173a34b1afb0/go.mod h1:5/6U7s9Kj5GXRZBiQejikd06mPYYWC+C1RoO8ehvifs=
-github.com/akitasoftware/plugin-flickr v0.2.1-0.20240627222123-742aad949c11 h1:BWNz/9KoWPZUjIapOeznop+QBJXmOg+7W8JMZH7gfl0=
-github.com/akitasoftware/plugin-flickr v0.2.1-0.20240627222123-742aad949c11/go.mod h1:oOtXiTkMcjW+ghEK+75kfMLDCKesuUum/NvRHFY8mRY=
 github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc/go.mod h1:LOuyumcjzFXgccqObfd/Ljyb9UuFJ6TxHnclSeseNhc=
 github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf/go.mod h1:ybxpYRFXyAe+OPACYpWeL0wqObRcbAqCMya13uyzqw0=
 github.com/amplitude/analytics-go v1.0.1 h1:rrdC5VBctlJigSk0kw7ktwSijob/wyH4bop2SqWduCU=
