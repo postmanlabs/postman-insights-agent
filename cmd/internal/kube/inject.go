@@ -120,8 +120,7 @@ var injectCmd = &cobra.Command{
 		var container v1.Container
 
 		// Inject the sidecar into the input file
-		_, env := cfg.GetPostmanAPIKeyAndEnvironment()
-		container = createPostmanSidecar(insightsProjectID, env)
+		container = createPostmanSidecar(insightsProjectID, true)
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)
 		if err != nil {
@@ -166,7 +165,7 @@ type secretGenerationOptions struct {
 // The image to use for the Postman Insights Agent sidecar
 const akitaImage = "docker.postman.com/postman-insights-agent:latest"
 
-func createPostmanSidecar(insightsProjectID string, postmanEnvironment string) v1.Container {
+func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.Container {
 	args := []string{"apidump", "--project", insightsProjectID}
 
 	// If a nondefault --domain flag was used, specify it for the container as well.
@@ -174,8 +173,11 @@ func createPostmanSidecar(insightsProjectID string, postmanEnvironment string) v
 		args = append(args, "--domain", rest.Domain)
 	}
 
-	envs := []v1.EnvVar{
-		{
+	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()
+	envs := []v1.EnvVar{}
+
+	if addAPIKeyAsSecret {
+		envs = append(envs, v1.EnvVar{
 			Name: "POSTMAN_API_KEY",
 			ValueFrom: &v1.EnvVarSource{
 				SecretKeyRef: &v1.SecretKeySelector{
@@ -185,13 +187,18 @@ func createPostmanSidecar(insightsProjectID string, postmanEnvironment string) v
 					Key: "postman-api-key",
 				},
 			},
-		},
+		})
+	} else {
+		envs = append(envs, v1.EnvVar{
+			Name:  "POSTMAN_API_KEY",
+			Value: pmKey,
+		})
 	}
 
-	if postmanEnvironment != "" {
+	if pmEnv != "" {
 		envs = append(envs, v1.EnvVar{
 			Name:  "POSTMAN_ENV",
-			Value: postmanEnvironment,
+			Value: pmEnv,
 		})
 	}
 
@@ -254,41 +261,4 @@ func lookupService(insightsProjectID string) error {
 
 	_, err = util.GetServiceNameByServiceID(frontClient, serviceID)
 	return err
-}
-
-func init() {
-	injectCmd.Flags().StringVarP(
-		&injectFileNameFlag,
-		"file",
-		"f",
-		"",
-		"Path to the Kubernetes YAML file to be injected. This should contain a Deployment object.",
-	)
-	_ = injectCmd.MarkFlagRequired("file")
-
-	injectCmd.Flags().StringVarP(
-		&injectOutputFlag,
-		"output",
-		"o",
-		"",
-		"Path to the output file. If not specified, the output will be printed to stdout.",
-	)
-
-	injectCmd.Flags().StringVarP(
-		&secretInjectFlag,
-		"secret",
-		"s",
-		"false",
-		`Whether to generate a Kubernetes Secret. If set to "true", the secret will be added to the modified Kubernetes YAML file. Specify a path to write the secret to a separate file; if this is done, an output file must also be specified with --output.`,
-	)
-	// Default value is "true" when the flag is given without an argument.
-	injectCmd.Flags().Lookup("secret").NoOptDefVal = "true"
-
-	injectCmd.Flags().StringVar(
-		&insightsProjectID,
-		"project",
-		"",
-		"Your Postman Insights project ID.")
-
-	Cmd.AddCommand(injectCmd)
 }
