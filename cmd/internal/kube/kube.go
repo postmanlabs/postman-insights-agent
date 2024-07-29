@@ -53,4 +53,5 @@ func init() {
 
 	Cmd.AddCommand(injectCmd)
 	Cmd.AddCommand(printHelmChartSnippetCmd)
+	Cmd.AddCommand(printTerraformChartSnippetCmd)
 }
