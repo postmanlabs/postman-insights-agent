@@ -9,7 +9,6 @@ require (
 	github.com/akitasoftware/akita-ir v0.0.0-20240702191148-96a4c6941493
 	github.com/akitasoftware/akita-libs v0.0.0-20240702192331-ea7eb1c0f778
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
-	github.com/akitasoftware/plugin-flickr v0.2.1-0.20240627222123-742aad949c11
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1
 	github.com/aws/aws-sdk-go-v2/config v1.17.10
