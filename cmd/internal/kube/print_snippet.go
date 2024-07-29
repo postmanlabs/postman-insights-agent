@@ -28,6 +28,6 @@ func printHelmChartSnippet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	printer.Infof(string(containerYaml))
+	printer.Infof("\n%s\n", string(containerYaml))
 	return nil
 }
