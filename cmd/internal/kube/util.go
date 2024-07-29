@@ -5,8 +5,14 @@ import (
 	"path/filepath"
 
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/rest"
+	v1 "k8s.io/api/core/v1"
 )
+
+// The image to use for the Postman Insights Agent sidecar
+const akitaImage = "docker.postman.com/postman-insights-agent:latest"
 
 // Writes the generated secret to the given file path
 func writeFile(data []byte, filePath string) error {
@@ -62,4 +68,65 @@ func createFile(path string) (*os.File, error) {
 	}
 
 	return outputFile, nil
+}
+
+func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.Container {
+	args := []string{"apidump", "--project", insightsProjectID}
+
+	// If a nondefault --domain flag was used, specify it for the container as well.
+	if rest.Domain != rest.DefaultDomain() {
+		args = append(args, "--domain", rest.Domain)
+	}
+
+	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()
+	envs := []v1.EnvVar{}
+
+	if addAPIKeyAsSecret {
+		envs = append(envs, v1.EnvVar{
+			Name: "POSTMAN_API_KEY",
+			ValueFrom: &v1.EnvVarSource{
+				SecretKeyRef: &v1.SecretKeySelector{
+					LocalObjectReference: v1.LocalObjectReference{
+						Name: "postman-agent-secrets",
+					},
+					Key: "postman-api-key",
+				},
+			},
+		})
+	} else {
+		envs = append(envs, v1.EnvVar{
+			Name:  "POSTMAN_API_KEY",
+			Value: pmKey,
+		})
+	}
+
+	if pmEnv != "" {
+		envs = append(envs, v1.EnvVar{
+			Name:  "POSTMAN_ENV",
+			Value: pmEnv,
+		})
+	}
+
+	sidecar := v1.Container{
+		Name:  "postman-insights-agent",
+		Image: akitaImage,
+		Env:   envs,
+		Lifecycle: &v1.Lifecycle{
+			PreStop: &v1.LifecycleHandler{
+				Exec: &v1.ExecAction{
+					Command: []string{
+						"/bin/sh",
+						"-c",
+						"POSTMAN_INSIGHTS_AGENT_PID=$(pgrep postman-insights-agent) && kill -2 $POSTMAN_INSIGHTS_AGENT_PID && tail -f /proc/$POSTMAN_INSIGHTS_AGENT_PID/fd/1",
+					},
+				},
+			},
+		},
+		Args: args,
+		SecurityContext: &v1.SecurityContext{
+			Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_RAW"}},
+		},
+	}
+
+	return sidecar
 }
