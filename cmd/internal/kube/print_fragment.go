@@ -49,13 +49,7 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-
-	// Trim off any extraneous newlines.
-	containerYamlBytes = bytes.Trim(containerYamlBytes, "\n")
-
-	// Indent four levels to line up with the expected indent level of the other container definitions
-	prefix := "        "
-	containerYaml := prefix + strings.ReplaceAll(string(containerYamlBytes), "\n", "\n"+prefix)
+	containerYaml := indentCodeFragment(containerYamlBytes, 4)
 
 	fmt.Printf("\n%s\n", containerYaml)
 	return nil
@@ -69,9 +63,10 @@ func printTerraformFragment(_ *cobra.Command, _ []string) error {
 
 	// Create the Postman Insights Agent sidecar container
 	hclBlockConfig := createTerraformContainer(insightsProjectID)
+	hclBlockConfigString := indentCodeFragment(hclBlockConfig.Bytes(), 4)
 
 	// Print the fragment
-	fmt.Printf("\n%s\n", string(hclBlockConfig.Bytes()))
+	fmt.Printf("\n%s\n", hclBlockConfigString)
 	return nil
 }
 
@@ -133,6 +128,19 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 	}
 
 	return hclConfig
+}
+
+func indentCodeFragment(codeFragmentInBytes []byte, indentLevel int) string {
+	// Trim off any extraneous newlines.
+	codeFragmentInBytes = bytes.Trim(codeFragmentInBytes, "\n")
+
+	// Indent level prefix
+	indentPrefix := strings.Repeat("  ", indentLevel)
+
+	indentedCodeFragment := indentPrefix + strings.ReplaceAll(
+		string(codeFragmentInBytes), "\n", "\n"+indentPrefix)
+
+	return indentedCodeFragment
 }
 
 func init() {
