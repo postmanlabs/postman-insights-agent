@@ -10,26 +10,27 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	"sigs.k8s.io/yaml"
 
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
-var printHelmChartSnippetCmd = &cobra.Command{
+var printHelmChartFragmentCmd = &cobra.Command{
 	Use:              "helm-fragment",
 	Short:            "Print a Helm chart container definition for adding the Postman Insights Agent to existing k8s deployment.",
 	Long:             "Print a container definition that can be inserted into a Helm Chart template to add the Postman Insights Agent as a sidecar container.",
-	RunE:             printHelmChartSnippet,
+	RunE:             printHelmChartFragment,
 	PersistentPreRun: kubeCommandPreRun,
 }
 
-var printTerraformChartSnippetCmd = &cobra.Command{
+var printTerraformFragmentCmd = &cobra.Command{
 	Use:              "tf-fragment",
-	Short:            "Print an Terraform code snippet for adding the Postman Insights Agent to an existing k8s deployment.",
-	Long:             "Print a Terraform code snippet that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
-	RunE:             printTerraformChartSnippet,
+	Short:            "Print an Terraform (HCL) code fragment for adding the Postman Insights Agent to an existing k8s deployment.",
+	Long:             "Print a Terraform (HCL) code fragment that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
+	RunE:             printTerraformFragment,
 	PersistentPreRun: kubeCommandPreRun,
 }
 
-func printHelmChartSnippet(_ *cobra.Command, _ []string) error {
+func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 	err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID)
 	if err != nil {
 		return err
@@ -38,7 +39,7 @@ func printHelmChartSnippet(_ *cobra.Command, _ []string) error {
 	// Create the Postman Insights Agent sidecar container
 	container := createPostmanSidecar(insightsProjectID, false)
 
-	// Print the snippet
+	// Print the fragment
 	containerYaml, err := yaml.Marshal(container)
 	if err != nil {
 		return err
@@ -47,7 +48,7 @@ func printHelmChartSnippet(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func printTerraformChartSnippet(_ *cobra.Command, _ []string) error {
+func printTerraformFragment(_ *cobra.Command, _ []string) error {
 	err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID)
 	if err != nil {
 		return err
@@ -56,7 +57,7 @@ func printTerraformChartSnippet(_ *cobra.Command, _ []string) error {
 	// Create the Postman Insights Agent sidecar container
 	hclBlockConfig := createTerraformContainer(insightsProjectID)
 
-	// Print the snippet
+	// Print the fragment
 	printer.Stdout.RawOutput("\n", string(hclBlockConfig.Bytes()))
 	return nil
 }
@@ -64,6 +65,14 @@ func printTerraformChartSnippet(_ *cobra.Command, _ []string) error {
 func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 	hclConfig := hclwrite.NewEmptyFile()
 	rootBody := hclConfig.Body()
+
+	rootBody.AppendUnstructuredTokens(hclwrite.Tokens{
+		{
+			Type:  hclsyntax.TokenComment,
+			Bytes: []byte("# Add this fragment to your 'kubernetes_deployment' resource under 'spec.template.spec'. \n"),
+		},
+	})
+
 	containerBlock := rootBody.AppendNewBlock("container", []string{})
 	containerBody := containerBlock.Body()
 
@@ -114,6 +123,6 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 }
 
 func init() {
-	Cmd.AddCommand(printHelmChartSnippetCmd)
-	Cmd.AddCommand(printTerraformChartSnippetCmd)
+	Cmd.AddCommand(printHelmChartFragmentCmd)
+	Cmd.AddCommand(printTerraformFragmentCmd)
 }
