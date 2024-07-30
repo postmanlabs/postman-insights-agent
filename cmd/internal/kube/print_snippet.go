@@ -1,10 +1,12 @@
 package kube
 
 import (
+	"fmt"
+
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
-	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
+
 	"github.com/spf13/cobra"
 	"github.com/zclconf/go-cty/cty"
 	"sigs.k8s.io/yaml"
@@ -13,14 +15,14 @@ import (
 )
 
 var printHelmChartSnippetCmd = &cobra.Command{
-	Use:   "helm-sidecar-snippet",
+	Use:   "helm-snippet",
 	Short: "Print a Helm chart container definition for adding the Postman Insights Agent to existing k8s deployment.",
 	Long:  "Print a container definition that can be inserted into a Helm Chart template to add the Postman Insights Agent as a sidecar container.",
 	RunE:  printHelmChartSnippet,
 }
 
 var printTerraformChartSnippetCmd = &cobra.Command{
-	Use:   "tf-sidecar-snippet",
+	Use:   "tf-snippet",
 	Short: "Print an Terraform code snippet for adding the Postman Insights Agent to an existing k8s deployment.",
 	Long:  "Print a Terraform code snippet that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
 	RunE:  printTerraformChartSnippet,
@@ -40,7 +42,7 @@ func printHelmChartSnippet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	printer.Infof("\n%s\n", string(containerYaml))
+	fmt.Printf("\n%s\n", string(containerYaml))
 	return nil
 }
 
@@ -51,10 +53,10 @@ func printTerraformChartSnippet(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the Postman Insights Agent sidecar container
-	a := createTerraformContainer(insightsProjectID)
+	hclBlockConfig := createTerraformContainer(insightsProjectID)
 
 	// Print the snippet
-	printer.Infof("\n%s\n", string(a.Bytes()))
+	fmt.Printf("\n%s\n", string(hclBlockConfig.Bytes()))
 	return nil
 }
 
@@ -108,4 +110,9 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 	}
 
 	return hclConfig
+}
+
+func init() {
+	Cmd.AddCommand(printHelmChartSnippetCmd)
+	Cmd.AddCommand(printTerraformChartSnippetCmd)
 }
