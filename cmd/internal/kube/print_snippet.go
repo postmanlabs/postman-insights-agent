@@ -1,10 +1,9 @@
 package kube
 
 import (
-	"fmt"
-
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 
 	"github.com/spf13/cobra"
@@ -15,20 +14,22 @@ import (
 )
 
 var printHelmChartSnippetCmd = &cobra.Command{
-	Use:   "helm-snippet",
-	Short: "Print a Helm chart container definition for adding the Postman Insights Agent to existing k8s deployment.",
-	Long:  "Print a container definition that can be inserted into a Helm Chart template to add the Postman Insights Agent as a sidecar container.",
-	RunE:  printHelmChartSnippet,
+	Use:              "helm-fragment",
+	Short:            "Print a Helm chart container definition for adding the Postman Insights Agent to existing k8s deployment.",
+	Long:             "Print a container definition that can be inserted into a Helm Chart template to add the Postman Insights Agent as a sidecar container.",
+	RunE:             printHelmChartSnippet,
+	PersistentPreRun: kubeCommandPreRun,
 }
 
 var printTerraformChartSnippetCmd = &cobra.Command{
-	Use:   "tf-snippet",
-	Short: "Print an Terraform code snippet for adding the Postman Insights Agent to an existing k8s deployment.",
-	Long:  "Print a Terraform code snippet that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
-	RunE:  printTerraformChartSnippet,
+	Use:              "tf-fragment",
+	Short:            "Print an Terraform code snippet for adding the Postman Insights Agent to an existing k8s deployment.",
+	Long:             "Print a Terraform code snippet that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
+	RunE:             printTerraformChartSnippet,
+	PersistentPreRun: kubeCommandPreRun,
 }
 
-func printHelmChartSnippet(cmd *cobra.Command, args []string) error {
+func printHelmChartSnippet(_ *cobra.Command, _ []string) error {
 	err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID)
 	if err != nil {
 		return err
@@ -42,11 +43,11 @@ func printHelmChartSnippet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\n%s\n", string(containerYaml))
+	printer.Stdout.RawOutput("\n", string(containerYaml))
 	return nil
 }
 
-func printTerraformChartSnippet(cmd *cobra.Command, args []string) error {
+func printTerraformChartSnippet(_ *cobra.Command, _ []string) error {
 	err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID)
 	if err != nil {
 		return err
@@ -56,7 +57,7 @@ func printTerraformChartSnippet(cmd *cobra.Command, args []string) error {
 	hclBlockConfig := createTerraformContainer(insightsProjectID)
 
 	// Print the snippet
-	fmt.Printf("\n%s\n", string(hclBlockConfig.Bytes()))
+	printer.Stdout.RawOutput("\n", string(hclBlockConfig.Bytes()))
 	return nil
 }
 
