@@ -1,10 +1,12 @@
 package kube
 
 import (
+	"fmt"
+
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
-	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
+	v1 "k8s.io/api/core/v1"
 
 	"github.com/spf13/cobra"
 	"github.com/zclconf/go-cty/cty"
@@ -38,13 +40,15 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 
 	// Create the Postman Insights Agent sidecar container
 	container := createPostmanSidecar(insightsProjectID, false)
+	// Store it in an array since the fragment will be added to a list of containers
+	containerArray := []v1.Container{container}
 
 	// Print the fragment
-	containerYaml, err := yaml.Marshal(container)
+	containerYaml, err := yaml.Marshal(containerArray)
 	if err != nil {
 		return err
 	}
-	printer.Stdout.RawOutput("\n", string(containerYaml))
+	fmt.Printf("\n%s\n", string(containerYaml))
 	return nil
 }
 
@@ -58,7 +62,7 @@ func printTerraformFragment(_ *cobra.Command, _ []string) error {
 	hclBlockConfig := createTerraformContainer(insightsProjectID)
 
 	// Print the fragment
-	printer.Stdout.RawOutput("\n", string(hclBlockConfig.Bytes()))
+	fmt.Printf("\n%s\n", string(hclBlockConfig.Bytes()))
 	return nil
 }
 
