@@ -1,10 +1,13 @@
 package kube
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/spf13/cobra"
+	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -23,13 +26,22 @@ func printHelmChartSnippet(cmd *cobra.Command, args []string) error {
 
 	// Create the Postman Insights Agent sidecar container
 	container := createPostmanSidecar(insightsProjectID, false)
+	// Store it in an array since the fragment will be added to a list of containers
+	containerArray := []v1.Container{container}
 
-	// Print the snippet
-	containerYaml, err := yaml.Marshal(container)
+	containerYamlBytes, err := yaml.Marshal(containerArray)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\n%s\n", string(containerYaml))
+
+	// Trim off any extraneous newlines.
+	containerYamlBytes = bytes.Trim(containerYamlBytes, "\n")
+
+	// Indent four levels to line up with the expected indent level of the other container definitions
+	prefix := "        "
+	containerYaml := prefix + strings.ReplaceAll(string(containerYamlBytes), "\n", "\n"+prefix)
+
+	fmt.Printf("\n%s\n", containerYaml)
 	return nil
 }
 
