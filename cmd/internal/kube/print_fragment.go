@@ -20,7 +20,7 @@ import (
 
 var printHelmChartFragmentCmd = &cobra.Command{
 	Use:              "helm-fragment",
-	Short:            "Print a Helm chart container definition for adding the Postman Insights Agent to existing k8s deployment.",
+	Short:            "Print a Helm chart container definition for adding the Postman Insights Agent to existing kubernetes deployment.",
 	Long:             "Print a container definition that can be inserted into a Helm Chart template to add the Postman Insights Agent as a sidecar container.",
 	RunE:             printHelmChartFragment,
 	PersistentPreRun: kubeCommandPreRun,
@@ -28,7 +28,7 @@ var printHelmChartFragmentCmd = &cobra.Command{
 
 var printTerraformFragmentCmd = &cobra.Command{
 	Use:              "tf-fragment",
-	Short:            "Print an Terraform (HCL) code fragment for adding the Postman Insights Agent to an existing k8s deployment.",
+	Short:            "Print an Terraform (HCL) code fragment for adding the Postman Insights Agent to an existing kubernetes deployment.",
 	Long:             "Print a Terraform (HCL) code fragment that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
 	RunE:             printTerraformFragment,
 	PersistentPreRun: kubeCommandPreRun,
