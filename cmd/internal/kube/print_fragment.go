@@ -108,7 +108,7 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 		cty.StringVal("--project"),
 		cty.StringVal(insightsProjectID),
 	})
-	// If a nondefault --domain flag was used, specify it for the container as well.
+	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
 		args.Add(cty.StringVal("--domain"))
 		args.Add(cty.StringVal(rest.Domain))

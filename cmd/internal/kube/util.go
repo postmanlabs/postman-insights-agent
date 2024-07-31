@@ -75,7 +75,7 @@ func createFile(path string) (*os.File, error) {
 func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.Container {
 	args := []string{"apidump", "--project", insightsProjectID}
 
-	// If a nondefault --domain flag was used, specify it for the container as well.
+	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
 		args = append(args, "--domain", rest.Domain)
 	}
@@ -133,8 +133,8 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.C
 	return sidecar
 }
 
-// This function overrrides the default preRun function in the root command.
-// It supresses the INFO logs printed on start i.e. agent version and telemetry logs
+// This function overrides the default preRun function in the root command.
+// It suppresses the INFO logs printed on start i.e. agent version and telemetry logs
 func kubeCommandPreRun(cmd *cobra.Command, args []string) {
 	// This function overrides the root command preRun so we need to duplicate the domain setup.
 	if rest.Domain == "" {
