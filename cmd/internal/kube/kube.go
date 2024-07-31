@@ -12,3 +12,13 @@ var Cmd = &cobra.Command{
 		"kubernetes",
 	},
 }
+
+func init() {
+	// `kube` command level flags
+	Cmd.PersistentFlags().StringVar(
+		&insightsProjectID,
+		"project",
+		"",
+		"Your Postman Insights project ID.")
+	_ = Cmd.MarkFlagRequired("project")
+}

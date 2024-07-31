@@ -8,8 +8,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/printer"
-	"github.com/postmanlabs/postman-insights-agent/rest"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -54,15 +52,7 @@ var secretCmd = &cobra.Command{
 	},
 	// Override the parent command's PersistentPreRun to prevent any logs from being printed.
 	// This is necessary because the secret command is intended to be used in a pipeline
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// This function overrides the root command preRun so we need to duplicate the domain setup.
-		if rest.Domain == "" {
-			rest.Domain = rest.DefaultDomain()
-		}
-
-		// Initialize the telemetry client, but do not allow any logs to be printed
-		telemetry.Init(false)
-	},
+	PersistentPreRun: kubeCommandPreRun,
 }
 
 // Represents the input used by secretTemplate
