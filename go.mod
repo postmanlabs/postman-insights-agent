@@ -20,13 +20,14 @@ require (
 	github.com/golang/gddo v0.0.0-20210115222349-20d68f94ee1f
 	github.com/golang/mock v1.4.4
 	github.com/golang/protobuf v1.5.2
-	github.com/google/go-cmp v0.5.9
+	github.com/google/go-cmp v0.6.0
 	github.com/google/gopacket v1.1.19
 	github.com/google/martian/v3 v3.0.1
 	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.8.0
 	github.com/hashicorp/go-retryablehttp v0.6.8
 	github.com/hashicorp/go-version v1.2.1
+	github.com/hashicorp/hcl/v2 v2.21.0
 	github.com/jpillora/backoff v1.0.0
 	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/mitchellh/go-homedir v1.1.0
@@ -36,9 +37,10 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.7.1
 	github.com/stretchr/testify v1.8.1
+	github.com/zclconf/go-cty v1.15.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
 	golang.org/x/term v0.5.0
-	golang.org/x/text v0.7.0
+	golang.org/x/text v0.11.0
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.26.3
 	k8s.io/apimachinery v0.26.3
@@ -46,8 +48,10 @@ require (
 )
 
 require (
+	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/akitasoftware/objecthash-proto v0.0.0-20211020162104-173a34b1afb0 // indirect
 	github.com/amplitude/analytics-go v1.0.1 // indirect
+	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.12.23 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.12.19 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.1.25 // indirect
@@ -74,6 +78,7 @@ require (
 	github.com/mattn/go-colorable v0.1.6 // indirect
 	github.com/mattn/go-isatty v0.0.12 // indirect
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
+	github.com/mitchellh/go-wordwrap v0.0.0-20150314170334-ad45545899c7 // indirect
 	github.com/mitchellh/mapstructure v1.4.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
@@ -83,8 +88,10 @@ require (
 	github.com/spf13/cast v1.3.0 // indirect
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
+	golang.org/x/mod v0.8.0 // indirect
 	golang.org/x/net v0.7.0 // indirect
 	golang.org/x/sys v0.5.0 // indirect
+	golang.org/x/tools v0.6.0 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.51.0 // indirect

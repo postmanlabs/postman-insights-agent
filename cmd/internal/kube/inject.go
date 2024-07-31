@@ -7,7 +7,6 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/injector"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -19,7 +18,7 @@ import (
 )
 
 var (
-	// The target Yaml faile to be injected
+	// The target Yaml file to be injected
 	// This is required for execution of injectCmd
 	injectFileNameFlag string
 	// The output file to write the injected Yaml to
@@ -120,8 +119,7 @@ var injectCmd = &cobra.Command{
 		var container v1.Container
 
 		// Inject the sidecar into the input file
-		_, env := cfg.GetPostmanAPIKeyAndEnvironment()
-		container = createPostmanSidecar(insightsProjectID, env)
+		container = createPostmanSidecar(insightsProjectID, true)
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)
 		if err != nil {
@@ -144,15 +142,7 @@ var injectCmd = &cobra.Command{
 
 		return nil
 	},
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// This function overrides the root command preRun so we need to duplicate the domain setup.
-		if rest.Domain == "" {
-			rest.Domain = rest.DefaultDomain()
-		}
-
-		// Initialize the telemetry client, but do not allow any logs to be printed
-		telemetry.Init(false)
-	},
+	PersistentPreRun: kubeCommandPreRun,
 }
 
 // A parsed representation of the `--secret` option.
@@ -161,62 +151,6 @@ type secretGenerationOptions struct {
 	ShouldInject bool
 	// The path to the secret file
 	Filepath optionals.Optional[string]
-}
-
-// The image to use for the Postman Insights Agent sidecar
-const akitaImage = "docker.postman.com/postman-insights-agent:latest"
-
-func createPostmanSidecar(insightsProjectID string, postmanEnvironment string) v1.Container {
-	args := []string{"apidump", "--project", insightsProjectID}
-
-	// If a nondefault --domain flag was used, specify it for the container as well.
-	if rest.Domain != rest.DefaultDomain() {
-		args = append(args, "--domain", rest.Domain)
-	}
-
-	envs := []v1.EnvVar{
-		{
-			Name: "POSTMAN_API_KEY",
-			ValueFrom: &v1.EnvVarSource{
-				SecretKeyRef: &v1.SecretKeySelector{
-					LocalObjectReference: v1.LocalObjectReference{
-						Name: "postman-agent-secrets",
-					},
-					Key: "postman-api-key",
-				},
-			},
-		},
-	}
-
-	if postmanEnvironment != "" {
-		envs = append(envs, v1.EnvVar{
-			Name:  "POSTMAN_ENV",
-			Value: postmanEnvironment,
-		})
-	}
-
-	sidecar := v1.Container{
-		Name:  "postman-insights-agent",
-		Image: akitaImage,
-		Env:   envs,
-		Lifecycle: &v1.Lifecycle{
-			PreStop: &v1.LifecycleHandler{
-				Exec: &v1.ExecAction{
-					Command: []string{
-						"/bin/sh",
-						"-c",
-						"POSTMAN_INSIGHTS_AGENT_PID=$(pgrep postman-insights-agent) && kill -2 $POSTMAN_INSIGHTS_AGENT_PID && tail -f /proc/$POSTMAN_INSIGHTS_AGENT_PID/fd/1",
-					},
-				},
-			},
-		},
-		Args: args,
-		SecurityContext: &v1.SecurityContext{
-			Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_RAW"}},
-		},
-	}
-
-	return sidecar
 }
 
 // Parses the given value for the `--secret` option.
@@ -257,6 +191,7 @@ func lookupService(insightsProjectID string) error {
 }
 
 func init() {
+	// `kube inject` command level flags
 	injectCmd.Flags().StringVarP(
 		&injectFileNameFlag,
 		"file",
@@ -283,12 +218,6 @@ func init() {
 	)
 	// Default value is "true" when the flag is given without an argument.
 	injectCmd.Flags().Lookup("secret").NoOptDefVal = "true"
-
-	injectCmd.Flags().StringVar(
-		&insightsProjectID,
-		"project",
-		"",
-		"Your Postman Insights project ID.")
 
 	Cmd.AddCommand(injectCmd)
 }
