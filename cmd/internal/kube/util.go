@@ -8,6 +8,8 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -129,4 +131,16 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.C
 	}
 
 	return sidecar
+}
+
+// This function overrrides the default preRun function in the root command.
+// It supresses the INFO logs printed on start i.e. agent version and telemetry logs
+func kubeCommandPreRun(cmd *cobra.Command, args []string) {
+	// This function overrides the root command preRun so we need to duplicate the domain setup.
+	if rest.Domain == "" {
+		rest.Domain = rest.DefaultDomain()
+	}
+
+	// Initialize the telemetry client, but do not allow any logs to be printed
+	telemetry.Init(false)
 }
