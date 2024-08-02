@@ -197,7 +197,7 @@ func init() {
 		"file",
 		"f",
 		"",
-		"Path to the Kubernetes YAML file to be injected. This should contain a Deployment object.",
+		"Path to the Kubernetes YAML file to be injected, or - for standard input. This should contain a Deployment object.",
 	)
 	_ = injectCmd.MarkFlagRequired("file")
 
