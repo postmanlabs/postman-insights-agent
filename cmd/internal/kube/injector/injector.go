@@ -164,6 +164,15 @@ func fromRawObject(raw []byte) (*unstructured.Unstructured, error) {
 }
 
 func getFile(filePath string) ([]byte, error) {
+	if filePath == "-" {
+		// Read from stdin instead.
+		bytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, errors.Wrapf(err, "could not read from standard input")
+		}
+		return bytes, nil
+	}
+
 	fileDir, fileName := filepath.Split(filePath)
 
 	absOutputDir, err := filepath.Abs(fileDir)
