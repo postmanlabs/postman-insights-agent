@@ -113,18 +113,7 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.C
 		Name:  "postman-insights-agent",
 		Image: akitaImage,
 		Env:   envs,
-		Lifecycle: &v1.Lifecycle{
-			PreStop: &v1.LifecycleHandler{
-				Exec: &v1.ExecAction{
-					Command: []string{
-						"/bin/sh",
-						"-c",
-						"POSTMAN_INSIGHTS_AGENT_PID=$(pgrep postman-insights-agent) && kill -2 $POSTMAN_INSIGHTS_AGENT_PID && tail -f /proc/$POSTMAN_INSIGHTS_AGENT_PID/fd/1",
-					},
-				},
-			},
-		},
-		Args: args,
+		Args:  args,
 		SecurityContext: &v1.SecurityContext{
 			Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_RAW"}},
 		},

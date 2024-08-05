@@ -87,15 +87,6 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 	containerBody.SetAttributeValue("name", cty.StringVal("postman-insights-agent"))
 	containerBody.SetAttributeValue("image", cty.StringVal(akitaImage))
 
-	containerBody.AppendNewBlock("lifecycle", []string{}).
-		Body().AppendNewBlock("pre_stop", []string{}).
-		Body().AppendNewBlock("exec", []string{}).
-		Body().SetAttributeValue("command", cty.ListVal([]cty.Value{
-		cty.StringVal("/bin/sh"),
-		cty.StringVal("-c"),
-		cty.StringVal("POSTMAN_INSIGHTS_AGENT_PID=$(pgrep postman-insights-agent) && kill -2 $POSTMAN_INSIGHTS_AGENT_PID && tail -f /proc/$POSTMAN_INSIGHTS_AGENT_PID/fd/1"),
-	}))
-
 	containerBody.AppendNewBlock("security_context", []string{}).
 		Body().AppendNewBlock("capabilities", []string{}).
 		Body().SetAttributeValue("add", cty.ListVal([]cty.Value{
