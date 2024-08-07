@@ -107,7 +107,7 @@ const (
 	akitaDockerImage = "akitasoftware/cli"
 
 	// Postman Insights Agent image location
-	postmanECRImage = "docker.postman.com/postman-insights-agent"
+	postmanECRImage = "public.ecr.aws/postman/postman-insights-agent"
 )
 
 // Run the "add to ECS" workflow until we complete or get an error.
