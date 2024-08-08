@@ -14,7 +14,7 @@ import (
 )
 
 // The image to use for the Postman Insights Agent sidecar
-const akitaImage = "docker.postman.com/postman-insights-agent:latest"
+const akitaImage = "public.ecr.aws/postman/postman-insights-agent:latest"
 
 // Writes the generated secret to the given file path
 func writeFile(data []byte, filePath string) error {

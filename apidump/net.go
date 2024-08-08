@@ -72,7 +72,7 @@ func showPermissionErrors(sampleError error) error {
 			return NewApidumpErrorf(
 				api_schema.ApidumpError_PCAPInterfaceNotImplemented,
 				"Unable to read network interfaces. If your host architecture is not %s, try using "+
-					"`docker pull --platform $YOUR_ARCHITECTURE docker.postman.com/postman-insights-agent:latest` to pull a Postman Insights Agent "+
+					"`docker pull --platform $YOUR_ARCHITECTURE public.ecr.aws/postman/postman-insights-agent:latest` to pull a Postman Insights Agent "+
 					"built for your architecture.",
 				arch,
 			)

@@ -107,7 +107,8 @@ const (
 	akitaDockerImage = "akitasoftware/cli"
 
 	// Postman Insights Agent image location
-	postmanECRImage = "docker.postman.com/postman-insights-agent"
+	postmanOldECRImage = "docker.postman.com/postman-insights-agent"
+	postmanECRImage    = "public.ecr.aws/postman/postman-insights-agent"
 )
 
 // Run the "add to ECS" workflow until we complete or get an error.
@@ -563,11 +564,11 @@ func getTaskState(wf *AddWorkflow) (nextState optionals.Optional[AddWorkflowStat
 			return awf_next(getTaskState)
 		}
 
-		// Also detect the Akita CLI image, to avoid having two copies of the agent
-		// running.
-		if matchesImage(image, akitaECRImage) || matchesImage(image, akitaDockerImage) {
-			printer.Errorf("The selected task definition already has the image %q, indicating that the Akita CLI is currently installed.\n", image)
-			printer.Infof("The Akita CLI is no longer supported. Please uninstall it and try again.\n")
+		// Also detect old images, such as the Akita CLI or unsupported versions of Postman Insights Agent,
+		// to avoid having two copies of the agent running simultaneously.
+		if matchesImage(image, akitaECRImage) || matchesImage(image, akitaDockerImage) || matchesImage(image, postmanOldECRImage) {
+			printer.Errorf("The selected task definition already has the image %q, indicating that the agent is currently installed.\n", image)
+			printer.Infof("This version of agent is no longer supported. Please uninstall it and try again.\n")
 			printer.Infof("You can also select a different task definition, or hit Ctrl+C to exit.\n")
 			return awf_next(getTaskState)
 		}
