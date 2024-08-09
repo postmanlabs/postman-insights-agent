@@ -1,10 +1,3 @@
-# POSTMAN_ENV is optional. If left blank, the agent will send witness data
-# to default Postman environment
-# For example: 
-#   POSTMAN_ENV=STAGE
-#
-POSTMAN_ENV={{.PostmanEnv}}
-
 # Add your Postman API key below. For example:
 #
 #   POSTMAN_API_KEY=PMAK-XXXXXXX
@@ -45,3 +38,8 @@ FILTER=
 # This is optional and can be left blank.
 
 EXTRA_APIDUMP_ARGS=
+
+{{if .PostmanEnv}}
+# POSTMAN_ENV is optional. Used for dogfooding and internal testing.
+POSTMAN_ENV={{.PostmanEnv}}
+{{end}}
