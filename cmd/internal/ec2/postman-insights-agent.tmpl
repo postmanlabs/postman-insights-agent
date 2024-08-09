@@ -38,3 +38,8 @@ FILTER=
 # This is optional and can be left blank.
 
 EXTRA_APIDUMP_ARGS=
+
+{{if .PostmanEnv}}
+# POSTMAN_ENV is optional. Used for dogfooding and internal testing.
+POSTMAN_ENV={{.PostmanEnv}}
+{{end}}
