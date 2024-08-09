@@ -10,6 +10,7 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -177,12 +178,17 @@ func configureSystemdFiles(projectID string) error {
 		return errors.Wrapf(err, "systemd env file parsing failed")
 	}
 
+	apiKey, env := cfg.GetPostmanAPIKeyAndEnvironment()
 	data := struct {
+		PostmanEnv    string
 		PostmanAPIKey string
 		ProjectID     string
 	}{
-		PostmanAPIKey: os.Getenv("POSTMAN_API_KEY"),
+		PostmanAPIKey: apiKey,
 		ProjectID:     projectID,
+	}
+	if env != "" {
+		data.PostmanEnv = env
 	}
 
 	// Ensure /etc/default exists
