@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-func GenrateAndWriteTemplateFile(
+func GenerateAndWriteTemplateFile(
 	fileFS embed.FS,
 	templateName string,
 	fileDirectory string,
