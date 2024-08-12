@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
-	"text/template"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/pkg/errors"
@@ -14,17 +13,19 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/util"
 )
 
 const (
 	envFileName         = "postman-insights-agent"
-	envFileTemplateName = "postman-insights-agent.tmpl"
+	envFileTemplateName = "postman-insights-agent.env.tmpl"
 	envFileBasePath     = "/etc/default/"
 	envFilePath         = envFileBasePath + envFileName
 
-	serviceFileName     = "postman-insights-agent.service"
-	serviceFileBasePath = "/usr/lib/systemd/system/"
-	serviceFilePath     = serviceFileBasePath + serviceFileName
+	serviceFileName         = "postman-insights-agent.service"
+	serviceFileTemplateName = "postman-insights-agent.service.tmpl"
+	serviceFileBasePath     = "/usr/lib/systemd/system/"
+	serviceFilePath         = serviceFileBasePath + serviceFileName
 
 	// Output of command: systemctl is-enabled postman-insights-agent
 	// Refer: https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#Exit%20status
@@ -33,15 +34,30 @@ const (
 	nonExisting = "Failed to get unit file state for postman-insights-agent.service: No such file or directory" // exit code: 1
 )
 
-// Embed files inside the binary. Requires Go >=1.16
+var (
+	agentInstallPaths = [...]string{
+		// Agent executable name
+		"postman-insights-agent",
 
-//go:embed postman-insights-agent.service
-var serviceFile string
+		// If agent is not found in directories named by PATH environment variable then look for below predefined paths
 
-// FS is used for easier template parsing
+		// Debian install path
+		"/usr/bin/postman-insights-agent",
+		// Homebrew install path
+		"/opt/homebrew/bin/postman-insights-agent",
+		// Usr local install path
+		"/usr/local/bin/postman-insights-agent",
+	}
 
-//go:embed postman-insights-agent.tmpl
-var envFileFS embed.FS
+	// Embed files inside the binary. Requires Go >=1.16
+	// FS is used for easier template parsing
+
+	//go:embed postman-insights-agent.env.tmpl
+	envFileFS embed.FS
+
+	//go:embed postman-insights-agent.service.tmpl
+	serviceFileFS embed.FS
+)
 
 // Helper function for reporting telemetry
 func reportStep(stepName string) {
@@ -162,6 +178,20 @@ func checkSystemdExists() error {
 	return nil
 }
 
+func getAgentInstallPath() (string, error) {
+	message := "Checking agent install path "
+	printer.Infof(message + "\n")
+	reportStep(message)
+
+	for _, possiblePath := range agentInstallPaths {
+		if path, err := exec.LookPath(possiblePath); err == nil {
+			return path, nil
+		}
+	}
+
+	return "", errors.Errorf("Could not find postman-insights-agent binary in your OS.")
+}
+
 func configureSystemdFiles(projectID string) error {
 	message := "Configuring systemd files"
 	printer.Infof(message + "\n")
@@ -172,14 +202,9 @@ func configureSystemdFiles(projectID string) error {
 		return err
 	}
 
-	// Write projectID and Postman API Key to go template file
-	tmpl, err := template.ParseFS(envFileFS, envFileTemplateName)
-	if err != nil {
-		return errors.Wrapf(err, "systemd env file parsing failed")
-	}
-
+	// -------- Write env file --------
 	apiKey, env := cfg.GetPostmanAPIKeyAndEnvironment()
-	data := struct {
+	envFiledata := struct {
 		PostmanEnv    string
 		PostmanAPIKey string
 		ProjectID     string
@@ -188,38 +213,28 @@ func configureSystemdFiles(projectID string) error {
 		ProjectID:     projectID,
 	}
 	if env != "" {
-		data.PostmanEnv = env
+		envFiledata.PostmanEnv = env
 	}
 
-	// Ensure /etc/default exists
-	cmd := exec.Command("mkdir", []string{"-p", envFileBasePath}...)
-	_, err = cmd.CombinedOutput()
+	err = util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, envFiledata)
 	if err != nil {
-		return errors.Wrapf(err, "failed to create %s directory\n", envFileBasePath)
-	}
-
-	envFile, err := os.Create(envFilePath)
-	if err != nil {
-		printer.Errorf("Failed to create systemd env file")
 		return err
 	}
 
-	err = tmpl.Execute(envFile, data)
+	// -------- Write service file --------
+	agentInstallPath, err := getAgentInstallPath()
 	if err != nil {
-		printer.Errorf("Failed to write values to systemd env file")
 		return err
 	}
 
-	// Ensure /usr/lib/systemd/system exists
-	cmd = exec.Command("mkdir", []string{"-p", serviceFileBasePath}...)
-	_, err = cmd.CombinedOutput()
-	if err != nil {
-		return errors.Wrapf(err, "failed to create %s directory", serviceFileBasePath)
+	serviceFileData := struct {
+		AgentInstallPath string
+	}{
+		AgentInstallPath: agentInstallPath,
 	}
 
-	err = os.WriteFile(serviceFilePath, []byte(serviceFile), 0600)
+	err = util.GenerateAndWriteTemplateFile(serviceFileFS, serviceFileTemplateName, serviceFileBasePath, serviceFileName, serviceFileData)
 	if err != nil {
-		printer.Errorf("failed to create %s file in %s directory with err %q \n", serviceFileName, serviceFilePath, err)
 		return err
 	}
 
