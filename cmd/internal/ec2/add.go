@@ -36,6 +36,11 @@ const (
 
 var (
 	agentInstallPaths = [...]string{
+		// Agent executable name
+		"postman-insights-agent",
+
+		// If agent is not found in directories named by PATH environment variable then look for below predefined paths
+
 		// Debian install path
 		"/usr/bin/postman-insights-agent",
 		// Homebrew install path
@@ -178,8 +183,8 @@ func getAgentInstallPath() (string, error) {
 	printer.Infof(message + "\n")
 	reportStep(message)
 
-	for _, path := range agentInstallPaths {
-		if _, err := exec.LookPath(path); err == nil {
+	for _, possiblePaths := range agentInstallPaths {
+		if path, err := exec.LookPath(possiblePaths); err == nil {
 			return path, nil
 		}
 	}
