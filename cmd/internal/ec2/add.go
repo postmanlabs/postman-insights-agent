@@ -183,8 +183,8 @@ func getAgentInstallPath() (string, error) {
 	printer.Infof(message + "\n")
 	reportStep(message)
 
-	for _, possiblePaths := range agentInstallPaths {
-		if path, err := exec.LookPath(possiblePaths); err == nil {
+	for _, possiblePath := range agentInstallPaths {
+		if path, err := exec.LookPath(possiblePath); err == nil {
 			return path, nil
 		}
 	}
