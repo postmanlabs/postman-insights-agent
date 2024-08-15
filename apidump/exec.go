@@ -29,12 +29,12 @@ func runCommand(username string, c string) error {
 
 	// Only support POSIX systems for now, which means we can assume uid and gid
 	// are integers.
-	var uid, gid int
-	uid, err = strconv.Atoi(runUser.Uid)
+	var uid, gid uint32
+	uid, err = parseUint32(runUser.Uid)
 	if err != nil {
 		return errors.Wrapf(err, "cannot lookup uid for %q", runUser.Name)
 	}
-	gid, err = strconv.Atoi(runUser.Gid)
+	gid, err = parseUint32(runUser.Gid)
 	if err != nil {
 		return errors.Wrapf(err, "cannot lookup gid for %q", runUser.Name)
 	}
@@ -52,7 +52,7 @@ func runCommand(username string, c string) error {
 
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{}
-	cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid}
 
 	{
 		stdout, err := cmd.StdoutPipe()
@@ -75,4 +75,12 @@ func runCommand(username string, c string) error {
 	}
 
 	return cmd.Wait()
+}
+
+func parseUint32(s string) (uint32, error) {
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(n), nil
 }

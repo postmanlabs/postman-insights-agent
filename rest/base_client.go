@@ -21,9 +21,6 @@ import (
 // none is provided.
 var ProxyAddress string
 
-// Connect even if the certificate does not validate.
-var PermitInvalidCertificate bool
-
 // Accept a server name other than the expected one in the TLS handshake
 var ExpectedServerName string
 
