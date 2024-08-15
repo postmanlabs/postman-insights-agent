@@ -2,11 +2,9 @@ package apidump
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -680,27 +678,10 @@ func (a *apidump) Run() error {
 				// however.
 				collector = trace.NewDummyCollector()
 			} else {
-				var localCollector trace.Collector
-				if args.Out.LocalPath != nil {
-					if lc, err := createLocalCollector(interfaceName, *args.Out.LocalPath, traceTags); err == nil {
-						localCollector = lc
-					} else {
-						return err
-					}
-				}
-
 				var backendCollector trace.Collector
-				if args.Out.AkitaURI != nil && args.Out.LocalPath != nil {
-					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.Plugins)
-					collector = trace.TeeCollector{
-						Dst1: backendCollector,
-						Dst2: localCollector,
-					}
-				} else if args.Out.AkitaURI != nil {
+				if args.Out.AkitaURI != nil {
 					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.Plugins)
 					collector = backendCollector
-				} else if args.Out.LocalPath != nil {
-					collector = localCollector
 				} else {
 					return errors.Errorf("invalid output location")
 				}
@@ -944,28 +925,4 @@ func (a *apidump) Run() error {
 
 	printer.Stderr.Infof("%s 🎉\n\n", printer.Color.Green("Success!"))
 	return nil
-}
-
-func createLocalCollector(interfaceName, outDir string, tags map[tags.Key]string) (trace.Collector, error) {
-	if fi, err := os.Stat(outDir); err == nil {
-		// File exists, check if it's a directory.
-		if !fi.IsDir() {
-			return nil, errors.Errorf("%s is not a directory", outDir)
-		}
-
-		// Check if we have permission to write to the directory.
-		testFile := filepath.Join(outDir, "postman_test")
-		if err := ioutil.WriteFile(testFile, []byte{1}, 0644); err == nil {
-			os.Remove(testFile)
-		} else {
-			return nil, errors.Wrapf(err, "cannot access directory %s", outDir)
-		}
-	} else {
-		// Attempt to create one to make sure there's no permission problem.
-		if err := os.Mkdir(outDir, 0755); err != nil {
-			return nil, errors.Wrapf(err, "failed to create directory %s", outDir)
-		}
-	}
-
-	return trace.NewHARCollector(interfaceName, outDir, tags), nil
 }
