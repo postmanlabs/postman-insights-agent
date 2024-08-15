@@ -93,10 +93,6 @@ func initHTTPClient() {
 		}
 	}
 	transport.TLSClientConfig = &tls.Config{}
-	if PermitInvalidCertificate {
-		printer.Warningf("Disabling TLS checking; sending traffic without verifying identity of Postman servers.\n")
-		transport.TLSClientConfig.InsecureSkipVerify = true
-	}
 	if ExpectedServerName != "" {
 		transport.TLSClientConfig.ServerName = ExpectedServerName
 	}

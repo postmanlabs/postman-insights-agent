@@ -173,8 +173,6 @@ func init() {
 
 	// Use a proxy or permit a mismatched certificate.
 	rootCmd.PersistentFlags().StringVar(&rest.ProxyAddress, "proxy", "", "The domain name, IP address, or URL of an HTTP proxy server to use")
-	rootCmd.PersistentFlags().BoolVar(&rest.PermitInvalidCertificate, "skip-tls-validate", false, "Skip TLS validation on the connection to the back end")
-	rootCmd.PersistentFlags().MarkHidden("skip-tls-validate")
 	rootCmd.PersistentFlags().StringVar(&rest.ExpectedServerName, "server-tls-name", "", "Provide an alternate TLS server name to accept")
 	rootCmd.PersistentFlags().MarkHidden("server-tls-name")
 
