@@ -9,7 +9,7 @@ require (
 	github.com/akitasoftware/akita-ir v0.0.0-20240702191148-96a4c6941493
 	github.com/akitasoftware/akita-libs v0.0.0-20240805174748-6896f31886a1
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
-	github.com/andybalholm/brotli v1.0.1
+	github.com/andybalholm/brotli v1.1.0
 	github.com/aws/aws-sdk-go-v2 v1.17.1
 	github.com/aws/aws-sdk-go-v2/config v1.17.10
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.69.0
@@ -39,8 +39,8 @@ require (
 	github.com/stretchr/testify v1.8.1
 	github.com/zclconf/go-cty v1.15.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
-	golang.org/x/term v0.5.0
-	golang.org/x/text v0.11.0
+	golang.org/x/term v0.18.0
+	golang.org/x/text v0.14.0
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.26.3
 	k8s.io/apimachinery v0.26.3
@@ -89,8 +89,8 @@ require (
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
 	golang.org/x/mod v0.8.0 // indirect
-	golang.org/x/net v0.7.0 // indirect
-	golang.org/x/sys v0.5.0 // indirect
+	golang.org/x/net v0.23.0 // indirect
+	golang.org/x/sys v0.18.0 // indirect
 	golang.org/x/tools v0.6.0 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
