@@ -6,8 +6,8 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
 	github.com/OneOfOne/xxhash v1.2.8
 	github.com/Pallinder/go-randomdata v1.2.0
-	github.com/akitasoftware/akita-ir v0.0.0-20240702191148-96a4c6941493
-	github.com/akitasoftware/akita-libs v0.0.0-20240805174748-6896f31886a1
+	github.com/akitasoftware/akita-ir v0.0.0-20240815175436-58df31060c47
+	github.com/akitasoftware/akita-libs v0.0.0-20240816142416-ec67f36814a8
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1
@@ -22,7 +22,6 @@ require (
 	github.com/golang/protobuf v1.5.2
 	github.com/google/go-cmp v0.6.0
 	github.com/google/gopacket v1.1.19
-	github.com/google/martian/v3 v3.0.1
 	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.8.0
 	github.com/hashicorp/go-retryablehttp v0.6.8
@@ -102,9 +101,6 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
 )
 
-replace (
-	// Merging google/gopacket into akitasoftware/gopacket does not
-	// bring along any tags, such as the v1.1.19 release.
-	github.com/google/gopacket v1.1.19 => github.com/akitasoftware/gopacket v1.1.18-0.20210730205736-879e93dac35b
-	github.com/google/martian/v3 v3.0.1 => github.com/akitasoftware/martian/v3 v3.0.1-0.20210608174341-829c1134e9de
-)
+// Merging google/gopacket into akitasoftware/gopacket does not
+// bring along any tags, such as the v1.1.19 release.
+replace github.com/google/gopacket v1.1.19 => github.com/akitasoftware/gopacket v1.1.18-0.20210730205736-879e93dac35b
