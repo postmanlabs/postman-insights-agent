@@ -137,6 +137,10 @@ type BackendCollector struct {
 	// Mutex protecting learnSessionID
 	learnSessionMutex sync.Mutex
 
+	// Whether to keep witness payloads intact. If false, witness payloads will be
+	// obfuscated before being sent to the back end.
+	sendWitnessPayloads bool
+
 	plugins []plugin.AkitaPlugin
 }
 
@@ -148,18 +152,20 @@ func NewBackendCollector(
 	lc rest.LearnClient,
 	maxWitnessSize_bytes optionals.Optional[int],
 	packetCounts PacketCountConsumer,
+	sendWitnessPayloads bool,
 	plugins []plugin.AkitaPlugin,
 ) Collector {
 	col := &BackendCollector{
-		serviceID:      svc,
-		learnSessionID: lrn,
-		learnClient:    lc,
-		flushDone:      make(chan struct{}),
-		plugins:        plugins,
+		serviceID:           svc,
+		learnSessionID:      lrn,
+		learnClient:         lc,
+		flushDone:           make(chan struct{}),
+		plugins:             plugins,
+		sendWitnessPayloads: sendWitnessPayloads,
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
-		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes),
+		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads),
 		uploadBatchFlushDuration,
 	)
 
@@ -280,9 +286,12 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		}
 	}
 
-	// Obfuscate the original value so type inference engine can use it on the
-	// backend without revealing the actual value.
-	obfuscate(w.witness.GetMethod())
+	if !c.sendWitnessPayloads {
+		// Obfuscate the original value so type inference engine can use it on the
+		// backend without revealing the actual value.
+		obfuscate(w.witness.GetMethod())
+	}
+
 	c.uploadReportBatch.Add(rawReport{
 		Witness: w,
 	})

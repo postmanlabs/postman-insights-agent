@@ -178,7 +178,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 
 	b.summary = trace.NewPacketCounter()
 	b.collector = trace.NewBackendCollector(b.backendSvc, backendLrn, b.learnClient,
-		optionals.Some(args.MaxWitnessSize_bytes), b.summary, args.Plugins)
+		optionals.Some(args.MaxWitnessSize_bytes), b.summary, false, args.Plugins)
 
 	// TODO: rate-limit
 	// TODO: session rotation
