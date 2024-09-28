@@ -48,6 +48,7 @@ var (
 	dockerExtensionMode     bool
 	healthCheckPort         int
 	randomizedStart         int
+	sendWitnessPayloads     bool
 )
 
 // This function will either startup apidump normally, or never return, with probability
@@ -201,6 +202,7 @@ var Cmd = &cobra.Command{
 			MaxWitnessSize_bytes:    maxWitnessSize_bytes,
 			DockerExtensionMode:     dockerExtensionMode,
 			HealthCheckPort:         healthCheckPort,
+			SendWitnessPayloads:     sendWitnessPayloads,
 		}
 		if err := apidump.Run(args); err != nil {
 			return cmderr.AkitaErr{Err: err}
@@ -396,4 +398,12 @@ func init() {
 		"Probability that the apidump command will start intercepting traffic.",
 	)
 	_ = Cmd.Flags().MarkHidden("randomized-start")
+
+	Cmd.Flags().BoolVar(
+		&sendWitnessPayloads,
+		"send-witness-payloads",
+		false,
+		"Send request and response payloads to Postman",
+	)
+	_ = Cmd.Flags().MarkHidden("send-witness-payloads")
 }
