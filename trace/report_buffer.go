@@ -28,6 +28,11 @@ type reportBuffer struct {
 	packetCounts         PacketCountConsumer
 	maxSize_bytes        int
 	maxWitnessSize_bytes optionals.Optional[int]
+
+	// If true, indicates that witnesses sent to this buffer will have intact
+	// payloads. If false, indicates that witnesses will have their payloads
+	// obfuscated before being sent to this buffer.
+	witnessesHavePayloads bool
 }
 
 var _ batcher.Buffer[rawReport] = (*reportBuffer)(nil)
@@ -37,33 +42,20 @@ func newReportBuffer(
 	packetCounts PacketCountConsumer,
 	maxSize_bytes int,
 	maxWitnessSize_bytes optionals.Optional[int],
+	witnessesHavePayloads bool,
 ) *reportBuffer {
 	return &reportBuffer{
-		collector:            collector,
-		packetCounts:         packetCounts,
-		maxSize_bytes:        maxSize_bytes,
-		maxWitnessSize_bytes: maxWitnessSize_bytes,
+		collector:             collector,
+		packetCounts:          packetCounts,
+		maxSize_bytes:         maxSize_bytes,
+		maxWitnessSize_bytes:  maxWitnessSize_bytes,
+		witnessesHavePayloads: witnessesHavePayloads,
 	}
 }
 
 func (buf *reportBuffer) Add(raw rawReport) (bool, error) {
 	if raw.Witness != nil {
-		witnessReport, err := raw.Witness.toReport()
-		if err != nil {
-			printer.Warningf("Failed to convert witness to report: %v\n", err)
-		} else if maxSize, exists := buf.maxWitnessSize_bytes.Get(); exists && len(witnessReport.WitnessProto) > maxSize {
-			// Drop the witness; it's too large.
-			printer.Debugf("Dropping oversized witness (%d MB) captured on interface %s\n", len(witnessReport.WitnessProto)/1_000_000, raw.Witness.netInterface)
-
-			buf.packetCounts.Update(client_telemetry.PacketCounts{
-				Interface:          raw.Witness.netInterface,
-				SrcPort:            int(raw.Witness.srcPort),
-				DstPort:            int(raw.Witness.dstPort),
-				OversizedWitnesses: 1,
-			})
-		} else {
-			buf.UploadReportsRequest.AddWitnessReport(witnessReport)
-		}
+		buf.addWitness(raw.Witness)
 	}
 
 	if raw.TCPReport != nil {
@@ -75,6 +67,46 @@ func (buf *reportBuffer) Add(raw rawReport) (bool, error) {
 	}
 
 	return buf.isFull(), nil
+}
+
+// Adds the given witness to the buffer. If the witness is too large, it is
+// obfuscated. If it is still too large after obfuscation, it is dropped. Any
+// errors that occur are logged.
+func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
+	witnessReport, err := w.toReport()
+	if err != nil {
+		printer.Warningf("Failed to convert witness to report: %v\n", err)
+		return
+	}
+
+	if buf.witnessesHavePayloads {
+		if maxSize, exists := buf.maxWitnessSize_bytes.Get(); exists && len(witnessReport.WitnessProto) > maxSize {
+			// The witness exceeds our per-witness storage limit. Obfuscate it to
+			// reduce its size while retaining its typing information.
+			printer.Debugf("Obfuscating oversized witness (%d MB) captured on interface %s\n", len(witnessReport.WitnessProto)/1_000_000, w.netInterface)
+			obfuscate(w.witness.GetMethod())
+			witnessReport, err = w.toReport()
+			if err != nil {
+				printer.Warningf("Failed to convert obfuscated witness to report: %v\n", err)
+				return
+			}
+		}
+	}
+
+	if maxSize, exists := buf.maxWitnessSize_bytes.Get(); exists && len(witnessReport.WitnessProto) > maxSize {
+		// The witness is still too large. Drop it.
+		printer.Debugf("Dropping oversized obfuscated witness (%d MB) captured on interface %s\n", len(witnessReport.WitnessProto)/1_000_000, w.netInterface)
+
+		buf.packetCounts.Update(client_telemetry.PacketCounts{
+			Interface:          w.netInterface,
+			SrcPort:            int(w.srcPort),
+			DstPort:            int(w.dstPort),
+			OversizedWitnesses: 1,
+		})
+		return
+	}
+
+	buf.UploadReportsRequest.AddWitnessReport(witnessReport)
 }
 
 func (buf *reportBuffer) Flush() error {
