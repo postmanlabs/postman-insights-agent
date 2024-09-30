@@ -340,3 +340,11 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		return true
 	})
 }
+
+func (c *BackendCollector) SendWitnessPayloads() bool {
+	return c.sendWitnessPayloads
+}
+
+func (c *BackendCollector) UpdateWitnessPayloadsConfig(sendWitnessPayloads bool) {
+	c.sendWitnessPayloads = sendWitnessPayloads
+}

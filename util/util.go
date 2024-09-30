@@ -243,6 +243,12 @@ func GetOrCreateServiceIDByPostmanCollectionID(c rest.FrontClient, collectionID 
 	return resp.ResourceID, nil
 }
 
+func GetServiceSettings(c rest.FrontClient, serviceID akid.ServiceID) (rest.InsightsServiceSettings, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	return c.GetServiceSettings(ctx, serviceID)
+}
+
 func DaemonHeartbeat(c rest.FrontClient, daemonName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()

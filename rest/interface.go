@@ -64,6 +64,7 @@ type LearnClient interface {
 type FrontClient interface {
 	GetServices(context.Context) ([]Service, error)
 	GetService(context.Context, akid.ServiceID) (InsightsService, error)
+	GetServiceSettings(context.Context, akid.ServiceID) (InsightsServiceSettings, error)
 	GetUser(context.Context) (PostmanUser, error)
 	CreateService(context.Context, string, string) (CreateServiceResponse, error)
 	DaemonHeartbeat(ctx context.Context, daemonName string) error

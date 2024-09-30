@@ -138,9 +138,6 @@ type Args struct {
 	DockerExtensionMode bool
 	// The port to be used by the Docker Extension for health checks
 	HealthCheckPort int
-
-	// Whether to include request/response payloads when uploading witnesses.
-	SendWitnessPayloads bool
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -148,9 +145,10 @@ type Args struct {
 type apidump struct {
 	*Args
 
-	backendSvc     akid.ServiceID
-	backendSvcName string
-	learnClient    rest.LearnClient
+	backendSvc          akid.ServiceID
+	backendSvcName      string
+	sendWitnessPayloads bool
+	learnClient         rest.LearnClient
 
 	startTime   time.Time
 	dumpSummary *Summary
@@ -196,6 +194,21 @@ func (a *apidump) LookupService() error {
 	}
 
 	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc)
+	return nil
+}
+
+// Get the service settings
+func (a *apidump) GetServiceSettings() error {
+	if !a.TargetIsRemote() {
+		return nil
+	}
+	frontClient := rest.NewFrontClient(a.Domain, a.ClientID)
+	settings, err := util.GetServiceSettings(frontClient, a.ServiceID)
+	if err != nil {
+		return err
+	}
+
+	a.sendWitnessPayloads = settings.CaptureWitnessPayloads
 	return nil
 }
 
@@ -446,6 +459,31 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 	}
 }
 
+func (a *apidump) ServiceSettingsWorker(collector trace.Collector, done <-chan struct{}) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			err := a.GetServiceSettings()
+			if err != nil {
+				telemetry.Error("service settings", err)
+				printer.Errorf("Failed to get service settings: %v\n", err)
+				continue
+			}
+
+			// Update the collector with the new settings.
+			backendCollector := collector.(*trace.BackendCollector)
+			if backendCollector.SendWitnessPayloads() != a.sendWitnessPayloads {
+				backendCollector.UpdateWitnessPayloadsConfig(a.sendWitnessPayloads)
+			}
+		}
+	}
+}
+
 type interfaceError struct {
 	interfaceName string
 	err           error
@@ -482,6 +520,11 @@ func (a *apidump) Run() error {
 	// send telemetry even before starting packet capture.
 	// This means "sudo" problems will occur after authentication or project-name
 	err := a.LookupService()
+	if err != nil {
+		return err
+	}
+
+	err = a.GetServiceSettings()
 	if err != nil {
 		return err
 	}
@@ -683,7 +726,8 @@ func (a *apidump) Run() error {
 			} else {
 				var backendCollector trace.Collector
 				if args.Out.AkitaURI != nil {
-					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.SendWitnessPayloads, args.Plugins)
+					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, a.sendWitnessPayloads, args.Plugins)
+					go a.ServiceSettingsWorker(backendCollector, stop)
 					collector = backendCollector
 				} else {
 					return errors.Errorf("invalid output location")
