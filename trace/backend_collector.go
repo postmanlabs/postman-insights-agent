@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
@@ -139,7 +140,7 @@ type BackendCollector struct {
 
 	// Whether to keep witness payloads intact. If false, witness payloads will be
 	// obfuscated before being sent to the back end.
-	sendWitnessPayloads bool
+	sendWitnessPayloads atomic.Bool
 
 	plugins []plugin.AkitaPlugin
 }
@@ -161,8 +162,10 @@ func NewBackendCollector(
 		learnClient:         lc,
 		flushDone:           make(chan struct{}),
 		plugins:             plugins,
-		sendWitnessPayloads: sendWitnessPayloads,
+		sendWitnessPayloads: atomic.Bool{},
 	}
+
+	col.sendWitnessPayloads.Store(sendWitnessPayloads)
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
 		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads),
@@ -286,7 +289,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		}
 	}
 
-	if !c.sendWitnessPayloads {
+	if !c.sendWitnessPayloads.Load() {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
 		obfuscate(w.witness.GetMethod())
@@ -339,4 +342,12 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		}
 		return true
 	})
+}
+
+func (c *BackendCollector) SendWitnessPayloads() bool {
+	return c.sendWitnessPayloads.Load()
+}
+
+func (c *BackendCollector) UpdateWitnessPayloadsConfig(sendWitnessPayloads bool) {
+	c.sendWitnessPayloads.Store(sendWitnessPayloads)
 }

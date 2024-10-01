@@ -35,6 +35,11 @@ type InsightsService struct {
 	Name string         `json:"service_name"`
 }
 
+type InsightsServiceSettings struct {
+	CaptureWitnessPayloads bool `json:"capture_witness_payloads"`
+	ShowIPHosts            bool `json:"show_ip_hosts"`
+}
+
 type PostmanUser struct {
 	ID     int    `json:"id"`
 	Email  string `json:"email"`

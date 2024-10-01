@@ -36,6 +36,15 @@ func (c *frontClientImpl) GetService(ctx context.Context, serviceID akid.Service
 	return resp, nil
 }
 
+func (c *frontClientImpl) GetServiceSettings(ctx context.Context, serviceID akid.ServiceID) (InsightsServiceSettings, error) {
+	var resp InsightsServiceSettings
+	path := path.Join("/v2/agent/services", akid.String(serviceID), "settings")
+	if err := c.Get(ctx, path, &resp); err != nil {
+		return InsightsServiceSettings{}, err
+	}
+	return resp, nil
+}
+
 func (c *frontClientImpl) GetUser(ctx context.Context) (PostmanUser, error) {
 	resp := PostmanUser{}
 	err := c.Get(ctx, "/v2/agent/user", &resp)
