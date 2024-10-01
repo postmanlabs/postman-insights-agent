@@ -286,6 +286,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		}
 	}
 
+	printer.Debugf("@@@@@@@@@ sendWitnessPayloads = %v", c.sendWitnessPayloads)
 	if !c.sendWitnessPayloads {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
