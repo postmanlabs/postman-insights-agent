@@ -26,8 +26,8 @@ github.com/Pallinder/go-randomdata v1.2.0 h1:DZ41wBchNRb/0GfsePLiSwb0PHZmT67XY00
 github.com/Pallinder/go-randomdata v1.2.0/go.mod h1:yHmJgulpD2Nfrm0cR9tI/+oAgRqCQQixsA8HyRZfV9Y=
 github.com/agext/levenshtein v1.2.1 h1:QmvMAjj2aEICytGiWzmxoE0x2KZvE0fvmqMOfy2tjT8=
 github.com/agext/levenshtein v1.2.1/go.mod h1:JEDfjyjHDjOF/1e4FlBE/PkbqA9OfWu2ki2W0IB5558=
-github.com/akitasoftware/akita-ir v0.0.0-20240815175436-58df31060c47 h1:TDwN055fb5Jhki+Gefi5ltc8yuH8cnzCSfBn8EqSNcM=
-github.com/akitasoftware/akita-ir v0.0.0-20240815175436-58df31060c47/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
+github.com/akitasoftware/akita-ir v0.0.0-20241008083010-10a0a96871ee h1:Ro3uTG4gNXk+c2kVYrZdI1BXlxNAhZ9O3X31Qb1gEX0=
+github.com/akitasoftware/akita-ir v0.0.0-20241008083010-10a0a96871ee/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
 github.com/akitasoftware/akita-libs v0.0.0-20240820205141-dc8c30c29a5b h1:uv2OpBVS7OQRj2oNxRjvypelKIibJhZnfXPXxdFzrm0=
 github.com/akitasoftware/akita-libs v0.0.0-20240820205141-dc8c30c29a5b/go.mod h1:a/vNhO1KQ5Qmz70Tvva4KfQKySiIpNmfJLdpArov3uc=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803 h1:ebIh/EFuaP8GczzMe8EwVID/blSv5Tej6S8NE4xyarQ=
