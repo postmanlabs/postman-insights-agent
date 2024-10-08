@@ -278,6 +278,9 @@ func (c *BackendCollector) processTLSHandshake(tls akinet.TLSHandshakeMetadata) 
 }
 
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
+	// Mark the method as not obfuscated.
+	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE
+
 	for _, p := range c.plugins {
 		if err := p.Transform(w.witness.GetMethod()); err != nil {
 			// Only upload if plugins did not return error.
@@ -290,9 +293,6 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
 		obfuscate(w.witness.GetMethod())
-	} else {
-		// Mark the method as not obfuscated.
-		w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE
 	}
 
 	c.uploadReportBatch.Add(rawReport{
