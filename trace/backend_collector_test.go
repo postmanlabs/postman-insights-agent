@@ -2,7 +2,6 @@ package trace
 
 import (
 	"encoding/base64"
-	"fmt"
 	"net/url"
 	"sync"
 	"testing"
@@ -407,6 +406,7 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 							Method:       "POST",
 							PathTemplate: "/v1/doggos",
 							Host:         "example.com",
+							Obfuscation:  pb.HTTPMethodMeta_ZERO_VALUE,
 						},
 					},
 				},
@@ -438,6 +438,7 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 							Method:       "POST",
 							PathTemplate: "/v1/doggos",
 							Host:         "example.com",
+							Obfuscation:  pb.HTTPMethodMeta_NONE,
 						},
 					},
 				},
@@ -446,7 +447,6 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 	}
 
 	for i := range expectedWitnesses {
-		fmt.Println(i)
 		expected := proto.MarshalTextString(expectedWitnesses[i])
 		actual := proto.MarshalTextString(rec.witnesses[i])
 		assert.Equal(t, expected, actual)
