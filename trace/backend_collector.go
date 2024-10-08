@@ -289,7 +289,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		}
 	}
 
-	if !c.sendWitnessPayloads || !hasErrorResponses(w.witness.GetMethod()) {
+	if !c.sendWitnessPayloads || !hasOnlyErrorResponses(w.witness.GetMethod()) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
 		obfuscate(w.witness.GetMethod())
