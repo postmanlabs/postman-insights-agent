@@ -2,6 +2,7 @@ package trace
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/url"
 	"sync"
 	"testing"
@@ -298,4 +299,155 @@ func TestFlushExit(t *testing.T) {
 	close(b.flushDone)
 	b.periodicFlush()
 	// Test should exit immediately
+}
+
+func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	defer ctrl.Finish()
+
+	var rec witnessRecorder
+	mockClient.
+		EXPECT().
+		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+		Do(rec.recordAsyncReportsUpload).
+		AnyTimes().
+		Return(nil)
+
+	streamID := uuid.New()
+	req := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{
+			StreamID: streamID,
+			Seq:      1203,
+			Method:   "POST",
+			URL: &url.URL{
+				Path: "/v1/doggos",
+			},
+			Host: "example.com",
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"name": "prince", "number": 6119717375543385000}`)),
+		},
+	}
+
+	resp := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPResponse{
+			StreamID:   streamID,
+			Seq:        1203,
+			StatusCode: 200,
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"homes": ["burbank, ca", "jeuno, ak", "versailles"]}`)),
+		},
+	}
+
+	errStreamID := uuid.New()
+	errReq := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{
+			StreamID: errStreamID,
+			Seq:      1204,
+			Method:   "POST",
+			URL: &url.URL{
+				Path: "/v1/doggos",
+			},
+			Host: "example.com",
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"name": "error", "number": 202410081550}`)),
+		},
+	}
+
+	errResp := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPResponse{
+			StreamID:   errStreamID,
+			Seq:        1204,
+			StatusCode: 404,
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"homes": ["error", "happened", "here"]}`)),
+		},
+	}
+
+	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	assert.NoError(t, col.Process(req))
+	assert.NoError(t, col.Process(resp))
+	assert.NoError(t, col.Process(errReq))
+	assert.NoError(t, col.Process(errResp))
+	assert.NoError(t, col.Close())
+
+	expectedWitnesses := []*pb.Witness{
+		{
+			Method: &pb.Method{
+				Id: &pb.MethodID{
+					ApiType: pb.ApiType_HTTP_REST,
+				},
+				Args: map[string]*pb.Data{
+					"nxnOc5Qy3D4=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"name":   dataFromPrimitive(spec_util.NewPrimitiveString("")),
+						"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(0)),
+					}),
+				},
+				Responses: map[string]*pb.Data{
+					"AyBUQkT0SHU=": newTestBodySpecFromStruct(200, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"homes": dataFromList(
+							dataFromPrimitive(spec_util.NewPrimitiveString("")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("")),
+						),
+					}),
+				},
+				Meta: &pb.MethodMeta{
+					Meta: &pb.MethodMeta_Http{
+						Http: &pb.HTTPMethodMeta{
+							Method:       "POST",
+							PathTemplate: "/v1/doggos",
+							Host:         "example.com",
+						},
+					},
+				},
+			},
+		},
+		{
+			Method: &pb.Method{
+				Id: &pb.MethodID{
+					ApiType: pb.ApiType_HTTP_REST,
+				},
+				Args: map[string]*pb.Data{
+					"MWeG2T99uHI=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"name":   dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+						"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
+					}),
+				},
+				Responses: map[string]*pb.Data{
+					"T7Jfr4mf1Zs=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"homes": dataFromList(
+							dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+						),
+					}),
+				},
+				Meta: &pb.MethodMeta{
+					Meta: &pb.MethodMeta_Http{
+						Http: &pb.HTTPMethodMeta{
+							Method:       "POST",
+							PathTemplate: "/v1/doggos",
+							Host:         "example.com",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for i := range expectedWitnesses {
+		fmt.Println(i)
+		expected := proto.MarshalTextString(expectedWitnesses[i])
+		actual := proto.MarshalTextString(rec.witnesses[i])
+		assert.Equal(t, expected, actual)
+	}
 }
