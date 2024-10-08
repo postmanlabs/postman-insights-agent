@@ -6,8 +6,8 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
 	github.com/OneOfOne/xxhash v1.2.8
 	github.com/Pallinder/go-randomdata v1.2.0
-	github.com/akitasoftware/akita-ir v0.0.0-20240815175436-58df31060c47
-	github.com/akitasoftware/akita-libs v0.0.0-20240820205141-dc8c30c29a5b
+	github.com/akitasoftware/akita-ir v0.0.0-20241008173748-ca8e2e3d5db4
+	github.com/akitasoftware/akita-libs v0.0.0-20241008174225-3b01e02d3430
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1

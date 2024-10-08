@@ -11,6 +11,9 @@ import (
 func obfuscate(m *pb.Method) {
 	var ov obfuscationVisitor
 	vis.Apply(&ov, m)
+
+	// Mark the method as obfuscated.
+	m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
 }
 
 type obfuscationVisitor struct {
