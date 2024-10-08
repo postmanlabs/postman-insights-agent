@@ -13,7 +13,7 @@ func hasOnlyErrorResponses(method *pb.Method) bool {
 
 	for _, response := range responses {
 		responseCode := response.Meta.GetHttp().GetResponseCode()
-		if responseCode < 400 {
+		if !(400 <= responseCode && responseCode < 600) {
 			return false
 		}
 	}
