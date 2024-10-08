@@ -123,6 +123,7 @@ func TestObfuscate(t *testing.T) {
 							Method:       "POST",
 							PathTemplate: "/v1/doggos",
 							Host:         "example.com",
+							Obfuscation:  pb.HTTPMethodMeta_ZERO_VALUE,
 						},
 					},
 				},
