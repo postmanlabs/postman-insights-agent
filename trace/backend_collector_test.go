@@ -2,6 +2,7 @@ package trace
 
 import (
 	"encoding/base64"
+	"net/http"
 	"net/url"
 	"sync"
 	"testing"
@@ -179,33 +180,48 @@ func newDataMeta(httpM *pb.HTTPMeta) *pb.DataMeta {
 	}
 }
 
-func newTestHeaderSpec(d *pb.Data, key string) *pb.Data {
+func newTestHeaderSpec(d *pb.Data, key string, responseCode int) *pb.Data {
 	d.Meta = newDataMeta(&pb.HTTPMeta{
 		Location: &pb.HTTPMeta_Header{
 			Header: &pb.HTTPHeader{
 				Key: key,
 			},
 		},
+		ResponseCode: int32(responseCode),
 	})
 	return d
 }
 
-func newTestQueryParamSpec(d *pb.Data, key string) *pb.Data {
+func newTestQueryParamSpec(d *pb.Data, key string, responseCode int) *pb.Data {
 	d.Meta = newDataMeta(&pb.HTTPMeta{
 		Location: &pb.HTTPMeta_Query{
 			Query: &pb.HTTPQuery{
 				Key: key,
 			},
 		},
+		ResponseCode: int32(responseCode),
 	})
 	return d
 }
 
-func newTestAuthSpec(d *pb.Data) *pb.Data {
+func newTestAuthSpec(d *pb.Data, responseCode int) *pb.Data {
 	d.Meta = newDataMeta(&pb.HTTPMeta{
 		Location: &pb.HTTPMeta_Auth{
 			Auth: &pb.HTTPAuth{},
 		},
+		ResponseCode: int32(responseCode),
+	})
+	return d
+}
+
+func newTestCookieSpec(d *pb.Data, key string, responseCode int) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Cookie{
+			Cookie: &pb.HTTPCookie{
+				Key: key,
+			},
+		},
+		ResponseCode: int32(responseCode),
 	})
 	return d
 }
@@ -526,7 +542,13 @@ func TestObfuscationConfigs(t *testing.T) {
 			StatusCode: 404,
 			Header: map[string][]string{
 				"Content-Type": {"application/json"},
-				"Cookie":       {"Cookie_data"},
+				"postman_sid":  {"XX__X_X_X_X"},
+			},
+			Cookies: []*http.Cookie{
+				{
+					Name:  "Random-Cookie",
+					Value: "Random-Cookie-Value",
+				},
 			},
 			Body: memview.New([]byte(`{"homes": ["error", "happened", "here"], "pmakInResponseBody": "PMAK-6717875c69335700017b1c46"}`)),
 		},
@@ -544,12 +566,12 @@ func TestObfuscationConfigs(t *testing.T) {
 					ApiType: pb.ApiType_HTTP_REST,
 				},
 				Args: map[string]*pb.Data{
-					"4F1vWo8G_-Q=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "x-access-token"),
-					"KC2RO-pCNJA=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("Normal-Value")), "Normal-Header"),
-					"xwb2G1yYVVc=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "pmak_in_header"),
-					"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "sso_jwt_key"),
-					"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "pmak_in_query"),
-					"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString(""))),
+					"4F1vWo8G_-Q=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "x-access-token", 0),
+					"KC2RO-pCNJA=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("Normal-Value")), "Normal-Header", 0),
+					"xwb2G1yYVVc=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "pmak_in_header", 0),
+					"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "sso_jwt_key", 0),
+					"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "pmak_in_query", 0),
+					"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), 0),
 					"bxitt4RTL5k=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 						"name":       dataFromPrimitive(spec_util.NewPrimitiveString("error")),
 						"number":     dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
@@ -557,6 +579,8 @@ func TestObfuscationConfigs(t *testing.T) {
 					}),
 				},
 				Responses: map[string]*pb.Data{
+					"hAjVb_ouhwQ=": newTestCookieSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "Random-Cookie", 404),
+					"rZob7SB3qd0=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("")), "postman_sid", 404),
 					"cBn6EHKhiAA=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 						"homes": dataFromList(
 							dataFromPrimitive(spec_util.NewPrimitiveString("error")),

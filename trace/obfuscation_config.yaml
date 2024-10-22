@@ -1,6 +1,4 @@
 sensitive_keys:
-  - authorization
-  - cookies
   - x-access-token
   - encryption_key
   - sso_jwt_key

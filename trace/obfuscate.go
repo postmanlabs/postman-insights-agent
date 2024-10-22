@@ -80,6 +80,11 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 		return ObfuscateWithZeroValue(d)
 	}
 
+	cookie := spec_util.HTTPCookieFromData(d)
+	if cookie != nil {
+		return ObfuscateWithZeroValue(d)
+	}
+
 	var key string
 
 	header := spec_util.HTTPHeaderFromData(d)
@@ -89,10 +94,6 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 	queryParam := spec_util.HTTPQueryFromData(d)
 	if queryParam != nil {
 		key = queryParam.Key
-	}
-	pathParam := spec_util.HTTPPathFromData(d)
-	if pathParam != nil {
-		key = pathParam.Key
 	}
 
 	// Check if the key is in the list of keys to obfuscate.
