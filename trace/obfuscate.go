@@ -44,25 +44,13 @@ func NewObfuscator() *Obfuscator {
 	}
 }
 
-func (o *Obfuscator) Obfuscate(m *pb.Method, obfuscateWholePayload bool) {
-	if obfuscateWholePayload {
-		var ov obfuscationVisitor
-		vis.Apply(&ov, m)
+func (o *Obfuscator) ObfuscateData(m *pb.Method) {
+	var ov obfuscationVisitor
+	vis.Apply(&ov, m)
 
-		// Mark the method as obfuscated.
-		m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
-		return
-	}
-
-	pov := redactSensitiveInfoVisitor{
-		obfuscationOptions: o,
-	}
-	vis.Apply(&pov, m)
+	// Mark the method as obfuscated.
+	m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
 	return
-}
-
-type obfuscationVisitor struct {
-	vis.DefaultSpecVisitorImpl
 }
 
 var _ vis.DefaultSpecVisitor = (*obfuscationVisitor)(nil)
@@ -83,6 +71,17 @@ func (*obfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVisitorContex
 
 	dp.Value = pv.Obfuscate().ToProto().Value
 	return Continue
+}
+
+func (o *Obfuscator) RedactData(m *pb.Method) {
+	pov := redactSensitiveInfoVisitor{
+		obfuscationOptions: o,
+	}
+	vis.Apply(&pov, m)
+}
+
+type obfuscationVisitor struct {
+	vis.DefaultSpecVisitorImpl
 }
 
 type redactSensitiveInfoVisitor struct {
