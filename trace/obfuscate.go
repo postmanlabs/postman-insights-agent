@@ -68,7 +68,20 @@ var _ vis.DefaultSpecVisitor = (*obfuscationVisitor)(nil)
 
 // EnterData processes the given data and obfuscates all the primitive values with zero values, regardless of it's meta data.
 func (*obfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVisitorContext, d *pb.Data) Cont {
-	return ObfuscateWithZeroValue(d)
+	dp := d.GetPrimitive()
+	if dp == nil {
+		return Continue
+	}
+
+	pv, err := spec_util.PrimitiveValueFromProto(dp)
+	if err != nil {
+		printer.Warningf("failed to obfuscate raw value, dropping\n")
+		d.Value = nil
+		return Continue
+	}
+
+	dp.Value = pv.Obfuscate().ToProto().Value
+	return Continue
 }
 
 type partialObfuscationVisitor struct {
@@ -88,9 +101,9 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 		var key string
 		switch httpMeta.Location.(type) {
 		case *pb.HTTPMeta_Auth:
-			return ObfuscateWithZeroValue(d)
+			return ObfuscateWithRedactedString(d)
 		case *pb.HTTPMeta_Cookie:
-			return ObfuscateWithZeroValue(d)
+			return ObfuscateWithRedactedString(d)
 		case *pb.HTTPMeta_Header:
 			header := httpMeta.GetHeader()
 			key = header.Key
@@ -100,7 +113,7 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 		}
 		// Check if the key is in the list of keys to obfuscate.
 		if pov.obfuscationOptions.SensitiveDataKeys.Contains(strings.ToLower(key)) {
-			return ObfuscateWithZeroValue(d)
+			return ObfuscateWithRedactedString(d)
 		}
 	}
 
@@ -118,26 +131,19 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 
 	for pattern, _ := range pov.obfuscationOptions.SensitiveDataValuePatterns {
 		if pattern.MatchString(stringValue.Value) {
-			return ObfuscateWithZeroValue(d)
+			return ObfuscateWithRedactedString(d)
 		}
 	}
 
 	return Continue
 }
 
-func ObfuscateWithZeroValue(d *pb.Data) Cont {
+func ObfuscateWithRedactedString(d *pb.Data) Cont {
 	dp := d.GetPrimitive()
 	if dp == nil {
 		return Continue
 	}
 
-	pv, err := spec_util.PrimitiveValueFromProto(dp)
-	if err != nil {
-		printer.Warningf("failed to obfuscate raw value, dropping\n")
-		d.Value = nil
-		return Continue
-	}
-
-	dp.Value = pv.Obfuscate().ToProto().Value
+	dp.Value = spec_util.NewPrimitiveString("REDACTED").Value
 	return Continue
 }
