@@ -2,17 +2,19 @@ package trace
 
 import (
 	"regexp"
+	"strings"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	. "github.com/akitasoftware/akita-libs/visitors"
 	vis "github.com/akitasoftware/akita-libs/visitors/http_rest"
+	"github.com/akitasoftware/go-utils/sets"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 type Obfuscator struct {
-	SensitiveDataKeys          []string
-	SensitiveDataValuePatterns []*regexp.Regexp
+	SensitiveDataKeys          sets.Set[string]
+	SensitiveDataValuePatterns sets.Set[*regexp.Regexp]
 }
 
 func NewObfuscator() *Obfuscator {
@@ -36,12 +38,12 @@ func NewObfuscator() *Obfuscator {
 	}
 
 	return &Obfuscator{
-		SensitiveDataKeys:          config.SensitiveKeys,
-		SensitiveDataValuePatterns: sensitiveDataRegex,
+		SensitiveDataKeys:          sets.NewSet(config.SensitiveKeys...),
+		SensitiveDataValuePatterns: sets.NewSet(sensitiveDataRegex...),
 	}
 }
 
-func (o *Obfuscator) obfuscate(m *pb.Method, obfuscateWholePayload bool) {
+func (o *Obfuscator) Obfuscate(m *pb.Method, obfuscateWholePayload bool) {
 	if obfuscateWholePayload {
 		var ov obfuscationVisitor
 		vis.Apply(&ov, m)
@@ -82,26 +84,23 @@ var _ vis.DefaultSpecVisitor = (*partialObfuscationVisitor)(nil)
 // 2. It cheks if spec is an HTTP Header or Query Param data and obfuscates the value if the key is in the list of sensitive keys.
 // 3. It applies regex patterns to all obfuscate sensitive primitive string values.
 func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVisitorContext, d *pb.Data) Cont {
-	dataMeta, ok := d.GetMeta().GetMeta().(*pb.DataMeta_Http)
-	if ok {
+	if httpMeta := d.GetMeta().GetHttp(); httpMeta != nil {
 		var key string
-		switch dataMeta.Http.Location.(type) {
+		switch httpMeta.Location.(type) {
 		case *pb.HTTPMeta_Auth:
 			return ObfuscateWithZeroValue(d)
 		case *pb.HTTPMeta_Cookie:
 			return ObfuscateWithZeroValue(d)
 		case *pb.HTTPMeta_Header:
-			header := dataMeta.Http.GetHeader()
+			header := httpMeta.GetHeader()
 			key = header.Key
 		case *pb.HTTPMeta_Query:
-			queryParam := dataMeta.Http.GetQuery()
+			queryParam := httpMeta.GetQuery()
 			key = queryParam.Key
 		}
 		// Check if the key is in the list of keys to obfuscate.
-		for _, k := range pov.obfuscationOptions.SensitiveDataKeys {
-			if k == key {
-				return ObfuscateWithZeroValue(d)
-			}
+		if pov.obfuscationOptions.SensitiveDataKeys.Contains(strings.ToLower(key)) {
+			return ObfuscateWithZeroValue(d)
 		}
 	}
 
@@ -117,7 +116,7 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 		return Continue
 	}
 
-	for _, pattern := range pov.obfuscationOptions.SensitiveDataValuePatterns {
+	for pattern, _ := range pov.obfuscationOptions.SensitiveDataValuePatterns {
 		if pattern.MatchString(stringValue.Value) {
 			return ObfuscateWithZeroValue(d)
 		}
@@ -127,18 +126,18 @@ func (pov *partialObfuscationVisitor) EnterData(self interface{}, ctx vis.SpecVi
 }
 
 func ObfuscateWithZeroValue(d *pb.Data) Cont {
-	dp, isPrimitive := d.GetValue().(*pb.Data_Primitive)
-	if !isPrimitive {
+	dp := d.GetPrimitive()
+	if dp == nil {
 		return Continue
 	}
 
-	pv, err := spec_util.PrimitiveValueFromProto(dp.Primitive)
+	pv, err := spec_util.PrimitiveValueFromProto(dp)
 	if err != nil {
 		printer.Warningf("failed to obfuscate raw value, dropping\n")
 		d.Value = nil
 		return Continue
 	}
 
-	dp.Primitive.Value = pv.Obfuscate().ToProto().Value
+	dp.Value = pv.Obfuscate().ToProto().Value
 	return Continue
 }
