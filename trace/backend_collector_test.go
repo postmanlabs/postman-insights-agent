@@ -531,7 +531,12 @@ func TestObfuscationConfigs(t *testing.T) {
 				"x-access-token": {"XX__X_X_X_X"},
 				"pmak_in_header": {"PMAK-6717875c69335700017b1c46"},
 			},
-			Body: memview.New([]byte(`{"name": "error", "number": 202410081550, "pmakInBody": "PMAK-6717875c69335700017b1c46"}`)),
+			Body: memview.New([]byte(`{
+				"name": "error",
+				"number": 202410081550,
+				"pmakInBody": "PMAK-6717875c69335700017b1c46",
+				"api_key": "XX__X_X_X_X"
+			}`)),
 		},
 	}
 
@@ -550,7 +555,21 @@ func TestObfuscationConfigs(t *testing.T) {
 					Value: "Random-Cookie-Value",
 				},
 			},
-			Body: memview.New([]byte(`{"homes": ["error", "happened", "here"], "pmakInResponseBody": "PMAK-6717875c69335700017b1c46"}`)),
+			Body: memview.New([]byte(`{
+				"homes": ["error", "happened", "here"],
+				"structList": [
+					{
+						"encryption_key": "XX__X_X_X_1",
+						"index": 0
+					},
+					{
+						"encryption_key": "XX__X_X_X_2",
+						"index": 1
+					}
+				],
+				"pmakInResponseBody": "PMAK-6717875c69335700017b1c46",
+				"encryption_key": [1,2,3,4,5]
+			}`)),
 		},
 	}
 
@@ -572,22 +591,36 @@ func TestObfuscationConfigs(t *testing.T) {
 					"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "sso_jwt_key", 0),
 					"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_query", 0),
 					"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), 0),
-					"bxitt4RTL5k=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+					"Ee95MCpMH0c=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 						"name":       dataFromPrimitive(spec_util.NewPrimitiveString("error")),
 						"number":     dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
 						"pmakInBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+						"api_key":    dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
 					}),
 				},
 				Responses: map[string]*pb.Data{
 					"hAjVb_ouhwQ=": newTestCookieSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "Random-Cookie", 404),
 					"rZob7SB3qd0=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "postman_sid", 404),
-					"cBn6EHKhiAA=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+					"PeIWlWWGoSE=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 						"homes": dataFromList(
 							dataFromPrimitive(spec_util.NewPrimitiveString("error")),
 							dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
 							dataFromPrimitive(spec_util.NewPrimitiveString("here")),
 						),
+						"structList": dataFromList(
+							dataFromStruct(map[string]*pb.Data{
+								"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"index":          dataFromPrimitive(spec_util.NewPrimitiveInt64(0)),
+							}),
+							dataFromStruct(map[string]*pb.Data{
+								"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"index":          dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
+							}),
+						),
 						"pmakInResponseBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+						"encryption_key": dataFromList(
+							dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+						),
 					}),
 				},
 				Meta: &pb.MethodMeta{
