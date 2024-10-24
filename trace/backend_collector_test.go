@@ -2,12 +2,14 @@ package trace
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/akitasoftware/akita-ir/go/api_spec"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -501,6 +503,479 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 }
 
 func TestObfuscationConfigs(t *testing.T) {
+	// Prepare a test cases
+	streamID := uuid.New()
+	type testCase struct {
+		name              string
+		request           akinet.HTTPRequest
+		response          akinet.HTTPResponse
+		expectedWitnesses *api_spec.Witness
+	}
+	testCases := []testCase{
+		{
+			name: "no sensitive data",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type":  {"application/json"},
+					"Normal-Header": {"Normal-Value"},
+				},
+				Body: memview.New([]byte(`{
+					"name": "error",
+					"number": 202410081550
+				}`)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"]
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"KC2RO-pCNJA=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("Normal-Value")), "Normal-Header", 0),
+						"MWeG2T99uHI=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"name":   dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+							"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
+						}),
+					},
+					Responses: map[string]*pb.Data{
+						"T7Jfr4mf1Zs=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+							),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive data in header, query param and cookie",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path:     "/v1/doggos",
+					RawQuery: "sso_jwt_key=XX__X_X_X_X&pmak_in_query=PMAK-6717875c69335700017b1c46",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type":   {"application/json"},
+					"Authorization":  {"XX__X_X_X_X"},
+					"Normal-Header":  {"Normal-Value"},
+					"x-access-token": {"XX__X_X_X_X"},
+					"pmak_in_header": {"PMAK-6717875c69335700017b1c46"},
+				},
+				Body: memview.New([]byte(`{
+					"name": "error",
+					"number": 202410081550,
+					"normal2DArray": [
+						[1,2,3],
+						["four","five","six"]
+					]
+				}`)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+					"postman_sid":  {"XX__X_X_X_X"},
+				},
+				Cookies: []*http.Cookie{
+					{
+						Name:  "Random-Cookie",
+						Value: "Random-Cookie-Value",
+					},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"]
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"4F1vWo8G_-Q=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "x-access-token", 0),
+						"KC2RO-pCNJA=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("Normal-Value")), "Normal-Header", 0),
+						"xwb2G1yYVVc=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_header", 0),
+						"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "sso_jwt_key", 0),
+						"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_query", 0),
+						"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), 0),
+						"K51zDh5OkH0=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"name":   dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+							"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
+							"normal2DArray": dataFromList(
+								dataFromList(
+									dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
+									dataFromPrimitive(spec_util.NewPrimitiveInt64(2)),
+									dataFromPrimitive(spec_util.NewPrimitiveInt64(3)),
+								),
+								dataFromList(
+									dataFromPrimitive(spec_util.NewPrimitiveString("four")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("five")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("six")),
+								),
+							),
+						}),
+					},
+					Responses: map[string]*pb.Data{
+						"hAjVb_ouhwQ=": newTestCookieSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "Random-Cookie", 404),
+						"rZob7SB3qd0=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "postman_sid", 404),
+						"T7Jfr4mf1Zs=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+							),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive data in body",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"name": "error",
+					"number": 202410081550,
+					"pmakInBody": "PMAK-6717875c69335700017b1c46",
+					"api_key": "XX__X_X_X_X"
+				}`)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"],
+					"pmakInResponseBody": "PMAK-6717875c69335700017b1c46",
+					"encryption_key": [1,2,3,4,5]
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"Ee95MCpMH0c=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"name":       dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+							"number":     dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
+							"pmakInBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							"api_key":    dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+						}),
+					},
+					Responses: map[string]*pb.Data{
+						"78vwENc96h0=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+							),
+							"pmakInResponseBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							"encryption_key": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "struct with sensitive keys and values",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{"name": "error"}`)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"],
+					"structList": [
+						{
+							"encryption_key": "XX__X_X_X_1",
+							"index": 0
+						},
+						{
+							"random_key": "PMAK-6717875c69335700017b1c46",
+							"index": 1
+						}
+					],
+					"sso_jwt_key": {
+						"key1": "XX__X_X_X_1",
+						"key2": [
+							{
+								"key2_1": "randomvalue"
+							},
+							{
+								"key2_2": "PMAK-6717875c69335700017b1c46"
+							}
+						],
+						"key3": [ 1, "PMAK-6717875c69335700017b1c46", 3]
+					}
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"XP9rRmHnH0A=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"name": dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+						}),
+					},
+					Responses: map[string]*pb.Data{
+						"zvyT9PDTBoM=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+							),
+							"structList": dataFromList(
+								dataFromStruct(map[string]*pb.Data{
+									"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									"index":          dataFromPrimitive(spec_util.NewPrimitiveInt64(0)),
+								}),
+								dataFromStruct(map[string]*pb.Data{
+									"random_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									"index":      dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
+								}),
+							),
+							"sso_jwt_key": dataFromStruct(map[string]*pb.Data{
+								"key1": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"key2": dataFromList(
+									dataFromStruct(map[string]*pb.Data{
+										"key2_1": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									}),
+									dataFromStruct(map[string]*pb.Data{
+										"key2_2": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									}),
+								),
+								"key3": dataFromList(
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								),
+							}),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "list with sensitive keys and values",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"name": "error",
+					"encryption_key": [
+						12323454,
+						"onetwothreetwothreesoon",
+						{
+							"index": 3,
+							"value": "III"
+						}
+					],
+					"sso_jwt_key": [
+						[1,2],
+						["one","two"],
+						[
+							{"index": 0, "value": "I"},
+							{"index": 1, "value": "II"}
+						]
+					]
+				}`)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"],
+					"encryption_key": ["one","PMAK-6717875c69335700017b1c46"],
+					"normal_list": [1,"two","PMAK-6717875c69335700017b1c46","IV",5]
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"gZwJ7G0xsTU=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"name": dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+							"encryption_key": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromStruct(map[string]*pb.Data{
+									"index": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									"value": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								}),
+							),
+							"sso_jwt_key": dataFromList(
+								dataFromList(
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								),
+								dataFromList(
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								),
+								dataFromList(
+									dataFromStruct(map[string]*pb.Data{
+										"index": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+										"value": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									}),
+									dataFromStruct(map[string]*pb.Data{
+										"index": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+										"value": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									}),
+								),
+							),
+						}),
+					},
+					Responses: map[string]*pb.Data{
+						"0BdogXDRY7U=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+							),
+							"encryption_key": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							),
+							"normal_list": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
+								dataFromPrimitive(spec_util.NewPrimitiveString("two")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("IV")),
+								dataFromPrimitive(spec_util.NewPrimitiveInt64(5)),
+							),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Setup for running tests
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -513,132 +988,18 @@ func TestObfuscationConfigs(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
-	errStreamID := uuid.New()
-	errReq := akinet.ParsedNetworkTraffic{
-		Content: akinet.HTTPRequest{
-			StreamID: errStreamID,
-			Seq:      1204,
-			Method:   "POST",
-			URL: &url.URL{
-				Path:     "/v1/doggos",
-				RawQuery: "sso_jwt_key=XX__X_X_X_X&pmak_in_query=PMAK-6717875c69335700017b1c46",
-			},
-			Host: "example.com",
-			Header: map[string][]string{
-				"Content-Type":   {"application/json"},
-				"Authorization":  {"XX__X_X_X_X"},
-				"Normal-Header":  {"Normal-Value"},
-				"x-access-token": {"XX__X_X_X_X"},
-				"pmak_in_header": {"PMAK-6717875c69335700017b1c46"},
-			},
-			Body: memview.New([]byte(`{
-				"name": "error",
-				"number": 202410081550,
-				"pmakInBody": "PMAK-6717875c69335700017b1c46",
-				"api_key": "XX__X_X_X_X"
-			}`)),
-		},
-	}
+	for i, testCase := range testCases {
+		fmt.Println("Running test case: ", testCase.name)
 
-	errResp := akinet.ParsedNetworkTraffic{
-		Content: akinet.HTTPResponse{
-			StreamID:   errStreamID,
-			Seq:        1204,
-			StatusCode: 404,
-			Header: map[string][]string{
-				"Content-Type": {"application/json"},
-				"postman_sid":  {"XX__X_X_X_X"},
-			},
-			Cookies: []*http.Cookie{
-				{
-					Name:  "Random-Cookie",
-					Value: "Random-Cookie-Value",
-				},
-			},
-			Body: memview.New([]byte(`{
-				"homes": ["error", "happened", "here"],
-				"structList": [
-					{
-						"encryption_key": "XX__X_X_X_1",
-						"index": 0
-					},
-					{
-						"encryption_key": "XX__X_X_X_2",
-						"index": 1
-					}
-				],
-				"pmakInResponseBody": "PMAK-6717875c69335700017b1c46",
-				"encryption_key": [1,2,3,4,5]
-			}`)),
-		},
-	}
+		req := akinet.ParsedNetworkTraffic{Content: testCase.request}
+		resp := akinet.ParsedNetworkTraffic{Content: testCase.response}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
-	assert.NoError(t, col.Process(errReq))
-	assert.NoError(t, col.Process(errResp))
-	assert.NoError(t, col.Close())
+		col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		assert.NoError(t, col.Process(req))
+		assert.NoError(t, col.Process(resp))
+		assert.NoError(t, col.Close())
 
-	expectedWitnesses := []*pb.Witness{
-		{
-			Method: &pb.Method{
-				Id: &pb.MethodID{
-					ApiType: pb.ApiType_HTTP_REST,
-				},
-				Args: map[string]*pb.Data{
-					"4F1vWo8G_-Q=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "x-access-token", 0),
-					"KC2RO-pCNJA=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("Normal-Value")), "Normal-Header", 0),
-					"xwb2G1yYVVc=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_header", 0),
-					"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "sso_jwt_key", 0),
-					"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_query", 0),
-					"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), 0),
-					"Ee95MCpMH0c=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
-						"name":       dataFromPrimitive(spec_util.NewPrimitiveString("error")),
-						"number":     dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
-						"pmakInBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-						"api_key":    dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-					}),
-				},
-				Responses: map[string]*pb.Data{
-					"hAjVb_ouhwQ=": newTestCookieSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "Random-Cookie", 404),
-					"rZob7SB3qd0=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "postman_sid", 404),
-					"PeIWlWWGoSE=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
-						"homes": dataFromList(
-							dataFromPrimitive(spec_util.NewPrimitiveString("error")),
-							dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
-							dataFromPrimitive(spec_util.NewPrimitiveString("here")),
-						),
-						"structList": dataFromList(
-							dataFromStruct(map[string]*pb.Data{
-								"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								"index":          dataFromPrimitive(spec_util.NewPrimitiveInt64(0)),
-							}),
-							dataFromStruct(map[string]*pb.Data{
-								"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								"index":          dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
-							}),
-						),
-						"pmakInResponseBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-						"encryption_key": dataFromList(
-							dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-						),
-					}),
-				},
-				Meta: &pb.MethodMeta{
-					Meta: &pb.MethodMeta_Http{
-						Http: &pb.HTTPMethodMeta{
-							Method:       "POST",
-							PathTemplate: "/v1/doggos",
-							Host:         "example.com",
-							Obfuscation:  pb.HTTPMethodMeta_NONE,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	for i := range expectedWitnesses {
-		expected := proto.MarshalTextString(expectedWitnesses[i])
+		expected := proto.MarshalTextString(testCase.expectedWitnesses)
 		actual := proto.MarshalTextString(rec.witnesses[i])
 		assert.Equal(t, expected, actual)
 	}

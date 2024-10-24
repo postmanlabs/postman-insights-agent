@@ -1,12 +1,22 @@
 package trace
 
 import (
-	"os"
+	"embed"
 	"strings"
+	"sync"
 
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
+)
+
+var (
+	//go:embed obfuscation_config.yaml
+	obfucationFileFS embed.FS
+
+	onceConfigLoad sync.Once
+	config         obfuscationConfig
+	configErr      error = nil
 )
 
 type obfuscationConfig struct {
@@ -26,20 +36,20 @@ func (c *obfuscationConfig) sanitizeConfigData() bool {
 	return false
 }
 
-func configFromFile(n string) (*obfuscationConfig, error) {
-	f, err := os.Open(n)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to open config file")
-	}
-	defer f.Close()
+func loadConfigFromFile() (*obfuscationConfig, error) {
+	onceConfigLoad.Do(func() {
+		data, err := obfucationFileFS.Open("obfuscation_config.yaml")
+		if err != nil {
+			configErr = errors.Wrap(err, "failed to open config file")
+		}
 
-	var c obfuscationConfig
-	dec := yaml.NewDecoder(f)
-	if err := dec.Decode(&c); err != nil {
-		return nil, errors.Wrap(err, "failed to parse YAML")
-	}
+		dec := yaml.NewDecoder(data)
+		if err := dec.Decode(&config); err != nil {
+			configErr = errors.Wrap(err, "failed to parse YAML")
+		}
 
-	c.sanitizeConfigData()
+		config.sanitizeConfigData()
+	})
 
-	return &c, nil
+	return &config, configErr
 }
