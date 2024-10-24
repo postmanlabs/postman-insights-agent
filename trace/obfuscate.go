@@ -177,6 +177,10 @@ func (s *redactSensitiveInfoVisitor) traverseAndRedactSensitiveInfo(data *pb.Dat
 				s.traverseAndRedactSensitiveInfo(itemData, redactData)
 			}
 		}
+	default:
+		// Unknown data type, mark as REDACTED string.
+		printer.Errorf("Unknown data type (OneOf or Optional) found, marking as REDACTED string\n")
+		ObfuscatePrimitiveWithRedactedString(data)
 	}
 }
 
@@ -188,8 +192,8 @@ func ObfuscatePrimitiveWithRedactedString(d *pb.Data) Cont {
 	if dp := d.GetPrimitive(); dp != nil {
 		dp.Value = redactedPrimitiveString.Value
 	} else {
-		// Unknown data type captured, though this should not happen.
-		// Mark the data as REDACTED string.
+		// Unknown data type captured, though this should not happen,except in case of OneOf and Optionals which should also not be present.
+		// Mark the data as REDACTED  string.
 		printer.Debugf("Unknown data type found, marking as REDACTED string\n")
 		d.Value = &pb.Data_Primitive{Primitive: redactedPrimitiveString}
 	}
