@@ -160,6 +160,23 @@ func (s *redactSensitiveInfoVisitor) EnterHTTPMultipart(self interface{}, ctx vi
 	return Continue
 }
 
+func (s *redactSensitiveInfoVisitor) EnterHTTPMethodMeta(self interface{}, ctx vis.SpecVisitorContext, meta *pb.HTTPMethodMeta) Cont {
+	pathSegments := strings.Split(meta.PathTemplate, "/")
+
+	for i, segment := range pathSegments {
+		// Check if the path segment contains sensitive information.
+		for _, pattern := range s.obfuscationOptions.SensitiveDataValuePatterns {
+			if pattern.MatchString(segment) {
+				pathSegments[i] = "REDACTED"
+				break
+			}
+		}
+	}
+
+	meta.PathTemplate = strings.Join(pathSegments, "/")
+	return Continue
+}
+
 // Traverses the protobuf data and redacts sensitive information based on the sensitive keys.
 // The function has 2 parameters:
 //  1. data: The current node in the recursive tree traversal of the protobuf data.

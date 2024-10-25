@@ -590,13 +590,13 @@ func TestObfuscationConfigs(t *testing.T) {
 			},
 		},
 		{
-			name: "sensitive data in header, query param and cookie",
+			name: "sensitive data in header, query param, cookie and URL path",
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
 				Method:   "POST",
 				URL: &url.URL{
-					Path:     "/v1/doggos",
+					Path:     "/v1/doggos/PMAK-6717875c69335700017b1c46/api-key/PMAK-6717875c69335700017b1c46",
 					RawQuery: "sso_jwt_key=XX__X_X_X_X&pmak_in_query=PMAK-6717875c69335700017b1c46",
 				},
 				Host: "example.com",
@@ -678,7 +678,7 @@ func TestObfuscationConfigs(t *testing.T) {
 						Meta: &pb.MethodMeta_Http{
 							Http: &pb.HTTPMethodMeta{
 								Method:       "POST",
-								PathTemplate: "/v1/doggos",
+								PathTemplate: "/v1/doggos/REDACTED/api-key/REDACTED",
 								Host:         "example.com",
 								Obfuscation:  pb.HTTPMethodMeta_NONE,
 							},
