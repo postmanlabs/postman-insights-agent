@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,6 +160,18 @@ func newTestBodySpecFromStruct(statusCode int, contentType pb.HTTPBody_ContentTy
 
 func newTestBodySpecFromData(statusCode int, contentType pb.HTTPBody_ContentType, originalContentType string, d *pb.Data) *pb.Data {
 	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType)
+	return d
+}
+
+func newTestMultipartFormDataSpec(responseCode int, d *pb.Data) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Multipart{
+			Multipart: &pb.HTTPMultipart{
+				Type: "form-data",
+			},
+		},
+		ResponseCode: int32(responseCode),
+	})
 	return d
 }
 
@@ -957,6 +970,172 @@ func TestObfuscationConfigs(t *testing.T) {
 								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
 								dataFromPrimitive(spec_util.NewPrimitiveString("IV")),
 								dataFromPrimitive(spec_util.NewPrimitiveInt64(5)),
+							),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multipart data, no sensitive data",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type": {"multipart/form-data;boundary=XXXX"},
+				},
+				Body: memview.New([]byte(
+					strings.Join([]string{
+						"--XXXX\r\n",
+						"Content-Disposition: form-data; name=\"field1\"\r\n",
+						"\r\n",
+						"value1\r\n",
+						"--XXXX\r\n",
+						"Content-Disposition: form-data; name=\"field2\"\r\n",
+						"Content-Type: application/json\r\n",
+						"\r\n",
+						`{"foo": "bar", "baz": 123}` + "\r\n",
+						"--XXXX--",
+					}, ""),
+				)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"]
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"LsTelHFYzIY=": newTestMultipartFormDataSpec(0, dataFromStruct(map[string]*pb.Data{
+							"field1": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("value1"))),
+							"field2": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+								"foo": dataFromPrimitive(spec_util.NewPrimitiveString("bar")),
+								"baz": dataFromPrimitive(spec_util.NewPrimitiveInt64(123)),
+							}),
+						}),
+						),
+					},
+					Responses: map[string]*pb.Data{
+						"T7Jfr4mf1Zs=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
+							),
+						}),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/v1/doggos",
+								Host:         "example.com",
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multipart data, with sensitive data",
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type": {"multipart/form-data;boundary=XXXX"},
+				},
+				Body: memview.New([]byte(
+					strings.Join([]string{
+						"--XXXX\r\n",
+						"Content-Disposition: form-data; name=\"sensitiveValue\"\r\n",
+						"\r\n",
+						"PMAK-6717875c69335700017b1c46\r\n",
+						"--XXXX\r\n",
+						"Content-Disposition: form-data; name=\"encryption_key\"\r\n",
+						"\r\n",
+						"sensitiveKey\r\n",
+						"--XXXX\r\n",
+						"Content-Disposition: form-data; name=\"jsonData\"\r\n",
+						"Content-Type: application/json\r\n",
+						"\r\n",
+						`{"x-access-token": "sensitiveKey", "senstiveValue": "PMAK-6717875c69335700017b1c46"}` + "\r\n",
+						"--XXXX\r\n",
+						"Content-Disposition: form-data; name=\"api_key\"\r\n",
+						"Content-Type: application/json\r\n",
+						"\r\n",
+						`{"resursive_struct": "sensitiveKey", "number": 12345}` + "\r\n",
+						"--XXXX--",
+					}, ""),
+				)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`{
+					"homes": ["error", "happened", "here"]
+				}`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"MRlGYcEp0Bc=": newTestMultipartFormDataSpec(0, dataFromStruct(map[string]*pb.Data{
+							"sensitiveValue": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED"))),
+							"encryption_key": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED"))),
+							"jsonData": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+								"x-access-token": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"senstiveValue":  dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							}),
+							"api_key": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+								"resursive_struct": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"number":           dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							}),
+						}),
+						),
+					},
+					Responses: map[string]*pb.Data{
+						"T7Jfr4mf1Zs=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+							"homes": dataFromList(
+								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
 							),
 						}),
 					},

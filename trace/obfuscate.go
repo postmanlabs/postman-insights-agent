@@ -147,6 +147,19 @@ func (s *redactSensitiveInfoVisitor) EnterHTTPBody(self interface{}, ctx vis.Spe
 	return Continue
 }
 
+func (s *redactSensitiveInfoVisitor) EnterHTTPMultipart(self interface{}, ctx vis.SpecVisitorContext, mp *pb.HTTPMultipart) Cont {
+	node, _ := ctx.GetInnermostNode(reflect.TypeOf((*pb.Data)(nil)))
+	data := node.(*pb.Data)
+	if data == nil {
+		return Continue
+	}
+
+	// Traverse the data node and redact sensitive information.
+	s.traverseAndRedactSensitiveInfo(data, false)
+
+	return Continue
+}
+
 // Traverses the protobuf data and redacts sensitive information based on the sensitive keys.
 // The function has 2 parameters:
 //  1. data: The current node in the recursive tree traversal of the protobuf data.
@@ -179,7 +192,7 @@ func (s *redactSensitiveInfoVisitor) traverseAndRedactSensitiveInfo(data *pb.Dat
 		}
 	default:
 		// Unknown data type, mark as REDACTED string.
-		printer.Errorf("Unknown data type (OneOf or Optional) found, marking as REDACTED string\n")
+		printer.Errorf("Unknown data type '%v' found, marking as REDACTED string\n", reflect.TypeOf(data.Value).String())
 		ObfuscatePrimitiveWithRedactedString(data)
 	}
 }
