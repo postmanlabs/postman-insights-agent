@@ -142,6 +142,8 @@ type BackendCollector struct {
 	sendWitnessPayloads bool
 
 	plugins []plugin.AkitaPlugin
+
+	obfuscator *Obfuscator
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -162,6 +164,7 @@ func NewBackendCollector(
 		flushDone:           make(chan struct{}),
 		plugins:             plugins,
 		sendWitnessPayloads: sendWitnessPayloads,
+		obfuscator:          NewObfuscator(),
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
@@ -292,7 +295,9 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	if !c.sendWitnessPayloads || !hasOnlyErrorResponses(w.witness.GetMethod()) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
-		obfuscate(w.witness.GetMethod())
+		c.obfuscator.ObfuscateDataWithZeroValue(w.witness.GetMethod())
+	} else {
+		c.obfuscator.RedactData(w.witness.GetMethod())
 	}
 
 	c.uploadReportBatch.Add(rawReport{
