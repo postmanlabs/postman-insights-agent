@@ -67,7 +67,6 @@ sensitive_value_regexes:
   - \brzp_live_[0-9a-zA-Z-_]+\b
   - (?i)\bpk_[0-9a-z]{34}\b
   - (?i)\bshippo_test_[a-fA-F0-9]{40}\b
-  - ^.{15,1000}$
   - \b(pscale_pw_[a-zA-Z0-9=\-_\.]{32,64})\b
   - \bAIza[0-9a-zA-Z-_]{35}\b
   - '[-]{5}BEGIN OPENSSH PRIVATE KEY[-]{5}([\s\S]{128,}?)[-]{5}END OPENSSH PRIVATE KEY[-]{5}'
@@ -136,7 +135,6 @@ sensitive_value_regexes:
   - \bEZTK[a-zA-Z0-9]{54}\b
   - \bapify\_api\_[a-zA-Z-0-9]{36}\b
   - \bEAACEdEose0cBA[0-9A-Za-z]{5,1000}\b
-  - (?i)[0-9a-z+\/]{15,1000}
   - \bPMAT-[0-9A-Z]{26}\b
   - (?i)\bshpca_[a-fA-F0-9]{32}\b
   - Bearer xoxb-[0-9]{8,14}\-[a-zA-Z0-9]{18,26}
