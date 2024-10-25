@@ -1,9 +1,17 @@
 sensitive_keys:
   - x-access-token
+  - x-support-secret
+  - x-auth-token
+  - x-csrf-token
+  - token
   - encryption_key
   - sso_jwt_key
   - postman_sid
   - api_key
+  - api-key
+  - x-api-key
+  - auth
+  - auth-key
 
 sensitive_value_regexes:
-  - \bPMAK-[a-f0-9]{24}\b
+  - \bPMAK-[a-f0-9]{24}\b # Unit Test Regex
