@@ -1,0 +1,9 @@
+sensitive_keys:
+  - x-access-token
+  - encryption_key
+  - sso_jwt_key
+  - postman_sid
+  - api_key
+
+sensitive_value_regexes:
+  - \bPMAK-[a-f0-9]{24}\b
