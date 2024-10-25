@@ -5,6 +5,7 @@ import (
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/stretchr/testify/assert"
 )
 
 var testWitness *pb.Witness = &pb.Witness{
@@ -40,6 +41,40 @@ var testWitness *pb.Witness = &pb.Witness{
 			},
 		},
 	},
+}
+
+func TestRedaction16CharacterIdentifier(t *testing.T) {
+	o := NewObfuscator()
+
+	origVal1 := "aaaaaaaaaaaaaaaa"
+	origVal2 := "0123456789012345"
+
+	witness := &pb.Witness{
+		Method: &pb.Method{
+			Id: &pb.MethodID{
+				ApiType: pb.ApiType_HTTP_REST,
+			},
+			Args: map[string]*pb.Data{
+				"1": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString(origVal1)), "Normal-Header", 0),
+				"2": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString(origVal2)), "Totally-Innocent", 0),
+			},
+			Responses: map[string]*pb.Data{},
+			Meta: &pb.MethodMeta{
+				Meta: &pb.MethodMeta_Http{
+					Http: &pb.HTTPMethodMeta{
+						Method:       "POST",
+						PathTemplate: "/v1/doggos",
+						Host:         "example.com",
+					},
+				},
+			},
+		},
+	}
+
+	o.RedactData(witness.Method)
+
+	assert.Equal(t, origVal1, witness.Method.Args["1"].GetPrimitive().GetStringValue().Value)
+	assert.Equal(t, origVal2, witness.Method.Args["2"].GetPrimitive().GetStringValue().Value)
 }
 
 func BenchmarkRedaction(b *testing.B) {
