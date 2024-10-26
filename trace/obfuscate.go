@@ -13,6 +13,8 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
+const redactionString = "*REDACTED*"
+
 type Obfuscator struct {
 	SensitiveDataKeys          sets.Set[string]
 	SensitiveDataValuePatterns []*regexp.Regexp
@@ -167,7 +169,7 @@ func (s *redactSensitiveInfoVisitor) EnterHTTPMethodMeta(self interface{}, ctx v
 		// Check if the path segment contains sensitive information.
 		for _, pattern := range s.obfuscationOptions.SensitiveDataValuePatterns {
 			if pattern.MatchString(segment) {
-				pathSegments[i] = "REDACTED"
+				pathSegments[i] = redactionString
 				break
 			}
 		}
@@ -217,7 +219,7 @@ func (s *redactSensitiveInfoVisitor) traverseAndRedactSensitiveInfo(data *pb.Dat
 // Obfuscate the given primitive data with REDACTED string.
 // In case data is not primitive type, it will also be marked as REDACTED string.
 func ObfuscatePrimitiveWithRedactedString(d *pb.Data) Cont {
-	redactedPrimitiveString := spec_util.NewPrimitiveString("REDACTED")
+	redactedPrimitiveString := spec_util.NewPrimitiveString(redactionString)
 
 	if dp := d.GetPrimitive(); dp != nil {
 		dp.Value = redactedPrimitiveString.Value
