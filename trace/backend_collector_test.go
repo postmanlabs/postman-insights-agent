@@ -640,12 +640,12 @@ func TestObfuscationConfigs(t *testing.T) {
 						ApiType: pb.ApiType_HTTP_REST,
 					},
 					Args: map[string]*pb.Data{
-						"4F1vWo8G_-Q=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "x-access-token", 0),
+						"4F1vWo8G_-Q=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), "x-access-token", 0),
 						"KC2RO-pCNJA=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("Normal-Value")), "Normal-Header", 0),
-						"xwb2G1yYVVc=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_header", 0),
-						"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "sso_jwt_key", 0),
-						"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "pmak_in_query", 0),
-						"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), 0),
+						"xwb2G1yYVVc=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), "pmak_in_header", 0),
+						"9NijbeQiJAg=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), "sso_jwt_key", 0),
+						"b5t-IaNo7Ug=": newTestQueryParamSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), "pmak_in_query", 0),
+						"k5p4y9tXMAk=": newTestAuthSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), 0),
 						"K51zDh5OkH0=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 							"name":   dataFromPrimitive(spec_util.NewPrimitiveString("error")),
 							"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
@@ -664,8 +664,8 @@ func TestObfuscationConfigs(t *testing.T) {
 						}),
 					},
 					Responses: map[string]*pb.Data{
-						"hAjVb_ouhwQ=": newTestCookieSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "Random-Cookie", 404),
-						"rZob7SB3qd0=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")), "postman_sid", 404),
+						"hAjVb_ouhwQ=": newTestCookieSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), "Random-Cookie", 404),
+						"rZob7SB3qd0=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")), "postman_sid", 404),
 						"T7Jfr4mf1Zs=": newTestBodySpecFromStruct(404, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 							"homes": dataFromList(
 								dataFromPrimitive(spec_util.NewPrimitiveString("error")),
@@ -678,7 +678,7 @@ func TestObfuscationConfigs(t *testing.T) {
 						Meta: &pb.MethodMeta_Http{
 							Http: &pb.HTTPMethodMeta{
 								Method:       "POST",
-								PathTemplate: "/v1/doggos/REDACTED/api-key/REDACTED",
+								PathTemplate: "/v1/doggos/*REDACTED*/api-key/*REDACTED*",
 								Host:         "example.com",
 								Obfuscation:  pb.HTTPMethodMeta_NONE,
 							},
@@ -729,8 +729,8 @@ func TestObfuscationConfigs(t *testing.T) {
 						"Ee95MCpMH0c=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 							"name":       dataFromPrimitive(spec_util.NewPrimitiveString("error")),
 							"number":     dataFromPrimitive(spec_util.NewPrimitiveInt64(202410081550)),
-							"pmakInBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-							"api_key":    dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							"pmakInBody": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+							"api_key":    dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 						}),
 					},
 					Responses: map[string]*pb.Data{
@@ -740,13 +740,13 @@ func TestObfuscationConfigs(t *testing.T) {
 								dataFromPrimitive(spec_util.NewPrimitiveString("happened")),
 								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
 							),
-							"pmakInResponseBody": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+							"pmakInResponseBody": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 							"encryption_key": dataFromList(
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 							),
 						}),
 					},
@@ -830,28 +830,28 @@ func TestObfuscationConfigs(t *testing.T) {
 							),
 							"structList": dataFromList(
 								dataFromStruct(map[string]*pb.Data{
-									"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									"encryption_key": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 									"index":          dataFromPrimitive(spec_util.NewPrimitiveInt64(0)),
 								}),
 								dataFromStruct(map[string]*pb.Data{
-									"random_key": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									"random_key": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 									"index":      dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
 								}),
 							),
 							"sso_jwt_key": dataFromStruct(map[string]*pb.Data{
-								"key1": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"key1": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								"key2": dataFromList(
 									dataFromStruct(map[string]*pb.Data{
-										"key2_1": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+										"key2_1": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 									}),
 									dataFromStruct(map[string]*pb.Data{
-										"key2_2": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+										"key2_2": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 									}),
 								),
 								"key3": dataFromList(
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								),
 							}),
 						}),
@@ -924,30 +924,30 @@ func TestObfuscationConfigs(t *testing.T) {
 						"gZwJ7G0xsTU=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 							"name": dataFromPrimitive(spec_util.NewPrimitiveString("error")),
 							"encryption_key": dataFromList(
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								dataFromStruct(map[string]*pb.Data{
-									"index": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-									"value": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									"index": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+									"value": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								}),
 							),
 							"sso_jwt_key": dataFromList(
 								dataFromList(
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								),
 								dataFromList(
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-									dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+									dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								),
 								dataFromList(
 									dataFromStruct(map[string]*pb.Data{
-										"index": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-										"value": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+										"index": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+										"value": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 									}),
 									dataFromStruct(map[string]*pb.Data{
-										"index": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-										"value": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+										"index": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+										"value": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 									}),
 								),
 							),
@@ -961,13 +961,13 @@ func TestObfuscationConfigs(t *testing.T) {
 								dataFromPrimitive(spec_util.NewPrimitiveString("here")),
 							),
 							"encryption_key": dataFromList(
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 							),
 							"normal_list": dataFromList(
 								dataFromPrimitive(spec_util.NewPrimitiveInt64(1)),
 								dataFromPrimitive(spec_util.NewPrimitiveString("two")),
-								dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 								dataFromPrimitive(spec_util.NewPrimitiveString("IV")),
 								dataFromPrimitive(spec_util.NewPrimitiveInt64(5)),
 							),
@@ -1117,15 +1117,15 @@ func TestObfuscationConfigs(t *testing.T) {
 					},
 					Args: map[string]*pb.Data{
 						"MRlGYcEp0Bc=": newTestMultipartFormDataSpec(0, dataFromStruct(map[string]*pb.Data{
-							"sensitiveValue": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED"))),
-							"encryption_key": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED"))),
+							"sensitiveValue": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*"))),
+							"encryption_key": newTestBodySpecFromData(0, pb.HTTPBody_TEXT_PLAIN, "text/plain", dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*"))),
 							"jsonData": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
-								"x-access-token": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								"senstiveValue":  dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"x-access-token": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								"senstiveValue":  dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 							}),
 							"api_key": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
-								"resursive_struct": dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
-								"number":           dataFromPrimitive(spec_util.NewPrimitiveString("REDACTED")),
+								"resursive_struct": dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
+								"number":           dataFromPrimitive(spec_util.NewPrimitiveString("*REDACTED*")),
 							}),
 						}),
 						),
