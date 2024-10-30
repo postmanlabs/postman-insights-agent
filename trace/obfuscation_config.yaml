@@ -1,23 +1,27 @@
+# Alphabetical list of sensitive keys
 sensitive_keys:
-  - x-access-token
-  - x-support-secret
-  - x-auth-token
-  - x-csrf-token
-  - token
-  - encryption_key
-  - sso_jwt_key
-  - postman_sid
   - api_key
   - api-key
-  - x-api-key
   - auth
   - auth-key
+  - encryption_key
+  - postman_sid
+  - proxy-authorization
+  - set-cookie
+  - sso_jwt_key
+  - token
+  - x-access-token
+  - x-amz-security-token
+  - x-api-key
+  - x-auth-token
+  - x-csrf-token
+  - x-support-secret
 
 sensitive_value_regexes:
   - \bPMAK-[a-f0-9]{24}\b # Unit Test Regex
   - (?i)https:\/\/creator\.zoho\.com\/api\/[A-Za-z0-9\/\-_\.]+\?authtoken=[A-Za-z0-9]+
   - \bt1\.[A-Z0-9a-z_-]+[=]{0,2}\.[A-Z0-9a-z_-]{86}[=]{0,2}\b
-  - key"\s*:\s*"username"\s*,\s*"value"\s*:\s*"((live|test)_[a-f0-9]{35})
+  - \b(live|test)_[a-f0-9]{35}\b
   - (?i)https:\/\/[\w-]*\.?zoom\.us\/(j|my)\/[\d\w?=-]+\b
   - \bb\.AAAAAQ[0-9a-zA-Z_-]{156}\b
   - (?i)\beyJhbGciOi[a-z0-9_\-\.]{2,1000}\b
@@ -25,7 +29,7 @@ sensitive_value_regexes:
   - \bFLWSECK_TEST[a-h0-9]{12}\b
   - \bnpm_[a-zA-Z0-9]{36}\b
   - \b[0-9]{15,25}-[a-zA-Z0-9]{20,40}\b
-  - key"\s*:\s*"Authorization"\s*,\s*"value"\s*:\s*"(SSWS [a-zA-Z0-9=_\-]{42})
+  - \bSSWS [a-zA-Z0-9=_\-]{42}\b
   - \bEZAK[a-zA-Z0-9]{54}\b
   - \b(?:pat|sat)\.[a-zA-Z0-9]{22}\.[a-zA-Z0-9]{24}\.[a-zA-Z0-9]{20}\b
   - \bico-[a-zA-Z0-9]{32}\b
@@ -96,7 +100,6 @@ sensitive_value_regexes:
   - \bapi_org_[a-zA-Z]{34}\b
   - \beyJrIjoi[A-Za-z0-9]{70,400}={0,2}\b
   - \btk-us-[a-zA-Z0-9-_]{48}\b
-  - key"\s*:\s*"X-Auth-Key"\s*,\s*"value"\s*:\s*"([a-f0-9]{37})
   - \bAGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}\b
   - \bsu[a-zA-Z0-9]{12}\b
   - (?i)\bBasic [A-Z0-9+/]{8,1000}[=]{0,2}
@@ -120,7 +123,7 @@ sensitive_value_regexes:
   - \brdme_[a-zA-Z0-9]{70}\b
   - \bsecret_[0-9a-zA-Z-_]{43}\b
   - (?i)\bpk_[0-9]{7,8}_[0-9a-z]{32}\b
-  - key"\s*:\s*"Authorization"\s*,\s*"value"\s*:\s*"(Bearer [0-9]{15,25}-[a-zA-Z0-9]{20,40})
+  - Bearer [0-9]{15,25}-[a-zA-Z0-9]{20,40}
   - \bpnu_[a-zA-Z0-9]{36}\b
   - \bsub-c-[0-9a-z]{8}-[a-z]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}\b
   - \bfio-u-[a-zA-Z0-9\-_=]{64}\b
