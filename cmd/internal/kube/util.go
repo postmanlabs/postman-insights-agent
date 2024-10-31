@@ -11,6 +11,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // The image to use for the Postman Insights Agent sidecar
@@ -109,11 +110,24 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.C
 		})
 	}
 
+	cpu := resource.MustParse("200m")
+	memory := resource.MustParse("500Mi")
+
 	sidecar := v1.Container{
 		Name:  "postman-insights-agent",
 		Image: akitaImage,
 		Env:   envs,
 		Args:  args,
+		Resources: v1.ResourceRequirements{
+			Limits: v1.ResourceList{
+				v1.ResourceCPU:    cpu,
+				v1.ResourceMemory: memory,
+			},
+			Requests: v1.ResourceList{
+				v1.ResourceCPU:    cpu,
+				v1.ResourceMemory: memory,
+			},
+		},
 		SecurityContext: &v1.SecurityContext{
 			Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_RAW"}},
 		},
