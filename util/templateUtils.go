@@ -40,5 +40,13 @@ func GenerateAndWriteTemplateFile(
 	if err != nil {
 		return errors.Wrapf(err, "Failed to write values to %s file\n", fileName)
 	}
+
+	// Change file permissions to 600.
+	// This is to ensure that the file is only readable and writable by the owner.
+	// As it might contain some sensitive information.
+	err = os.Chmod(fileDirectory+fileName, 0600)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to change %s file permissions\n", fileName)
+	}
 	return nil
 }
