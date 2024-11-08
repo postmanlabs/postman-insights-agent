@@ -95,6 +95,8 @@ func preRun(cmd *cobra.Command, args []string) {
 	telemetry.CommandLine(cmd.Name(), os.Args)
 
 	startProfiling(cmd, args)
+
+	printFlagsWarning()
 }
 
 func startProfiling(cmd *cobra.Command, args []string) {
@@ -138,6 +140,22 @@ func stopProfiling(cmd *cobra.Command, args []string) {
 	if cpuProfileOut != nil {
 		pprof.StopCPUProfile()
 		cpuProfileOut.Close()
+	}
+}
+
+func printFlagsWarning() {
+	testingFlags := make(map[string]string)
+
+	if testOnlyUseHTTPSFlag {
+		testingFlags["test_only_disable_https"] = "This is only for debugging and testing in local environment."
+	}
+
+	if liveProfileAddress != "" {
+		testingFlags["live-profile"] = "The profiler server can run on an unsecured HTTP port without authentication, which could expose sensitive process information to unauthorized users."
+	}
+
+	if len(testingFlags) > 0 {
+		util.PrintFlagsWarning(testingFlags)
 	}
 }
 
