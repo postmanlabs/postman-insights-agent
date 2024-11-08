@@ -216,7 +216,8 @@ func configureSystemdFiles(projectID string) error {
 		envFiledata.PostmanEnv = env
 	}
 
-	err = util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, envFiledata)
+	// Generate and write the env file, with permissions 0600 (read/write for owner only)
+	err = util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, 0600, envFiledata)
 	if err != nil {
 		return err
 	}
@@ -233,7 +234,8 @@ func configureSystemdFiles(projectID string) error {
 		AgentInstallPath: agentInstallPath,
 	}
 
-	err = util.GenerateAndWriteTemplateFile(serviceFileFS, serviceFileTemplateName, serviceFileBasePath, serviceFileName, serviceFileData)
+	// Generate and write the service file, with permissions 0600 (read/write for owner only)
+	err = util.GenerateAndWriteTemplateFile(serviceFileFS, serviceFileTemplateName, serviceFileBasePath, serviceFileName, 0600, serviceFileData)
 	if err != nil {
 		return err
 	}
