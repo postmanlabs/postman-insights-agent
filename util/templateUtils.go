@@ -35,6 +35,7 @@ func GenerateAndWriteTemplateFile(
 	if err != nil {
 		return errors.Wrapf(err, "Failed to create %s file in %s directory with permissions %d\n", fileName, fileDirectory, filePermissions)
 	}
+	defer file.Close()
 
 	// Write the data to the file
 	err = tmpl.Execute(file, data)
