@@ -519,14 +519,12 @@ func TestObfuscationConfigs(t *testing.T) {
 	// Prepare a test cases
 	streamID := uuid.New()
 	type testCase struct {
-		name              string
 		request           akinet.HTTPRequest
 		response          akinet.HTTPResponse
 		expectedWitnesses *api_spec.Witness
 	}
-	testCases := []testCase{
-		{
-			name: "no sensitive data",
+	testCases := map[string]testCase{
+		"no sensitive data": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -589,8 +587,7 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "sensitive data in header, query param, cookie and URL path",
+		"sensitive data in header, query param, cookie and URL path": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -687,8 +684,7 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "sensitive data in body",
+		"sensitive data in body": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -763,8 +759,7 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "struct with sensitive keys and values",
+		"struct with sensitive keys and values": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -869,8 +864,7 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "list with sensitive keys and values",
+		"list with sensitive keys and values": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -986,8 +980,7 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "multipart data, no sensitive data",
+		"multipart data, no sensitive data": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -1062,8 +1055,7 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
-		{
-			name: "multipart data, with sensitive data",
+		"multipart data, with sensitive data": {
 			request: akinet.HTTPRequest{
 				StreamID: streamID,
 				Seq:      1204,
@@ -1167,8 +1159,10 @@ func TestObfuscationConfigs(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
-	for i, testCase := range testCases {
-		fmt.Println("Running test case: ", testCase.name)
+	i := -1
+	for name, testCase := range testCases {
+		i++
+		fmt.Println("Running test case: ", name)
 
 		req := akinet.ParsedNetworkTraffic{Content: testCase.request}
 		resp := akinet.ParsedNetworkTraffic{Content: testCase.response}
