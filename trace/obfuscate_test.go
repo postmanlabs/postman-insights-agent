@@ -93,6 +93,6 @@ func BenchmarkObfuscation(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		o.ObfuscateDataWithZeroValue(testWitness.Method)
+		o.ZeroAllPrimitivesInMethod(testWitness.Method)
 	}
 }

@@ -42,13 +42,13 @@ func NewObfuscator() *Obfuscator {
 	}
 }
 
-func (o *Obfuscator) ObfuscateDataWithZeroValue(m *pb.Method) {
+// Replaces all primitive values in the given method with zero values.
+func (o *Obfuscator) ZeroAllPrimitivesInMethod(m *pb.Method) {
 	var ov obfuscationVisitor
 	vis.Apply(&ov, m)
 
 	// Mark the method as obfuscated.
 	m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
-	return
 }
 
 type obfuscationVisitor struct {
