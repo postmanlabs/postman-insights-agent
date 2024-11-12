@@ -297,7 +297,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		// backend without revealing the actual value.
 		c.obfuscator.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
 	} else {
-		c.obfuscator.RedactData(w.witness.GetMethod())
+		c.obfuscator.RedactSensitiveData(w.witness.GetMethod())
 	}
 
 	c.uploadReportBatch.Add(rawReport{

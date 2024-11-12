@@ -75,7 +75,7 @@ func (*obfuscationVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext,
 	return Continue
 }
 
-func (o *Obfuscator) RedactData(m *pb.Method) {
+func (o *Obfuscator) RedactSensitiveData(m *pb.Method) {
 	pov := redactSensitiveInfoVisitor{
 		obfuscationOptions: o,
 	}

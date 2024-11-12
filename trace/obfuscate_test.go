@@ -71,7 +71,7 @@ func TestRedaction16CharacterIdentifier(t *testing.T) {
 		},
 	}
 
-	o.RedactData(witness.Method)
+	o.RedactSensitiveData(witness.Method)
 
 	assert.Equal(t, origVal1, witness.Method.Args["1"].GetPrimitive().GetStringValue().Value)
 	assert.Equal(t, origVal2, witness.Method.Args["2"].GetPrimitive().GetStringValue().Value)
@@ -83,7 +83,7 @@ func BenchmarkRedaction(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		o.RedactData(testWitness.Method)
+		o.RedactSensitiveData(testWitness.Method)
 	}
 }
 
