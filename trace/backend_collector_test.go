@@ -1144,6 +1144,75 @@ func TestObfuscationConfigs(t *testing.T) {
 				},
 			},
 		},
+		"null value": {
+			request: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      1204,
+				Method:   "POST",
+				URL: &url.URL{
+					Path: "/",
+				},
+				Host: "example.com",
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`
+					{
+						"null": null
+					}
+				`)),
+			},
+			response: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        1204,
+				StatusCode: 404,
+				Header: map[string][]string{
+					"Content-Type": {"application/json"},
+				},
+				Body: memview.New([]byte(`
+				  {
+						"null": null
+				  }
+				`)),
+			},
+			expectedWitnesses: &pb.Witness{
+				Method: &pb.Method{
+					Id: &pb.MethodID{
+						ApiType: pb.ApiType_HTTP_REST,
+					},
+					Args: map[string]*pb.Data{
+						"sLSDNjJ5umQ=": newTestBodySpecFromStruct(
+							0,
+							pb.HTTPBody_JSON,
+							"application/json",
+							map[string]*pb.Data{
+								"null": spec_util.NoneData,
+							},
+						),
+					},
+					Responses: map[string]*pb.Data{
+						"2drZdoQw74E=": newTestBodySpecFromStruct(
+							404,
+							pb.HTTPBody_JSON,
+							"application/json",
+							map[string]*pb.Data{
+								"null": spec_util.NoneData,
+							},
+						),
+					},
+					Meta: &pb.MethodMeta{
+						Meta: &pb.MethodMeta_Http{
+							Http: &pb.HTTPMethodMeta{
+								Method:       "POST",
+								PathTemplate: "/",
+								Host:         "example.com",
+								Obfuscation:  api_spec.HTTPMethodMeta_NONE,
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	// Setup for running tests
