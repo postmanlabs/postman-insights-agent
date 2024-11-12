@@ -44,21 +44,22 @@ func NewObfuscator() *Obfuscator {
 
 // Replaces all primitive values in the given method with zero values.
 func (o *Obfuscator) ZeroAllPrimitivesInMethod(m *pb.Method) {
-	var ov obfuscationVisitor
+	var ov zeroPrimitivesVisitor
 	vis.Apply(&ov, m)
 
 	// Mark the method as obfuscated.
 	m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
 }
 
-type obfuscationVisitor struct {
+type zeroPrimitivesVisitor struct {
 	vis.DefaultSpecVisitorImpl
 }
 
-var _ vis.DefaultSpecVisitor = (*obfuscationVisitor)(nil)
+var _ vis.DefaultSpecVisitor = (*zeroPrimitivesVisitor)(nil)
 
-// EnterData processes the given data and obfuscates all the primitive values with zero values, regardless of it's meta data.
-func (*obfuscationVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext, d *pb.Data) Cont {
+// EnterData processes the given data and replaces all the primitive values
+// with zero values, regardless of its metadata.
+func (*zeroPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext, d *pb.Data) Cont {
 	dp := d.GetPrimitive()
 	if dp == nil {
 		return Continue
@@ -66,7 +67,7 @@ func (*obfuscationVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext,
 
 	pv, err := spec_util.PrimitiveValueFromProto(dp)
 	if err != nil {
-		printer.Warningf("failed to obfuscate raw value, dropping\n")
+		printer.Warningf("failed to zero out raw value, dropping\n")
 		d.Value = nil
 		return Continue
 	}
