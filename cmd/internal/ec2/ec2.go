@@ -3,13 +3,15 @@ package ec2
 import (
 	"fmt"
 
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/spf13/cobra"
 )
 
 var (
 	// Postman Insights project id
-	projectID string
+	projectID    string
+	apidumpFlags apidump.CommonApidumpFlags
 )
 
 var Cmd = &cobra.Command{
@@ -43,6 +45,9 @@ var RemoveFromEC2Cmd = &cobra.Command{
 func init() {
 	Cmd.PersistentFlags().StringVar(&projectID, "project", "", "Your Insights Project ID")
 	Cmd.MarkPersistentFlagRequired("project")
+
+	// initialize common apidump flags as flags for the ecs add command
+	apidumpFlags = apidump.AddCommonApiDumpFlags(Cmd)
 
 	Cmd.AddCommand(SetupInEC2Cmd)
 	Cmd.AddCommand(RemoveFromEC2Cmd)

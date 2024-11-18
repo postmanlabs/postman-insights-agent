@@ -25,16 +25,9 @@ var (
 	outFlag                 location.Location
 	projectID               string
 	postmanCollectionID     string
-	interfacesFlag          []string
-	filterFlag              string
 	sampleRateFlag          float64
-	rateLimitFlag           float64
 	tagsFlag                []string
 	appendByTagFlag         bool
-	pathExclusionsFlag      []string
-	hostExclusionsFlag      []string
-	pathAllowlistFlag       []string
-	hostAllowlistFlag       []string
 	execCommandFlag         string
 	execCommandUserFlag     string
 	pluginsFlag             []string
@@ -47,8 +40,8 @@ var (
 	maxWitnessSize_bytes    int
 	dockerExtensionMode     bool
 	healthCheckPort         int
-	randomizedStart         int
-	sendWitnessPayloads     bool
+
+	commonApidumpFlags CommonApidumpFlags
 )
 
 // This function will either startup apidump normally, or never return, with probability
@@ -59,7 +52,7 @@ var (
 //
 // Negative values are effectively treated as 0 probability, instead of being validated.
 func applyRandomizedStart() {
-	prob := randomizedStart
+	prob := commonApidumpFlags.RandomizedStart
 
 	if env := os.Getenv("POSTMAN_AGENT_RANDOM_START"); env != "" {
 		override, err := strconv.Atoi(env)
@@ -163,8 +156,8 @@ var Cmd = &cobra.Command{
 		}
 
 		// Rate limit must be greater than zero.
-		if rateLimitFlag <= 0.0 {
-			rateLimitFlag = 1000.0
+		if commonApidumpFlags.RateLimit <= 0.0 {
+			commonApidumpFlags.RateLimit = 1000.0
 		}
 
 		// If we collect TLS information, we have to parse it
@@ -183,13 +176,13 @@ var Cmd = &cobra.Command{
 			ServiceID:               serviceID,
 			Tags:                    traceTags,
 			SampleRate:              sampleRateFlag,
-			WitnessesPerMinute:      rateLimitFlag,
-			Interfaces:              interfacesFlag,
-			Filter:                  filterFlag,
-			PathExclusions:          pathExclusionsFlag,
-			HostExclusions:          hostExclusionsFlag,
-			PathAllowlist:           pathAllowlistFlag,
-			HostAllowlist:           hostAllowlistFlag,
+			WitnessesPerMinute:      commonApidumpFlags.RateLimit,
+			Interfaces:              commonApidumpFlags.Interfaces,
+			Filter:                  commonApidumpFlags.Filter,
+			PathExclusions:          commonApidumpFlags.PathExclusions,
+			HostExclusions:          commonApidumpFlags.HostExclusions,
+			PathAllowlist:           commonApidumpFlags.PathAllowlist,
+			HostAllowlist:           commonApidumpFlags.HostAllowlist,
 			ExecCommand:             execCommandFlag,
 			ExecCommandUser:         execCommandUserFlag,
 			Plugins:                 plugins,
@@ -202,7 +195,7 @@ var Cmd = &cobra.Command{
 			MaxWitnessSize_bytes:    maxWitnessSize_bytes,
 			DockerExtensionMode:     dockerExtensionMode,
 			HealthCheckPort:         healthCheckPort,
-			SendWitnessPayloads:     sendWitnessPayloads,
+			SendWitnessPayloads:     commonApidumpFlags.SendWitnessPayloads,
 		}
 		if err := apidump.Run(args); err != nil {
 			return cmderr.AkitaErr{Err: err}
@@ -227,18 +220,6 @@ func init() {
 
 	Cmd.MarkFlagsMutuallyExclusive("project", "collection")
 
-	Cmd.Flags().StringVar(
-		&filterFlag,
-		"filter",
-		"",
-		"Used to match packets going to and coming from your API service.")
-
-	Cmd.Flags().StringSliceVar(
-		&interfacesFlag,
-		"interfaces",
-		nil,
-		"List of network interfaces to listen on. Defaults to all interfaces on host.")
-
 	Cmd.Flags().Float64Var(
 		&sampleRateFlag,
 		"sample-rate",
@@ -246,13 +227,6 @@ func init() {
 		"A number between [0.0, 1.0] to control sampling.",
 	)
 	Cmd.Flags().MarkDeprecated("sample-rate", "use --rate-limit instead.")
-
-	Cmd.Flags().Float64Var(
-		&rateLimitFlag,
-		"rate-limit",
-		apispec.DefaultRateLimit,
-		"Number of requests per minute to capture.",
-	)
 
 	Cmd.Flags().StringSliceVar(
 		&tagsFlag,
@@ -267,34 +241,6 @@ func init() {
 		false,
 		"Add to the most recent trace with matching tag.")
 	Cmd.Flags().MarkDeprecated("append-by-tag", "and is no longer necessary. All traces in a project are now combined into a single model. Please remove this flag.")
-
-	Cmd.Flags().StringSliceVar(
-		&pathExclusionsFlag,
-		"path-exclusions",
-		nil,
-		"Removes HTTP paths matching regular expressions.",
-	)
-
-	Cmd.Flags().StringSliceVar(
-		&hostExclusionsFlag,
-		"host-exclusions",
-		nil,
-		"Removes HTTP hosts matching regular expressions.",
-	)
-
-	Cmd.Flags().StringSliceVar(
-		&pathAllowlistFlag,
-		"path-allow",
-		nil,
-		"Allows only HTTP paths matching regular expressions.",
-	)
-
-	Cmd.Flags().StringSliceVar(
-		&hostAllowlistFlag,
-		"host-allow",
-		nil,
-		"Allows only HTTP hosts matching regular expressions.",
-	)
 
 	Cmd.Flags().StringVarP(
 		&execCommandFlag,
@@ -391,19 +337,5 @@ func init() {
 	)
 	_ = Cmd.Flags().MarkHidden("health-check-port")
 
-	Cmd.Flags().IntVar(
-		&randomizedStart,
-		"randomized-start",
-		100,
-		"Probability that the apidump command will start intercepting traffic.",
-	)
-	_ = Cmd.Flags().MarkHidden("randomized-start")
-
-	Cmd.Flags().BoolVar(
-		&sendWitnessPayloads,
-		"send-witness-payloads",
-		false,
-		"Send request and response payloads to Postman",
-	)
-	_ = Cmd.Flags().MarkHidden("send-witness-payloads")
+	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)
 }
