@@ -360,6 +360,12 @@ func collectTraceTags(args *Args) map[tags.Key]string {
 		traceTags[tags.XAkitaSource] = tags.UserSource
 	}
 
+	// Set hostname tag
+	hostname, err := os.Hostname()
+	if err == nil {
+		traceTags[tags.XInsightsHostname] = hostname
+	}
+
 	printer.Debugln("trace tags:", traceTags)
 	return traceTags
 }

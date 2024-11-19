@@ -110,6 +110,51 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.C
 		})
 	}
 
+	k8sEnvVars := []v1.EnvVar{
+		v1.EnvVar{
+			Name: "POSTMAN_K8S_NODE",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "spec.nodeName",
+				},
+			},
+		},
+		v1.EnvVar{
+			Name: "POSTMAN_K8S_NAMESPACE",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace",
+				},
+			},
+		},
+		v1.EnvVar{
+			Name: "POSTMAN_K8S_POD",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "metadata.name",
+				},
+			},
+		},
+		v1.EnvVar{
+			Name: "POSTMAN_K8S_HOST_IP",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "status.hostIP",
+				},
+			},
+		},
+		v1.EnvVar{
+			Name: "POSTMAN_K8S_POD_IP",
+			ValueFrom: &v1.EnvVarSource{
+				FieldRef: &v1.ObjectFieldSelector{
+					FieldPath: "status.podIP",
+				},
+			},
+		},
+	}
+	// Add k8s metadata env vars to the sidecar
+	envs = append(envs, k8sEnvVars...)
+
 	cpu := resource.MustParse("200m")
 	memory := resource.MustParse("500Mi")
 
