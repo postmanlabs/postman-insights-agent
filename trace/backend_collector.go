@@ -3,7 +3,9 @@ package trace
 import (
 	"encoding/base64"
 	"net"
+	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
 	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/learn"
@@ -283,6 +286,17 @@ func (c *BackendCollector) processTLSHandshake(tls akinet.TLSHandshakeMetadata) 
 }
 
 var cloudAPIEnvironmentsPathRE = regexp.MustCompile(`^/environments/[^/]+$`)
+var cloudAPIHostnames = sets.NewSet[string]()
+
+func init() {
+	cloudAPIHostnames.Insert("api.getpostman-stage.com")
+	cloudAPIHostnames.Insert("api.getpostman.com")
+	cloudAPIHostnames.Insert("api.postman.com")
+	cloudAPIHostnamesEnv := os.Getenv("XXX_INSIGHTS_AGENT_CLOUD_API_HOSTNAMES")
+	for _, hostname := range strings.Split(cloudAPIHostnamesEnv, " ") {
+		cloudAPIHostnames.Insert(strings.ToLower(hostname))
+	}
+}
 
 // Returns true if the witness should be excluded from Repro Mode.
 //
@@ -295,8 +309,7 @@ func excludeWitnessFromReproMode(w *pb.Witness) bool {
 		return false
 	}
 
-	switch httpMeta.Host {
-	case "api.getpostman-stage.com", "api.getpostman.com":
+	if cloudAPIHostnames.Contains(strings.ToLower(httpMeta.Host)) {
 		switch httpMeta.Method {
 		case http_rest_methods.GET.String():
 			// Exclude GET /environments/{environment}.
