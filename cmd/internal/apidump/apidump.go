@@ -89,126 +89,154 @@ func applyRandomizedStart() {
 	}
 }
 
+// When run in a container or as a systemd service, we will automatically be restarted
+// on failure.  But, this will not correct misconfiguration errors; we will just get stuck
+// in a boot loop, which can cause disruption to the services in the same pod.
+//
+// Instead, we will terminate normally when no error is returned, but loop indefinitely
+// on error, as if randomized start failed.
+//
+// FIXME: do we need custom SIGTERM or SIGINT handlers?  I do not think we do.  But, it
+// might be that apidump already installed one before returning error.  Will that cause a problem?
+//
+// TODO: create a separate command for "run as a service" vs "run on command line"?  I don't
+// think there is a reliable way to tell the context otherwise.
+func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
+	err := apidumpRunInternal(cmd, args)
+
+	if err == nil {
+		return nil
+	}
+
+	// Log the error and wait forever.
+	printer.Stderr.Errorf("Error during initiaization: %v\n", err)
+	printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
+
+	select {}
+}
+
+func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
+	applyRandomizedStart()
+
+	traceTags, err := util.ParseTagsAndWarn(tagsFlag)
+	if err != nil {
+		return err
+	}
+
+	plugins, err := pluginloader.Load(pluginsFlag)
+	if err != nil {
+		return errors.Wrap(err, "failed to load plugins")
+	}
+
+	// Check that exactly one of --project or --collection is specified.
+	if projectID == "" && postmanCollectionID == "" {
+		return errors.New("exactly one of --project or --collection must be specified")
+	}
+
+	// If --project was given, convert projectID to serviceID.
+	var serviceID akid.ServiceID
+	if projectID != "" {
+		err := akid.ParseIDAs(projectID, &serviceID)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse project ID")
+		}
+	}
+
+	// Look up existing trace by tags
+	if appendByTagFlag {
+		if outFlag.AkitaURI == nil {
+			return errors.New("\"append-by-tag\" can only be used with a cloud-based trace")
+		}
+
+		if outFlag.AkitaURI.ObjectName != "" {
+			return errors.New("Cannot specify a trace name together with \"append-by-tag\"")
+		}
+
+		destURI, err := util.GetTraceURIByTags(rest.Domain,
+			telemetry.GetClientID(),
+			outFlag.AkitaURI.ServiceName,
+			traceTags,
+			"append-by-tag",
+		)
+		if err != nil {
+			return err
+		}
+		if destURI.ObjectName != "" {
+			outFlag.AkitaURI = &destURI
+		}
+	}
+
+	// Allow specification of an alternate rotation time, default 1h.
+	// We can rotate the trace if we're sending the output to a cloud-based trace.
+	// But, if the trace name is explicitly given, or selected by tag,
+	// or we're sending the output to a local file, then we cannot rotate.
+	traceRotateInterval := time.Duration(0)
+	if (outFlag.AkitaURI != nil && outFlag.AkitaURI.ObjectName == "") || projectID != "" || postmanCollectionID != "" {
+		if traceRotateFlag != "" {
+			traceRotateInterval, err = time.ParseDuration(traceRotateFlag)
+			if err != nil {
+				return errors.Wrap(err, "Failed to parse trace rotation interval.")
+			}
+		} else {
+			traceRotateInterval = apispec.DefaultTraceRotateInterval
+		}
+	}
+
+	// Rate limit must be greater than zero.
+	if rateLimitFlag <= 0.0 {
+		rateLimitFlag = 1000.0
+	}
+
+	// If we collect TLS information, we have to parse it
+	if collectTCPAndTLSReports {
+		if !parseTLSHandshakes {
+			printer.Stderr.Warningf("Overriding parse-tls-handshakes=false because TLS report collection is enabled.\n")
+			parseTLSHandshakes = true
+		}
+	}
+
+	args := apidump.Args{
+		ClientID:                telemetry.GetClientID(),
+		Domain:                  rest.Domain,
+		Out:                     outFlag,
+		PostmanCollectionID:     postmanCollectionID,
+		ServiceID:               serviceID,
+		Tags:                    traceTags,
+		SampleRate:              sampleRateFlag,
+		WitnessesPerMinute:      rateLimitFlag,
+		Interfaces:              interfacesFlag,
+		Filter:                  filterFlag,
+		PathExclusions:          pathExclusionsFlag,
+		HostExclusions:          hostExclusionsFlag,
+		PathAllowlist:           pathAllowlistFlag,
+		HostAllowlist:           hostAllowlistFlag,
+		ExecCommand:             execCommandFlag,
+		ExecCommandUser:         execCommandUserFlag,
+		Plugins:                 plugins,
+		LearnSessionLifetime:    traceRotateInterval,
+		StatsLogDelay:           statsLogDelay,
+		TelemetryInterval:       telemetryInterval,
+		ProcFSPollingInterval:   procFSPollingInterval,
+		CollectTCPAndTLSReports: collectTCPAndTLSReports,
+		ParseTLSHandshakes:      parseTLSHandshakes,
+		MaxWitnessSize_bytes:    maxWitnessSize_bytes,
+		DockerExtensionMode:     dockerExtensionMode,
+		HealthCheckPort:         healthCheckPort,
+		SendWitnessPayloads:     sendWitnessPayloads,
+	}
+	if err := apidump.Run(args); err != nil {
+		return cmderr.AkitaErr{Err: err}
+	}
+	return nil
+}
+
 var Cmd = &cobra.Command{
 	Use:          "apidump",
 	Short:        "Capture requests/responses from network traffic.",
 	Long:         "Capture and store a sequence of requests/responses to a service by observing network traffic.",
 	SilenceUsage: true,
 	Args:         cobra.ExactArgs(0),
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		applyRandomizedStart()
-
-		traceTags, err := util.ParseTagsAndWarn(tagsFlag)
-		if err != nil {
-			return err
-		}
-
-		plugins, err := pluginloader.Load(pluginsFlag)
-		if err != nil {
-			return errors.Wrap(err, "failed to load plugins")
-		}
-
-		// Check that exactly one of --project or --collection is specified.
-		if projectID == "" && postmanCollectionID == "" {
-			return errors.New("exactly one of --project or --collection must be specified")
-		}
-
-		// If --project was given, convert projectID to serviceID.
-		var serviceID akid.ServiceID
-		if projectID != "" {
-			err := akid.ParseIDAs(projectID, &serviceID)
-			if err != nil {
-				return errors.Wrap(err, "failed to parse project ID")
-			}
-		}
-
-		// Look up existing trace by tags
-		if appendByTagFlag {
-			if outFlag.AkitaURI == nil {
-				return errors.New("\"append-by-tag\" can only be used with a cloud-based trace")
-			}
-
-			if outFlag.AkitaURI.ObjectName != "" {
-				return errors.New("Cannot specify a trace name together with \"append-by-tag\"")
-			}
-
-			destURI, err := util.GetTraceURIByTags(rest.Domain,
-				telemetry.GetClientID(),
-				outFlag.AkitaURI.ServiceName,
-				traceTags,
-				"append-by-tag",
-			)
-			if err != nil {
-				return err
-			}
-			if destURI.ObjectName != "" {
-				outFlag.AkitaURI = &destURI
-			}
-		}
-
-		// Allow specification of an alternate rotation time, default 1h.
-		// We can rotate the trace if we're sending the output to a cloud-based trace.
-		// But, if the trace name is explicitly given, or selected by tag,
-		// or we're sending the output to a local file, then we cannot rotate.
-		traceRotateInterval := time.Duration(0)
-		if (outFlag.AkitaURI != nil && outFlag.AkitaURI.ObjectName == "") || projectID != "" || postmanCollectionID != "" {
-			if traceRotateFlag != "" {
-				traceRotateInterval, err = time.ParseDuration(traceRotateFlag)
-				if err != nil {
-					return errors.Wrap(err, "Failed to parse trace rotation interval.")
-				}
-			} else {
-				traceRotateInterval = apispec.DefaultTraceRotateInterval
-			}
-		}
-
-		// Rate limit must be greater than zero.
-		if rateLimitFlag <= 0.0 {
-			rateLimitFlag = 1000.0
-		}
-
-		// If we collect TLS information, we have to parse it
-		if collectTCPAndTLSReports {
-			if !parseTLSHandshakes {
-				printer.Stderr.Warningf("Overriding parse-tls-handshakes=false because TLS report collection is enabled.\n")
-				parseTLSHandshakes = true
-			}
-		}
-
-		args := apidump.Args{
-			ClientID:                telemetry.GetClientID(),
-			Domain:                  rest.Domain,
-			Out:                     outFlag,
-			PostmanCollectionID:     postmanCollectionID,
-			ServiceID:               serviceID,
-			Tags:                    traceTags,
-			SampleRate:              sampleRateFlag,
-			WitnessesPerMinute:      rateLimitFlag,
-			Interfaces:              interfacesFlag,
-			Filter:                  filterFlag,
-			PathExclusions:          pathExclusionsFlag,
-			HostExclusions:          hostExclusionsFlag,
-			PathAllowlist:           pathAllowlistFlag,
-			HostAllowlist:           hostAllowlistFlag,
-			ExecCommand:             execCommandFlag,
-			ExecCommandUser:         execCommandUserFlag,
-			Plugins:                 plugins,
-			LearnSessionLifetime:    traceRotateInterval,
-			StatsLogDelay:           statsLogDelay,
-			TelemetryInterval:       telemetryInterval,
-			ProcFSPollingInterval:   procFSPollingInterval,
-			CollectTCPAndTLSReports: collectTCPAndTLSReports,
-			ParseTLSHandshakes:      parseTLSHandshakes,
-			MaxWitnessSize_bytes:    maxWitnessSize_bytes,
-			DockerExtensionMode:     dockerExtensionMode,
-			HealthCheckPort:         healthCheckPort,
-			SendWitnessPayloads:     sendWitnessPayloads,
-		}
-		if err := apidump.Run(args); err != nil {
-			return cmderr.AkitaErr{Err: err}
-		}
-		return nil
-	},
+	RunE:         apidumpRunWithoutAbnormalExit,
 }
 
 func init() {
