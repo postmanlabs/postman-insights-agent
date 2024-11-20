@@ -100,7 +100,7 @@ func applyRandomizedStart() {
 // might be that apidump already installed one before returning error.  Will that cause a problem?
 //
 // TODO: create a separate command for "run as a service" vs "run on command line"?  I don't
-// think there is a reliable way to tell the context ohterise.
+// think there is a reliable way to tell the context otherwise.
 func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
 	err := apidumpRunInternal(cmd, args)
 
