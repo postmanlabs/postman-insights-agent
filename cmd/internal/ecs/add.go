@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -972,30 +971,11 @@ func makeAgentContainerDefinition(
 		projectId,
 	}
 
-	if rateLimitFlag != apispec.DefaultRateLimit {
-		entryPoint = append(entryPoint, "--rate-limit", strconv.FormatFloat(rateLimitFlag, 'f', -1, 64))
-	}
-	if filterFlag != "" {
-		entryPoint = append(entryPoint, "--filter", filterFlag)
-	}
-	// Add slice type flags to the entry point.
-	// Flags: --host-allow, --host-exclusions, --interfaces, --path-allow, --path-exclusions
-	// Added them separately instead of joining with comma(,) to avoid any regex parsing issues.
-	for _, host := range hostAllowlistFlag {
-		entryPoint = append(entryPoint, "--host-allow", host)
-	}
-	for _, host := range hostExclusionsFlag {
-		entryPoint = append(entryPoint, "--host-exclusions", host)
-	}
-	for _, interfaceFlag := range interfacesFlag {
-		entryPoint = append(entryPoint, "--interfaces", interfaceFlag)
-	}
-	for _, path := range pathAllowlistFlag {
-		entryPoint = append(entryPoint, "--path-allow", path)
-	}
-	for _, path := range pathExclusionsFlag {
-		entryPoint = append(entryPoint, "--path-exclusions", path)
-	}
+	// Get the common apidump args
+	extraApidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
+
+	// Add the extra apidump args to the entrypoint
+	entryPoint = append(entryPoint, extraApidumpArgs...)
 
 	// XXX If we instantiate any new fields in the container definition here, we
 	// need to remember to update the code in the ecs_console_utils and the

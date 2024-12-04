@@ -7,9 +7,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/apispec"
 	ecs_cloudformation_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/cloudformation/ecs"
 	ecs_console_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/console/ecs"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/spf13/cobra"
 )
@@ -38,13 +38,7 @@ var (
 
 	// apidump flags
 	// These flags will be passed to apidump command in task definition file
-	filterFlag         string
-	hostAllowlistFlag  []string
-	hostExclusionsFlag []string
-	interfacesFlag     []string
-	pathAllowlistFlag  []string
-	pathExclusionsFlag []string
-	rateLimitFlag      float64
+	apidumpFlags apidump.CommonApidumpFlags
 )
 
 var Cmd = &cobra.Command{
@@ -123,13 +117,7 @@ func init() {
 	Cmd.PersistentFlags().MarkHidden("aws-credentials")
 
 	// initialize apidump flags as flags for the ecs add command
-	AddToECSCmd.Flags().StringVar(&filterFlag, "filter", "", "Used to match packets going to and coming from your API service.")
-	AddToECSCmd.Flags().StringSliceVar(&hostAllowlistFlag, "host-allow", nil, "Allows only HTTP hosts matching regular expressions.")
-	AddToECSCmd.Flags().StringSliceVar(&hostExclusionsFlag, "host-exclusions", nil, "Removes HTTP hosts matching regular expressions.")
-	AddToECSCmd.Flags().StringSliceVar(&interfacesFlag, "interfaces", nil, "List of network interfaces to listen on. Defaults to all interfaces on host.")
-	AddToECSCmd.Flags().StringSliceVar(&pathAllowlistFlag, "path-allow", nil, "Allows only HTTP paths matching regular expressions.")
-	AddToECSCmd.Flags().StringSliceVar(&pathExclusionsFlag, "path-exclusions", nil, "Removes HTTP paths matching regular expressions.")
-	AddToECSCmd.Flags().Float64Var(&rateLimitFlag, "rate-limit", apispec.DefaultRateLimit, "Number of requests per minute to capture.")
+	apidumpFlags = apidump.AddCommonApiDumpFlags(Cmd)
 
 	Cmd.AddCommand(AddToECSCmd)
 	Cmd.AddCommand(PrintCloudFormationFragmentCmd)
