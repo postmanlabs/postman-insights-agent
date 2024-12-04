@@ -10,6 +10,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -61,7 +62,7 @@ var (
 
 // Helper function for reporting telemetry
 func reportStep(stepName string) {
-	telemetry.WorkflowStep("Starting systemd conguration", stepName)
+	telemetry.WorkflowStep("Starting systemd configuration", stepName)
 }
 
 func setupAgentForServer(projectID string) error {
@@ -228,10 +229,18 @@ func configureSystemdFiles(projectID string) error {
 		return err
 	}
 
+	// Get the common apidump args
+	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
+
+	// Join the extra apidump args to a single string
+	apidumpArgsStr := strings.Join(apidumpArgs, " ")
+
 	serviceFileData := struct {
 		AgentInstallPath string
+		ExtraApidumpArgs string
 	}{
 		AgentInstallPath: agentInstallPath,
+		ExtraApidumpArgs: apidumpArgsStr,
 	}
 
 	// Generate and write the service file, with permissions 0600 (read/write for owner only)
