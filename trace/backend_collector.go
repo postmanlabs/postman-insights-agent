@@ -3,6 +3,9 @@ package trace
 import (
 	"encoding/base64"
 	"net"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,9 +14,11 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/batcher"
+	"github.com/akitasoftware/akita-libs/http_rest_methods"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
 	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/learn"
@@ -280,6 +285,55 @@ func (c *BackendCollector) processTLSHandshake(tls akinet.TLSHandshakeMetadata) 
 	return nil
 }
 
+var cloudAPIEnvironmentsPathRE = regexp.MustCompile(`^/environments/[^/]+$`)
+var cloudAPIHostnames = sets.NewSet[string]()
+
+func init() {
+	cloudAPIHostnames.Insert("api.getpostman-stage.com")
+	cloudAPIHostnames.Insert("api.getpostman.com")
+	cloudAPIHostnames.Insert("api.postman.com")
+	cloudAPIHostnamesEnv := os.Getenv("XXX_INSIGHTS_AGENT_CLOUD_API_HOSTNAMES")
+	for _, hostname := range strings.Split(cloudAPIHostnamesEnv, " ") {
+		cloudAPIHostnames.Insert(strings.ToLower(hostname))
+	}
+}
+
+// Returns true if the witness should be excluded from Repro Mode.
+//
+// XXX This is a stop-gap hack to exclude certain endpoints for Cloud API from
+// Repro Mode.
+func excludeWitnessFromReproMode(w *pb.Witness) bool {
+
+	httpMeta := w.GetMethod().GetMeta().GetHttp()
+	if httpMeta == nil {
+		return false
+	}
+
+	if cloudAPIHostnames.Contains(strings.ToLower(httpMeta.Host)) {
+		switch httpMeta.Method {
+		case http_rest_methods.GET.String():
+			// Exclude GET /environments/{environment}.
+			if cloudAPIEnvironmentsPathRE.MatchString(httpMeta.PathTemplate) {
+				return true
+			}
+
+		case http_rest_methods.POST.String():
+			// Exclude POST /environments.
+			if httpMeta.PathTemplate == "/environments" {
+				return true
+			}
+
+		case http_rest_methods.PUT.String():
+			// Exclude PUT /environments/{environment}.
+			// Exclude GET /environments/{environment}.
+			if cloudAPIEnvironmentsPathRE.MatchString(httpMeta.PathTemplate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	// Mark the method as not obfuscated.
 	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE
@@ -292,7 +346,9 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		}
 	}
 
-	if !c.sendWitnessPayloads || !hasOnlyErrorResponses(w.witness.GetMethod()) {
+	if !c.sendWitnessPayloads ||
+		!hasOnlyErrorResponses(w.witness.GetMethod()) ||
+		excludeWitnessFromReproMode(w.witness) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
 		c.obfuscator.ZeroAllPrimitivesInMethod(w.witness.GetMethod())

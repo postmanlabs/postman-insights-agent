@@ -28,8 +28,8 @@ github.com/agext/levenshtein v1.2.1 h1:QmvMAjj2aEICytGiWzmxoE0x2KZvE0fvmqMOfy2tj
 github.com/agext/levenshtein v1.2.1/go.mod h1:JEDfjyjHDjOF/1e4FlBE/PkbqA9OfWu2ki2W0IB5558=
 github.com/akitasoftware/akita-ir v0.0.0-20241008173748-ca8e2e3d5db4 h1:jbsA7E68G4dkK+ldQKQNPFIaRojFCn+cEB3gEEUSEU4=
 github.com/akitasoftware/akita-ir v0.0.0-20241008173748-ca8e2e3d5db4/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
-github.com/akitasoftware/akita-libs v0.0.0-20241113221948-cf2298b3c0fd h1:ZzV9VguF9u915Alo9p5pWBe/m5R4Pfjq1l/y0Xncrm4=
-github.com/akitasoftware/akita-libs v0.0.0-20241113221948-cf2298b3c0fd/go.mod h1:5rzkpaJI1sA9CtGELYZpf15oczAVopcyda2WsYG5xno=
+github.com/akitasoftware/akita-libs v0.0.0-20241115053127-0af65b813d9c h1:EFEyv9FTVqSbCKfiSlXEAcNJQoJwMpIGjHuc4uR1Bgk=
+github.com/akitasoftware/akita-libs v0.0.0-20241115053127-0af65b813d9c/go.mod h1:5rzkpaJI1sA9CtGELYZpf15oczAVopcyda2WsYG5xno=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803 h1:ebIh/EFuaP8GczzMe8EwVID/blSv5Tej6S8NE4xyarQ=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803/go.mod h1:+IOXf7l/QCAQECJzjJwhTp1sBkRoJ6WciZwJezUwBa4=
 github.com/akitasoftware/gopacket v1.1.18-0.20240820200020-7289ae956f70 h1:VnU7QLDBwRujpQoHwShs5yu0Ahv1fSalNJa4UijwlmY=
