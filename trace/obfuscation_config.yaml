@@ -11,7 +11,9 @@ sensitive_keys:
 - encryption_key
 - password
 - postman_sid
+- primarySecret
 - proxy-authorization
+- secondarySecret
 - secretKey
 - sessionToken
 - set-cookie
