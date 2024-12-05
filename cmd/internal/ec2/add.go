@@ -198,9 +198,12 @@ func configureSystemdFiles(projectID string) error {
 	printer.Infof(message + "\n")
 	reportStep(message)
 
-	err := checkReconfiguration()
-	if err != nil {
-		return err
+	// Prompt user if --force flag is not set
+	if !forceOverwrite {
+		err := checkReconfiguration()
+		if err != nil {
+			return err
+		}
 	}
 
 	// -------- Write env file --------
@@ -218,7 +221,7 @@ func configureSystemdFiles(projectID string) error {
 	}
 
 	// Generate and write the env file, with permissions 0600 (read/write for owner only)
-	err = util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, 0600, envFiledata)
+	err := util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, 0600, envFiledata)
 	if err != nil {
 		return err
 	}
