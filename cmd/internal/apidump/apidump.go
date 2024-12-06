@@ -121,9 +121,14 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 		return errors.Wrap(err, "failed to load plugins")
 	}
 
+	// override the project id if the environment variable is set
+	if envProjectID := os.Getenv("POSTMAN_AGENT_PROJECT_ID"); envProjectID != "" {
+		projectID = envProjectID
+	}
+
 	// Check that exactly one of --project or --collection is specified.
 	if projectID == "" && postmanCollectionID == "" {
-		return errors.New("exactly one of --project or --collection must be specified")
+		return errors.New("exactly one of --project or --collection must be specified, or set the POSTMAN_AGENT_PROJECT_ID environment variable")
 	}
 
 	// If --project was given, convert projectID to serviceID.
