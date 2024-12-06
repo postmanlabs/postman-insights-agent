@@ -52,7 +52,7 @@ func init() {
 	// initialize common apidump flags as flags for the ecs add command
 	apidumpFlags = apidump.AddCommonApiDumpFlags(Cmd)
 
-	SetupInEC2Cmd.PersistentFlags().BoolVarP(&forceOverwrite, "force", "f", false, "If the service files already exists, overwrite them and don't prompt the user")
+	SetupInEC2Cmd.PersistentFlags().BoolVarP(&forceOverwrite, "force", "f", false, "If the service files already exist, overwrite them without asking for confirmation")
 
 	Cmd.AddCommand(SetupInEC2Cmd)
 	Cmd.AddCommand(RemoveFromEC2Cmd)

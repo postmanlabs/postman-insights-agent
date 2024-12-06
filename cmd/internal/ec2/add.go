@@ -101,6 +101,12 @@ func askToReconfigure() error {
 		"Check systemd service file: cat %s\n",
 		envFilePath, serviceFilePath)
 
+	// Don't prompt user if forceOverwrite is true, print the message and return
+	if forceOverwrite {
+		printer.Infof("--force flag is set, overwriting old API key and Project ID values in systemd configuration file with current values\n")
+		return nil
+	}
+
 	err := survey.AskOne(
 		&survey.Confirm{
 			Message: "Overwrite old API key and Project ID values in systemd configuration file with current values?",
@@ -198,12 +204,9 @@ func configureSystemdFiles(projectID string) error {
 	printer.Infof(message + "\n")
 	reportStep(message)
 
-	// Prompt user if --force flag is not set
-	if !forceOverwrite {
-		err := checkReconfiguration()
-		if err != nil {
-			return err
-		}
+	err := checkReconfiguration()
+	if err != nil {
+		return err
 	}
 
 	// -------- Write env file --------
@@ -221,7 +224,7 @@ func configureSystemdFiles(projectID string) error {
 	}
 
 	// Generate and write the env file, with permissions 0600 (read/write for owner only)
-	err := util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, 0600, envFiledata)
+	err = util.GenerateAndWriteTemplateFile(envFileFS, envFileTemplateName, envFileBasePath, envFileName, 0600, envFiledata)
 	if err != nil {
 		return err
 	}
