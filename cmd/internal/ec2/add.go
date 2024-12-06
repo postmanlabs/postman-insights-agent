@@ -101,6 +101,12 @@ func askToReconfigure() error {
 		"Check systemd service file: cat %s\n",
 		envFilePath, serviceFilePath)
 
+	// Don't prompt user if forceOverwrite is true, print the message and return
+	if forceOverwrite {
+		printer.Infof("--force flag is set, overwriting old API key and Project ID values in systemd configuration file with current values\n")
+		return nil
+	}
+
 	err := survey.AskOne(
 		&survey.Confirm{
 			Message: "Overwrite old API key and Project ID values in systemd configuration file with current values?",

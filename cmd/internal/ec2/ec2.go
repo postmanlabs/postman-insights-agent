@@ -12,6 +12,9 @@ var (
 	// Postman Insights project id
 	projectID    string
 	apidumpFlags apidump.CommonApidumpFlags
+
+	// Overwrite the existing service file and don't prompt the user
+	forceOverwrite bool
 )
 
 var Cmd = &cobra.Command{
@@ -48,6 +51,8 @@ func init() {
 
 	// initialize common apidump flags as flags for the ecs add command
 	apidumpFlags = apidump.AddCommonApiDumpFlags(Cmd)
+
+	SetupInEC2Cmd.PersistentFlags().BoolVarP(&forceOverwrite, "force", "f", false, "If the service files already exist, overwrite them without asking for confirmation")
 
 	Cmd.AddCommand(SetupInEC2Cmd)
 	Cmd.AddCommand(RemoveFromEC2Cmd)
