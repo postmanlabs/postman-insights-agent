@@ -122,11 +122,11 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 	}
 
 	// override the project id if the environment variable is set
-	if envProjectID := os.Getenv("POSTMAN_AGENT_PROJECT_ID"); envProjectID != "" {
+	if envProjectID := os.Getenv("POSTMAN_INSIGHTS_PROJECT_ID"); envProjectID != "" {
 		projectID = envProjectID
 	}
 
-	// Check that exactly one of --project or --collection is specified, or POSTMAN_AGENT_PROJECT_ID was set.
+	// Check that exactly one of --project or --collection is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
 	// If not, we wll loop indefinitely to avoid boot loops.
 	if projectID == "" && postmanCollectionID == "" {
 		printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
