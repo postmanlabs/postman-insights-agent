@@ -336,6 +336,13 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 
 	var bodyData *pb.Data
 
+	// Create a buffer to store the entire body
+	bodyBytes, err := io.ReadAll(bodyStream)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read body")
+	}
+	bodyReader := bytes.NewReader(bodyBytes)
+
 	// Handle unstructured types, but use this local value to signal
 	// errors so we can do the check just once
 	var blobErr error = nil
@@ -343,7 +350,7 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	// Interpret as []byte
 	handleAsBlob := func() {
 		// Grab a small sample
-		body, err := limitedBufferBody(bodyStream, SmallBodySample)
+		body, err := limitedBufferBody(bodyReader, SmallBodySample)
 		if err != nil {
 			blobErr = err
 			return
@@ -353,7 +360,7 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	// Interpret as string, optionally attempt to parse into another type
 	handleAsString := func(interpret spec_util.InterpretStrings) {
 		// Grab a small sample
-		body, err := limitedBufferBody(bodyStream, SmallBodySample)
+		body, err := limitedBufferBody(bodyReader, SmallBodySample)
 		if err != nil {
 			blobErr = err
 			return
@@ -362,11 +369,14 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	}
 
 	// Parse body.
+	parsingError := false
 	switch parseBodyDataAs {
 	case pb.HTTPBody_JSON:
-		bodyData, err = parseHTTPBodyJSON(bodyStream)
+		jsonReader := bytes.NewBuffer(bodyBytes)
+		bodyData, err = parseHTTPBodyJSON(jsonReader)
 		if err != nil {
-			return nil, errors.Wrapf(err, "could not parse JSON body")
+			handleAsString(spec_util.NO_INTERPRET_STRINGS) // Fallback to parsing and persisting the body as string
+			parsingError = true
 		}
 	case pb.HTTPBody_FORM_URL_ENCODED:
 		body, err := limitedBufferBody(bodyStream, MaxBufferedBody)
@@ -398,9 +408,11 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 		// to be smart about re-interpreting values.
 		bodyData = parseElem(m, spec_util.INTERPRET_STRINGS)
 	case pb.HTTPBody_YAML:
-		bodyData, err = parseHTTPBodyYAML(bodyStream)
+		yamlReader := bytes.NewBuffer(bodyBytes)
+		bodyData, err = parseHTTPBodyYAML(yamlReader)
 		if err != nil {
-			return nil, errors.Wrapf(err, "could not parse YAML body")
+			handleAsString(spec_util.INTERPRET_STRINGS) // Fallback to parsing and persisting the body as string
+			parsingError = true
 		}
 	case pb.HTTPBody_OCTET_STREAM:
 		handleAsBlob()
@@ -430,6 +442,10 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 
 		// We're co-opting OtherType to always contain the original media type.
 		OtherType: mediaType,
+	}
+
+	if parsingError {
+		bodyMeta.Errors = pb.HTTPBody_PARSING_ERROR
 	}
 
 	httpMeta := &pb.HTTPMeta{
