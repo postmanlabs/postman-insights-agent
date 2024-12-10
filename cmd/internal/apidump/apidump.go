@@ -127,11 +127,8 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Check that exactly one of --project or --collection is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
-	// If not, we wll loop indefinitely to avoid boot loops.
 	if projectID == "" && postmanCollectionID == "" {
-		printer.Stdout.Infof("Please specify a project ID with the --project flag or the POSTMAN_INSIGHTS_PROJECT_ID environment variable.\n")
-		printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
-		select {}
+		return errors.New("Exactly one of --project or --collection must be specified, or POSTMAN_INSIGHTS_PROJECT_ID must be set.")
 	}
 
 	// If --project was given, convert projectID to serviceID.
