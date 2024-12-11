@@ -373,10 +373,10 @@ func TestParseHTTPRequest(t *testing.T) {
 			testContent: newTestHTTPResponse(
 				200,
 				[]byte(`
-		prince:
-		  - bread
-		  - eat
-		`),
+prince:
+  - bread
+  - eat
+`),
 				"application/x-yaml",
 				map[string][]string{},
 				[]*http.Cookie{},
