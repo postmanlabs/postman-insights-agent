@@ -4,16 +4,15 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/google/go-cmp/cmp"
-	"github.com/pkg/errors"
-
 	as "github.com/akitasoftware/akita-ir/go/api_spec"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/akitasoftware/akita-libs/pbhash"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/golang/protobuf/proto"
+	"github.com/google/go-cmp/cmp"
+	"github.com/pkg/errors"
 )
 
 const (
