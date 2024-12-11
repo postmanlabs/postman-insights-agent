@@ -191,8 +191,13 @@ func dataFromPrimitive(p *pb.Primitive) *pb.Data {
 	return &pb.Data{Value: &pb.Data_Primitive{Primitive: p}}
 }
 
-func newBodyDataMeta(responseCode int, contentType pb.HTTPBody_ContentType, originalContentType string) *pb.DataMeta {
-	return newDataMeta(&pb.HTTPMeta{
+func newBodyDataMeta(
+	responseCode int,
+	contentType pb.HTTPBody_ContentType,
+	originalContentType string,
+	bodyError *as.HTTPBody_Errors,
+) *pb.DataMeta {
+	dataMeta := newDataMeta(&pb.HTTPMeta{
 		Location: &pb.HTTPMeta_Body{
 			Body: &pb.HTTPBody{
 				ContentType: contentType,
@@ -201,6 +206,12 @@ func newBodyDataMeta(responseCode int, contentType pb.HTTPBody_ContentType, orig
 		},
 		ResponseCode: int32(responseCode),
 	})
+
+	if bodyError != nil {
+		dataMeta.GetHttp().GetBody().Errors = *bodyError
+	}
+
+	return dataMeta
 }
 
 func annotateIfSensitiveForTest(sensitive bool, prim *pb.Primitive) *pb.Primitive {

@@ -84,11 +84,17 @@ func newTestBodySpecContentType(contentType string, statusCode int) *as.Data {
 }
 
 func newTestBodySpecFromStruct(statusCode int, contentType as.HTTPBody_ContentType, originalContentType string, s map[string]*as.Data) *as.Data {
-	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s))
+	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s), nil)
 }
 
-func newTestBodySpecFromData(statusCode int, contentType as.HTTPBody_ContentType, originalContentType string, d *as.Data) *as.Data {
-	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType)
+func newTestBodySpecFromData(
+	statusCode int,
+	contentType as.HTTPBody_ContentType,
+	originalContentType string,
+	d *as.Data,
+	bodyError *as.HTTPBody_Errors,
+) *as.Data {
+	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType, bodyError)
 	return d
 }
 
@@ -99,7 +105,7 @@ func newTestMultipartFormData(statusCode int) *as.Data {
 		Value: &as.Data_Struct{
 			Struct: &as.Struct{
 				Fields: map[string]*as.Data{
-					"field1": newTestBodySpecFromData(statusCode, as.HTTPBody_TEXT_PLAIN, "text/plain", f1),
+					"field1": newTestBodySpecFromData(statusCode, as.HTTPBody_TEXT_PLAIN, "text/plain", f1, nil),
 					"field2": newTestBodySpecFromStruct(statusCode, as.HTTPBody_JSON, "application/json", map[string]*as.Data{
 						"foo": dataFromPrimitive(spec_util.NewPrimitiveString("bar")),
 						"baz": dataFromPrimitive(spec_util.NewPrimitiveInt64(123)),
@@ -356,6 +362,7 @@ func TestParseHTTPRequest(t *testing.T) {
 						as.HTTPBody_OCTET_STREAM,
 						"application/octet-stream",
 						dataFromPrimitive(spec_util.NewPrimitiveBytes([]byte("prince is a good boy"))),
+						nil,
 					),
 				},
 				UnknownHTTPMethodMeta(),
@@ -366,10 +373,10 @@ func TestParseHTTPRequest(t *testing.T) {
 			testContent: newTestHTTPResponse(
 				200,
 				[]byte(`
-prince:
-  - bread
-  - eat
-`),
+		prince:
+		  - bread
+		  - eat
+		`),
 				"application/x-yaml",
 				map[string][]string{},
 				[]*http.Cookie{},
@@ -468,10 +475,8 @@ prince:
 			),
 		},
 		&parseTest{
-			// Log error and skip the body if we can't parse it, instead of aborting
-			// the whole endpoint.
-			// https://app.clubhouse.io/akita-software/story/1898/juan-s-payload-problem
-			name: "skip body if unable to parse",
+			// Capture the unparsable body and indicate a parsing error in body metadata
+			name: "capture stringified body if unable to parse",
 			testContent: newTestHTTPResponse(
 				200,
 				[]byte("I am not JSON"),
@@ -485,6 +490,13 @@ prince:
 				nil,
 				[]*as.Data{
 					newDataHeader("X-Charming-Level", 200, spec_util.NewPrimitiveString("extreme"), false),
+					newTestBodySpecFromData(
+						200,
+						as.HTTPBody_JSON,
+						"application/json",
+						dataFromPrimitive(spec_util.NewPrimitiveString("I am not JSON")),
+						as.HTTPBody_PARSING_ERROR.Enum(),
+					),
 				},
 				UnknownHTTPMethodMeta(),
 			),

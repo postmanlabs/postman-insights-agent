@@ -26,7 +26,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"golang.org/x/text/encoding/ianaindex"
 	"golang.org/x/text/transform"
 	"gopkg.in/yaml.v2"
@@ -145,14 +144,12 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 		}
 
 		if err != nil {
-			// Just log an error instead of returning an error so users can see the
-			// other parts of the endpoint in the spec rather than an empty spec.
-			// https://app.clubhouse.io/akita-software/story/1898/juan-s-payload-problem
-			telemetry.RateLimitError("unparsable body", err)
-			printer.Debugf("skipping unparsable body: %v\n", err)
-		} else if bodyData != nil {
-			datas = append(datas, bodyData)
+			// When the body is unparsable even after attempting fallback decompressions,
+			// we will try to capture the body as a string and indicate parsing error in the body meta
+			bodyData = captureUnparsableBody(rawBody, contentType, statusCode)
 		}
+
+		datas = append(datas, bodyData)
 	}
 
 	method := &pb.Method{Id: UnassignedHTTPID(), Meta: methodMeta}
@@ -311,37 +308,9 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	// TODO: XML parsing
 	// TODO: application/json-seq (RFC 7466)?
 	// TODO: more text/* types
-	var parseBodyDataAs pb.HTTPBody_ContentType
-	switch mediaType {
-	case "application/json":
-		parseBodyDataAs = pb.HTTPBody_JSON
-	case "application/x-www-form-urlencoded":
-		parseBodyDataAs = pb.HTTPBody_FORM_URL_ENCODED
-	case "application/yaml", "application/x-yaml", "text/yaml", "text/x-yaml":
-		parseBodyDataAs = pb.HTTPBody_YAML
-	case "application/octet-stream":
-		parseBodyDataAs = pb.HTTPBody_OCTET_STREAM
-	case "text/plain", "text/csv":
-		parseBodyDataAs = pb.HTTPBody_TEXT_PLAIN
-	case "text/html":
-		parseBodyDataAs = pb.HTTPBody_TEXT_HTML
-	default:
-		// Handle custom JSON-encoded media types.
-		if strings.HasSuffix(mediaType, "+json") {
-			parseBodyDataAs = pb.HTTPBody_JSON
-		} else {
-			parseBodyDataAs = pb.HTTPBody_OTHER
-		}
-	}
+	parseBodyDataAs := getContentTypeFromMediaType(mediaType)
 
 	var bodyData *pb.Data
-
-	// Create a buffer to store the entire body
-	bodyBytes, err := io.ReadAll(bodyStream)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to read body")
-	}
-	bodyReader := bytes.NewReader(bodyBytes)
 
 	// Handle unstructured types, but use this local value to signal
 	// errors so we can do the check just once
@@ -350,7 +319,7 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	// Interpret as []byte
 	handleAsBlob := func() {
 		// Grab a small sample
-		body, err := limitedBufferBody(bodyReader, SmallBodySample)
+		body, err := limitedBufferBody(bodyStream, SmallBodySample)
 		if err != nil {
 			blobErr = err
 			return
@@ -360,7 +329,7 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	// Interpret as string, optionally attempt to parse into another type
 	handleAsString := func(interpret spec_util.InterpretStrings) {
 		// Grab a small sample
-		body, err := limitedBufferBody(bodyReader, SmallBodySample)
+		body, err := limitedBufferBody(bodyStream, SmallBodySample)
 		if err != nil {
 			blobErr = err
 			return
@@ -369,14 +338,11 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	}
 
 	// Parse body.
-	parsingError := false
 	switch parseBodyDataAs {
 	case pb.HTTPBody_JSON:
-		jsonReader := bytes.NewBuffer(bodyBytes)
-		bodyData, err = parseHTTPBodyJSON(jsonReader)
+		bodyData, err = parseHTTPBodyJSON(bodyStream)
 		if err != nil {
-			handleAsString(spec_util.NO_INTERPRET_STRINGS) // Fallback to parsing and persisting the body as string
-			parsingError = true
+			return nil, errors.Wrapf(err, "could not parse JSON body")
 		}
 	case pb.HTTPBody_FORM_URL_ENCODED:
 		body, err := limitedBufferBody(bodyStream, MaxBufferedBody)
@@ -408,11 +374,9 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 		// to be smart about re-interpreting values.
 		bodyData = parseElem(m, spec_util.INTERPRET_STRINGS)
 	case pb.HTTPBody_YAML:
-		yamlReader := bytes.NewBuffer(bodyBytes)
-		bodyData, err = parseHTTPBodyYAML(yamlReader)
+		bodyData, err = parseHTTPBodyYAML(bodyStream)
 		if err != nil {
-			handleAsString(spec_util.INTERPRET_STRINGS) // Fallback to parsing and persisting the body as string
-			parsingError = true
+			return nil, errors.Wrapf(err, "could not parse YAML body")
 		}
 	case pb.HTTPBody_OCTET_STREAM:
 		handleAsBlob()
@@ -444,10 +408,6 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 		OtherType: mediaType,
 	}
 
-	if parsingError {
-		bodyMeta.Errors = pb.HTTPBody_PARSING_ERROR
-	}
-
 	httpMeta := &pb.HTTPMeta{
 		Location: &pb.HTTPMeta_Body{
 			Body: bodyMeta,
@@ -457,6 +417,78 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	bodyData.Meta = newDataMetaHTTPMeta(httpMeta)
 
 	return bodyData, nil
+}
+
+func captureUnparsableBody(body memview.MemView, contentType string, statusCode int) *pb.Data {
+	// If the body is empty, return nil.
+	if body.Len() == 0 {
+		return nil
+	}
+
+	// If the body is too large, return nil.
+	if body.Len() > MaxBufferedBody {
+		return nil
+	}
+
+	// Read the body into a buffer.
+	bodyStream := body.CreateReader()
+	bodyBytes, err := ioutil.ReadAll(bodyStream)
+	if err != nil {
+		return nil
+	}
+
+	// If the body is too large, return nil.
+	if len(bodyBytes) > MaxBufferedBody {
+		return nil
+	}
+
+	// Categorize the body as a string.
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	bodyStr := string(bodyBytes)
+	bodyData := &pb.Data{
+		Value: newDataPrimitive(categorizeStringToPrimitive(bodyStr)),
+		Meta: newDataMetaHTTPMeta(&pb.HTTPMeta{
+			Location: &pb.HTTPMeta_Body{
+				Body: &pb.HTTPBody{
+					ContentType: getContentTypeFromMediaType(mediaType),
+					OtherType:   contentType,
+					Errors:      pb.HTTPBody_PARSING_ERROR,
+				},
+			},
+			ResponseCode: int32(statusCode),
+		}),
+	}
+
+	return bodyData
+}
+
+func getContentTypeFromMediaType(mediaType string) pb.HTTPBody_ContentType {
+	mediaType, _, _ = mime.ParseMediaType(mediaType)
+
+	var parseBodyDataAs pb.HTTPBody_ContentType
+	switch mediaType {
+	case "application/json":
+		parseBodyDataAs = pb.HTTPBody_JSON
+	case "application/x-www-form-urlencoded":
+		parseBodyDataAs = pb.HTTPBody_FORM_URL_ENCODED
+	case "application/yaml", "application/x-yaml", "text/yaml", "text/x-yaml":
+		parseBodyDataAs = pb.HTTPBody_YAML
+	case "application/octet-stream":
+		parseBodyDataAs = pb.HTTPBody_OCTET_STREAM
+	case "text/plain", "text/csv":
+		parseBodyDataAs = pb.HTTPBody_TEXT_PLAIN
+	case "text/html":
+		parseBodyDataAs = pb.HTTPBody_TEXT_HTML
+	default:
+		// Handle custom JSON-encoded media types.
+		if strings.HasSuffix(mediaType, "+json") {
+			parseBodyDataAs = pb.HTTPBody_JSON
+		} else {
+			parseBodyDataAs = pb.HTTPBody_OTHER
+		}
+	}
+
+	return parseBodyDataAs
 }
 
 func parseMultipartBody(multipartType string, boundary string, bodyStream io.Reader, statusCode int) (*pb.Data, error) {
