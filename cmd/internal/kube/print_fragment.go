@@ -5,17 +5,15 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/rest"
-	v1 "k8s.io/api/core/v1"
-
 	"github.com/spf13/cobra"
 	"github.com/zclconf/go-cty/cty"
+	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
-
-	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
 var printHelmChartFragmentCmd = &cobra.Command{

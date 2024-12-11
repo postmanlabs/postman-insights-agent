@@ -8,12 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/gopacket"
-
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/gopacket"
 )
 
 var (

@@ -19,7 +19,9 @@ type CommonApidumpFlags struct {
 	SendWitnessPayloads bool
 }
 
-func AddCommonApiDumpFlags(cmd *cobra.Command) (flags CommonApidumpFlags) {
+func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
+	flags := &CommonApidumpFlags{}
+
 	cmd.Flags().StringVar(
 		&flags.Filter,
 		"filter",
@@ -88,7 +90,7 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) (flags CommonApidumpFlags) {
 	return flags
 }
 
-func ConvertCommonApiDumpFlagsToArgs(flags CommonApidumpFlags) []string {
+func ConvertCommonApiDumpFlagsToArgs(flags *CommonApidumpFlags) []string {
 	commonApidumpArgs := []string{}
 
 	if flags.Filter != "" {

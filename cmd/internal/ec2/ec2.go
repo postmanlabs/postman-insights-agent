@@ -11,7 +11,7 @@ import (
 var (
 	// Postman Insights project id
 	projectID    string
-	apidumpFlags apidump.CommonApidumpFlags
+	apidumpFlags *apidump.CommonApidumpFlags
 
 	// Overwrite the existing service file and don't prompt the user
 	forceOverwrite bool

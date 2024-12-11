@@ -38,7 +38,7 @@ var (
 
 	// apidump flags
 	// These flags will be passed to apidump command in task definition file
-	apidumpFlags apidump.CommonApidumpFlags
+	apidumpFlags *apidump.CommonApidumpFlags
 )
 
 var Cmd = &cobra.Command{
