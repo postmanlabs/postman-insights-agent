@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akinet"
+	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
+	"github.com/akitasoftware/akita-libs/buffer_pool"
+	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/gopacket"
@@ -14,11 +18,6 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-
-	"github.com/akitasoftware/akita-libs/akinet"
-	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
-	"github.com/akitasoftware/akita-libs/buffer_pool"
-	"github.com/akitasoftware/akita-libs/memview"
 )
 
 // Constants wrapped as functions because we can't read the testdata file at

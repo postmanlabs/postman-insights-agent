@@ -6,13 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
 	"github.com/google/uuid"
-
-	"github.com/akitasoftware/akita-libs/akinet"
-	"github.com/akitasoftware/akita-libs/memview"
 )
 
 var (

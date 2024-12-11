@@ -10,10 +10,9 @@ import (
 	"os"
 	"sync"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
-
-	"github.com/akitasoftware/akita-libs/akid"
 )
 
 // Use a proxy, "" is none. (This is because the flags package doesn't support Optional)
