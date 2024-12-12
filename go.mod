@@ -1,6 +1,8 @@
 module github.com/postmanlabs/postman-insights-agent
 
-go 1.18
+go 1.23
+
+toolchain go1.23.4
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
@@ -38,8 +40,8 @@ require (
 	github.com/stretchr/testify v1.8.1
 	github.com/zclconf/go-cty v1.15.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
-	golang.org/x/term v0.18.0
-	golang.org/x/text v0.14.0
+	golang.org/x/term v0.25.0
+	golang.org/x/text v0.19.0
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.26.3
 	k8s.io/apimachinery v0.26.3
@@ -60,9 +62,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.11.25 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.13.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.17.1 // indirect
+	github.com/containernetworking/plugins v1.6.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
-	github.com/go-logr/logr v1.2.3 // indirect
+	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
 	github.com/google/gofuzz v1.1.0 // indirect
@@ -87,11 +90,11 @@ require (
 	github.com/spf13/cast v1.3.0 // indirect
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
-	golang.org/x/mod v0.8.0 // indirect
-	golang.org/x/net v0.23.0 // indirect
-	golang.org/x/sys v0.18.0 // indirect
-	golang.org/x/tools v0.6.0 // indirect
-	google.golang.org/protobuf v1.28.1 // indirect
+	golang.org/x/mod v0.21.0 // indirect
+	golang.org/x/net v0.30.0 // indirect
+	golang.org/x/sys v0.27.0 // indirect
+	golang.org/x/tools v0.26.0 // indirect
+	google.golang.org/protobuf v1.35.1 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.51.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
