@@ -304,10 +304,6 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 		return parseMultipartBody("mixed", mediaParams["boundary"], bodyStream, statusCode)
 	}
 
-	// Otherwise, use media type to decide how to parse the body.
-	// TODO: XML parsing
-	// TODO: application/json-seq (RFC 7466)?
-	// TODO: more text/* types
 	parseBodyDataAs := getContentTypeFromMediaType(mediaType)
 
 	var bodyData *pb.Data
@@ -419,34 +415,12 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	return bodyData, nil
 }
 
+// When we can't parse the body, we will try to capture it as a raw primitive string and
+// indicate the parsing error in the body meta.
 func captureUnparsableBody(body memview.MemView, contentType string, statusCode int) *pb.Data {
-	// If the body is empty, return nil.
-	if body.Len() == 0 {
-		return nil
-	}
-
-	// If the body is too large, return nil.
-	if body.Len() > MaxBufferedBody {
-		return nil
-	}
-
-	// Read the body into a buffer.
-	bodyStream := body.CreateReader()
-	bodyBytes, err := ioutil.ReadAll(bodyStream)
-	if err != nil {
-		return nil
-	}
-
-	// If the body is too large, return nil.
-	if len(bodyBytes) > MaxBufferedBody {
-		return nil
-	}
-
-	// Categorize the body as a string.
 	mediaType, _, _ := mime.ParseMediaType(contentType)
-	bodyStr := string(bodyBytes)
 	bodyData := &pb.Data{
-		Value: newDataPrimitive(categorizeStringToPrimitive(bodyStr)),
+		Value: newDataPrimitive(categorizeStringToPrimitive("Cannot parse body")),
 		Meta: newDataMetaHTTPMeta(&pb.HTTPMeta{
 			Location: &pb.HTTPMeta_Body{
 				Body: &pb.HTTPBody{
@@ -459,12 +433,26 @@ func captureUnparsableBody(body memview.MemView, contentType string, statusCode 
 		}),
 	}
 
+	bodyStream := body.CreateReader()
+	bodyBytes, err := io.ReadAll(bodyStream)
+	if err != nil {
+		return bodyData
+	}
+
+	// Categorize the body as a string.
+	bodyStr := string(bodyBytes)
+	bodyData.Value = newDataPrimitive(categorizeStringToPrimitive(bodyStr))
 	return bodyData
 }
 
+// Gets the content type to use for parsing the body based on the media type.
+// E.g. application/json -> JSON, application/x-www-form-urlencoded -> FORM_URL_ENCODED.
+// Also handles the case where the media type is a custom JSON-encoded media type.
 func getContentTypeFromMediaType(mediaType string) pb.HTTPBody_ContentType {
-	mediaType, _, _ = mime.ParseMediaType(mediaType)
-
+	// Use media type to decide how to parse the body.
+	// TODO: XML parsing
+	// TODO: application/json-seq (RFC 7466)?
+	// TODO: more text/* types
 	var parseBodyDataAs pb.HTTPBody_ContentType
 	switch mediaType {
 	case "application/json":

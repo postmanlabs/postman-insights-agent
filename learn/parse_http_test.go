@@ -10,6 +10,7 @@ import (
 	as "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/viper"
 )
@@ -84,7 +85,7 @@ func newTestBodySpecContentType(contentType string, statusCode int) *as.Data {
 }
 
 func newTestBodySpecFromStruct(statusCode int, contentType as.HTTPBody_ContentType, originalContentType string, s map[string]*as.Data) *as.Data {
-	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s), nil)
+	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s), optionals.None[as.HTTPBody_Errors]())
 }
 
 func newTestBodySpecFromData(
@@ -92,7 +93,7 @@ func newTestBodySpecFromData(
 	contentType as.HTTPBody_ContentType,
 	originalContentType string,
 	d *as.Data,
-	bodyError *as.HTTPBody_Errors,
+	bodyError optionals.Optional[as.HTTPBody_Errors],
 ) *as.Data {
 	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType, bodyError)
 	return d
@@ -105,7 +106,7 @@ func newTestMultipartFormData(statusCode int) *as.Data {
 		Value: &as.Data_Struct{
 			Struct: &as.Struct{
 				Fields: map[string]*as.Data{
-					"field1": newTestBodySpecFromData(statusCode, as.HTTPBody_TEXT_PLAIN, "text/plain", f1, nil),
+					"field1": newTestBodySpecFromData(statusCode, as.HTTPBody_TEXT_PLAIN, "text/plain", f1, optionals.None[as.HTTPBody_Errors]()),
 					"field2": newTestBodySpecFromStruct(statusCode, as.HTTPBody_JSON, "application/json", map[string]*as.Data{
 						"foo": dataFromPrimitive(spec_util.NewPrimitiveString("bar")),
 						"baz": dataFromPrimitive(spec_util.NewPrimitiveInt64(123)),
@@ -362,7 +363,7 @@ func TestParseHTTPRequest(t *testing.T) {
 						as.HTTPBody_OCTET_STREAM,
 						"application/octet-stream",
 						dataFromPrimitive(spec_util.NewPrimitiveBytes([]byte("prince is a good boy"))),
-						nil,
+						optionals.None[as.HTTPBody_Errors](),
 					),
 				},
 				UnknownHTTPMethodMeta(),
@@ -495,7 +496,7 @@ prince:
 						as.HTTPBody_JSON,
 						"application/json",
 						dataFromPrimitive(spec_util.NewPrimitiveString("I am not JSON")),
-						as.HTTPBody_PARSING_ERROR.Enum(),
+						optionals.Some(as.HTTPBody_PARSING_ERROR),
 					),
 				},
 				UnknownHTTPMethodMeta(),

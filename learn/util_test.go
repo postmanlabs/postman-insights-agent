@@ -14,6 +14,7 @@ import (
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/akitasoftware/akita-libs/pbhash"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/akitasoftware/go-utils/optionals"
 )
 
 const (
@@ -195,7 +196,7 @@ func newBodyDataMeta(
 	responseCode int,
 	contentType pb.HTTPBody_ContentType,
 	originalContentType string,
-	bodyError *as.HTTPBody_Errors,
+	bodyErrorOpt optionals.Optional[pb.HTTPBody_Errors],
 ) *pb.DataMeta {
 	dataMeta := newDataMeta(&pb.HTTPMeta{
 		Location: &pb.HTTPMeta_Body{
@@ -207,8 +208,8 @@ func newBodyDataMeta(
 		ResponseCode: int32(responseCode),
 	})
 
-	if bodyError != nil {
-		dataMeta.GetHttp().GetBody().Errors = *bodyError
+	if bodyError, exists := bodyErrorOpt.Get(); exists {
+		dataMeta.GetHttp().GetBody().Errors = bodyError
 	}
 
 	return dataMeta
