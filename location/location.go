@@ -1,9 +1,8 @@
 package location
 
 import (
-	"github.com/pkg/errors"
-
 	"github.com/akitasoftware/akita-libs/akiuri"
+	"github.com/pkg/errors"
 )
 
 // Implements pflag.Value interface.

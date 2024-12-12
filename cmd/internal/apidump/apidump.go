@@ -41,7 +41,7 @@ var (
 	dockerExtensionMode     bool
 	healthCheckPort         int
 
-	commonApidumpFlags CommonApidumpFlags
+	commonApidumpFlags *CommonApidumpFlags
 )
 
 // This function will either startup apidump normally, or never return, with probability

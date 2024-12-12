@@ -2,8 +2,9 @@ package apidump
 
 import (
 	"fmt"
-	"github.com/gorilla/mux"
 	"net/http"
+
+	"github.com/gorilla/mux"
 )
 
 // Handles health check requests for the Docker Extension.

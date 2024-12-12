@@ -3,10 +3,9 @@ package learn
 import (
 	"strconv"
 
-	"github.com/google/uuid"
-
-	"github.com/akitasoftware/akita-libs/akid"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
+	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/google/uuid"
 )
 
 var (
