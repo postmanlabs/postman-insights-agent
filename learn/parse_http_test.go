@@ -21,6 +21,7 @@ const (
 )
 
 var deflatedBody bytes.Buffer
+var deflatedInvalidJSONBody bytes.Buffer
 
 func init() {
 	dw, err := flate.NewWriter(&deflatedBody, flate.BestCompression)
@@ -28,6 +29,14 @@ func init() {
 		panic(err)
 	}
 	dw.Write([]byte(`{"34302ecf": "this is prince"}`))
+	dw.Close()
+
+	dw, err = flate.NewWriter(&deflatedInvalidJSONBody, flate.BestCompression)
+	if err != nil {
+		panic(err)
+	}
+
+	dw.Write([]byte(`{"key": invalid JSON}`))
 	dw.Close()
 }
 
@@ -450,6 +459,32 @@ prince:
 			),
 		},
 		&parseTest{
+			// Capture the unparsable body and indicate a parsing error in body metadata
+			name: "compressed body with invalid JSON should capture stringified body",
+			testContent: newTestHTTPResponse(
+				200,
+				deflatedInvalidJSONBody.Bytes(),
+				"application/json",
+				map[string][]string{"Content-Encoding": {"deflate"}},
+				[]*http.Cookie{},
+			),
+			expectedMethod: newMethod(
+				nil,
+				[]*as.Data{
+					newDataHeader("Content-Encoding", 200, spec_util.NewPrimitiveString("deflate"), false),
+					newTestBodySpecFromData(
+						200,
+						as.HTTPBody_JSON,
+						"application/json",
+
+						dataFromPrimitive(spec_util.NewPrimitiveString("{\"key\": invalid JSON}")),
+						optionals.Some(as.HTTPBody_PARSING_ERROR),
+					),
+				},
+				UnknownHTTPMethodMeta(),
+			),
+		},
+		&parseTest{
 			// Test our fallback mechanism for auto-detecting compressed bodies.
 			// https://app.clubhouse.io/akita-software/story/1656
 			name: "deflated body without content-encoding header",
@@ -477,7 +512,7 @@ prince:
 		},
 		&parseTest{
 			// Capture the unparsable body and indicate a parsing error in body metadata
-			name: "capture stringified body if unable to parse",
+			name: "uncompressed body with invalid JSON should capture stringified body",
 			testContent: newTestHTTPResponse(
 				200,
 				[]byte("I am not JSON"),

@@ -129,24 +129,29 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 			return nil, errors.Wrap(err, "failed to decode body")
 		}
 
+		origReader, fallbackReader, err := createMultiReader(decodeStream)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create multi reader")
+		}
+
 		contentType := headers.Get("Content-Type")
-		bodyData, err := parseBody(contentType, decodeStream, statusCode)
+		bodyData, err := parseBody(contentType, origReader, statusCode)
 		if err != nil {
 			// TODO: maybe don't do this if we *did* get a Content-Encoding header?
 			//
 			// Try common decompression algorithms to see if the body is compressed
 			// but did not have Content-Encoding header.
 			printer.Debugf("Failed to parse body, attempting common decompressions: %v\n", err)
-			fallbackReader, decompressErr := attemptDecompress(rawBody)
+			decompressedReader, decompressErr := attemptDecompress(rawBody)
 			if decompressErr == nil {
-				bodyData, err = parseBody(contentType, fallbackReader, statusCode)
+				bodyData, err = parseBody(contentType, decompressedReader, statusCode)
 			}
 		}
 
 		if err != nil {
 			// When the body is unparsable even after attempting fallback decompressions,
 			// we will try to capture the body as a string and indicate parsing error in the body meta
-			bodyData = captureUnparsableBody(rawBody, contentType, statusCode)
+			bodyData = captureUnparsableBody(fallbackReader, contentType, statusCode)
 		}
 
 		datas = append(datas, bodyData)
@@ -288,6 +293,17 @@ func limitedBufferBody(bodyStream io.Reader, limit int64) ([]byte, error) {
 	return body, nil
 }
 
+// Creates multiple readers for consuming the same decoded body stream
+func createMultiReader(originalReader io.Reader) (io.Reader, io.Reader, error) {
+	bodyBytes, err := io.ReadAll(originalReader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Create two independent readers from the same byte slice
+	return bytes.NewReader(bodyBytes), bytes.NewReader(bodyBytes), nil
+}
+
 // Possible to return nil for both the data and error values. The data will be nil
 // if the passed in body is length 0 or nil. This is not considered an error.
 func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Data, error) {
@@ -417,7 +433,7 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 
 // When we can't parse the body, we will try to capture it as a raw primitive string and
 // indicate the parsing error in the body meta.
-func captureUnparsableBody(body memview.MemView, contentType string, statusCode int) *pb.Data {
+func captureUnparsableBody(bodyStream io.Reader, contentType string, statusCode int) *pb.Data {
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	bodyData := &pb.Data{
 		Value: newDataPrimitive(categorizeStringToPrimitive("Cannot parse body")),
@@ -433,15 +449,14 @@ func captureUnparsableBody(body memview.MemView, contentType string, statusCode 
 		}),
 	}
 
-	bodyStream := body.CreateReader()
-	bodyBytes, err := io.ReadAll(bodyStream)
+	// Categorize the body as a string.
+	buf := new(strings.Builder)
+	_, err := io.Copy(buf, bodyStream)
 	if err != nil {
 		return bodyData
 	}
 
-	// Categorize the body as a string.
-	bodyStr := string(bodyBytes)
-	bodyData.Value = newDataPrimitive(categorizeStringToPrimitive(bodyStr))
+	bodyData.Value = newDataPrimitive(categorizeStringToPrimitive(buf.String()))
 	return bodyData
 }
 
