@@ -132,7 +132,8 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 		// saving a copy to use for capturing the raw stringified body in case of parsing error
 		origReader, fallbackReader, err := createMultiReader(decodeStream)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to create multi reader")
+			origReader = decodeStream
+			fallbackReader = decodeStream
 		}
 
 		contentType := headers.Get("Content-Type")
@@ -146,7 +147,12 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 			decompressedReader, decompressErr := attemptDecompress(rawBody)
 			if decompressErr == nil {
 				// saving a copy to use for capturing the raw stringified body in case of parsing error
-				origReader, fallbackReader, _ = createMultiReader(decompressedReader)
+				origReader, fallbackReader, err = createMultiReader(decompressedReader)
+				if err != nil {
+					origReader = decompressedReader
+					fallbackReader = decompressedReader
+				}
+
 				bodyData, err = parseBody(contentType, origReader, statusCode)
 			}
 		}
