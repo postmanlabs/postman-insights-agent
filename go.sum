@@ -32,6 +32,7 @@ github.com/akitasoftware/akita-ir v0.0.0-20241210134130-1db037ecc549 h1:r5EbkpsL
 github.com/akitasoftware/akita-ir v0.0.0-20241210134130-1db037ecc549/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
 github.com/akitasoftware/akita-ir v0.0.0-20241212105914-68c47ec34a0a h1:7qu19Mmi+I9AwDZqrbGUPYmsyXu/UbwRFnlnvjyuboQ=
 github.com/akitasoftware/akita-ir v0.0.0-20241212105914-68c47ec34a0a/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
+github.com/akitasoftware/akita-ir v0.0.0-20241213050034-057d7b6097e8 h1:sf2aaOG8o+tAIMxuk7peMkKrHPp9l3/r+JmiQ3dwJ5U=
 github.com/akitasoftware/akita-ir v0.0.0-20241213050034-057d7b6097e8/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
 github.com/akitasoftware/akita-libs v0.0.0-20241115053127-0af65b813d9c h1:EFEyv9FTVqSbCKfiSlXEAcNJQoJwMpIGjHuc4uR1Bgk=
 github.com/akitasoftware/akita-libs v0.0.0-20241115053127-0af65b813d9c/go.mod h1:5rzkpaJI1sA9CtGELYZpf15oczAVopcyda2WsYG5xno=

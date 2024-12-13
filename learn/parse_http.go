@@ -129,6 +129,7 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 			return nil, errors.Wrap(err, "failed to decode body")
 		}
 
+		// saving a copy to use for capturing the raw stringified body in case of parsing error
 		origReader, fallbackReader, err := createMultiReader(decodeStream)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create multi reader")
@@ -144,7 +145,9 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 			printer.Debugf("Failed to parse body, attempting common decompressions: %v\n", err)
 			decompressedReader, decompressErr := attemptDecompress(rawBody)
 			if decompressErr == nil {
-				bodyData, err = parseBody(contentType, decompressedReader, statusCode)
+				// saving a copy to use for capturing the raw stringified body in case of parsing error
+				origReader, fallbackReader, _ = createMultiReader(decompressedReader)
+				bodyData, err = parseBody(contentType, origReader, statusCode)
 			}
 		}
 
