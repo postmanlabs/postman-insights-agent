@@ -129,38 +129,26 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 			return nil, errors.Wrap(err, "failed to decode body")
 		}
 
-		// saving a copy to use for capturing the raw stringified body in case of parsing error
-		origReader, fallbackReader, err := createMultiReader(decodeStream)
-		if err != nil {
-			origReader = decodeStream
-			fallbackReader = decodeStream
-		}
-
 		contentType := headers.Get("Content-Type")
-		bodyData, err := parseBody(contentType, origReader, statusCode)
+		bodyData, err := parseBody(contentType, decodeStream, statusCode)
 		if err != nil {
 			// TODO: maybe don't do this if we *did* get a Content-Encoding header?
 			//
 			// Try common decompression algorithms to see if the body is compressed
 			// but did not have Content-Encoding header.
 			printer.Debugf("Failed to parse body, attempting common decompressions: %v\n", err)
-			decompressedReader, decompressErr := attemptDecompress(rawBody)
+			fallbackReader, decompressErr := attemptDecompress(rawBody)
 			if decompressErr == nil {
-				// saving a copy to use for capturing the raw stringified body in case of parsing error
-				origReader, fallbackReader, err = createMultiReader(decompressedReader)
-				if err != nil {
-					origReader = decompressedReader
-					fallbackReader = decompressedReader
-				}
-
-				bodyData, err = parseBody(contentType, origReader, statusCode)
+				bodyData, err = parseBody(contentType, fallbackReader, statusCode)
 			}
 		}
 
 		if err != nil {
 			// When the body is unparsable even after attempting fallback decompressions,
 			// we will try to capture the body as a string and indicate parsing error in the body meta
-			bodyData = captureUnparsableBody(fallbackReader, contentType, statusCode)
+			bodyStream := rawBody.CreateReader()
+			decodeStream, _ := decodeBody(headers, bodyStream, bodyDecompressed)
+			bodyData = captureUnparsableBody(decodeStream, contentType, statusCode)
 		}
 
 		datas = append(datas, bodyData)
@@ -300,17 +288,6 @@ func limitedBufferBody(bodyStream io.Reader, limit int64) ([]byte, error) {
 		return nil, errors.Wrap(err, "error reading body")
 	}
 	return body, nil
-}
-
-// Creates multiple readers for consuming the same decoded body stream
-func createMultiReader(originalReader io.Reader) (io.Reader, io.Reader, error) {
-	bodyBytes, err := io.ReadAll(originalReader)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Create two independent readers from the same byte slice
-	return bytes.NewReader(bodyBytes), bytes.NewReader(bodyBytes), nil
 }
 
 // Possible to return nil for both the data and error values. The data will be nil
