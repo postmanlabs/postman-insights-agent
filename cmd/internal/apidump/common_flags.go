@@ -22,70 +22,70 @@ type CommonApidumpFlags struct {
 func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 	flags := &CommonApidumpFlags{}
 
-	cmd.Flags().StringVar(
+	cmd.PersistentFlags().StringVar(
 		&flags.Filter,
 		"filter",
 		"",
 		"Used to match packets going to and coming from your API service.",
 	)
 
-	cmd.Flags().StringSliceVar(
+	cmd.PersistentFlags().StringSliceVar(
 		&flags.HostAllowlist,
 		"host-allow",
 		nil,
 		"Allows only HTTP hosts matching regular expressions.",
 	)
 
-	cmd.Flags().StringSliceVar(
+	cmd.PersistentFlags().StringSliceVar(
 		&flags.HostExclusions,
 		"host-exclusions",
 		nil,
 		"Removes HTTP hosts matching regular expressions.",
 	)
 
-	cmd.Flags().StringSliceVar(
+	cmd.PersistentFlags().StringSliceVar(
 		&flags.Interfaces,
 		"interfaces",
 		nil,
 		"List of network interfaces to listen on. Defaults to all interfaces on host.",
 	)
 
-	cmd.Flags().StringSliceVar(
+	cmd.PersistentFlags().StringSliceVar(
 		&flags.PathAllowlist,
 		"path-allow",
 		nil,
 		"Allows only HTTP paths matching regular expressions.",
 	)
 
-	cmd.Flags().StringSliceVar(
+	cmd.PersistentFlags().StringSliceVar(
 		&flags.PathExclusions,
 		"path-exclusions",
 		nil,
 		"Removes HTTP paths matching regular expressions.",
 	)
 
-	cmd.Flags().IntVar(
+	cmd.PersistentFlags().IntVar(
 		&flags.RandomizedStart,
 		"randomized-start",
 		100,
 		"Probability that the apidump command will start intercepting traffic.",
 	)
-	_ = cmd.Flags().MarkHidden("randomized-start")
+	_ = cmd.PersistentFlags().MarkHidden("randomized-start")
 
-	cmd.Flags().Float64Var(
+	cmd.PersistentFlags().Float64Var(
 		&flags.RateLimit,
 		"rate-limit",
 		apispec.DefaultRateLimit,
 		"Number of requests per minute to capture.",
 	)
 
-	cmd.Flags().BoolVar(
+	cmd.PersistentFlags().BoolVar(
 		&flags.SendWitnessPayloads,
 		"send-witness-payloads",
 		false,
 		"Send request and response payloads to Postman",
 	)
-	_ = cmd.Flags().MarkHidden("send-witness-payloads")
+	_ = cmd.PersistentFlags().MarkHidden("send-witness-payloads")
 
 	return flags
 }
