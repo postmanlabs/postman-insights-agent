@@ -147,6 +147,8 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 			// When the body is unparsable even after attempting fallback decompressions,
 			// we will try to capture the body as a string and indicate parsing error in the body meta
 			bodyStream := rawBody.CreateReader()
+			// we are ignoring the error from decodeBody here
+			// if the decodeStream is nil, we will capture a placeholder bodyData that would say we received an unparsable body
 			decodeStream, _ := decodeBody(headers, bodyStream, bodyDecompressed)
 			bodyData = captureUnparsableBody(decodeStream, contentType, statusCode)
 		}
@@ -433,6 +435,10 @@ func captureUnparsableBody(bodyStream io.Reader, contentType string, statusCode 
 			},
 			ResponseCode: int32(statusCode),
 		}),
+	}
+
+	if bodyStream == nil {
+		return bodyData
 	}
 
 	// Categorize the body as a string.
