@@ -26,7 +26,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"golang.org/x/text/encoding/ianaindex"
 	"golang.org/x/text/transform"
 	"gopkg.in/yaml.v2"
@@ -145,14 +144,16 @@ func ParseHTTP(elem akinet.ParsedNetworkContent) (*PartialWitness, error) {
 		}
 
 		if err != nil {
-			// Just log an error instead of returning an error so users can see the
-			// other parts of the endpoint in the spec rather than an empty spec.
-			// https://app.clubhouse.io/akita-software/story/1898/juan-s-payload-problem
-			telemetry.RateLimitError("unparsable body", err)
-			printer.Debugf("skipping unparsable body: %v\n", err)
-		} else if bodyData != nil {
-			datas = append(datas, bodyData)
+			// When the body is unparsable even after attempting fallback decompressions,
+			// we will try to capture the body as a string and indicate parsing error in the body meta
+			bodyStream := rawBody.CreateReader()
+			// we are ignoring the error from decodeBody here
+			// if the decodeStream is nil, we will capture a placeholder bodyData that would say we received an unparsable body
+			decodeStream, _ := decodeBody(headers, bodyStream, bodyDecompressed)
+			bodyData = captureUnparsableBody(decodeStream, contentType, statusCode)
 		}
+
+		datas = append(datas, bodyData)
 	}
 
 	method := &pb.Method{Id: UnassignedHTTPID(), Meta: methodMeta}
@@ -307,32 +308,7 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 		return parseMultipartBody("mixed", mediaParams["boundary"], bodyStream, statusCode)
 	}
 
-	// Otherwise, use media type to decide how to parse the body.
-	// TODO: XML parsing
-	// TODO: application/json-seq (RFC 7466)?
-	// TODO: more text/* types
-	var parseBodyDataAs pb.HTTPBody_ContentType
-	switch mediaType {
-	case "application/json":
-		parseBodyDataAs = pb.HTTPBody_JSON
-	case "application/x-www-form-urlencoded":
-		parseBodyDataAs = pb.HTTPBody_FORM_URL_ENCODED
-	case "application/yaml", "application/x-yaml", "text/yaml", "text/x-yaml":
-		parseBodyDataAs = pb.HTTPBody_YAML
-	case "application/octet-stream":
-		parseBodyDataAs = pb.HTTPBody_OCTET_STREAM
-	case "text/plain", "text/csv":
-		parseBodyDataAs = pb.HTTPBody_TEXT_PLAIN
-	case "text/html":
-		parseBodyDataAs = pb.HTTPBody_TEXT_HTML
-	default:
-		// Handle custom JSON-encoded media types.
-		if strings.HasSuffix(mediaType, "+json") {
-			parseBodyDataAs = pb.HTTPBody_JSON
-		} else {
-			parseBodyDataAs = pb.HTTPBody_OTHER
-		}
-	}
+	parseBodyDataAs := getContentTypeFromMediaType(mediaType)
 
 	var bodyData *pb.Data
 
@@ -441,6 +417,73 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 	bodyData.Meta = newDataMetaHTTPMeta(httpMeta)
 
 	return bodyData, nil
+}
+
+// When we can't parse the body, we will try to capture it as a raw primitive string and
+// indicate the parsing error in the body meta.
+func captureUnparsableBody(bodyStream io.Reader, contentType string, statusCode int) *pb.Data {
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	bodyData := &pb.Data{
+		Value: newDataPrimitive(categorizeStringToPrimitive("Cannot parse body")),
+		Meta: newDataMetaHTTPMeta(&pb.HTTPMeta{
+			Location: &pb.HTTPMeta_Body{
+				Body: &pb.HTTPBody{
+					ContentType: getContentTypeFromMediaType(mediaType),
+					OtherType:   contentType,
+					Errors:      pb.HTTPBody_PARSING_ERROR,
+				},
+			},
+			ResponseCode: int32(statusCode),
+		}),
+	}
+
+	if bodyStream == nil {
+		return bodyData
+	}
+
+	// Categorize the body as a string.
+	buf := new(strings.Builder)
+	_, err := io.Copy(buf, bodyStream)
+	if err != nil {
+		return bodyData
+	}
+
+	bodyData.Value = newDataPrimitive(categorizeStringToPrimitive(buf.String()))
+	return bodyData
+}
+
+// Gets the content type to use for parsing the body based on the media type.
+// E.g. application/json -> JSON, application/x-www-form-urlencoded -> FORM_URL_ENCODED.
+// Also handles the case where the media type is a custom JSON-encoded media type.
+func getContentTypeFromMediaType(mediaType string) pb.HTTPBody_ContentType {
+	// Use media type to decide how to parse the body.
+	// TODO: XML parsing
+	// TODO: application/json-seq (RFC 7466)?
+	// TODO: more text/* types
+	var parseBodyDataAs pb.HTTPBody_ContentType
+	switch mediaType {
+	case "application/json":
+		parseBodyDataAs = pb.HTTPBody_JSON
+	case "application/x-www-form-urlencoded":
+		parseBodyDataAs = pb.HTTPBody_FORM_URL_ENCODED
+	case "application/yaml", "application/x-yaml", "text/yaml", "text/x-yaml":
+		parseBodyDataAs = pb.HTTPBody_YAML
+	case "application/octet-stream":
+		parseBodyDataAs = pb.HTTPBody_OCTET_STREAM
+	case "text/plain", "text/csv":
+		parseBodyDataAs = pb.HTTPBody_TEXT_PLAIN
+	case "text/html":
+		parseBodyDataAs = pb.HTTPBody_TEXT_HTML
+	default:
+		// Handle custom JSON-encoded media types.
+		if strings.HasSuffix(mediaType, "+json") {
+			parseBodyDataAs = pb.HTTPBody_JSON
+		} else {
+			parseBodyDataAs = pb.HTTPBody_OTHER
+		}
+	}
+
+	return parseBodyDataAs
 }
 
 func parseMultipartBody(multipartType string, boundary string, bodyStream io.Reader, statusCode int) (*pb.Data, error) {
