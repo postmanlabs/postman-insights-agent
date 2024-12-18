@@ -6,9 +6,9 @@ After=network-online.target NetworkManager.service systemd-resolved.service
 [Service]
 EnvironmentFile=/etc/default/postman-insights-agent
 # DO NOT CHANGE
-# "${FOO}" uses the arguement as is, while "$FOO" splits the string on white space 
+# "${FOO}" uses the argument as is, while "$FOO" splits the string on white space 
 # Reference: https://www.freedesktop.org/software/systemd/man/systemd.service.html#Command%20lines
-ExecStart={{.AgentInstallPath}} apidump --project "${PROJECT_ID}" --interfaces "${INTERFACES}" --filter "${FILTER}" {{.ExtraApidumpArgs}} "${EXTRA_APIDUMP_ARGS}"
+ExecStart={{.AgentInstallPath}} apidump --project "${PROJECT_ID}" --interfaces "${INTERFACES}" --filter "${FILTER}" {{.ExtraApidumpArgs}} ${EXTRA_APIDUMP_ARGS}
 
 [Install]
 WantedBy=multi-user.target
