@@ -10,6 +10,7 @@ import (
 	as "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/viper"
 )
@@ -20,6 +21,7 @@ const (
 )
 
 var deflatedBody bytes.Buffer
+var deflatedInvalidJSONBody bytes.Buffer
 
 func init() {
 	dw, err := flate.NewWriter(&deflatedBody, flate.BestCompression)
@@ -27,6 +29,14 @@ func init() {
 		panic(err)
 	}
 	dw.Write([]byte(`{"34302ecf": "this is prince"}`))
+	dw.Close()
+
+	dw, err = flate.NewWriter(&deflatedInvalidJSONBody, flate.BestCompression)
+	if err != nil {
+		panic(err)
+	}
+
+	dw.Write([]byte(`{"key": invalid JSON}`))
 	dw.Close()
 }
 
@@ -84,11 +94,17 @@ func newTestBodySpecContentType(contentType string, statusCode int) *as.Data {
 }
 
 func newTestBodySpecFromStruct(statusCode int, contentType as.HTTPBody_ContentType, originalContentType string, s map[string]*as.Data) *as.Data {
-	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s))
+	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s), optionals.None[as.HTTPBody_Errors]())
 }
 
-func newTestBodySpecFromData(statusCode int, contentType as.HTTPBody_ContentType, originalContentType string, d *as.Data) *as.Data {
-	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType)
+func newTestBodySpecFromData(
+	statusCode int,
+	contentType as.HTTPBody_ContentType,
+	originalContentType string,
+	d *as.Data,
+	bodyError optionals.Optional[as.HTTPBody_Errors],
+) *as.Data {
+	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType, bodyError)
 	return d
 }
 
@@ -99,7 +115,7 @@ func newTestMultipartFormData(statusCode int) *as.Data {
 		Value: &as.Data_Struct{
 			Struct: &as.Struct{
 				Fields: map[string]*as.Data{
-					"field1": newTestBodySpecFromData(statusCode, as.HTTPBody_TEXT_PLAIN, "text/plain", f1),
+					"field1": newTestBodySpecFromData(statusCode, as.HTTPBody_TEXT_PLAIN, "text/plain", f1, optionals.None[as.HTTPBody_Errors]()),
 					"field2": newTestBodySpecFromStruct(statusCode, as.HTTPBody_JSON, "application/json", map[string]*as.Data{
 						"foo": dataFromPrimitive(spec_util.NewPrimitiveString("bar")),
 						"baz": dataFromPrimitive(spec_util.NewPrimitiveInt64(123)),
@@ -356,6 +372,7 @@ func TestParseHTTPRequest(t *testing.T) {
 						as.HTTPBody_OCTET_STREAM,
 						"application/octet-stream",
 						dataFromPrimitive(spec_util.NewPrimitiveBytes([]byte("prince is a good boy"))),
+						optionals.None[as.HTTPBody_Errors](),
 					),
 				},
 				UnknownHTTPMethodMeta(),
@@ -442,6 +459,32 @@ prince:
 			),
 		},
 		&parseTest{
+			// Capture the unparsable body and indicate a parsing error in body metadata
+			name: "compressed body with invalid JSON should capture stringified body",
+			testContent: newTestHTTPResponse(
+				200,
+				deflatedInvalidJSONBody.Bytes(),
+				"application/json",
+				map[string][]string{"Content-Encoding": {"deflate"}},
+				[]*http.Cookie{},
+			),
+			expectedMethod: newMethod(
+				nil,
+				[]*as.Data{
+					newDataHeader("Content-Encoding", 200, spec_util.NewPrimitiveString("deflate"), false),
+					newTestBodySpecFromData(
+						200,
+						as.HTTPBody_JSON,
+						"application/json",
+
+						dataFromPrimitive(spec_util.NewPrimitiveString("{\"key\": invalid JSON}")),
+						optionals.Some(as.HTTPBody_PARSING_ERROR),
+					),
+				},
+				UnknownHTTPMethodMeta(),
+			),
+		},
+		&parseTest{
 			// Test our fallback mechanism for auto-detecting compressed bodies.
 			// https://app.clubhouse.io/akita-software/story/1656
 			name: "deflated body without content-encoding header",
@@ -468,10 +511,8 @@ prince:
 			),
 		},
 		&parseTest{
-			// Log error and skip the body if we can't parse it, instead of aborting
-			// the whole endpoint.
-			// https://app.clubhouse.io/akita-software/story/1898/juan-s-payload-problem
-			name: "skip body if unable to parse",
+			// Capture the unparsable body and indicate a parsing error in body metadata
+			name: "uncompressed body with invalid JSON should capture stringified body",
 			testContent: newTestHTTPResponse(
 				200,
 				[]byte("I am not JSON"),
@@ -485,6 +526,13 @@ prince:
 				nil,
 				[]*as.Data{
 					newDataHeader("X-Charming-Level", 200, spec_util.NewPrimitiveString("extreme"), false),
+					newTestBodySpecFromData(
+						200,
+						as.HTTPBody_JSON,
+						"application/json",
+						dataFromPrimitive(spec_util.NewPrimitiveString("I am not JSON")),
+						optionals.Some(as.HTTPBody_PARSING_ERROR),
+					),
 				},
 				UnknownHTTPMethodMeta(),
 			),
