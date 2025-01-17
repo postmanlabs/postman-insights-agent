@@ -55,6 +55,12 @@ type witnessWithInfo struct {
 	requestEnd      time.Time
 	responseStart   time.Time
 
+	// Mutex protecting witness while it is being processed and/or flushed.
+	witnessMutex sync.Mutex
+
+	// Whether the witness has been flushed to the backend.
+	witnessFlushed bool
+
 	witness *pb.Witness
 }
 
@@ -210,6 +216,10 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	if val, ok := c.pairCache.LoadAndDelete(partial.PairKey); ok {
 		pair := val.(*witnessWithInfo)
 
+		// Lock the witness while it is being processed and flushed
+		// and unlock it after it is flushed
+		pair.witnessMutex.Lock()
+
 		// Combine the pair, merging the result into the existing item
 		// rather than the new partial.
 		learn.MergeWitness(pair.witness, partial.Witness)
@@ -226,6 +236,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		printer.Debugf("Completed witness %v at %v -- %v\n",
 			partial.PairKey, t.ObservationTime, t.FinalPacketTime)
 
+		pair.witnessMutex.Unlock()
 	} else {
 		// Store the partial witness for now, waiting for its pair or a
 		// flush timeout.
@@ -335,6 +346,15 @@ func excludeWitnessFromReproMode(w *pb.Witness) bool {
 }
 
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
+	if w.witnessFlushed {
+		printer.Debugf("Witness %v already flushed.\n", w.id)
+		return
+	} else {
+		defer func() {
+			w.witnessFlushed = true
+		}()
+	}
+
 	// Mark the method as not obfuscated.
 	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE
 
@@ -398,8 +418,14 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
+			// Lock the witness while it is being flushed
+			// and unlock it after it is deleted from pairCache
+			e.witnessMutex.Lock()
+
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
+
+			e.witnessMutex.Unlock()
 		}
 		return true
 	})
