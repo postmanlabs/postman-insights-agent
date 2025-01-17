@@ -220,7 +220,9 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 		MaxWitnessSize_bytes:    maxWitnessSize_bytes,
 		DockerExtensionMode:     dockerExtensionMode,
 		HealthCheckPort:         healthCheckPort,
-		SendWitnessPayloads:     commonApidumpFlags.SendWitnessPayloads,
+
+		// TODO: remove the SendWitnessPayloads flag once all existing users are migrated to new flag.
+		ReproMode: commonApidumpFlags.EnableReproMode || commonApidumpFlags.SendWitnessPayloads,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
