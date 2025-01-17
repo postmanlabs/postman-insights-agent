@@ -94,6 +94,7 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 		false,
 		"Enable repro mode to send request and response payloads to Postman.",
 	)
+	_ = cmd.PersistentFlags().MarkHidden("repro-mode")
 
 	return flags
 }
