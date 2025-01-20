@@ -139,8 +139,8 @@ type Args struct {
 	// The port to be used by the Docker Extension for health checks
 	HealthCheckPort int
 
-	// Whether to include request/response payloads when uploading witnesses.
-	SendWitnessPayloads bool
+	// Whether to enable repro mode and include request/response payloads when uploading witnesses.
+	ReproMode bool
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -689,7 +689,7 @@ func (a *apidump) Run() error {
 			} else {
 				var backendCollector trace.Collector
 				if args.Out.AkitaURI != nil {
-					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.SendWitnessPayloads, args.Plugins)
+					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.ReproMode, args.Plugins)
 					collector = backendCollector
 				} else {
 					return errors.Errorf("invalid output location")
