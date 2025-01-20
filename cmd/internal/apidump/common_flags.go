@@ -17,6 +17,7 @@ type CommonApidumpFlags struct {
 	RandomizedStart     int
 	RateLimit           float64
 	SendWitnessPayloads bool
+	EnableReproMode     bool
 }
 
 func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
@@ -87,6 +88,14 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 	)
 	_ = cmd.PersistentFlags().MarkHidden("send-witness-payloads")
 
+	cmd.PersistentFlags().BoolVar(
+		&flags.EnableReproMode,
+		"repro-mode",
+		false,
+		"Enable repro mode to send request and response payloads to Postman.",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("repro-mode")
+
 	return flags
 }
 
@@ -107,6 +116,10 @@ func ConvertCommonApiDumpFlagsToArgs(flags *CommonApidumpFlags) []string {
 
 	if flags.SendWitnessPayloads {
 		commonApidumpArgs = append(commonApidumpArgs, "--send-witness-payloads")
+	}
+
+	if flags.EnableReproMode {
+		commonApidumpArgs = append(commonApidumpArgs, "--repro-mode")
 	}
 
 	// Add slice type flags to the entry point.
