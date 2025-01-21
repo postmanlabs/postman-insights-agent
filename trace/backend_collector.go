@@ -55,6 +55,12 @@ type witnessWithInfo struct {
 	requestEnd      time.Time
 	responseStart   time.Time
 
+	// Mutex protecting witness while it is being processed and/or flushed.
+	witnessMutex sync.Mutex
+
+	// Whether the witness has been flushed to the backend.
+	witnessFlushed bool
+
 	witness *pb.Witness
 }
 
@@ -210,22 +216,28 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	if val, ok := c.pairCache.LoadAndDelete(partial.PairKey); ok {
 		pair := val.(*witnessWithInfo)
 
-		// Combine the pair, merging the result into the existing item
-		// rather than the new partial.
-		learn.MergeWitness(pair.witness, partial.Witness)
-		pair.computeProcessingLatency(isRequest, t)
+		func() {
+			// Lock the witness while it is being processed and flushed
+			// and unlock it after it is flushed
+			pair.witnessMutex.Lock()
+			defer pair.witnessMutex.Unlock()
 
-		// If partial is the request, flip the src/dst in the pair before
-		// reporting.
-		if isRequest {
-			pair.srcIP, pair.dstIP = pair.dstIP, pair.srcIP
-			pair.srcPort, pair.dstPort = pair.dstPort, pair.srcPort
-		}
+			// Combine the pair, merging the result into the existing item
+			// rather than the new partial.
+			learn.MergeWitness(pair.witness, partial.Witness)
+			pair.computeProcessingLatency(isRequest, t)
 
-		c.queueUpload(pair)
-		printer.Debugf("Completed witness %v at %v -- %v\n",
-			partial.PairKey, t.ObservationTime, t.FinalPacketTime)
+			// If partial is the request, flip the src/dst in the pair before
+			// reporting.
+			if isRequest {
+				pair.srcIP, pair.dstIP = pair.dstIP, pair.srcIP
+				pair.srcPort, pair.dstPort = pair.dstPort, pair.srcPort
+			}
 
+			c.queueUpload(pair)
+			printer.Debugf("Completed witness %v at %v -- %v\n",
+				partial.PairKey, t.ObservationTime, t.FinalPacketTime)
+		}()
 	} else {
 		// Store the partial witness for now, waiting for its pair or a
 		// flush timeout.
@@ -335,6 +347,14 @@ func excludeWitnessFromReproMode(w *pb.Witness) bool {
 }
 
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
+	if w.witnessFlushed {
+		printer.Debugf("Witness %v already flushed.\n", w.id)
+		return
+	}
+	defer func() {
+		w.witnessFlushed = true
+	}()
+
 	// Mark the method as not obfuscated.
 	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE
 
@@ -398,6 +418,11 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
+			// Lock the witness while it is being flushed
+			// and unlock it after it is deleted from pairCache
+			e.witnessMutex.Lock()
+			defer e.witnessMutex.Unlock()
+
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
 		}
