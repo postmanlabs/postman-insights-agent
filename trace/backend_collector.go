@@ -154,7 +154,7 @@ type BackendCollector struct {
 
 	plugins []plugin.AkitaPlugin
 
-	obfuscator *Obfuscator
+	redactor *Redactor
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -175,7 +175,7 @@ func NewBackendCollector(
 		flushDone:           make(chan struct{}),
 		plugins:             plugins,
 		sendWitnessPayloads: sendWitnessPayloads,
-		obfuscator:          NewObfuscator(),
+		redactor:            NewRedactor(),
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
@@ -371,9 +371,9 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		excludeWitnessFromReproMode(w.witness) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
-		c.obfuscator.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
+		c.redactor.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
 	} else {
-		c.obfuscator.RedactSensitiveData(w.witness.GetMethod())
+		c.redactor.RedactSensitiveData(w.witness.GetMethod())
 	}
 
 	c.uploadReportBatch.Add(rawReport{

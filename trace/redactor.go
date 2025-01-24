@@ -14,16 +14,17 @@ import (
 
 const redactionString = "*REDACTED*"
 
-type Obfuscator struct {
+// Replaces sensitive data with a redaction string.
+type Redactor struct {
 	SensitiveDataKeys          sets.Set[string]
 	SensitiveDataValuePatterns []*regexp.Regexp
 }
 
-func NewObfuscator() *Obfuscator {
-	// Load obfuscation config using relative path to load the config file.
+func NewRedactor() *Redactor {
+	// Load redaction config using relative path to load the config file.
 	config, err := loadConfigFromFile()
 	if err != nil {
-		printer.Errorf("failed to load obfuscation config: %v\n", err)
+		printer.Errorf("failed to load redaction config: %v\n", err)
 		return nil
 	}
 
@@ -31,18 +32,19 @@ func NewObfuscator() *Obfuscator {
 
 	// Compile regex patterns.
 	for i, pattern := range config.SensitiveValueRegexes {
-		// Panic if any pattern in invalid. Since the list is not user driven and is part of the agent, this is acceptable.
+		// Panic if any pattern is invalid. Since the list is not user driven and is
+		// part of the agent, this is acceptable.
 		sensitiveDataRegex[i] = regexp.MustCompile(pattern)
 	}
 
-	return &Obfuscator{
+	return &Redactor{
 		SensitiveDataKeys:          sets.NewSet(config.SensitiveKeys...),
 		SensitiveDataValuePatterns: sensitiveDataRegex,
 	}
 }
 
 // Replaces all primitive values in the given method with zero values.
-func (o *Obfuscator) ZeroAllPrimitivesInMethod(m *pb.Method) {
+func (o *Redactor) ZeroAllPrimitivesInMethod(m *pb.Method) {
 	var ov zeroPrimitivesVisitor
 	vis.Apply(&ov, m)
 
@@ -50,6 +52,7 @@ func (o *Obfuscator) ZeroAllPrimitivesInMethod(m *pb.Method) {
 	m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
 }
 
+// Replaces all primitive values with zero values.
 type zeroPrimitivesVisitor struct {
 	vis.DefaultSpecVisitorImpl
 }
@@ -75,31 +78,31 @@ func (*zeroPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorConte
 	return Continue
 }
 
-func (o *Obfuscator) RedactSensitiveData(m *pb.Method) {
+func (o *Redactor) RedactSensitiveData(m *pb.Method) {
 	pov := redactSensitiveInfoVisitor{
-		obfuscationOptions: o,
+		redactionOptions: o,
 	}
 	vis.Apply(&pov, m)
 }
 
 type redactSensitiveInfoVisitor struct {
 	vis.DefaultSpecVisitorImpl
-	obfuscationOptions *Obfuscator
+	redactionOptions *Redactor
 }
 
 var _ vis.DefaultSpecVisitor = (*redactSensitiveInfoVisitor)(nil)
 
-// EnterData processes the given data and obfuscates sensitive information based
-// on the provided obfuscation options. It does 3 checks to determine if the
+// EnterData processes the given data and redacts sensitive information based
+// on the provided redaction options. It does 3 checks to determine if the
 // data contains sensitive information:
 //
-// 1. It checks if spec is an HTTP Authorization or Cookie data and obfuscates
+// 1. It checks if spec is an HTTP Authorization or Cookie data and redacts
 // the value.
 //
-// 2. It checks if spec is an HTTP Header or Query Param data and obfuscates the
+// 2. It checks if spec is an HTTP Header or Query Param data and redacts the
 // value if the key is in the list of sensitive keys.
 //
-// 3. It applies regex patterns to all obfuscate sensitive primitive string
+// 3. It applies regex patterns to all redacts sensitive primitive string
 // values.
 func (s *redactSensitiveInfoVisitor) EnterData(self interface{}, ctx vis.SpecVisitorContext, d *pb.Data) Cont {
 	// Redact cookies and authorization headers.
@@ -124,7 +127,7 @@ func (s *redactSensitiveInfoVisitor) EnterData(self interface{}, ctx vis.SpecVis
 		innermostFieldPathElt := fieldPath[len(fieldPath)-1]
 		if innermostFieldPathElt.IsFieldName() {
 			fieldName := innermostFieldPathElt.String()
-			if s.obfuscationOptions.SensitiveDataKeys.Contains(strings.ToLower(fieldName)) {
+			if s.redactionOptions.SensitiveDataKeys.Contains(strings.ToLower(fieldName)) {
 				redactPrimitivesInIR(d)
 				return SkipChildren
 			}
@@ -150,7 +153,7 @@ func (s *redactSensitiveInfoVisitor) EnterHTTPMethodMeta(self interface{}, ctx v
 
 // Determines whether the given string is a sensitive value.
 func (s *redactSensitiveInfoVisitor) isSensitiveString(v string) bool {
-	for _, pattern := range s.obfuscationOptions.SensitiveDataValuePatterns {
+	for _, pattern := range s.redactionOptions.SensitiveDataValuePatterns {
 		if pattern.MatchString(v) {
 			return true
 		}

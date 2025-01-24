@@ -44,7 +44,7 @@ var testWitness *pb.Witness = &pb.Witness{
 }
 
 func TestRedaction16CharacterIdentifier(t *testing.T) {
-	o := NewObfuscator()
+	o := NewRedactor()
 
 	origVal1 := "aaaaaaaaaaaaaaaa"
 	origVal2 := "0123456789012345"
@@ -78,7 +78,7 @@ func TestRedaction16CharacterIdentifier(t *testing.T) {
 }
 
 func BenchmarkRedaction(b *testing.B) {
-	o := NewObfuscator()
+	o := NewRedactor()
 
 	b.ResetTimer()
 
@@ -88,7 +88,7 @@ func BenchmarkRedaction(b *testing.B) {
 }
 
 func BenchmarkObfuscation(b *testing.B) {
-	o := NewObfuscator()
+	o := NewRedactor()
 
 	b.ResetTimer()
 

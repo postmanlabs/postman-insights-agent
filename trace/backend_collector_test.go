@@ -52,8 +52,8 @@ func (wr *witnessRecorder) recordAsyncReportsUpload(args ...interface{}) {
 	}
 }
 
-// Make sure we obfuscate values before uploading.
-func TestObfuscate(t *testing.T) {
+// Make sure we redact values before uploading.
+func TestRedact(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -363,7 +363,7 @@ func TestFlushExit(t *testing.T) {
 	// Test should exit immediately
 }
 
-func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
+func TestOnlyRedactNonErrorResponses(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -515,7 +515,7 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 	}
 }
 
-func TestObfuscationConfigs(t *testing.T) {
+func TestRedactionConfigs(t *testing.T) {
 	// Prepare a test cases
 	streamID := uuid.New()
 	type testCase struct {
