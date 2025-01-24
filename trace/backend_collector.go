@@ -371,7 +371,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		excludeWitnessFromReproMode(w.witness) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
-		c.redactor.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
+		ObfuscateMethod(w.witness.GetMethod())
 	} else {
 		c.redactor.RedactSensitiveData(w.witness.GetMethod())
 	}

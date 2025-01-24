@@ -86,13 +86,3 @@ func BenchmarkRedaction(b *testing.B) {
 		o.RedactSensitiveData(testWitness.Method)
 	}
 }
-
-func BenchmarkObfuscation(b *testing.B) {
-	o := NewRedactor()
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		o.ZeroAllPrimitivesInMethod(testWitness.Method)
-	}
-}

@@ -84,7 +84,7 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 			// The witness exceeds our per-witness storage limit. Obfuscate it to
 			// reduce its size while retaining its typing information.
 			printer.Debugf("Obfuscating oversized witness (%d MB) captured on interface %s\n", len(witnessReport.WitnessProto)/1_000_000, w.netInterface)
-			buf.collector.redactor.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
+			ObfuscateMethod(w.witness.GetMethod())
 			witnessReport, err = w.toReport()
 			if err != nil {
 				printer.Warningf("Failed to convert obfuscated witness to report: %v\n", err)
