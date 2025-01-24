@@ -1,11 +1,19 @@
-package trace
+package data_masks
 
 import (
 	"testing"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/postmanlabs/postman-insights-agent/test_utils"
 	"github.com/stretchr/testify/assert"
+)
+
+var (
+	dataFromList              = test_utils.DataFromList
+	dataFromPrimitive         = test_utils.DataFromPrimitive
+	newTestBodySpecFromStruct = test_utils.NewTestBodySpecFromStruct
+	newTestHeaderSpec         = test_utils.NewTestHeaderSpec
 )
 
 var testWitness *pb.Witness = &pb.Witness{

@@ -22,6 +22,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
 	"github.com/postmanlabs/postman-insights-agent/test_utils"
 	"github.com/stretchr/testify/assert"
@@ -43,6 +44,8 @@ var (
 	newTestHeaderSpec            = test_utils.NewTestHeaderSpec
 	newTestMultipartFormDataSpec = test_utils.NewTestMultipartFormDataSpec
 	newTestQueryParamSpec        = test_utils.NewTestQueryParamSpec
+
+	redactionString = data_masks.RedactionString
 )
 
 type witnessRecorder struct {

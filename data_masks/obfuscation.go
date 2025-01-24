@@ -1,4 +1,4 @@
-package trace
+package data_masks
 
 import (
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"

@@ -21,6 +21,7 @@ import (
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/learn"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -154,7 +155,7 @@ type BackendCollector struct {
 
 	plugins []plugin.AkitaPlugin
 
-	redactor *Redactor
+	redactor *data_masks.Redactor
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -175,7 +176,7 @@ func NewBackendCollector(
 		flushDone:           make(chan struct{}),
 		plugins:             plugins,
 		sendWitnessPayloads: sendWitnessPayloads,
-		redactor:            NewRedactor(),
+		redactor:            data_masks.NewRedactor(),
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
@@ -371,7 +372,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		excludeWitnessFromReproMode(w.witness) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
-		ObfuscateMethod(w.witness.GetMethod())
+		data_masks.ObfuscateMethod(w.witness.GetMethod())
 	} else {
 		c.redactor.RedactSensitiveData(w.witness.GetMethod())
 	}

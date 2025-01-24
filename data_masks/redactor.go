@@ -1,4 +1,4 @@
-package trace
+package data_masks
 
 import (
 	"regexp"
@@ -12,7 +12,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
-const redactionString = "*REDACTED*"
+const RedactionString = "*REDACTED*"
 
 // Replaces sensitive data with a redaction string.
 type Redactor struct {
@@ -108,7 +108,7 @@ func (s *redactSensitiveInfoVisitor) EnterHTTPMethodMeta(self interface{}, ctx v
 	for i, segment := range pathSegments {
 		// Check if the path segment contains sensitive information.
 		if s.isSensitiveString(segment) {
-			pathSegments[i] = redactionString
+			pathSegments[i] = RedactionString
 		}
 	}
 
@@ -162,5 +162,5 @@ func (*redactPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorCon
 
 // Replaces the value in the given Primitive with the redaction string.
 func redactPrimitive(p *pb.Primitive) {
-	p.Value = spec_util.NewPrimitiveString(redactionString).Value
+	p.Value = spec_util.NewPrimitiveString(RedactionString).Value
 }
