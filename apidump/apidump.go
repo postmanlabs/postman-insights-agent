@@ -213,6 +213,7 @@ func (a *apidump) SendInitialTelemetry() {
 		ClientID:                  a.ClientID,
 		ObservedStartingAt:        a.startTime,
 		ObservedDurationInSeconds: a.StatsLogDelay,
+		SendsWitnessPayloads:      a.ReproMode,
 		CLIVersion:                version.ReleaseVersion().String(),
 		CLITargetArch:             architecture.GetCanonicalArch(),
 		AkitaDockerRelease:        env.InDocker(),
