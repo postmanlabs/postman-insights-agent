@@ -83,6 +83,12 @@ func TestRedact(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
 		Content: akinet.HTTPRequest{
@@ -112,7 +118,8 @@ func TestRedact(t *testing.T) {
 		},
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	assert.NoError(t, err)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -173,6 +180,12 @@ func TestTiming(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	streamID := uuid.New()
 	startTime := time.Now()
 
@@ -200,7 +213,8 @@ func TestTiming(t *testing.T) {
 		FinalPacketTime: startTime.Add(13 * time.Millisecond),
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	assert.NoError(t, err)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -221,8 +235,14 @@ func TestMultipleInterfaces(t *testing.T) {
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
 		Return(nil)
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
-	bc := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	bc, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	assert.NoError(t, err)
 
 	var wg sync.WaitGroup
 	fakeTrace := func(count int, start_seq int) {
@@ -294,6 +314,12 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
 		Content: akinet.HTTPRequest{
@@ -352,7 +378,8 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		},
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	assert.NoError(t, err)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Process(errReq))
@@ -1146,6 +1173,12 @@ func TestRedactionConfigs(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	i := -1
 	for name, testCase := range testCases {
 		i++
@@ -1154,7 +1187,8 @@ func TestRedactionConfigs(t *testing.T) {
 		req := akinet.ParsedNetworkTraffic{Content: testCase.request}
 		resp := akinet.ParsedNetworkTraffic{Content: testCase.response}
 
-		col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		assert.NoError(t, err)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))
 		assert.NoError(t, col.Close())

@@ -177,8 +177,11 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 	printer.Infof("Created new trace on Akita Cloud: %s\n", traceName)
 
 	b.summary = trace.NewPacketCounter()
-	b.collector = trace.NewBackendCollector(b.backendSvc, backendLrn, b.learnClient,
+	b.collector, err = trace.NewBackendCollector(b.backendSvc, backendLrn, b.learnClient,
 		optionals.Some(args.MaxWitnessSize_bytes), b.summary, false, args.Plugins)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to create backend collector for %s", b.backendSvc)
+	}
 
 	// TODO: rate-limit
 	// TODO: session rotation

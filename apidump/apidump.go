@@ -690,7 +690,11 @@ func (a *apidump) Run() error {
 			} else {
 				var backendCollector trace.Collector
 				if args.Out.AkitaURI != nil {
-					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.ReproMode, args.Plugins)
+					backendCollector, err = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.ReproMode, args.Plugins)
+					if err != nil {
+						return errors.Wrapf(err, "unable to create backend collector for %s", a.backendSvc)
+					}
+
 					collector = backendCollector
 				} else {
 					return errors.Errorf("invalid output location")

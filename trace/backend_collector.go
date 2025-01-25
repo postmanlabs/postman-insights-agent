@@ -65,7 +65,7 @@ type witnessWithInfo struct {
 	witness *pb.Witness
 }
 
-func (r witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
+func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 	// Hash algorithm defined in
 	// https://docs.google.com/document/d/1ZANeoLTnsO10DcuzsAt6PBCt2MWLYW8oeu_A6d9bTJk/edit#heading=h.tbvm9waph6eu
 	hash := ir_hash.HashWitnessToString(r.witness)
@@ -98,7 +98,7 @@ func (w *witnessWithInfo) recordTimestamp(isRequest bool, t akinet.ParsedNetwork
 
 }
 
-func (w witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
+func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
 	// Processing latency is the time from the last packet of the request,
 	// to the first packet of the response.
 	requestEnd := w.requestEnd
@@ -168,7 +168,11 @@ func NewBackendCollector(
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
 	plugins []plugin.AkitaPlugin,
-) Collector {
+) (Collector, error) {
+	redactor, err := data_masks.NewRedactor(svc, lc)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to instantiate redactor for %s", svc)
+	}
 	col := &BackendCollector{
 		serviceID:           svc,
 		learnSessionID:      lrn,
@@ -176,7 +180,7 @@ func NewBackendCollector(
 		flushDone:           make(chan struct{}),
 		plugins:             plugins,
 		sendWitnessPayloads: sendWitnessPayloads,
-		redactor:            data_masks.NewRedactor(),
+		redactor:            redactor,
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
@@ -186,7 +190,7 @@ func NewBackendCollector(
 
 	go col.periodicFlush()
 
-	return col
+	return col, nil
 }
 
 func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
@@ -383,6 +387,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 }
 
 func (c *BackendCollector) Close() error {
+	defer c.redactor.StopPeriodicUpdates()
 	close(c.flushDone)
 	c.flushPairCache(time.Now())
 	c.uploadReportBatch.Close()
