@@ -8,6 +8,7 @@ import (
 	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/akitasoftware/go-utils/slices"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
 type userRedactionConfig struct {
@@ -92,6 +93,9 @@ func (c *userRedactionConfig) update(
 	// Replace the active configuration with the new one.
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	printer.Debugln("updating user redaction config")
+	printer.Debugf("field names: %v", newFieldNames)
+	printer.Debugf("field name regexps: %v", newFieldNameRegexps)
 	c.fieldNames = newFieldNames
 	c.fieldNameRegexps = agentConfig.FieldsToRedact.FieldNameRegexps
 }
