@@ -97,7 +97,7 @@ func (c *userRedactionConfig) update(
 	printer.Debugf("field names: %v\n", newFieldNames.AsSlice())
 	printer.Debugf("field name regexps: %v\n", newFieldNameRegexps)
 	c.fieldNames = newFieldNames
-	c.fieldNameRegexps = agentConfig.FieldsToRedact.FieldNameRegexps
+	c.fieldNameRegexps = newFieldNameRegexps
 }
 
 func (c *userRedactionConfig) RLock() {
