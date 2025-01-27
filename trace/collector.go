@@ -98,8 +98,9 @@ func (sc *UserTrafficCollector) Close() error {
 
 // This is a shim to add packet counts based on payload type.
 type PacketCountCollector struct {
-	PacketCounts PacketCountConsumer
-	Collector    Collector
+	PacketCounts         PacketCountConsumer
+	Collector            Collector
+	SendSuccessTelemetry func()
 }
 
 // Don't record self-generated traffic in the breakdown by hostname,
@@ -121,6 +122,11 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			DstPort:      t.DstPort,
 			HTTPRequests: 1,
 		})
+		// only count the capture as success if we see total.Requests > 0 && total.HTTPResponses > 0
+		totalCounts := pc.PacketCounts.Get()
+		if totalCounts.HTTPResponses > 0 {
+			pc.SendSuccessTelemetry()
+		}
 	case akinet.HTTPResponse:
 		// TODO(cns): There's no easy way to get the host here to count HTTP
 		//    responses.  Revisit this if we ever add a pass to pair HTTP
@@ -131,6 +137,11 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			DstPort:       t.DstPort,
 			HTTPResponses: 1,
 		})
+		// only count the capture as success if we see total.Requests > 0 && total.HTTPResponses > 0
+		totalCounts := pc.PacketCounts.Get()
+		if totalCounts.HTTPRequests > 0 {
+			pc.SendSuccessTelemetry()
+		}
 	case akinet.TLSClientHello:
 		dstHost := HostnameUnavailable
 		if c.Hostname != nil {

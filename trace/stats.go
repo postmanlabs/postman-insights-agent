@@ -15,6 +15,9 @@ import (
 type PacketCountConsumer interface {
 	// Add an additional measurement to the current count
 	Update(delta PacketCounts)
+
+	// Get the current total counts
+	Get() PacketCounts
 }
 
 // Discard the count
@@ -125,6 +128,10 @@ func (s *PacketCounter) Update(c PacketCounts) {
 	})
 
 	s.total.Add(c)
+}
+
+func (s *PacketCounter) Get() PacketCounts {
+	return s.total
 }
 
 func (s *PacketCounter) Total() PacketCounts {
