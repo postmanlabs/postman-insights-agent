@@ -2,11 +2,12 @@ package data_masks
 
 import (
 	"regexp"
-	"slices"
+	go_slices "slices"
 	"sync"
 
 	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/go-utils/sets"
+	"github.com/akitasoftware/go-utils/slices"
 )
 
 type userRedactionConfig struct {
@@ -49,7 +50,17 @@ func (c *userRedactionConfig) update(
 	agentConfig *api_schema.ServiceAgentConfig,
 ) {
 	newFieldNames := sets.NewSet(agentConfig.FieldsToRedact.FieldNames...)
-	newFieldNameRegexps := agentConfig.FieldsToRedact.FieldNameRegexps
+
+	// Filter out empty regular expressions from the incoming configuration. These
+	// match everything, which is almost certainly not what is intended. If the
+	// user wants to match everything, they can use a different regular
+	// expression, such as `$`.
+	newFieldNameRegexps := slices.Filter(
+		agentConfig.FieldsToRedact.FieldNameRegexps,
+		func(re *regexp.Regexp) bool {
+			return len(re.String()) > 0
+		},
+	)
 
 	// Determine whether the two configurations are the same.
 	sameConfig := func() bool {
@@ -60,7 +71,7 @@ func (c *userRedactionConfig) update(
 			return false
 		}
 
-		if !slices.EqualFunc(
+		if !go_slices.EqualFunc(
 			c.fieldNameRegexps,
 			newFieldNameRegexps,
 			func(r1, r2 *regexp.Regexp) bool {
