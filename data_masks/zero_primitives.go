@@ -9,7 +9,7 @@ import (
 )
 
 // Replaces all primitive values in the given method with zero values.
-func ObfuscateMethod(m *pb.Method) {
+func ZeroAllPrimitivesInMethod(m *pb.Method) {
 	var ov zeroPrimitivesVisitor
 	vis.Apply(&ov, m)
 
