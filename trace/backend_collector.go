@@ -164,15 +164,12 @@ func NewBackendCollector(
 	svc akid.ServiceID,
 	lrn akid.LearnSessionID,
 	lc rest.LearnClient,
+	redactor *data_masks.Redactor,
 	maxWitnessSize_bytes optionals.Optional[int],
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
 	plugins []plugin.AkitaPlugin,
-) (Collector, error) {
-	redactor, err := data_masks.NewRedactor(svc, lc)
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to instantiate redactor for %s", svc)
-	}
+) Collector {
 	col := &BackendCollector{
 		serviceID:           svc,
 		learnSessionID:      lrn,
@@ -190,7 +187,7 @@ func NewBackendCollector(
 
 	go col.periodicFlush()
 
-	return col, nil
+	return col
 }
 
 func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {

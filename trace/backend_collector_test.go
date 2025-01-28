@@ -118,8 +118,19 @@ func TestRedact(t *testing.T) {
 		},
 	}
 
-	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		false,
+		nil,
+	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -213,8 +224,19 @@ func TestTiming(t *testing.T) {
 		FinalPacketTime: startTime.Add(13 * time.Millisecond),
 	}
 
-	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		false,
+		nil,
+	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -241,8 +263,19 @@ func TestMultipleInterfaces(t *testing.T) {
 		AnyTimes().
 		Return(kgxapi.NewServiceAgentConfig(), nil)
 
-	bc, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 	assert.NoError(t, err)
+
+	bc := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		false,
+		nil,
+	)
 
 	var wg sync.WaitGroup
 	fakeTrace := func(count int, start_seq int) {
@@ -378,8 +411,19 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		},
 	}
 
-	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		true,
+		nil,
+	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Process(errReq))
@@ -1187,8 +1231,19 @@ func TestRedactionConfigs(t *testing.T) {
 		req := akinet.ParsedNetworkTraffic{Content: testCase.request}
 		resp := akinet.ParsedNetworkTraffic{Content: testCase.response}
 
-		col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 		assert.NoError(t, err)
+
+		col := NewBackendCollector(
+			fakeSvc,
+			fakeLrn,
+			mockClient,
+			redactor,
+			optionals.None[int](),
+			NewPacketCounter(),
+			true,
+			nil,
+		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))
 		assert.NoError(t, col.Close())
