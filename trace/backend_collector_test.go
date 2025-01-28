@@ -24,7 +24,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
-	"github.com/postmanlabs/postman-insights-agent/test_utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,20 +32,7 @@ var (
 	fakeLrn = akid.NewLearnSessionID(uuid.Must(uuid.Parse("2b5dd735-9fc0-4365-93e8-74bf86d3f853")))
 )
 
-var (
-	dataFromList                 = test_utils.DataFromList
-	dataFromPrimitive            = test_utils.DataFromPrimitive
-	dataFromStruct               = test_utils.DataFromStruct
-	newTestAuthSpec              = test_utils.NewTestAuthSpec
-	newTestBodySpecFromData      = test_utils.NewTestBodySpecFromData
-	newTestBodySpecFromStruct    = test_utils.NewTestBodySpecFromStruct
-	newTestCookieSpec            = test_utils.NewTestCookieSpec
-	newTestHeaderSpec            = test_utils.NewTestHeaderSpec
-	newTestMultipartFormDataSpec = test_utils.NewTestMultipartFormDataSpec
-	newTestQueryParamSpec        = test_utils.NewTestQueryParamSpec
-
-	redactionString = data_masks.RedactionString
-)
+var redactionString = data_masks.RedactionString
 
 type witnessRecorder struct {
 	witnesses []*pb.Witness
@@ -175,6 +161,105 @@ func TestRedact(t *testing.T) {
 		actual := proto.MarshalTextString(rec.witnesses[i])
 		assert.Equal(t, expected, actual)
 	}
+}
+
+func dataFromPrimitive(p *pb.Primitive) *pb.Data {
+	return &pb.Data{Value: &pb.Data_Primitive{Primitive: p}}
+}
+
+func dataFromStruct(fields map[string]*pb.Data) *pb.Data {
+	return &pb.Data{Value: &pb.Data_Struct{Struct: &pb.Struct{Fields: fields}}}
+}
+
+func dataFromList(elems ...*pb.Data) *pb.Data {
+	return &pb.Data{Value: &pb.Data_List{List: &pb.List{Elems: elems}}}
+}
+
+func newTestBodySpecFromStruct(statusCode int, contentType pb.HTTPBody_ContentType, originalContentType string, s map[string]*pb.Data) *pb.Data {
+	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s))
+}
+
+func newTestBodySpecFromData(statusCode int, contentType pb.HTTPBody_ContentType, originalContentType string, d *pb.Data) *pb.Data {
+	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType)
+	return d
+}
+
+func newTestMultipartFormDataSpec(responseCode int, d *pb.Data) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Multipart{
+			Multipart: &pb.HTTPMultipart{
+				Type: "form-data",
+			},
+		},
+		ResponseCode: int32(responseCode),
+	})
+	return d
+}
+
+func newBodyDataMeta(responseCode int, contentType pb.HTTPBody_ContentType, originalContentType string) *pb.DataMeta {
+	return newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Body{
+			Body: &pb.HTTPBody{
+				ContentType: contentType,
+				OtherType:   originalContentType,
+			},
+		},
+		ResponseCode: int32(responseCode),
+	})
+}
+
+func newDataMeta(httpM *pb.HTTPMeta) *pb.DataMeta {
+	return &pb.DataMeta{
+		Meta: &pb.DataMeta_Http{
+			Http: httpM,
+		},
+	}
+}
+
+func newTestHeaderSpec(d *pb.Data, key string, responseCode int) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Header{
+			Header: &pb.HTTPHeader{
+				Key: key,
+			},
+		},
+		ResponseCode: int32(responseCode),
+	})
+	return d
+}
+
+func newTestQueryParamSpec(d *pb.Data, key string, responseCode int) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Query{
+			Query: &pb.HTTPQuery{
+				Key: key,
+			},
+		},
+		ResponseCode: int32(responseCode),
+	})
+	return d
+}
+
+func newTestAuthSpec(d *pb.Data, responseCode int) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Auth{
+			Auth: &pb.HTTPAuth{},
+		},
+		ResponseCode: int32(responseCode),
+	})
+	return d
+}
+
+func newTestCookieSpec(d *pb.Data, key string, responseCode int) *pb.Data {
+	d.Meta = newDataMeta(&pb.HTTPMeta{
+		Location: &pb.HTTPMeta_Cookie{
+			Cookie: &pb.HTTPCookie{
+				Key: key,
+			},
+		},
+		ResponseCode: int32(responseCode),
+	})
+	return d
 }
 
 // Verify processing latency computation
