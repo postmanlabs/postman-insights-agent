@@ -31,7 +31,7 @@ func newUserRedactionConfig(
 
 // Determines whether fields with the given name should be redacted according to
 // this configuration.
-func (c *userRedactionConfig) redactsFieldsNamed(fieldName string) bool {
+func (c *userRedactionConfig) redactFieldsNamed(fieldName string) bool {
 	if c.fieldNames.Contains(fieldName) {
 		return true
 	}

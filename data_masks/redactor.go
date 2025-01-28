@@ -126,14 +126,14 @@ func (o *Redactor) RedactSensitiveData(m *pb.Method) {
 
 // Determines whether fields with the given name should be redacted. Caller must
 // hold at least a read lock on muUserConfig.
-func (o *Redactor) redactsFieldsNamed(fieldName string) bool {
+func (o *Redactor) redactFieldsNamed(fieldName string) bool {
 	// Determine whether to redact based on default rules.
 	if o.SensitiveDataKeys.Contains(strings.ToLower(fieldName)) {
 		return true
 	}
 
 	// Determine whether to redact based on user settings.
-	if o.userConfig.redactsFieldsNamed(fieldName) {
+	if o.userConfig.redactFieldsNamed(fieldName) {
 		return true
 	}
 
@@ -182,7 +182,7 @@ func (s *redactSensitiveInfoVisitor) EnterData(self interface{}, ctx vis.SpecVis
 		innermostFieldPathElt := fieldPath[len(fieldPath)-1]
 		if innermostFieldPathElt.IsFieldName() {
 			fieldName := innermostFieldPathElt.String()
-			if s.redactionOptions.redactsFieldsNamed(fieldName) {
+			if s.redactionOptions.redactFieldsNamed(fieldName) {
 				redactPrimitivesInIR(d)
 				return SkipChildren
 			}
