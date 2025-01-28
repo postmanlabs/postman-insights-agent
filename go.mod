@@ -40,12 +40,12 @@ require (
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
 	golang.org/x/term v0.21.0
 	golang.org/x/text v0.16.0
-	google.golang.org/grpc v1.63.3
+	google.golang.org/grpc v1.57.2
 	gopkg.in/yaml.v2 v2.4.0
-	k8s.io/api v0.28.15
-	k8s.io/apimachinery v0.28.15
-	k8s.io/client-go v0.28.15
-	k8s.io/cri-api v0.28.15
+	k8s.io/api v0.26.3
+	k8s.io/apimachinery v0.26.3
+	k8s.io/client-go v0.26.3
+	k8s.io/cri-api v0.26.3
 	sigs.k8s.io/yaml v1.3.0
 )
 
@@ -71,7 +71,8 @@ require (
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.22.3 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/glog v1.2.0 // indirect
+	github.com/golang/glog v1.1.0 // indirect
+	github.com/google/gnostic v0.5.7-v3refs // indirect
 	github.com/google/gnostic-models v0.6.8 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.1 // indirect
