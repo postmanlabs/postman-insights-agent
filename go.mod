@@ -1,6 +1,6 @@
 module github.com/postmanlabs/postman-insights-agent
 
-go 1.18
+go 1.21
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
