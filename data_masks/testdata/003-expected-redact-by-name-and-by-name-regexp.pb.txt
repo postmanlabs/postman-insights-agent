@@ -1,0 +1,105 @@
+# api_spec.Witness proto
+
+method: {
+  id: {
+    api_type: HTTP_REST
+  }
+  args: {
+    key: "gwLpCbDEj9U="
+    value: {
+      primitive: {
+        string_value: {
+          value: "curl/8.11.1"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "User-Agent"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "h9izWKXxdQE="
+    value: {
+      primitive: {
+        string_value: {
+          value: "*/*"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Accept"
+          }
+        }
+      }
+    }
+  }
+  responses: {
+    key: "bogus hash"
+    value: {
+      struct: {
+        fields: {
+          key: "api-key"
+          value: {
+            primitive: {
+              string_value: {
+                value: "*REDACTED*"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "by-value-regexp"
+          value: {
+            primitive: {
+              string_value: {
+                value: "*REDACTED*"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "by-name"
+          value: {
+            primitive: {
+              string_value: {
+                value: "*REDACTED*"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "by-name-regexp"
+          value: {
+            primitive: {
+              string_value: {
+                value: "*REDACTED*"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "never"
+          value: {
+            primitive: {
+              string_value: {
+                value: "never redacted"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  meta: {
+    http: {
+      method: "GET"
+      path_template: "/"
+      host: "localhost:8080"
+    }
+  }
+}

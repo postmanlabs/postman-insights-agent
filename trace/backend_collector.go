@@ -21,6 +21,7 @@ import (
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/learn"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -64,7 +65,7 @@ type witnessWithInfo struct {
 	witness *pb.Witness
 }
 
-func (r witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
+func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 	// Hash algorithm defined in
 	// https://docs.google.com/document/d/1ZANeoLTnsO10DcuzsAt6PBCt2MWLYW8oeu_A6d9bTJk/edit#heading=h.tbvm9waph6eu
 	hash := ir_hash.HashWitnessToString(r.witness)
@@ -97,7 +98,7 @@ func (w *witnessWithInfo) recordTimestamp(isRequest bool, t akinet.ParsedNetwork
 
 }
 
-func (w witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
+func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
 	// Processing latency is the time from the last packet of the request,
 	// to the first packet of the response.
 	requestEnd := w.requestEnd
@@ -154,7 +155,7 @@ type BackendCollector struct {
 
 	plugins []plugin.AkitaPlugin
 
-	obfuscator *Obfuscator
+	redactor *data_masks.Redactor
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -163,6 +164,7 @@ func NewBackendCollector(
 	svc akid.ServiceID,
 	lrn akid.LearnSessionID,
 	lc rest.LearnClient,
+	redactor *data_masks.Redactor,
 	maxWitnessSize_bytes optionals.Optional[int],
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
@@ -175,7 +177,7 @@ func NewBackendCollector(
 		flushDone:           make(chan struct{}),
 		plugins:             plugins,
 		sendWitnessPayloads: sendWitnessPayloads,
-		obfuscator:          NewObfuscator(),
+		redactor:            redactor,
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
@@ -371,9 +373,9 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		excludeWitnessFromReproMode(w.witness) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
-		c.obfuscator.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
+		data_masks.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
 	} else {
-		c.obfuscator.RedactSensitiveData(w.witness.GetMethod())
+		c.redactor.RedactSensitiveData(w.witness.GetMethod())
 	}
 
 	c.uploadReportBatch.Add(rawReport{
@@ -382,6 +384,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 }
 
 func (c *BackendCollector) Close() error {
+	defer c.redactor.StopPeriodicUpdates()
 	close(c.flushDone)
 	c.flushPairCache(time.Now())
 	c.uploadReportBatch.Close()

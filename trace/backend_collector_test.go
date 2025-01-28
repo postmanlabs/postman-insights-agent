@@ -22,6 +22,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -30,6 +31,8 @@ var (
 	fakeSvc = akid.NewServiceID(uuid.Must(uuid.Parse("8b2cf196-87fe-4e53-a6b9-1452d7efb863")))
 	fakeLrn = akid.NewLearnSessionID(uuid.Must(uuid.Parse("2b5dd735-9fc0-4365-93e8-74bf86d3f853")))
 )
+
+var redactionString = data_masks.RedactionString
 
 type witnessRecorder struct {
 	witnesses []*pb.Witness
@@ -52,8 +55,8 @@ func (wr *witnessRecorder) recordAsyncReportsUpload(args ...interface{}) {
 	}
 }
 
-// Make sure we obfuscate values before uploading.
-func TestObfuscate(t *testing.T) {
+// Make sure we redact values before uploading.
+func TestRedact(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -65,6 +68,12 @@ func TestObfuscate(t *testing.T) {
 		Do(rec.recordAsyncReportsUpload).
 		AnyTimes().
 		Return(nil)
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
@@ -95,7 +104,19 @@ func TestObfuscate(t *testing.T) {
 		},
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		false,
+		nil,
+	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -255,6 +276,12 @@ func TestTiming(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	streamID := uuid.New()
 	startTime := time.Now()
 
@@ -282,7 +309,19 @@ func TestTiming(t *testing.T) {
 		FinalPacketTime: startTime.Add(13 * time.Millisecond),
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		false,
+		nil,
+	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -303,8 +342,25 @@ func TestMultipleInterfaces(t *testing.T) {
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
 		Return(nil)
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
-	bc := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+	assert.NoError(t, err)
+
+	bc := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		false,
+		nil,
+	)
 
 	var wg sync.WaitGroup
 	fakeTrace := func(count int, start_seq int) {
@@ -363,7 +419,7 @@ func TestFlushExit(t *testing.T) {
 	// Test should exit immediately
 }
 
-func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
+func TestOnlyRedactNonErrorResponses(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -375,6 +431,12 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 		Do(rec.recordAsyncReportsUpload).
 		AnyTimes().
 		Return(nil)
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
@@ -434,7 +496,19 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 		},
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		true,
+		nil,
+	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Process(errReq))
@@ -515,7 +589,7 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 	}
 }
 
-func TestObfuscationConfigs(t *testing.T) {
+func TestRedactionConfigs(t *testing.T) {
 	// Prepare a test cases
 	streamID := uuid.New()
 	type testCase struct {
@@ -1228,6 +1302,12 @@ func TestObfuscationConfigs(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	i := -1
 	for name, testCase := range testCases {
 		i++
@@ -1236,7 +1316,19 @@ func TestObfuscationConfigs(t *testing.T) {
 		req := akinet.ParsedNetworkTraffic{Content: testCase.request}
 		resp := akinet.ParsedNetworkTraffic{Content: testCase.response}
 
-		col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+		assert.NoError(t, err)
+
+		col := NewBackendCollector(
+			fakeSvc,
+			fakeLrn,
+			mockClient,
+			redactor,
+			optionals.None[int](),
+			NewPacketCounter(),
+			true,
+			nil,
+		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))
 		assert.NoError(t, col.Close())

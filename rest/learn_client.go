@@ -88,6 +88,19 @@ func (c *learnClientImpl) CreateLearnSession(ctx context.Context, baseSpecRef *k
 	return resp.ID, nil
 }
 
+func (c *learnClientImpl) GetDynamicAgentConfigForService(
+	ctx context.Context,
+	serviceID akid.ServiceID,
+) (*kgxapi.ServiceAgentConfig, error) {
+	var resp kgxapi.ServiceAgentConfig
+	p := path.Join("/v2/agent/services", c.serviceID.String(), "settings")
+	err := c.Get(ctx, p, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *learnClientImpl) AsyncReportsUpload(ctx context.Context, lrn akid.LearnSessionID, req *kgxapi.UploadReportsRequest) error {
 	req.ClientID = c.clientID
 	resp := map[string]interface{}{}

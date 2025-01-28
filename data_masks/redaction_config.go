@@ -1,4 +1,4 @@
-package trace
+package data_masks
 
 import (
 	"embed"
@@ -11,20 +11,20 @@ import (
 )
 
 var (
-	//go:embed obfuscation_config.yaml
-	obfucationFileFS embed.FS
+	//go:embed redaction_config.yaml
+	redactionFileFS embed.FS
 
 	onceConfigLoad sync.Once
-	config         obfuscationConfig
+	config         redactionConfig
 	configErr      error = nil
 )
 
-type obfuscationConfig struct {
+type redactionConfig struct {
 	SensitiveKeys         []string `yaml:"sensitive_keys"`
 	SensitiveValueRegexes []string `yaml:"sensitive_value_regexes"`
 }
 
-func (c *obfuscationConfig) sanitizeConfigData() bool {
+func (c *redactionConfig) sanitizeConfigData() bool {
 
 	// Convert all the keys to lower case and remove duplicates
 	keys := sets.NewSet[string]()
@@ -36,9 +36,9 @@ func (c *obfuscationConfig) sanitizeConfigData() bool {
 	return false
 }
 
-func loadConfigFromFile() (*obfuscationConfig, error) {
+func loadConfigFromFile() (*redactionConfig, error) {
 	onceConfigLoad.Do(func() {
-		data, err := obfucationFileFS.Open("obfuscation_config.yaml")
+		data, err := redactionFileFS.Open("redaction_config.yaml")
 		if err != nil {
 			configErr = errors.Wrap(err, "failed to open config file")
 		}
