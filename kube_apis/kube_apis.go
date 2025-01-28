@@ -1,9 +1,12 @@
 package kube_apis
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"strings"
 
+	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -48,10 +51,17 @@ func (kc *KubeClient) TearDown() {
 	kc.EventWatch.Stop()
 }
 
-// This watcher will create a new go-channel which will only forward the events belonging to the specific node
-// We can get the node from daemonset's node. But how will it help?
+// This watcher will create a new go-channel which will listen for all events in the cluster
 func (kc *KubeClient) initEventWatcher() {
-	// Not implemented
+	// Create a watch for pod events
+	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
+		Watch: true,
+	})
+	if err != nil {
+		log.Fatalf("Error creating watcher: %v", err)
+	}
+
+	kc.EventWatch = watcher
 }
 
 // Function to return the go-channel to listen to for getting events
@@ -61,10 +71,37 @@ func (kc *KubeClient) GetEventWatcher() (watch.Interface, error) {
 }
 
 func (kc *KubeClient) GetPodContainerImages(podName string) []string {
-	return nil
+	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
+	if err != nil {
+		log.Fatalf("Error getting pod: %v", err)
+	}
+
+	var containerImages []string
+	for _, container := range pod.Spec.Containers {
+		containerImages = append(containerImages, container.Image)
+	}
+
+	return containerImages
 }
 
 // Function to get main container's uuid in a pod
 func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error getting pod: %v", err)
+	}
+
+	if len(pod.Status.ContainerStatuses) > 0 {
+		containerID := pod.Status.ContainerStatuses[0].ContainerID
+
+		// Extract UUID from the container ID
+		parts := strings.Split(containerID, "://")
+		if len(parts) == 2 {
+			return parts[1], nil
+		} else {
+			return "", fmt.Errorf("invalid container ID: %s", containerID)
+		}
+	}
+
+	return "", fmt.Errorf("no container statuses found for pod: %s", podName)
 }
