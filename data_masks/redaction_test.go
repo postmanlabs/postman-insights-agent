@@ -8,6 +8,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/test"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/go-cmp/cmp"
@@ -30,28 +31,49 @@ func sortWitness(m1, m2 *api_spec.Witness) bool {
 	return proto.MarshalTextString(m1) < proto.MarshalTextString(m2)
 }
 
-func TestRedaction16CharacterIdentifier(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	mockClient := mockrest.NewMockLearnClient(ctrl)
-	defer ctrl.Finish()
+func TestRedaction(t *testing.T) {
+	testCases := map[string]struct {
+		agentConfig  optionals.Optional[*kgxapi.FieldRedactionConfig]
+		inputFile    string
+		expectedFile string
+	}{
+		// Expect values with 16-character identifiers to remain unchanged.
+		"16-character identifier": {
+			inputFile:    "002-witness.pb.txt",
+			expectedFile: "002-witness.pb.txt",
+		},
+	}
 
-	mockClient.
-		EXPECT().
-		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
-		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+	for testName, testCase := range testCases {
+		func() {
+			ctrl := gomock.NewController(t)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			defer ctrl.Finish()
 
-	o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
-	assert.NoError(t, err)
+			agentConfig := kgxapi.NewServiceAgentConfig()
+			if fieldsToRedact, exists := testCase.agentConfig.Get(); exists {
+				agentConfig.FieldsToRedact = fieldsToRedact
+			}
 
-	testWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", "002-witness.pb.txt"))
-	expectedWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", "002-witness.pb.txt"))
+			mockClient.
+				EXPECT().
+				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+				AnyTimes().
+				Return(agentConfig, nil)
 
-	o.RedactSensitiveData(testWitness.Method)
+			o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
+			assert.NoError(t, err)
 
-	// Expect witness to remain unchanged.
-	if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
-		t.Errorf("found diff:\n%s", diff)
+			testWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.inputFile))
+			expectedWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.expectedFile))
+
+			o.RedactSensitiveData(testWitness.Method)
+
+			// Expect witness to remain unchanged.
+			if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
+				t.Errorf("found unexpected diff in test case %q:\n%s", testName, diff)
+			}
+		}()
 	}
 }
 
