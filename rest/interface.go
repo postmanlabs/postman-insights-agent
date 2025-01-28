@@ -39,6 +39,13 @@ type LearnClient interface {
 	GetLearnSession(context.Context, akid.ServiceID, akid.LearnSessionID) (*kgxapi.LearnSession, error)
 	CreateLearnSession(context.Context, *kgxapi.APISpecReference, string, map[tags.Key]string) (akid.LearnSessionID, error)
 
+	// Fetches the agent's dynamic configuration for the given service, as
+	// specified by the user in the UI.
+	GetDynamicAgentConfigForService(
+		context.Context,
+		akid.ServiceID,
+	) (*kgxapi.ServiceAgentConfig, error)
+
 	// Uploads a batch of reports to Akita Cloud. This method is responsible for
 	// filling in the ClientID in the given ReportsUploadRequest.
 	AsyncReportsUpload(context.Context, akid.LearnSessionID, *kgxapi.UploadReportsRequest) error

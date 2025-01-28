@@ -23,6 +23,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
 	"github.com/postmanlabs/postman-insights-agent/ci"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/location"
@@ -654,6 +655,11 @@ func (a *apidump) Run() error {
 		go a.TelemetryWorker(stop)
 	}
 
+	redactor, err := data_masks.NewRedactor(a.backendSvc, a.learnClient)
+	if err != nil {
+		return errors.Wrapf(err, "unable to instantiate redactor for %s", a.backendSvc)
+	}
+
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
 	for _, filterState := range []filterState{matchedFilter, notMatchedFilter} {
@@ -690,7 +696,17 @@ func (a *apidump) Run() error {
 			} else {
 				var backendCollector trace.Collector
 				if args.Out.AkitaURI != nil {
-					backendCollector = trace.NewBackendCollector(a.backendSvc, backendLrn, a.learnClient, optionals.Some(a.MaxWitnessSize_bytes), summary, args.ReproMode, args.Plugins)
+					backendCollector = trace.NewBackendCollector(
+						a.backendSvc,
+						backendLrn,
+						a.learnClient,
+						redactor,
+						optionals.Some(a.MaxWitnessSize_bytes),
+						summary,
+						args.ReproMode,
+						args.Plugins,
+					)
+
 					collector = backendCollector
 				} else {
 					return errors.Errorf("invalid output location")
