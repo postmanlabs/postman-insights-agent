@@ -92,10 +92,12 @@ func (c *userRedactionConfig) update(
 
 	// Replace the active configuration with the new one.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	printer.Debugln("Updating user redaction config")
-	printer.Debugf("field names: %v\n", newFieldNames.AsSlice())
-	printer.Debugf("field name regexps: %v\n", newFieldNameRegexps)
+	defer func() {
+		c.mu.Unlock()
+		printer.Debugln("Updated user redaction config")
+		printer.Debugf("field names: %v\n", newFieldNames.AsSlice())
+		printer.Debugf("field name regexps: %v\n", newFieldNameRegexps)
+	}()
 	c.fieldNames = newFieldNames
 	c.fieldNameRegexps = newFieldNameRegexps
 }
