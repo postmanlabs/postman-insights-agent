@@ -2,6 +2,7 @@ package data_masks
 
 import (
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/akitasoftware/akita-ir/go/api_spec"
@@ -41,6 +42,36 @@ func TestRedaction(t *testing.T) {
 		"16-character identifier": {
 			inputFile:    "002-witness.pb.txt",
 			expectedFile: "002-witness.pb.txt",
+		},
+
+		"default redaction rules": {
+			inputFile:    "003-witness.pb.txt",
+			expectedFile: "003-expected-default-redaction.pb.txt",
+		},
+
+		"agent config: redact by name": {
+			agentConfig: optionals.Some(&kgxapi.FieldRedactionConfig{
+				FieldNames: []string{"by-name"},
+			}),
+			inputFile:    "003-witness.pb.txt",
+			expectedFile: "003-expected-redact-by-name.pb.txt",
+		},
+
+		"agent config: redact by name regexp": {
+			agentConfig: optionals.Some(&kgxapi.FieldRedactionConfig{
+				FieldNameRegexps: []*regexp.Regexp{regexp.MustCompile("nam.*xp$")},
+			}),
+			inputFile:    "003-witness.pb.txt",
+			expectedFile: "003-expected-redact-by-name-regexp.pb.txt",
+		},
+
+		"agent config: redact by name and by name regexp": {
+			agentConfig: optionals.Some(&kgxapi.FieldRedactionConfig{
+				FieldNames:       []string{"by-name"},
+				FieldNameRegexps: []*regexp.Regexp{regexp.MustCompile("nam.*xp$")},
+			}),
+			inputFile:    "003-witness.pb.txt",
+			expectedFile: "003-expected-redact-by-name-and-by-name-regexp.pb.txt",
 		},
 	}
 
