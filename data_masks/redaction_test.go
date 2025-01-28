@@ -100,7 +100,6 @@ func TestRedaction(t *testing.T) {
 
 			o.RedactSensitiveData(testWitness.Method)
 
-			// Expect witness to remain unchanged.
 			if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
 				t.Errorf("found unexpected diff in test case %q:\n%s", testName, diff)
 			}
