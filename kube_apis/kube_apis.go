@@ -3,9 +3,10 @@ package kube_apis
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 	"strings"
 
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -17,10 +18,11 @@ import (
 type KubeClient struct {
 	Clientset  *kubernetes.Clientset
 	EventWatch watch.Interface
+	AgentNode  string
 }
 
 // NewKubeClient initializes a new Kubernetes client
-func NewKubeClient() KubeClient {
+func NewKubeClient() (KubeClient, error) {
 	// Setup Kubernetes client
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -28,22 +30,28 @@ func NewKubeClient() KubeClient {
 		kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			log.Fatalf("Error building kubeconfig: %v", err)
+			return KubeClient{}, fmt.Errorf("Error building kubeconfig: %v", err)
 		}
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Fatalf("Error creating clientset: %v", err)
+		return KubeClient{}, fmt.Errorf("Error creating clientset: %v", err)
+	}
+
+	agentNodeName := os.Getenv("POSTMAN_K8S_NODE")
+	if agentNodeName == "" {
+		return KubeClient{}, fmt.Errorf("POSTMAN_K8S_NODE environment variable not set")
 	}
 
 	kubeClient := KubeClient{
 		Clientset: clientset,
+		AgentNode: agentNodeName,
 	}
 
 	// Initialize event watcher
 	kubeClient.initEventWatcher()
 
-	return kubeClient
+	return kubeClient, nil
 }
 
 // TearDown stops the event watcher
@@ -57,7 +65,7 @@ func (kc *KubeClient) initEventWatcher() {
 		Watch: true,
 	})
 	if err != nil {
-		log.Fatalf("Error creating watcher: %v", err)
+		printer.Errorf("Error creating watcher: %v", err)
 	}
 
 	kc.EventWatch = watcher
@@ -67,7 +75,7 @@ func (kc *KubeClient) initEventWatcher() {
 func (kc *KubeClient) GetPodContainerImages(podName string) []string {
 	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
 	if err != nil {
-		log.Fatalf("Error getting pod: %v", err)
+		printer.Errorf("Error getting pod: %v", err)
 	}
 
 	var containerImages []string
@@ -98,4 +106,31 @@ func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no container statuses found for pod: %s", podName)
+}
+
+// GetPodsInNode returns the names of all pods running in a given node
+func (kc *KubeClient) GetPodsInNode(nodeName string) ([]string, error) {
+	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+		FieldSelector: "spec.nodeName=" + nodeName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error getting pods: %v", err)
+	}
+
+	var podNames []string
+	for _, pod := range pods.Items {
+		podNames = append(podNames, pod.Name)
+	}
+
+	return podNames, nil
+}
+
+// GetPodStatus returns the status of a given pod
+func (kc *KubeClient) GetPodStatus(podName string) (string, error) {
+	pod, err := kc.Clientset.CoreV1().Pods("").Get(context.Background(), podName, metaV1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error getting pod: %v", err)
+	}
+
+	return string(pod.Status.Phase), nil
 }
