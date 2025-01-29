@@ -13,14 +13,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// KubeClient struct holds the Kubernetes clientset and event watcher
 type KubeClient struct {
-	// Kube Client struct
-	Clientset *kubernetes.Clientset
-
-	// Channel to listen to for events
+	Clientset  *kubernetes.Clientset
 	EventWatch watch.Interface
 }
 
+// NewKubeClient initializes a new Kubernetes client
 func NewKubeClient() KubeClient {
 	// Setup Kubernetes client
 	config, err := rest.InClusterConfig()
@@ -41,19 +40,19 @@ func NewKubeClient() KubeClient {
 		Clientset: clientset,
 	}
 
+	// Initialize event watcher
 	kubeClient.initEventWatcher()
 
 	return kubeClient
 }
 
+// TearDown stops the event watcher
 func (kc *KubeClient) TearDown() {
-	// Stop the event watch
 	kc.EventWatch.Stop()
 }
 
-// This watcher will create a new go-channel which will listen for all events in the cluster
+// initEventWatcher creates a new go-channel to listen for all events in the cluster
 func (kc *KubeClient) initEventWatcher() {
-	// Create a watch for pod events
 	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
 		Watch: true,
 	})
@@ -64,12 +63,7 @@ func (kc *KubeClient) initEventWatcher() {
 	kc.EventWatch = watcher
 }
 
-// Function to return the go-channel to listen to for getting events
-func (kc *KubeClient) GetEventWatcher() (watch.Interface, error) {
-	// Return the event watch channel
-	return nil, fmt.Errorf("not implemented")
-}
-
+// GetPodContainerImages returns the container images of a given pod
 func (kc *KubeClient) GetPodContainerImages(podName string) []string {
 	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
 	if err != nil {
@@ -84,7 +78,7 @@ func (kc *KubeClient) GetPodContainerImages(podName string) []string {
 	return containerImages
 }
 
-// Function to get main container's uuid in a pod
+// GetMainContainerUUID returns the UUID of the main container of a given pod
 func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
 	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
 	if err != nil {
