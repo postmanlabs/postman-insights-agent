@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/OneOfOne/xxhash"
 	"github.com/akitasoftware/akita-libs/akid"
@@ -13,6 +14,11 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/viper"
 )
+
+type SuccessTelemetry struct {
+	Channel chan struct{}
+	Once    sync.Once
+}
 
 type Collector interface {
 	// Hands new data from network to the collector. The implementation may choose
@@ -98,8 +104,9 @@ func (sc *UserTrafficCollector) Close() error {
 
 // This is a shim to add packet counts based on payload type.
 type PacketCountCollector struct {
-	PacketCounts PacketCountConsumer
-	Collector    Collector
+	PacketCounts     PacketCountConsumer
+	Collector        Collector
+	SuccessTelemetry *SuccessTelemetry
 }
 
 // Don't record self-generated traffic in the breakdown by hostname,
@@ -190,6 +197,11 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			SrcPort:   t.SrcPort,
 			DstPort:   t.DstPort,
 			Unparsed:  1,
+		})
+	}
+	if pc.PacketCounts.Get().HTTPRequests > 0 && pc.PacketCounts.Get().HTTPResponses > 0 {
+		pc.SuccessTelemetry.Once.Do(func() {
+			pc.SuccessTelemetry.Channel <- struct{}{}
 		})
 	}
 	return pc.Collector.Process(t)
