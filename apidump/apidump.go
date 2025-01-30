@@ -437,8 +437,7 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 				subsequentTelemetrySent = true
 			case <-a.successTelemetry.Channel:
 				if !subsequentTelemetrySent {
-					duration := int(time.Since(a.startTime) / time.Second)
-					a.SendPacketTelemetry(duration)
+					a.SendPacketTelemetry(a.TelemetryInterval)
 				}
 			}
 		}
