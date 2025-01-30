@@ -17,7 +17,6 @@ import (
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 	"github.com/akitasoftware/akita-libs/tags"
-	"github.com/akitasoftware/go-utils/math"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
@@ -149,9 +148,9 @@ type apidump struct {
 	backendSvcName string
 	learnClient    rest.LearnClient
 
-	startTime            time.Time
-	dumpSummary          *Summary
-	successTelemetrySent bool
+	startTime        time.Time
+	dumpSummary      *Summary
+	successTelemetry *trace.SuccessTelemetry
 }
 
 // Start a new apidump session based on the given arguments.
@@ -159,6 +158,10 @@ func newSession(args *Args) *apidump {
 	a := &apidump{
 		Args:      args,
 		startTime: time.Now(),
+		successTelemetry: &trace.SuccessTelemetry{
+			Channel: make(chan struct{}),
+			Once:    sync.Once{},
+		},
 	}
 	return a
 }
@@ -226,20 +229,6 @@ func (a *apidump) SendInitialTelemetry() {
 		printer.Stderr.Errorf("Failed to send initial telemetry statistics: %s\n", err)
 		telemetry.Error("telemetry", err)
 	}
-}
-
-// Send a message to the backend that we have successfully captured HTTP traffic
-func (a *apidump) SendSuccessTelemetry() {
-	// Do not send packet capture telemetry for local captures or if we have already sent it once.
-	if !a.TargetIsRemote() || a.successTelemetrySent {
-		return
-	}
-
-	req := &kgxapi.PostClientPacketCaptureStatsRequest{
-		ObservedDurationInSeconds: a.TelemetryInterval,
-	}
-	a.SendTelemetry(req)
-	a.successTelemetrySent = true
 }
 
 // Send a message to the backend indicating failure to start and a cause
@@ -434,6 +423,7 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 
 	a.SendInitialTelemetry()
 
+	subsequentTelemetrySent := false
 	if a.TelemetryInterval > 0 {
 		ticker := time.NewTicker(time.Duration(a.TelemetryInterval) * time.Second)
 
@@ -442,12 +432,14 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 			case <-done:
 				return
 			case now := <-ticker.C:
-				// Print telemetry data.
-				printer.Stderr.Infof("Printing packet capture statistics every %d seconds after capture.\n", a.TelemetryInterval)
-				a.dumpSummary.PrintPacketCounts()
-				a.dumpSummary.PrintWarnings()
 				duration := int(now.Sub(a.startTime) / time.Second)
 				a.SendPacketTelemetry(duration)
+				subsequentTelemetrySent = true
+			case <-a.successTelemetry.Channel:
+				if !subsequentTelemetrySent {
+					duration := int(time.Since(a.startTime) / time.Second)
+					a.SendPacketTelemetry(duration)
+				}
 			}
 		}
 	}
@@ -640,15 +632,8 @@ func (a *apidump) Run() error {
 	// when the main collection process does.
 	if a.TargetIsRemote() {
 		{
-			// Record the first resource usage data slightly before the
-			// telemetry interval log delay to ensure we include usage data in the first
-			// telemetry upload.
-			var delay time.Duration
-			if 0 < a.TelemetryInterval {
-				delay = time.Duration(math.Max(a.TelemetryInterval-5, 1)) * time.Second
-			}
-
-			go usage.Poll(stop, delay, time.Duration(a.ProcFSPollingInterval)*time.Second)
+			// Record the first usage immediately (sending delay = 0) since we want to include it in the success telemetry
+			go usage.Poll(stop, 0, time.Duration(a.ProcFSPollingInterval)*time.Second)
 		}
 
 		go a.TelemetryWorker(stop)
@@ -708,9 +693,9 @@ func (a *apidump) Run() error {
 			// trace is empty or not.)  In the future we could add columns for both
 			// pre- and post-filtering.
 			collector = &trace.PacketCountCollector{
-				PacketCounts:         summary,
-				Collector:            collector,
-				SendSuccessTelemetry: a.SendSuccessTelemetry,
+				PacketCounts:     summary,
+				Collector:        collector,
+				SuccessTelemetry: a.successTelemetry,
 			}
 
 			// Subsampling.

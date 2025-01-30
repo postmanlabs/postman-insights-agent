@@ -131,6 +131,8 @@ func (s *PacketCounter) Update(c PacketCounts) {
 }
 
 func (s *PacketCounter) Get() PacketCounts {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 	return s.total
 }
 

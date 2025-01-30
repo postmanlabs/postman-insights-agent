@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/OneOfOne/xxhash"
 	"github.com/akitasoftware/akita-libs/akid"
@@ -13,6 +14,11 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/viper"
 )
+
+type SuccessTelemetry struct {
+	Channel chan struct{}
+	Once    sync.Once
+}
 
 type Collector interface {
 	// Hands new data from network to the collector. The implementation may choose
@@ -98,9 +104,9 @@ func (sc *UserTrafficCollector) Close() error {
 
 // This is a shim to add packet counts based on payload type.
 type PacketCountCollector struct {
-	PacketCounts         PacketCountConsumer
-	Collector            Collector
-	SendSuccessTelemetry func()
+	PacketCounts     PacketCountConsumer
+	Collector        Collector
+	SuccessTelemetry *SuccessTelemetry
 }
 
 // Don't record self-generated traffic in the breakdown by hostname,
@@ -122,11 +128,6 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			DstPort:      t.DstPort,
 			HTTPRequests: 1,
 		})
-		// only count the capture as success if we see total.Requests > 0 && total.HTTPResponses > 0
-		totalCounts := pc.PacketCounts.Get()
-		if totalCounts.HTTPResponses > 0 {
-			pc.SendSuccessTelemetry()
-		}
 	case akinet.HTTPResponse:
 		// TODO(cns): There's no easy way to get the host here to count HTTP
 		//    responses.  Revisit this if we ever add a pass to pair HTTP
@@ -137,11 +138,6 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			DstPort:       t.DstPort,
 			HTTPResponses: 1,
 		})
-		// only count the capture as success if we see total.Requests > 0 && total.HTTPResponses > 0
-		totalCounts := pc.PacketCounts.Get()
-		if totalCounts.HTTPRequests > 0 {
-			pc.SendSuccessTelemetry()
-		}
 	case akinet.TLSClientHello:
 		dstHost := HostnameUnavailable
 		if c.Hostname != nil {
@@ -201,6 +197,11 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			SrcPort:   t.SrcPort,
 			DstPort:   t.DstPort,
 			Unparsed:  1,
+		})
+	}
+	if pc.PacketCounts.Get().HTTPRequests > 0 && pc.PacketCounts.Get().HTTPResponses > 0 {
+		pc.SuccessTelemetry.Once.Do(func() {
+			pc.SuccessTelemetry.Channel <- struct{}{}
 		})
 	}
 	return pc.Collector.Process(t)
