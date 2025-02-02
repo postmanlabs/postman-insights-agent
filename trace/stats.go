@@ -16,8 +16,8 @@ type PacketCountConsumer interface {
 	// Add an additional measurement to the current count
 	Update(delta PacketCounts)
 
-	// Get the current total counts
-	Get() PacketCounts
+	// Returns true if we have successfully received at least one request and a response
+	HasRequestAndResponse() bool
 }
 
 // Discard the count
@@ -130,10 +130,10 @@ func (s *PacketCounter) Update(c PacketCounts) {
 	s.total.Add(c)
 }
 
-func (s *PacketCounter) Get() PacketCounts {
+func (s *PacketCounter) HasRequestAndResponse() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return s.total
+	return s.total.HTTPRequests > 0 && s.total.HTTPResponses > 0
 }
 
 func (s *PacketCounter) Total() PacketCounts {

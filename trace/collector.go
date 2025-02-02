@@ -199,14 +199,17 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			Unparsed:  1,
 		})
 	}
-	if pc.PacketCounts.Get().HTTPRequests > 0 && pc.PacketCounts.Get().HTTPResponses > 0 {
-		pc.SuccessTelemetry.Once.Do(func() {
-			pc.SuccessTelemetry.Channel <- struct{}{}
-		})
+	if pc.PacketCounts.HasRequestAndResponse() {
+		pc.SendSuccessTelemetry()
 	}
 	return pc.Collector.Process(t)
 }
 
+func (pc *PacketCountCollector) SendSuccessTelemetry() {
+	pc.SuccessTelemetry.Once.Do(func() {
+		pc.SuccessTelemetry.Channel <- struct{}{}
+	})
+}
 func (pc *PacketCountCollector) Close() error {
 	return pc.Collector.Close()
 }
