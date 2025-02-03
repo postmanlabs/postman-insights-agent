@@ -32,7 +32,6 @@ var (
 	execCommandUserFlag     string
 	pluginsFlag             []string
 	traceRotateFlag         string
-	statsLogDelay           int
 	telemetryInterval       int
 	procFSPollingInterval   int
 	collectTCPAndTLSReports bool
@@ -212,7 +211,6 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 		ExecCommandUser:         execCommandUserFlag,
 		Plugins:                 plugins,
 		LearnSessionLifetime:    traceRotateInterval,
-		StatsLogDelay:           statsLogDelay,
 		TelemetryInterval:       telemetryInterval,
 		ProcFSPollingInterval:   procFSPollingInterval,
 		CollectTCPAndTLSReports: collectTCPAndTLSReports,
@@ -308,13 +306,6 @@ func init() {
 		"Interval at which the trace will be rotated to a new learn session.",
 	)
 	Cmd.Flags().MarkHidden("trace-rotate")
-
-	Cmd.Flags().IntVar(
-		&statsLogDelay,
-		"stats-log-delay",
-		apispec.DefaultStatsLogDelay_seconds,
-		"Print packet capture statistics after N seconds.",
-	)
 
 	Cmd.Flags().IntVar(
 		&telemetryInterval,
