@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/postmanlabs/postman-insights-agent/printer"
+	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -30,12 +30,12 @@ func NewKubeClient() (KubeClient, error) {
 		kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return KubeClient{}, fmt.Errorf("Error building kubeconfig: %v", err)
+			return KubeClient{}, fmt.Errorf("error building kubeconfig: %v", err)
 		}
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return KubeClient{}, fmt.Errorf("Error creating clientset: %v", err)
+		return KubeClient{}, fmt.Errorf("error creating clientset: %v", err)
 	}
 
 	agentNodeName := os.Getenv("POSTMAN_K8S_NODE")
@@ -49,7 +49,10 @@ func NewKubeClient() (KubeClient, error) {
 	}
 
 	// Initialize event watcher
-	kubeClient.initEventWatcher()
+	err = kubeClient.initEventWatcher()
+	if err != nil {
+		return KubeClient{}, err
+	}
 
 	return kubeClient, nil
 }
@@ -60,22 +63,37 @@ func (kc *KubeClient) TearDown() {
 }
 
 // initEventWatcher creates a new go-channel to listen for all events in the cluster
-func (kc *KubeClient) initEventWatcher() {
+func (kc *KubeClient) initEventWatcher() error {
 	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
 		Watch: true,
 	})
 	if err != nil {
-		printer.Errorf("Error creating watcher: %v", err)
+		return fmt.Errorf("error creating watcher: %v", err)
 	}
 
 	kc.EventWatch = watcher
+	return nil
+}
+
+func (kc *KubeClient) getPod(podName string) (coreV1.Pod, error) {
+	fieldSelector := fmt.Sprintf("metadata.name=%s", podName)
+	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		return coreV1.Pod{}, fmt.Errorf("error getting pods: %v", err)
+	}
+	if len(pods.Items) == 0 {
+		return coreV1.Pod{}, fmt.Errorf("pod not found: %s", podName)
+	}
+	return pods.Items[0], nil
 }
 
 // GetPodContainerImages returns the container images of a given pod
-func (kc *KubeClient) GetPodContainerImages(podName string) []string {
-	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
+func (kc *KubeClient) GetPodContainerImages(podName string) ([]string, error) {
+	pod, err := kc.getPod(podName)
 	if err != nil {
-		printer.Errorf("Error getting pod: %v", err)
+		return nil, err
 	}
 
 	var containerImages []string
@@ -83,14 +101,14 @@ func (kc *KubeClient) GetPodContainerImages(podName string) []string {
 		containerImages = append(containerImages, container.Image)
 	}
 
-	return containerImages
+	return containerImages, nil
 }
 
 // GetMainContainerUUID returns the UUID of the main container of a given pod
 func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
-	pod, err := kc.Clientset.CoreV1().Pods("default").Get(context.Background(), podName, metaV1.GetOptions{})
+	pod, err := kc.getPod(podName)
 	if err != nil {
-		return "", fmt.Errorf("error getting pod: %v", err)
+		return "", err
 	}
 
 	if len(pod.Status.ContainerStatuses) > 0 {
@@ -110,8 +128,9 @@ func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
 
 // GetPodsInNode returns the names of all pods running in a given node
 func (kc *KubeClient) GetPodsInNode(nodeName string) ([]string, error) {
+	fieldSelector := fmt.Sprintf("spec.nodeName=%s", nodeName)
 	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-		FieldSelector: "spec.nodeName=" + nodeName,
+		FieldSelector: fieldSelector,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("error getting pods: %v", err)
@@ -127,9 +146,9 @@ func (kc *KubeClient) GetPodsInNode(nodeName string) ([]string, error) {
 
 // GetPodStatus returns the status of a given pod
 func (kc *KubeClient) GetPodStatus(podName string) (string, error) {
-	pod, err := kc.Clientset.CoreV1().Pods("").Get(context.Background(), podName, metaV1.GetOptions{})
+	pod, err := kc.getPod(podName)
 	if err != nil {
-		return "", fmt.Errorf("error getting pod: %v", err)
+		return "", err
 	}
 
 	return string(pod.Status.Phase), nil
