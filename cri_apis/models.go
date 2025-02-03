@@ -1,9 +1,5 @@
 package cri_apis
 
-import (
-	pb "k8s.io/cri-api/pkg/apis/runtime/v1"
-)
-
 type LinuxNamespace struct {
 	Type string `json:"type"`
 	Path string `json:"path"`
@@ -38,7 +34,6 @@ type ContainerInfo struct {
 	Config Config `json:"config"`
 }
 
-type ContainerResponse struct {
-	Status *pb.ContainerStatus `json:"status,omitempty"`
-	Info   *ContainerInfo      `json:"info,omitempty"`
+type ContainerInfoWrapper struct {
+	Info ContainerInfo `json:"info"`
 }

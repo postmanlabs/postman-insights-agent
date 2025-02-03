@@ -10,47 +10,53 @@ import (
 )
 
 const (
+	// Context timeout for all CRI operations
 	connectionTimeout = 2 * time.Second
 )
 
+// Default runtime endpoints to try connecting to if no endpoint is provided
 var defaultRuntimeEndpoints = []string{"unix:///run/containerd/containerd.sock", "unix:///run/crio/crio.sock", "unix:///var/run/cri-dockerd.sock"}
 
 // CriClient struct holds the runtime service client
 type CriClient struct {
-	runtime runtime.RuntimeServiceClient
+	runtimeService *remoteRuntimeService
 }
 
 // NewCRIClient initializes a new CRI client
 func NewCRIClient(criEndpoint string) (*CriClient, error) {
 	var (
-		client runtime.RuntimeServiceClient
-		err    error
+		service *remoteRuntimeService
+		err     error
 	)
 
 	if criEndpoint != "" {
-		client, err = newRemoteRuntimeServiceClient(criEndpoint, connectionTimeout)
+		service, err = newRemoteRuntimeService(criEndpoint, connectionTimeout)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		printer.Infof("No CRI endpoint provided, trying default endpoints")
+		printer.Infof("No CRI endpoint provided, trying default endpoints\n")
 		// Fallback mechanism to try connecting to default endpoints
 		// It will slow down the agent startup since each connection will take
 		// some time before timing out.
 		for _, endpoint := range defaultRuntimeEndpoints {
-			client, err = newRemoteRuntimeServiceClient(endpoint, connectionTimeout)
+			service, err = newRemoteRuntimeService(endpoint, connectionTimeout)
 			if err != nil {
-				printer.Infof("Failed to connect to %s: %v", endpoint, err)
+				printer.Debugf("Failed to connect to %s: %v\n", endpoint, err)
 				continue
 			} else {
-				printer.Infof("Connected to %s", endpoint)
+				printer.Debugf("Connected to %s\n", endpoint)
 				break
 			}
 		}
 	}
 
+	if service == nil {
+		return nil, fmt.Errorf("failed to connect to CRI runtime")
+	}
+
 	criClient := CriClient{
-		runtime: client,
+		runtimeService: service,
 	}
 
 	return &criClient, nil
@@ -62,12 +68,15 @@ func (cc *CriClient) inspectContainer(containerID string) (ContainerInfo, error)
 		ContainerId: containerID,
 		Verbose:     true, // Needed to get info object
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cc.runtimeService.timeout)
+	defer cancel()
+
 	// Inspect the container
-	resp, err := cc.runtime.ContainerStatus(context.Background(), containerStatusRequest)
+	resp, err := cc.runtimeService.runtimeClient.ContainerStatus(ctx, containerStatusRequest)
 	if err != nil {
 		return ContainerInfo{}, err
 	}
-	printer.Debugf("Container Response: %v", resp)
 
 	containerInfo, err := convertContainerInfo(resp.Info)
 	if err != nil {

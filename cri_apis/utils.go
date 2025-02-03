@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 )
 
 const (
@@ -64,19 +65,35 @@ func parseEndpoint(endpoint string) (string, string, error) {
 
 // convertContainerInfo converts a map of container information to a ContainerInfo struct
 func convertContainerInfo(info map[string]string) (ContainerInfo, error) {
-	var result ContainerInfo
+	var result ContainerInfoWrapper
 
-	// First convert map to JSON
-	jsonBytes, err := json.Marshal(info)
+	// Convert map[string]string to map[string]any{}
+	infoMap := map[string]any{}
+	for key, val := range info {
+		if strings.HasPrefix(val, "{") {
+			// Assume a JSON object
+			var genericVal map[string]any
+			if err := json.Unmarshal([]byte(val), &genericVal); err != nil {
+				return ContainerInfo{}, err
+			}
+			infoMap[key] = genericVal
+		} else {
+			// Assume a string and remove any double quotes
+			infoMap[key] = strings.Trim(val, `"`)
+		}
+	}
+
+	// Marshal map to JSON
+	jsonBytes, err := json.Marshal(infoMap)
 	if err != nil {
 		return ContainerInfo{}, err
 	}
 
-	// Then unmarshal JSON to struct
+	// Unmarshal JSON to struct
 	err = json.Unmarshal(jsonBytes, &result)
 	if err != nil {
 		return ContainerInfo{}, err
 	}
 
-	return result, nil
+	return result.Info, nil
 }
