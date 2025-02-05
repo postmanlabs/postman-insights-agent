@@ -86,3 +86,13 @@ func (c *frontClientImpl) CreateService(ctx context.Context, serviceName string,
 
 	return resp, err
 }
+
+func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error {
+	var (
+		resp struct{}
+		// TODO(K8s-MNS): Replace it with akita-libs object
+		req struct{}
+	)
+	path := "/v2/agent/daemonset/telemetry"
+	return c.Post(ctx, path, req, &resp)
+}

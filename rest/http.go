@@ -118,8 +118,20 @@ func sendRequest(ctx context.Context, req *http.Request) ([]byte, error) {
 	}
 
 	postmanAPIKey, postmanEnv := cfg.GetPostmanAPIKeyAndEnvironment()
+	postmanInsightsVerificationToken := cfg.GetPostmanInsightsVerificationToken()
 
-	if postmanAPIKey == "" {
+	if postmanAPIKey != "" {
+		// Set postman API key as header
+		req.Header.Set("x-api-key", postmanAPIKey)
+
+		// Set postman env header if it exists
+		if postmanEnv != "" {
+			req.Header.Set("x-postman-env", postmanEnv)
+		}
+	} else if postmanInsightsVerificationToken != "" {
+		// Set postman team verification token as header
+		req.Header.Set("postman-insights-verification-token ", postmanInsightsVerificationToken)
+	} else {
 		// XXX Integration tests still use Akita API keys.
 		apiKeyID, apiKeySecret := cfg.GetAPIKeyAndSecret()
 
@@ -132,15 +144,6 @@ func sendRequest(ctx context.Context, req *http.Request) ([]byte, error) {
 		}
 
 		req.SetBasicAuth(apiKeyID, apiKeySecret)
-	} else {
-		// Set postman API key as header
-		req.Header.Set("x-api-key", postmanAPIKey)
-
-		// Set postman env header if it exists
-		if postmanEnv != "" {
-			req.Header.Set("x-postman-env", postmanEnv)
-		}
-
 	}
 
 	req.Header.Set("user-agent", GetUserAgent())
