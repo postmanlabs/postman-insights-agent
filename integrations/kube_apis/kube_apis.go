@@ -43,7 +43,7 @@ func NewKubeClient() KubeClient {
 	return kubeClient
 }
 
-func (kc *KubeClient) TearDown() {
+func (kc *KubeClient) Close() {
 	// Stop the event watch
 	kc.EventWatch.Stop()
 }
