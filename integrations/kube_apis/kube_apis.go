@@ -58,7 +58,7 @@ func NewKubeClient() (KubeClient, error) {
 }
 
 // TearDown stops the event watcher
-func (kc *KubeClient) TearDown() {
+func (kc *KubeClient) Close() {
 	kc.EventWatch.Stop()
 }
 
