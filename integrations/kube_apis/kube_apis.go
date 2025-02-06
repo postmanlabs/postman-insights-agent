@@ -96,7 +96,7 @@ func (kc *KubeClient) FilterPodsByContainerImage(pods []coreV1.Pod, containerIma
 
 	for _, pod := range pods {
 		for _, container := range pod.Spec.Containers {
-			if strings.EqualFold(containerImage, container.Image) != negate {
+			if isImageEqual(containerImage, container.Image) != negate {
 				filteredPods = append(filteredPods, pod)
 				break
 			}
