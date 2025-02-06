@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/rest"
@@ -17,6 +18,11 @@ const (
 
 type Args struct {
 	ClusterName string
+}
+
+type ApidumpArgs struct {
+	InsightsProjectID akid.ServiceID
+	InsightsAPIKey    string
 }
 
 type Daemonset struct {
@@ -77,6 +83,10 @@ func (d *Daemonset) PodsHealthWorker() {
 	// Not implemented
 }
 
-func (d *Daemonset) StartApiDumpProcess() error {
+func (d *Daemonset) StartApiDumpProcess(args ApidumpArgs) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (d *Daemonset) StopApiDumpProcess() error {
 	return fmt.Errorf("not implemented")
 }
