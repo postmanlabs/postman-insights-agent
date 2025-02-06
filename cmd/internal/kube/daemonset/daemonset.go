@@ -93,39 +93,12 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 
 	// Iterate over each pod without the agent sidecar
 	for _, pod := range podsWithoutAgentSidecar {
-		// Get the UUID of the main container in the pod
-		containerUUID, err := d.KubeClient.GetMainContainerUUID(pod)
+		args, err := d.inspectPodForEnvVars(pod)
 		if err != nil {
-			return fmt.Errorf("failed to get main container UUID: %w", err)
+			printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
 		}
 
-		// Get the environment variables of the main container
-		envVars, err := d.CRIClient.GetEnvVars(containerUUID)
-		if err != nil {
-			return fmt.Errorf("failed to get environment variables for container %s: %w", containerUUID, err)
-		}
-
-		var (
-			insightsProjectID akid.ServiceID
-			insightsAPIKey    string
-		)
-
-		// Extract the necessary environment variables
-		for key, value := range envVars {
-			if key == "POSTMAN_INSIGHTS_PROJECT_ID" {
-				err := akid.ParseIDAs(value, &insightsProjectID)
-				if err != nil {
-					return errors.Wrap(err, "failed to parse project ID")
-				}
-			} else if key == "POSTMAN_INSIGHTS_API_KEY" {
-				insightsAPIKey = value
-			}
-		}
-
-		// If both the project ID and API key are found, start the API dump process
-		if (insightsProjectID != akid.ServiceID{}) && insightsAPIKey != "" {
-			//TODO: Call StartApiDumpProcess
-		}
+		err = d.StartApiDumpProcess(args)
 	}
 
 	return nil
