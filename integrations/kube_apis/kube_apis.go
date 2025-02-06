@@ -124,7 +124,7 @@ func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 }
 
 // GetPodsInNode returns the names of all pods running in a given node
-func (kc *KubeClient) GetPodsInNode(nodeName string) ([]string, error) {
+func (kc *KubeClient) GetPodsInNode(nodeName string) ([]coreV1.Pod, error) {
 	fieldSelector := fmt.Sprintf("spec.nodeName=%s", nodeName)
 	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
@@ -133,12 +133,7 @@ func (kc *KubeClient) GetPodsInNode(nodeName string) ([]string, error) {
 		return nil, fmt.Errorf("error getting pods: %v", err)
 	}
 
-	var podNames []string
-	for _, pod := range pods.Items {
-		podNames = append(podNames, pod.Name)
-	}
-
-	return podNames, nil
+	return pods.Items, nil
 }
 
 // GetPodsStatus returns the statuses for list of pods
