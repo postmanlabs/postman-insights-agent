@@ -1,65 +1,118 @@
 package cri_apis
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-const containerdCRIEndpoint = "unix:///var/run/containerd/containerd.sock"
-const CRIOEndpoint = "unix:///var/run/crio/crio.sock"
+const (
+	// Context timeout for all CRI operations
+	connectionTimeout = 2 * time.Second
+)
 
-// grpc library default is 4MB for message size
-const maxMsgSize = 1024 * 1024 * 4
+// Default runtime endpoints to try connecting to if no endpoint is provided
+var defaultRuntimeEndpoints = []string{"unix:///run/containerd/containerd.sock", "unix:///run/crio/crio.sock", "unix:///var/run/cri-dockerd.sock"}
 
-type NetworkNamespace string
-
-type ContainerInfo struct {
-	// Container Info struct
-}
-
+// CriClient struct holds the runtime service client
 type CriClient struct {
-	// CRI Client struct
+	runtimeService *remoteRuntimeService
 }
 
-// Constructor to init the client
-func NewCRIClient() (*CriClient, error) {
-	// Set up connection to CRI
-	conn, err := grpc.Dial(
-		containerdCRIEndpoint, // CRI Endpoint
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMsgSize)),
+// NewCRIClient initializes a new CRI client
+func NewCRIClient(criEndpoint string) (*CriClient, error) {
+	var (
+		service *remoteRuntimeService
+		err     error
 	)
-	if err != nil {
-		log.Fatalf("Failed to connect to CRI endpoint: %v", err)
+
+	if criEndpoint != "" {
+		service, err = newRemoteRuntimeService(criEndpoint, connectionTimeout)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		printer.Infof("No CRI endpoint provided, trying default endpoints\n")
+		// Fallback mechanism to try connecting to default endpoints
+		// It will slow down the agent startup since each connection will take
+		// some time before timing out.
+		for _, endpoint := range defaultRuntimeEndpoints {
+			service, err = newRemoteRuntimeService(endpoint, connectionTimeout)
+			if err != nil {
+				printer.Debugf("Failed to connect to %s: %v\n", endpoint, err)
+				continue
+			} else {
+				printer.Debugf("Connected to %s\n", endpoint)
+				break
+			}
+		}
 	}
-	defer conn.Close()
 
-	// Create runtime service client
-	// TODO: assign runtime to CriClient struct
-	_ = runtime.NewRuntimeServiceClient(conn)
+	if service == nil {
+		return nil, fmt.Errorf("failed to connect to CRI runtime")
+	}
 
-	return &CriClient{}, nil
+	criClient := CriClient{
+		runtimeService: service,
+	}
+
+	return &criClient, nil
 }
 
-// Function to inspect the container with the given ID. This will be the internal function ??
+// inspectContainer inspects the container with the given ID
 func (cc *CriClient) inspectContainer(containerID string) (ContainerInfo, error) {
+	containerStatusRequest := &runtime.ContainerStatusRequest{
+		ContainerId: containerID,
+		Verbose:     true, // Needed to get info object
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cc.runtimeService.timeout)
+	defer cancel()
+
 	// Inspect the container
-	return ContainerInfo{}, fmt.Errorf("not implemented")
+	resp, err := cc.runtimeService.runtimeClient.ContainerStatus(ctx, containerStatusRequest)
+	if err != nil {
+		return ContainerInfo{}, err
+	}
+
+	containerInfo, err := convertContainerInfo(resp.Info)
+	if err != nil {
+		return ContainerInfo{}, err
+	}
+
+	return containerInfo, nil
 }
 
-// Separate functions to get network namespace and environment variables of a container
-// Function to get the network namespace of a container
-func (cc *CriClient) GetNetworkNamespace(containerID string) (NetworkNamespace, error) {
-	// Get the network namespace
-	return "", fmt.Errorf("not implemented")
+// GetNetworkNamespace returns the network namespace of a given container
+func (cc *CriClient) GetNetworkNamespace(containerID string) (string, error) {
+	containerInfo, err := cc.inspectContainer(containerID)
+	if err != nil {
+		return "", err
+	}
+
+	for _, namespace := range containerInfo.RuntimeSpec.Linux.Namespaces {
+		if namespace.Type == "network" {
+			return namespace.Path, nil
+		}
+	}
+
+	return "", fmt.Errorf("network namespace not found")
 }
 
-// Function to get the environment variables of a container
+// GetEnvVars returns the environment variables of a given container
 func (cc *CriClient) GetEnvVars(containerID string) (map[string]string, error) {
-	// Get the environment variables
-	return nil, fmt.Errorf("not implemented")
+	containerInfo, err := cc.inspectContainer(containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	envVars := make(map[string]string)
+	for _, keyValueObj := range containerInfo.Config.Envs {
+		envVars[keyValueObj.Key] = keyValueObj.Value
+	}
+
+	return envVars, nil
 }
