@@ -63,10 +63,11 @@ func (kc *KubeClient) Close() {
 	kc.EventWatch.Stop()
 }
 
-// initEventWatcher creates a new go-channel to listen for all events in the cluster
+// initEventWatcher creates a new go-channel to listen for pod events in the cluster
 func (kc *KubeClient) initEventWatcher() error {
 	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
-		Watch: true,
+		Watch:         true,
+		FieldSelector: "involvedObject.kind=Pod",
 	})
 	if err != nil {
 		return fmt.Errorf("error creating watcher: %v", err)
@@ -77,7 +78,7 @@ func (kc *KubeClient) initEventWatcher() error {
 }
 
 func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
-	fieldSelector := fmt.Sprintf("metadata.name in (%s)", strings.Join(podNames, ","))
+	fieldSelector := fmt.Sprintf("spec.nodeName=%s,metadata.name in (%s)", kc.AgentNode, strings.Join(podNames, ","))
 	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
 	})
