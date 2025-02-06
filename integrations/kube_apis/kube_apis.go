@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/akitasoftware/go-utils/maps"
 	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -75,42 +76,38 @@ func (kc *KubeClient) initEventWatcher() error {
 	return nil
 }
 
-func (kc *KubeClient) getPod(podName string) (coreV1.Pod, error) {
-	fieldSelector := fmt.Sprintf("metadata.name=%s", podName)
+func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
+	fieldSelector := fmt.Sprintf("metadata.name in (%s)", strings.Join(podNames, ","))
 	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
 	})
 	if err != nil {
-		return coreV1.Pod{}, fmt.Errorf("error getting pods: %v", err)
+		return []coreV1.Pod{}, fmt.Errorf("error getting pods: %v", err)
 	}
 	if len(pods.Items) == 0 {
-		return coreV1.Pod{}, fmt.Errorf("pod not found: %s", podName)
+		return []coreV1.Pod{}, fmt.Errorf("no pods found with names: %v", podNames)
 	}
-	return pods.Items[0], nil
+	return pods.Items, nil
 }
 
-// GetPodContainerImages returns the container images of a given pod
-func (kc *KubeClient) GetPodContainerImages(podName string) ([]string, error) {
-	pod, err := kc.getPod(podName)
-	if err != nil {
-		return nil, err
+// FilterPodsByContainerImage returns the container images of a given pod
+func (kc *KubeClient) FilterPodsByContainerImage(pods []coreV1.Pod, containerImage string, negate bool) ([]coreV1.Pod, error) {
+	var filteredPods []coreV1.Pod
+
+	for _, pod := range pods {
+		for _, container := range pod.Spec.Containers {
+			if strings.EqualFold(containerImage, container.Image) != negate {
+				filteredPods = append(filteredPods, pod)
+				break
+			}
+		}
 	}
 
-	var containerImages []string
-	for _, container := range pod.Spec.Containers {
-		containerImages = append(containerImages, container.Image)
-	}
-
-	return containerImages, nil
+	return filteredPods, nil
 }
 
 // GetMainContainerUUID returns the UUID of the main container of a given pod
-func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
-	pod, err := kc.getPod(podName)
-	if err != nil {
-		return "", err
-	}
-
+func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 	if len(pod.Status.ContainerStatuses) > 0 {
 		containerID := pod.Status.ContainerStatuses[0].ContainerID
 
@@ -123,7 +120,7 @@ func (kc *KubeClient) GetMainContainerUUID(podName string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no container statuses found for pod: %s", podName)
+	return "", fmt.Errorf("no containers found for pod: %s", pod.Name)
 }
 
 // GetPodsInNode returns the names of all pods running in a given node
@@ -144,12 +141,17 @@ func (kc *KubeClient) GetPodsInNode(nodeName string) ([]string, error) {
 	return podNames, nil
 }
 
-// GetPodStatus returns the status of a given pod
-func (kc *KubeClient) GetPodStatus(podName string) (string, error) {
-	pod, err := kc.getPod(podName)
+// GetPodsStatus returns the statuses for list of pods
+func (kc *KubeClient) GetPodsStatus(podNames []string) (maps.Map[string, string], error) {
+	pods, err := kc.GetPods(podNames)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(pod.Status.Phase), nil
+	statuses := maps.NewMap[string, string]()
+	for _, pod := range pods {
+		statuses[pod.Name] = string(pod.Status.Phase)
+	}
+
+	return statuses, nil
 }
