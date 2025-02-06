@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
+	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
@@ -18,8 +20,8 @@ type Args struct {
 }
 
 type Daemonset struct {
-	KubeClient any
-	CRIClient  any
+	KubeClient kube_apis.KubeClient
+	CRIClient  *cri_apis.CriClient
 }
 
 func StartDaemonset(args Args) error {
@@ -33,12 +35,21 @@ func StartDaemonset(args Args) error {
 		return err
 	}
 
+	kubeClient, err := kube_apis.NewKubeClient()
+	if err != nil {
+		return fmt.Errorf("failed to create kube client: %w", err)
+	}
+
+	criClient, err := cri_apis.NewCRIClient("")
+	if err != nil {
+		return fmt.Errorf("failed to create CRI client: %w", err)
+	}
+
 	errChan := make(chan error)
 	go func() {
-		//TODO(K8s-MNS): Replace with actual client
 		daemonsetRun := &Daemonset{
-			KubeClient: interface{}(nil),
-			CRIClient:  interface{}(nil),
+			KubeClient: kubeClient,
+			CRIClient:  criClient,
 		}
 		errChan <- daemonsetRun.Run()
 	}()
