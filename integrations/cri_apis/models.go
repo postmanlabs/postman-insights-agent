@@ -33,7 +33,3 @@ type ContainerInfo struct {
 	// Ref from pb.ContainerConfig
 	Config Config `json:"config"`
 }
-
-type ContainerInfoWrapper struct {
-	Info ContainerInfo `json:"info"`
-}
