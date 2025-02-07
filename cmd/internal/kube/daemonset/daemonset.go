@@ -92,16 +92,14 @@ func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
 		return
 	}
 
-	if d.TelemetryInterval > 0 {
-		ticker := time.NewTicker(d.TelemetryInterval)
+	ticker := time.NewTicker(d.TelemetryInterval)
 
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				d.sendTelemetry()
-			}
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			d.sendTelemetry()
 		}
 	}
 }
