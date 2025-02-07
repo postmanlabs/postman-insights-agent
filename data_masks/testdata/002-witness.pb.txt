@@ -1,0 +1,45 @@
+# api_spec.Witness proto
+
+method: {
+  meta: {
+    http: {
+      method: "POST"
+      path_template: "/v1/doggos"
+      host: "example.com"
+    }
+  }
+  args: {
+    key: "1"
+    value: {
+      primitive: {
+        string_value: {
+          value: "aaaaaaaaaaaaaaaa"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Normal-Header"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "2"
+    value: {
+      primitive: {
+        string_value: {
+          value: "0123456789012345"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Totally-Innocent"
+          }
+        }
+      }
+    }
+  }
+}
