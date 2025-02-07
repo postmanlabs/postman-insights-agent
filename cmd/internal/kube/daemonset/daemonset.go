@@ -80,7 +80,7 @@ func (d *Daemonset) TelemetryWorker() {
 // that do not have the agent sidecar container and required env vars.
 func (d *Daemonset) StartProcessInExistingPods() error {
 	// Get all pods in the node where the agent is running
-	pods, err := d.KubeClient.GetPodsInNode(d.KubeClient.AgentNode)
+	pods, err := d.KubeClient.GetPodsInAgentNode()
 	if err != nil {
 		return fmt.Errorf("failed to get pods in node: %w", err)
 	}
@@ -98,7 +98,8 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
 		}
 
-		err = d.StartApiDumpProcess(args)
+		// TODO(K8S-MNS): Handle all errors and send that at once
+		d.StartApiDumpProcess(args)
 	}
 
 	return nil
