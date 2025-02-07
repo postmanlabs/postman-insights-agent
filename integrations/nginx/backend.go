@@ -12,6 +12,7 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -176,9 +177,22 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 	}
 	printer.Infof("Created new trace on Akita Cloud: %s\n", traceName)
 
+	redactor, err := data_masks.NewRedactor(b.backendSvc, b.learnClient)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to instantiate redactor for %s", b.backendSvc)
+	}
+
 	b.summary = trace.NewPacketCounter()
-	b.collector = trace.NewBackendCollector(b.backendSvc, backendLrn, b.learnClient,
-		optionals.Some(args.MaxWitnessSize_bytes), b.summary, false, args.Plugins)
+	b.collector = trace.NewBackendCollector(
+		b.backendSvc,
+		backendLrn,
+		b.learnClient,
+		redactor,
+		optionals.Some(args.MaxWitnessSize_bytes),
+		b.summary,
+		false,
+		args.Plugins,
+	)
 
 	// TODO: rate-limit
 	// TODO: session rotation
