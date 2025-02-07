@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"net/http"
 	"path"
 
 	"github.com/akitasoftware/akita-libs/akid"
@@ -12,9 +13,22 @@ type frontClientImpl struct {
 	BaseClient
 }
 
+func NewFrontClientForDaemonset(host string, cli akid.ClientID, podName string) *frontClientImpl {
+	var authHandler func(*http.Request) error
+	if podName != "" {
+		authHandler = daemonsetAuthHandler(podName)
+	}
+
+	return &frontClientImpl{
+		BaseClient: NewBaseClient(host, cli, authHandler),
+	}
+}
+
+var _ FrontClient = (*frontClientImpl)(nil)
+
 func NewFrontClient(host string, cli akid.ClientID) *frontClientImpl {
 	return &frontClientImpl{
-		BaseClient: NewBaseClient(host, cli),
+		BaseClient: NewBaseClient(host, cli, nil),
 	}
 }
 

@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
 	"strconv"
@@ -28,9 +29,21 @@ type learnClientImpl struct {
 
 var _ LearnClient = (*learnClientImpl)(nil)
 
+func NewLearnClientForDaemonset(host string, cli akid.ClientID, svc akid.ServiceID, podName string) *learnClientImpl {
+	var authHandler func(*http.Request) error
+	if podName != "" {
+		authHandler = daemonsetAuthHandler(podName)
+	}
+
+	return &learnClientImpl{
+		BaseClient: NewBaseClient(host, cli, authHandler),
+		serviceID:  svc,
+	}
+}
+
 func NewLearnClient(host string, cli akid.ClientID, svc akid.ServiceID) *learnClientImpl {
 	return &learnClientImpl{
-		BaseClient: NewBaseClient(host, cli),
+		BaseClient: NewBaseClient(host, cli, nil),
 		serviceID:  svc,
 	}
 }

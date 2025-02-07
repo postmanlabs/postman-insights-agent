@@ -8,6 +8,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -23,10 +24,14 @@ type Args struct {
 	ClusterName string
 }
 
+type PodCreds struct {
+	InsightsAPIKey      string
+	InsightsEnvironment string
+}
+
 type PodArgs struct {
 	// apidump related fields
 	InsightsProjectID        akid.ServiceID
-	InsightsAPIKey           string
 	InsightsReproModeEnabled bool
 
 	// Pod related fields
@@ -94,7 +99,7 @@ func (d *Daemonset) PodsHealthWorker() {
 	// Not implemented
 }
 
-func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs) error {
+func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs, podCreds PodCreds) error {
 	networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
 	if err != nil {
 		return fmt.Errorf("failed to get network namespace: %w", err)
@@ -110,10 +115,12 @@ func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs) error {
 		TargetNetworkNamespace: networkNamespace,
 		ReproMode:              podArgs.InsightsReproModeEnabled,
 		StopChan:               stopChan,
+		PodName:                podArgs.PodName,
 	}
 
 	// Put the process stop channel map and start the process in separate go routine
 	d.PodNameStopChanMap.Put(podArgs.PodName, stopChan)
+	cfg.SetPodPostmanAPIKeyAndEnvironment(podArgs.PodName, podCreds.InsightsAPIKey, podCreds.InsightsEnvironment)
 	go func() {
 		if err := apidump.Run(apidumpArgs); err != nil {
 			printer.Errorf("failed to run API dump process for pod %s: %v", podArgs.PodName, err)
@@ -128,6 +135,7 @@ func (d *Daemonset) StopApiDumpProcess(podName string, err error) error {
 		printer.Infof("stopping API dump process for pod %s", podName)
 		stopChan <- err
 		d.PodNameStopChanMap.Delete(podName)
+		cfg.UnsetPodPostmanAPIKeyAndEnvironment(podName)
 		return nil
 	} else {
 		printer.Errorf("failed to stop API dump process for pod %s: stop channel not found", podName)

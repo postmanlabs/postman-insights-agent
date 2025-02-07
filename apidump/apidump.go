@@ -139,9 +139,10 @@ type Args struct {
 	// Whether to enable repro mode and include request/response payloads when uploading witnesses.
 	ReproMode bool
 
-	// The network namespace to capture packets from.
+	// Args for running apidump as daemonset in Kubernetes
 	TargetNetworkNamespace string
 	StopChan               chan error
+	PodName                string
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -181,7 +182,12 @@ func (a *apidump) LookupService() error {
 	if !a.TargetIsRemote() {
 		return nil
 	}
-	frontClient := rest.NewFrontClient(a.Domain, a.ClientID)
+	var frontClient rest.FrontClient
+	if a.PodName != "" {
+		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, a.PodName)
+	} else {
+		frontClient = rest.NewFrontClient(a.Domain, a.ClientID)
+	}
 
 	if a.PostmanCollectionID != "" {
 		backendSvc, err := util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, a.PostmanCollectionID)
@@ -201,7 +207,13 @@ func (a *apidump) LookupService() error {
 		a.backendSvcName = serviceName
 	}
 
-	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc)
+	if a.PodName != "" {
+		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, a.PodName)
+		a.learnClient = rest.NewLearnClientForDaemonset(a.Domain, a.ClientID, a.backendSvc, a.PodName)
+	} else {
+		frontClient = rest.NewFrontClient(a.Domain, a.ClientID)
+		a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc)
+	}
 	return nil
 }
 
