@@ -6,8 +6,11 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/akitasoftware/go-utils/maps"
+	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
@@ -20,14 +23,22 @@ type Args struct {
 	ClusterName string
 }
 
-type ApidumpArgs struct {
-	InsightsProjectID akid.ServiceID
-	InsightsAPIKey    string
+type PodArgs struct {
+	// apidump related fields
+	InsightsProjectID        akid.ServiceID
+	InsightsAPIKey           string
+	InsightsReproModeEnabled bool
+
+	// Pod related fields
+	PodName       string
+	ContainerUUID string
 }
 
 type Daemonset struct {
 	KubeClient kube_apis.KubeClient
 	CRIClient  *cri_apis.CriClient
+
+	PodNameStopChanMap maps.Map[string, chan error]
 }
 
 func StartDaemonset(args Args) error {
@@ -83,8 +94,33 @@ func (d *Daemonset) PodsHealthWorker() {
 	// Not implemented
 }
 
-func (d *Daemonset) StartApiDumpProcess(args ApidumpArgs) error {
-	return fmt.Errorf("not implemented")
+func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs) error {
+	networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
+	if err != nil {
+		return fmt.Errorf("failed to get network namespace: %w", err)
+	}
+
+	// Channel to stop the API dump process
+	stopChan := make(chan error)
+
+	apidumpArgs := apidump.Args{
+		ClientID:               telemetry.GetClientID(),
+		Domain:                 rest.Domain,
+		ServiceID:              podArgs.InsightsProjectID,
+		TargetNetworkNamespace: networkNamespace,
+		ReproMode:              podArgs.InsightsReproModeEnabled,
+		StopChan:               stopChan,
+	}
+
+	// Put the process stop channel map and start the process in separate go routine
+	d.PodNameStopChanMap.Put(podArgs.PodName, stopChan)
+	go func() {
+		if err := apidump.Run(apidumpArgs); err != nil {
+			printer.Errorf("failed to run API dump process for pod %s: %v", podArgs.PodName, err)
+		}
+	}()
+
+	return nil
 }
 
 func (d *Daemonset) StopApiDumpProcess() error {

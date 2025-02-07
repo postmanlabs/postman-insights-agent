@@ -4,6 +4,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/google/gopacket"
 	_ "github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -17,17 +18,47 @@ const (
 )
 
 type pcapWrapper interface {
-	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string) (<-chan gopacket.Packet, error)
+	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespace string) (<-chan gopacket.Packet, error)
 	getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
 type pcapImpl struct{}
 
-func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string) (<-chan gopacket.Packet, error) {
-	handle, err := pcap.OpenLive(interfaceName, defaultSnapLen, true, pcap.BlockForever)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open pcap to %s", interfaceName)
+func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespace string) (<-chan gopacket.Packet, error) {
+	var (
+		handle *pcap.Handle
+		err    error
+	)
+
+	if targetNetworkNamespace != "" {
+		// Switch to the target network namespace.
+		targetNs, err := ns.GetNS(targetNetworkNamespace)
+		if err != nil {
+			return nil, errors.Wrapf(err, "can't get network namespace %s", targetNetworkNamespace)
+		}
+		//TODO(K8s-MNS) Is this right place to close? Same in net.go
+		defer targetNs.Close()
+
+		// Open the pcap handle in the target network namespace.
+		err = targetNs.Do(func(host ns.NetNS) error {
+			var err error
+			handle, err = pcap.OpenLive(interfaceName, defaultSnapLen, true, pcap.BlockForever)
+			if err != nil {
+				return errors.Wrapf(err, "failed to open pcap to %s/%s", targetNetworkNamespace, interfaceName)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Open the pcap handle in the agent's network namespace.
+		handle, err = pcap.OpenLive(interfaceName, defaultSnapLen, true, pcap.BlockForever)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to open pcap to %s", interfaceName)
+		}
 	}
+
 	if bpfFilter != "" {
 		if err := handle.SetBPFFilter(bpfFilter); err != nil {
 			handle.Close()

@@ -97,7 +97,7 @@ func setupParseFromInterface(pcap pcapWrapper, signalClose <-chan struct{}, fact
 	p := NewNetworkTrafficParser(1.0)
 	p.pcap = pcap
 	p.clock = &fakeClock{testTime}
-	rawOut, err := p.ParseFromInterface("dummy0", "", signalClose, facts...)
+	rawOut, err := p.ParseFromInterface("dummy0", "", "", signalClose, facts...)
 	if err != nil {
 		return rawOut, err
 	}

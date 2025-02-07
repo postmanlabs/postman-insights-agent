@@ -105,9 +105,13 @@ func (p *NetworkTrafficParser) InstallObserver(observer NetworkTrafficObserver) 
 // HTTP request and response pairs.
 // The order of parsers matters: earlier parsers will get tried first. Once a
 // parser has been accepted, no other parser will be used.
-func (p *NetworkTrafficParser) ParseFromInterface(interfaceName, bpfFilter string, signalClose <-chan struct{}, fs ...akinet.TCPParserFactory) (<-chan akinet.ParsedNetworkTraffic, error) {
+func (p *NetworkTrafficParser) ParseFromInterface(
+	interfaceName, bpfFilter, targetNetworkNamespace string,
+	signalClose <-chan struct{},
+	fs ...akinet.TCPParserFactory,
+) (<-chan akinet.ParsedNetworkTraffic, error) {
 	// Read in packets, pass to assembler
-	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter)
+	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespace)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed begin capturing packets from %s", interfaceName)
 	}

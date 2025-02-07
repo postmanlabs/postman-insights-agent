@@ -17,6 +17,7 @@ func Collect(
 	stop <-chan struct{},
 	intf string,
 	bpfFilter string,
+	targetNetworkNamespace string,
 	bufferShare float32,
 	parseTCPAndTLS bool,
 	proc trace.Collector,
@@ -43,7 +44,7 @@ func Collect(
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
 	}
 
-	parsedChan, err := parser.ParseFromInterface(intf, bpfFilter, stop, facts...)
+	parsedChan, err := parser.ParseFromInterface(intf, bpfFilter, targetNetworkNamespace, stop, facts...)
 	if err != nil {
 		return errors.Wrap(err, "couldn't start parsing from interface")
 	}

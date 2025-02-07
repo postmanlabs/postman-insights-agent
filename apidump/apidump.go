@@ -138,6 +138,10 @@ type Args struct {
 
 	// Whether to enable repro mode and include request/response payloads when uploading witnesses.
 	ReproMode bool
+
+	// The network namespace to capture packets from.
+	TargetNetworkNamespace string
+	StopChan               chan error
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -495,7 +499,7 @@ func (a *apidump) Run() error {
 	}
 
 	// Get the interfaces to listen on.
-	interfaces, err := getEligibleInterfaces(args.Interfaces)
+	interfaces, err := getEligibleInterfaces(args.Interfaces, args.TargetNetworkNamespace)
 	if err != nil {
 		a.SendErrorTelemetry(GetErrorTypeWithDefault(err, api_schema.ApidumpError_PCAPInterfaceOther), err)
 		return errors.Wrap(err, "No network interfaces could be used")
@@ -767,7 +771,7 @@ func (a *apidump) Run() error {
 			go func(interfaceName, filter string) {
 				defer doneWG.Done()
 				// Collect trace. This blocks until stop is closed or an error occurs.
-				if err := pcap.Collect(stop, interfaceName, filter, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
+				if err := pcap.Collect(stop, interfaceName, filter, args.TargetNetworkNamespace, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
 						err:           errors.Wrapf(err, "failed to collect trace on interface %s", interfaceName),
@@ -884,6 +888,9 @@ func (a *apidump) Run() error {
 						printer.Stderr.Errorf("Encountered an error on interface %s.  Error: %s\n", interfaceErr.interfaceName, interfaceErr.err.Error())
 						break DoneWaitingForSignal
 					}
+				case externalStopError := <-args.StopChan:
+					printer.Stderr.Infof("Received external stop signal, error: %v\n", externalStopError)
+					break DoneWaitingForSignal
 				}
 			}
 		}
