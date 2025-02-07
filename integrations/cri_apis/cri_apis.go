@@ -13,10 +13,10 @@ import (
 const (
 	// Context timeout for all CRI operations
 	connectionTimeout = 5 * time.Second
-)
 
-// Default containerd runtime endpoint
-var containerdCRIEndpoint = "unix:///run/containerd/containerd.sock"
+	// Default containerd runtime endpoint
+	containerdCRIEndpoint = "unix:///run/containerd/containerd.sock"
+)
 
 // CriClient struct holds the runtime service client
 type CriClient struct {
