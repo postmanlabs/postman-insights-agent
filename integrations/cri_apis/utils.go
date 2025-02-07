@@ -62,7 +62,8 @@ func parseEndpoint(endpoint string) (string, string, error) {
 	}
 }
 
-// convertContainerInfo converts a map of container information to a ContainerInfo struct
+// convertContainerInfo converts a map containing container information into a ContainerInfo struct.
+// The map is expected to have a key "info" with a JSON string value representing the container information.
 func convertContainerInfo(info map[string]string) (ContainerInfo, error) {
 	var containerInfo ContainerInfo
 

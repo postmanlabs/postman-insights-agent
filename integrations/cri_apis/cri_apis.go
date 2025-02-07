@@ -3,6 +3,7 @@ package cri_apis
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -11,11 +12,11 @@ import (
 
 const (
 	// Context timeout for all CRI operations
-	connectionTimeout = 2 * time.Second
+	connectionTimeout = 5 * time.Second
 )
 
-// Default runtime endpoints to try connecting to if no endpoint is provided
-var defaultRuntimeEndpoints = []string{"unix:///run/containerd/containerd.sock", "unix:///run/crio/crio.sock", "unix:///var/run/cri-dockerd.sock"}
+// Default containerd runtime endpoint
+var containerdCRIEndpoint = "unix:///run/containerd/containerd.sock"
 
 // CriClient struct holds the runtime service client
 type CriClient struct {
@@ -23,36 +24,28 @@ type CriClient struct {
 }
 
 // NewCRIClient initializes a new CRI client
-func NewCRIClient(criEndpoint string) (*CriClient, error) {
+func NewCRIClient() (*CriClient, error) {
 	var (
 		service *remoteRuntimeService
 		err     error
 	)
 
+	criEndpoint := os.Getenv("POSTMAN_CRI_ENDPOINT")
 	if criEndpoint != "" {
 		service, err = newRemoteRuntimeService(criEndpoint, connectionTimeout)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		printer.Infof("No CRI endpoint provided, trying default endpoints\n")
-		// Fallback mechanism to try connecting to default endpoints
-		// It will slow down the agent startup since each connection will take
-		// some time before timing out.
-		for _, endpoint := range defaultRuntimeEndpoints {
-			service, err = newRemoteRuntimeService(endpoint, connectionTimeout)
-			if err != nil {
-				printer.Debugf("Failed to connect to %s: %v\n", endpoint, err)
-				continue
-			} else {
-				printer.Debugf("Connected to %s\n", endpoint)
-				break
-			}
+		printer.Infoln("No CRI endpoint provided, trying default CRI endpoint")
+		service, err = newRemoteRuntimeService(containerdCRIEndpoint, connectionTimeout)
+		if err != nil {
+			printer.Errorf("Failed to connect to %s: %v\n", containerdCRIEndpoint, err)
 		}
 	}
 
 	if service == nil {
-		return nil, fmt.Errorf("failed to connect to CRI runtime")
+		return nil, fmt.Errorf("failed to connect to CRI endpoint")
 	}
 
 	criClient := CriClient{
@@ -78,6 +71,7 @@ func (cc *CriClient) inspectContainer(containerID string) (ContainerInfo, error)
 		return ContainerInfo{}, err
 	}
 
+	// the ContainerStatusResponse.Info has a generic map of strings[stringifiedJson], which should be in JSON format.
 	containerInfo, err := convertContainerInfo(resp.Info)
 	if err != nil {
 		return ContainerInfo{}, err
