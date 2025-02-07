@@ -37,6 +37,8 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: POSTMAN_CRI_ENDPOINT
+          value: /var/run/containerd/containerd.sock
     name: ubuntu
     volumeMounts:
       - mountPath: /host/proc

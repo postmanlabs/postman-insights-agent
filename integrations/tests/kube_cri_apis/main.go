@@ -85,7 +85,7 @@ func k8s_funcs() (string, error) {
 
 func cri_funcs(containerUUID string) error {
 	// Initialize CriClient
-	criClient, err := cri_apis.NewCRIClient("")
+	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
 		return fmt.Errorf("failed to create CriClient: %v", err)
 	}
