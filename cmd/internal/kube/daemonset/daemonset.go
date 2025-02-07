@@ -123,6 +123,15 @@ func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs) error {
 	return nil
 }
 
-func (d *Daemonset) StopApiDumpProcess() error {
-	return fmt.Errorf("not implemented")
+func (d *Daemonset) StopApiDumpProcess(podName string, err error) error {
+	if stopChan, exists := d.PodNameStopChanMap.Get(podName).Get(); exists {
+		printer.Infof("stopping API dump process for pod %s", podName)
+		stopChan <- err
+		d.PodNameStopChanMap.Delete(podName)
+		return nil
+	} else {
+		printer.Errorf("failed to stop API dump process for pod %s: stop channel not found", podName)
+		printer.Errorf("Maybe the pod has already been deleted")
+	}
+	return nil
 }
