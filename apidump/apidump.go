@@ -214,7 +214,7 @@ func (a *apidump) SendInitialTelemetry() {
 	req := kgxapi.PostInitialClientTelemetryRequest{
 		ClientID:                  a.ClientID,
 		ObservedStartingAt:        a.startTime,
-		ObservedDurationInSeconds: a.TelemetryInterval,
+		ObservedDurationInSeconds: 0,
 		SendsWitnessPayloads:      a.ReproMode,
 		CLIVersion:                version.ReleaseVersion().String(),
 		CLITargetArch:             architecture.GetCanonicalArch(),
@@ -438,7 +438,8 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 				subsequentTelemetrySent = true
 			case <-a.successTelemetry.Channel:
 				if !subsequentTelemetrySent {
-					a.SendPacketTelemetry(a.TelemetryInterval)
+					duration := int(time.Since(a.startTime) / time.Second)
+					a.SendPacketTelemetry(duration)
 				}
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/akitasoftware/go-utils/maps"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -58,14 +59,14 @@ func NewKubeClient() (KubeClient, error) {
 	return kubeClient, nil
 }
 
-// TearDown stops the event watcher
+// Close stops the event watcher
 func (kc *KubeClient) Close() {
 	kc.EventWatch.Stop()
 }
 
 // initEventWatcher creates a new go-channel to listen for pod events in the cluster
 func (kc *KubeClient) initEventWatcher() error {
-	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
+	watcher, err := kc.Clientset.CoreV1().Events("").Watch(context.Background(), metaV1.ListOptions{
 		Watch:         true,
 		FieldSelector: "involvedObject.kind=Pod",
 	})
@@ -77,21 +78,52 @@ func (kc *KubeClient) initEventWatcher() error {
 	return nil
 }
 
-func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
-	fieldSelector := fmt.Sprintf("spec.nodeName=%s,metadata.name in (%s)", kc.AgentNode, strings.Join(podNames, ","))
+// GetPodsInNode returns the names of all pods running in a given node
+func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
+	fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
 	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
 	})
 	if err != nil {
 		return []coreV1.Pod{}, fmt.Errorf("error getting pods: %v", err)
 	}
-	if len(pods.Items) == 0 {
-		return []coreV1.Pod{}, fmt.Errorf("no pods found with names: %v", podNames)
-	}
+
 	return pods.Items, nil
 }
 
-// FilterPodsByContainerImage returns the container images of a given pod
+// GetPods returns a list of pods running on the agent node with the given names
+func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
+	pods, err := kc.GetPodsInAgentNode()
+	if err != nil {
+		return []coreV1.Pod{}, err
+	}
+	if len(pods) == 0 {
+		return []coreV1.Pod{}, fmt.Errorf("no pods in node: %s", kc.AgentNode)
+	}
+
+	podMap := make(map[string]coreV1.Pod)
+	for _, pod := range pods {
+		podMap[pod.Name] = pod
+	}
+
+	var filteredPods []coreV1.Pod
+	for _, name := range podNames {
+		pod, ok := podMap[name]
+		if !ok {
+			printer.Debugf("pod not found with name: %v\n", name)
+			continue
+		}
+		filteredPods = append(filteredPods, pod)
+	}
+
+	if len(filteredPods) == 0 {
+		return []coreV1.Pod{}, fmt.Errorf("no pods found with names: %v", podNames)
+	}
+
+	return filteredPods, nil
+}
+
+// FilterPodsByContainerImage filters a list of pods by the container image name
 func (kc *KubeClient) FilterPodsByContainerImage(pods []coreV1.Pod, containerImage string, negate bool) ([]coreV1.Pod, error) {
 	var filteredPods []coreV1.Pod
 
@@ -122,19 +154,6 @@ func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 	}
 
 	return "", fmt.Errorf("no containers found for pod: %s", pod.Name)
-}
-
-// GetPodsInNode returns the names of all pods running in a given node
-func (kc *KubeClient) GetPodsInNode(nodeName string) ([]coreV1.Pod, error) {
-	fieldSelector := fmt.Sprintf("spec.nodeName=%s", nodeName)
-	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-		FieldSelector: fieldSelector,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error getting pods: %v", err)
-	}
-
-	return pods.Items, nil
 }
 
 // GetPodsStatus returns the statuses for list of pods
