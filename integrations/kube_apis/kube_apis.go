@@ -58,7 +58,7 @@ func NewKubeClient() (KubeClient, error) {
 	return kubeClient, nil
 }
 
-// TearDown stops the event watcher
+// Close stops the event watcher
 func (kc *KubeClient) Close() {
 	kc.EventWatch.Stop()
 }
@@ -91,7 +91,7 @@ func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
 	return pods.Items, nil
 }
 
-// FilterPodsByContainerImage returns the container images of a given pod
+// FilterPodsByContainerImage filters a list of pods by the container image name
 func (kc *KubeClient) FilterPodsByContainerImage(pods []coreV1.Pod, containerImage string, negate bool) ([]coreV1.Pod, error) {
 	var filteredPods []coreV1.Pod
 
