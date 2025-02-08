@@ -8,6 +8,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
@@ -36,9 +37,15 @@ func StartDaemonset(args Args) error {
 	defer cancel()
 
 	// Send initial telemetry
-	err := frontClient.PostDaemonsetAgentTelemetry(ctx, args.ClusterName)
-	if err != nil {
-		return err
+	if args.ClusterName != "" {
+		err := frontClient.PostDaemonsetAgentTelemetry(ctx, args.ClusterName)
+		if err != nil {
+			printer.Errorf("Failed to send daemonset agent telemetry: %v", err)
+			printer.Infof(
+				"Telemetry will not be sent from this agent, it will not be tracked on our end, " +
+					"and it will not appear in the app's list of clusters where the agent is running.",
+			)
+		}
 	}
 
 	kubeClient, err := kube_apis.NewKubeClient()
@@ -51,16 +58,15 @@ func StartDaemonset(args Args) error {
 		return fmt.Errorf("failed to create CRI client: %w", err)
 	}
 
-	errChan := make(chan error)
 	go func() {
 		daemonsetRun := &Daemonset{
 			KubeClient: kubeClient,
 			CRIClient:  criClient,
 		}
-		errChan <- daemonsetRun.Run()
+		daemonsetRun.Run()
 	}()
 
-	return <-errChan
+	return nil
 }
 
 func (d *Daemonset) Run() error {
