@@ -1,33 +1,30 @@
 package kube
 
 import (
-	"os"
-
-	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/daemonset"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/cobra"
 )
 
+func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
+	err := daemonset.StartDaemonset()
+
+	if err == nil {
+		return nil
+	}
+
+	// Log the error and wait forever.
+	printer.Stderr.Errorf("Error while starting the process: %v\n", err)
+	printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
+
+	select {}
+}
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet",
 	Long:  "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet to collect and send data to Postman Insights",
-	RunE: func(_ *cobra.Command, args []string) error {
-		clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
-		if clusterName == "" {
-			printer.Infof(
-				"The cluster name is missing. Telemetry will not be sent from this agent, " +
-					"it will not be tracked on our end, and it will not appear in the app's " +
-					"list of clusters where the agent is running.",
-			)
-		}
-
-		if err := daemonset.StartDaemonset(daemonset.Args{ClusterName: clusterName}); err != nil {
-			return cmderr.AkitaErr{Err: err}
-		}
-		return nil
-	},
+	RunE:  StartDaemonsetAndHibernateOnError,
 }
 
 func init() {

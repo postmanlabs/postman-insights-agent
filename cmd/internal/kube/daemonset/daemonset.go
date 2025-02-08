@@ -3,6 +3,7 @@ package daemonset
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
@@ -17,10 +18,6 @@ import (
 const (
 	apiContextTimeout = 20 * time.Second
 )
-
-type Args struct {
-	ClusterName string
-}
 
 type ApidumpArgs struct {
 	InsightsProjectID akid.ServiceID
@@ -37,14 +34,23 @@ type Daemonset struct {
 	TelemetryInterval time.Duration
 }
 
-func StartDaemonset(args Args) error {
+func StartDaemonset() error {
 	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
 
-	// Send initial telemetry
-	if args.ClusterName != "" {
-		err := frontClient.PostDaemonsetAgentTelemetry(ctx, args.ClusterName)
+	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
+	telemetryInterval := apispec.DefaultTelemetryInterval_seconds * time.Second
+	if clusterName == "" {
+		printer.Infof(
+			"The cluster name is missing. Telemetry will not be sent from this agent, " +
+				"it will not be tracked on our end, and it will not appear in the app's " +
+				"list of clusters where the agent is running.",
+		)
+		telemetryInterval = 0
+	} else {
+		// Send Initial telemetry
+		err := frontClient.PostDaemonsetAgentTelemetry(ctx, clusterName)
 		if err != nil {
 			printer.Errorf("Failed to send daemonset agent telemetry: %v", err)
 			printer.Infof(
@@ -59,18 +65,18 @@ func StartDaemonset(args Args) error {
 		return fmt.Errorf("failed to create kube client: %w", err)
 	}
 
-	criClient, err := cri_apis.NewCRIClient("")
+	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
 		return fmt.Errorf("failed to create CRI client: %w", err)
 	}
 
 	go func() {
 		daemonsetRun := &Daemonset{
-			ClusterName:       args.ClusterName,
+			ClusterName:       clusterName,
 			KubeClient:        kubeClient,
 			CRIClient:         criClient,
 			FrontClient:       frontClient,
-			TelemetryInterval: apispec.DefaultTelemetryInterval_seconds * time.Second, // Is 5 min okay or it should be less?
+			TelemetryInterval: telemetryInterval,
 		}
 		daemonsetRun.Run()
 	}()
