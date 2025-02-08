@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -27,8 +28,13 @@ type ApidumpArgs struct {
 }
 
 type Daemonset struct {
-	KubeClient kube_apis.KubeClient
-	CRIClient  *cri_apis.CriClient
+	ClusterName string
+
+	KubeClient  kube_apis.KubeClient
+	CRIClient   *cri_apis.CriClient
+	FrontClient rest.FrontClient
+
+	TelemetryInterval time.Duration
 }
 
 func StartDaemonset(args Args) error {
@@ -60,8 +66,11 @@ func StartDaemonset(args Args) error {
 
 	go func() {
 		daemonsetRun := &Daemonset{
-			KubeClient: kubeClient,
-			CRIClient:  criClient,
+			ClusterName:       args.ClusterName,
+			KubeClient:        kubeClient,
+			CRIClient:         criClient,
+			FrontClient:       frontClient,
+			TelemetryInterval: apispec.DefaultTelemetryInterval_seconds * time.Second, // Is 5 min okay or it should be less?
 		}
 		daemonsetRun.Run()
 	}()
@@ -73,8 +82,31 @@ func (d *Daemonset) Run() error {
 	return fmt.Errorf("not implemented")
 }
 
-func (d *Daemonset) TelemetryWorker() {
-	// Not implemented
+func (d *Daemonset) sendTelemetry() {
+	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
+	defer cancel()
+
+	err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, d.ClusterName)
+	if err != nil {
+		printer.Errorf("Failed to send telemetry: %v\n", err)
+	}
+}
+
+func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
+	if d.TelemetryInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(d.TelemetryInterval)
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			d.sendTelemetry()
+		}
+	}
 }
 
 func (d *Daemonset) StartProcessInExistingPods() error {
