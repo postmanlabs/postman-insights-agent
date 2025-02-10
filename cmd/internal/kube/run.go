@@ -1,28 +1,30 @@
 package kube
 
 import (
-	"os"
-
-	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/daemonset"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/cobra"
 )
 
+func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
+	err := daemonset.StartDaemonset()
+
+	if err == nil {
+		return nil
+	}
+
+	// Log the error and wait forever.
+	printer.Stderr.Errorf("Error while starting the process: %v\n", err)
+	printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
+
+	select {}
+}
+
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Run the Postman Insights Agent in your Kubernetes cluster as a daemon-set",
-	Long:  "Run the Postman Insights Agent in your Kubernetes cluster as a daemon-set to collect and send data to Postman Insights",
-	RunE: func(_ *cobra.Command, args []string) error {
-		clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
-		if clusterName == "" {
-			clusterName = "default" // Do we need a default value? Is this required env var?
-		}
-
-		if err := daemonset.StartDaemonset(daemonset.Args{ClusterName: clusterName}); err != nil {
-			return cmderr.AkitaErr{Err: err}
-		}
-		return nil
-	},
+	Short: "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet",
+	Long:  "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet to collect and send data to Postman Insights",
+	RunE:  StartDaemonsetAndHibernateOnError,
 }
 
 func init() {

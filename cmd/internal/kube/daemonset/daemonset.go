@@ -3,11 +3,13 @@ package daemonset
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -18,10 +20,6 @@ import (
 const (
 	apiContextTimeout = 20 * time.Second
 )
-
-type Args struct {
-	ClusterName string
-}
 
 type PodArgs struct {
 	// apidump related fields
@@ -35,21 +33,41 @@ type PodArgs struct {
 }
 
 type Daemonset struct {
-	KubeClient kube_apis.KubeClient
-	CRIClient  *cri_apis.CriClient
+	ClusterName string
+
+	KubeClient  kube_apis.KubeClient
+	CRIClient   *cri_apis.CriClient
+	FrontClient rest.FrontClient
 
 	PodNameStopChanMap maps.Map[string, chan error]
+
+	TelemetryInterval time.Duration
 }
 
-func StartDaemonset(args Args) error {
+func StartDaemonset() error {
 	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
 
-	// Send initial telemetry
-	err := frontClient.PostDaemonsetAgentTelemetry(ctx, args.ClusterName)
-	if err != nil {
-		return err
+	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
+	telemetryInterval := apispec.DefaultTelemetryInterval_seconds * time.Second
+	if clusterName == "" {
+		printer.Infof(
+			"The cluster name is missing. Telemetry will not be sent from this agent, " +
+				"it will not be tracked on our end, and it will not appear in the app's " +
+				"list of clusters where the agent is running.",
+		)
+		telemetryInterval = 0
+	} else {
+		// Send Initial telemetry
+		err := frontClient.PostDaemonsetAgentTelemetry(ctx, clusterName)
+		if err != nil {
+			printer.Errorf("Failed to send daemonset agent telemetry: %v", err)
+			printer.Infof(
+				"Telemetry will not be sent from this agent, it will not be tracked on our end, " +
+					"and it will not appear in the app's list of clusters where the agent is running.",
+			)
+		}
 	}
 
 	kubeClient, err := kube_apis.NewKubeClient()
@@ -57,29 +75,54 @@ func StartDaemonset(args Args) error {
 		return fmt.Errorf("failed to create kube client: %w", err)
 	}
 
-	criClient, err := cri_apis.NewCRIClient("")
+	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
 		return fmt.Errorf("failed to create CRI client: %w", err)
 	}
 
-	errChan := make(chan error)
 	go func() {
 		daemonsetRun := &Daemonset{
-			KubeClient: kubeClient,
-			CRIClient:  criClient,
+			ClusterName:       clusterName,
+			KubeClient:        kubeClient,
+			CRIClient:         criClient,
+			FrontClient:       frontClient,
+			TelemetryInterval: telemetryInterval,
 		}
-		errChan <- daemonsetRun.Run()
+		daemonsetRun.Run()
 	}()
 
-	return <-errChan
+	return nil
 }
 
 func (d *Daemonset) Run() error {
 	return fmt.Errorf("not implemented")
 }
 
-func (d *Daemonset) TelemetryWorker() {
-	// Not implemented
+func (d *Daemonset) sendTelemetry() {
+	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
+	defer cancel()
+
+	err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, d.ClusterName)
+	if err != nil {
+		printer.Errorf("Failed to send telemetry: %v\n", err)
+	}
+}
+
+func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
+	if d.TelemetryInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(d.TelemetryInterval)
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			d.sendTelemetry()
+		}
+	}
 }
 
 func (d *Daemonset) StartProcessInExistingPods() error {
