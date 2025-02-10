@@ -160,7 +160,7 @@ func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs, podCreds PodCreds) erro
 		TargetNetworkNamespaceOpt: optionals.Some(networkNamespace),
 		ReproMode:                 podArgs.InsightsReproModeEnabled,
 		StopChan:                  stopChan,
-		PodName:                   podArgs.PodName,
+		PodName:                   optionals.Some(podArgs.PodName),
 	}
 
 	// Put the process stop channel map and start the process in separate go routine

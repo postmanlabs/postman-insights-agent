@@ -142,7 +142,7 @@ type Args struct {
 	// Args for running apidump as daemonset in Kubernetes
 	TargetNetworkNamespaceOpt optionals.Optional[string]
 	StopChan                  <-chan error
-	PodName                   string
+	PodName                   optionals.Optional[string]
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -183,8 +183,8 @@ func (a *apidump) LookupService() error {
 		return nil
 	}
 	var frontClient rest.FrontClient
-	if a.PodName != "" {
-		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, a.PodName)
+	if podName, exists := a.PodName.Get(); exists {
+		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, podName)
 	} else {
 		frontClient = rest.NewFrontClient(a.Domain, a.ClientID)
 	}
@@ -207,11 +207,9 @@ func (a *apidump) LookupService() error {
 		a.backendSvcName = serviceName
 	}
 
-	if a.PodName != "" {
-		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, a.PodName)
-		a.learnClient = rest.NewLearnClientForDaemonset(a.Domain, a.ClientID, a.backendSvc, a.PodName)
+	if podName, exists := a.PodName.Get(); exists {
+		a.learnClient = rest.NewLearnClientForDaemonset(a.Domain, a.ClientID, a.backendSvc, podName)
 	} else {
-		frontClient = rest.NewFrontClient(a.Domain, a.ClientID)
 		a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc)
 	}
 	return nil
