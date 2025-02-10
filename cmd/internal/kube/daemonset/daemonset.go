@@ -148,33 +148,37 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	return nil
 }
 
-func (d *Daemonset) KubernetesEventsWorker() {
-	for event := range d.KubeClient.EventWatch.ResultChan() {
-		// Any other event type to be handled?
-		switch event.Type {
-		case watch.Added:
-			if e, ok := event.Object.(*coreV1.Event); ok {
-				pods, err := d.KubeClient.GetPods([]string{e.InvolvedObject.Name})
-				if err != nil {
-					printer.Errorf("failed to get pod for k8s added event, pod name: %s, error: %v", e.InvolvedObject.Name, err)
-				}
-				if len(pods) == 0 {
-					printer.Errorf("no pods found for k8s added event, pod name: %s", e.InvolvedObject.Name)
-				}
+func (d *Daemonset) KubernetesEventsWorker(done chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case event := <-d.KubeClient.EventWatch.ResultChan():
+			switch event.Type {
+			case watch.Added:
+				if e, ok := event.Object.(*coreV1.Event); ok {
+					pods, err := d.KubeClient.GetPods([]string{e.InvolvedObject.Name})
+					if err != nil {
+						printer.Errorf("failed to get pod for k8s added event, pod name: %s, error: %v", e.InvolvedObject.Name, err)
+					}
+					if len(pods) == 0 {
+						printer.Errorf("no pods found for k8s added event, pod name: %s", e.InvolvedObject.Name)
+					}
 
-				apidumpArgs, err := d.inspectPodForEnvVars(pods[0])
-				if err != nil {
-					printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", e.InvolvedObject.Name, err)
-				}
+					apidumpArgs, err := d.inspectPodForEnvVars(pods[0])
+					if err != nil {
+						printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", e.InvolvedObject.Name, err)
+					}
 
-				err = d.StartApiDumpProcess(apidumpArgs)
-				if err != nil {
-					printer.Errorf("failed to start api dump process, pod name: %s, error: %v", e.InvolvedObject.Name, err)
+					err = d.StartApiDumpProcess(apidumpArgs)
+					if err != nil {
+						printer.Errorf("failed to start api dump process, pod name: %s, error: %v", e.InvolvedObject.Name, err)
+					}
 				}
-			}
-		case watch.Deleted:
-			if e, ok := event.Object.(*coreV1.Event); ok {
-				go d.StopApiDumpProcess(e.InvolvedObject.Name)
+			case watch.Deleted:
+				if e, ok := event.Object.(*coreV1.Event); ok {
+					go d.StopApiDumpProcess(e.InvolvedObject.Name)
+				}
 			}
 		}
 	}
