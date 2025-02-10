@@ -8,6 +8,8 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
+	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
@@ -140,19 +142,19 @@ func (d *Daemonset) PodsHealthWorker() {
 func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs) error {
 	networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
 	if err != nil {
-		return fmt.Errorf("failed to get network namespace: %w", err)
+		return errors.Wrapf(err, "failed to get network namespace for pod/containerUUID: %s/%s", podArgs.PodName, podArgs.ContainerUUID)
 	}
 
 	// Channel to stop the API dump process
 	stopChan := make(chan error)
 
 	apidumpArgs := apidump.Args{
-		ClientID:               telemetry.GetClientID(),
-		Domain:                 rest.Domain,
-		ServiceID:              podArgs.InsightsProjectID,
-		TargetNetworkNamespace: networkNamespace,
-		ReproMode:              podArgs.InsightsReproModeEnabled,
-		StopChan:               stopChan,
+		ClientID:                  telemetry.GetClientID(),
+		Domain:                    rest.Domain,
+		ServiceID:                 podArgs.InsightsProjectID,
+		TargetNetworkNamespaceOpt: optionals.Some(networkNamespace),
+		ReproMode:                 podArgs.InsightsReproModeEnabled,
+		StopChan:                  stopChan,
 	}
 
 	// Put the process stop channel map and start the process in separate go routine

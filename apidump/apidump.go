@@ -140,8 +140,8 @@ type Args struct {
 	ReproMode bool
 
 	// The network namespace to capture packets from.
-	TargetNetworkNamespace string
-	StopChan               chan error
+	TargetNetworkNamespaceOpt optionals.Optional[string]
+	StopChan                  <-chan error
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -499,7 +499,7 @@ func (a *apidump) Run() error {
 	}
 
 	// Get the interfaces to listen on.
-	interfaces, err := getEligibleInterfaces(args.Interfaces, args.TargetNetworkNamespace)
+	interfaces, err := getEligibleInterfaces(args.Interfaces, args.TargetNetworkNamespaceOpt)
 	if err != nil {
 		a.SendErrorTelemetry(GetErrorTypeWithDefault(err, api_schema.ApidumpError_PCAPInterfaceOther), err)
 		return errors.Wrap(err, "No network interfaces could be used")
@@ -771,7 +771,7 @@ func (a *apidump) Run() error {
 			go func(interfaceName, filter string) {
 				defer doneWG.Done()
 				// Collect trace. This blocks until stop is closed or an error occurs.
-				if err := pcap.Collect(stop, interfaceName, filter, args.TargetNetworkNamespace, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
+				if err := pcap.Collect(stop, interfaceName, filter, args.TargetNetworkNamespaceOpt, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
 						err:           errors.Wrapf(err, "failed to collect trace on interface %s", interfaceName),

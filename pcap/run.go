@@ -7,6 +7,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet/tls"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 	. "github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/pkg/errors"
@@ -17,7 +18,7 @@ func Collect(
 	stop <-chan struct{},
 	intf string,
 	bpfFilter string,
-	targetNetworkNamespace string,
+	targetNetworkNamespaceOpt optionals.Optional[string],
 	bufferShare float32,
 	parseTCPAndTLS bool,
 	proc trace.Collector,
@@ -44,7 +45,7 @@ func Collect(
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
 	}
 
-	parsedChan, err := parser.ParseFromInterface(intf, bpfFilter, targetNetworkNamespace, stop, facts...)
+	parsedChan, err := parser.ParseFromInterface(intf, bpfFilter, targetNetworkNamespaceOpt, stop, facts...)
 	if err != nil {
 		return errors.Wrap(err, "couldn't start parsing from interface")
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/memview"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/gopacket"
@@ -25,7 +26,7 @@ var (
 
 type fakePcap []gopacket.Packet
 
-func (f fakePcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter, targetNetworkNamespace string) (<-chan gopacket.Packet, error) {
+func (f fakePcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
 	outChan := make(chan gopacket.Packet)
 	go func() {
 		defer close(outChan)
@@ -48,7 +49,7 @@ func (f fakePcap) getInterfaceAddrs(interfaceName string) ([]net.IP, error) {
 // cancelled.
 type forceCancelPcap []gopacket.Packet
 
-func (f forceCancelPcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter, targetNetworkNamespace string) (<-chan gopacket.Packet, error) {
+func (f forceCancelPcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
 	outChan := make(chan gopacket.Packet)
 	go func() {
 		defer close(outChan)
