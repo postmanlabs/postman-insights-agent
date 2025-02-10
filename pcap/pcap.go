@@ -4,6 +4,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/google/gopacket"
 	_ "github.com/google/gopacket/layers"
@@ -18,19 +19,19 @@ const (
 )
 
 type pcapWrapper interface {
-	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespace string) (<-chan gopacket.Packet, error)
+	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error)
 	getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
 type pcapImpl struct{}
 
-func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespace string) (<-chan gopacket.Packet, error) {
+func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
 	var (
 		handle *pcap.Handle
 		err    error
 	)
 
-	if targetNetworkNamespace != "" {
+	if targetNetworkNamespace, exists := targetNetworkNamespaceOpt.Get(); exists {
 		// Switch to the target network namespace.
 		targetNs, err := ns.GetNS(targetNetworkNamespace)
 		if err != nil {

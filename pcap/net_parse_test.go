@@ -11,6 +11,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/gopacket"
 )
@@ -97,7 +98,7 @@ func setupParseFromInterface(pcap pcapWrapper, signalClose <-chan struct{}, fact
 	p := NewNetworkTrafficParser(1.0)
 	p.pcap = pcap
 	p.clock = &fakeClock{testTime}
-	rawOut, err := p.ParseFromInterface("dummy0", "", "", signalClose, facts...)
+	rawOut, err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose, facts...)
 	if err != nil {
 		return rawOut, err
 	}

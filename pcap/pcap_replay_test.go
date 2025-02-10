@@ -11,6 +11,7 @@ import (
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 	"github.com/akitasoftware/akita-libs/memview"
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/gopacket"
@@ -146,7 +147,7 @@ func removeNonDeterministicField(p *akinet.ParsedNetworkTraffic) {
 // pcapWrapper backed by a pcap file.
 type filePcapWrapper string
 
-func (f filePcapWrapper) capturePackets(done <-chan struct{}, _, _, _ string) (<-chan gopacket.Packet, error) {
+func (f filePcapWrapper) capturePackets(done <-chan struct{}, _, _ string, _ optionals.Optional[string]) (<-chan gopacket.Packet, error) {
 	handle, err := pcap.OpenOffline(string(f))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to open %s", f)
@@ -180,7 +181,7 @@ func readFromPcapFile(file string, pool buffer_pool.BufferPool) ([]akinet.Parsed
 
 	done := make(chan struct{})
 	defer close(done)
-	out, err := p.ParseFromInterface("fake", "", "", done, akihttp.NewHTTPRequestParserFactory(pool), akihttp.NewHTTPResponseParserFactory(pool))
+	out, err := p.ParseFromInterface("fake", "", optionals.None[string](), done, akihttp.NewHTTPRequestParserFactory(pool), akihttp.NewHTTPResponseParserFactory(pool))
 	if err != nil {
 		return nil, errors.Wrap(err, "ParseFromInterface failed")
 	}
