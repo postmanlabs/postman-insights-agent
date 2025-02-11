@@ -166,7 +166,7 @@ func (d *Daemonset) checkPodsHealth() {
 		if podStatus == string(coreV1.PodSucceeded) || podStatus == string(coreV1.PodFailed) {
 			printer.Infof("pod %s has stopped running", podStatus)
 			d.StopApiDumpProcess(
-				podStatus,
+				podName,
 				fmt.Errorf("pod %s has stopped running, status: %s", podName, podStatus),
 			)
 		}
@@ -193,7 +193,8 @@ func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs, podCreds PodCreds) error {
 	networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get network namespace for pod/containerUUID: %s/%s", podArgs.PodName, podArgs.ContainerUUID)
+		return errors.Wrapf(err, "failed to get network namespace for pod/containerUUID: %s/%s",
+			podArgs.PodName, podArgs.ContainerUUID)
 	}
 
 	// Channel to stop the API dump process
