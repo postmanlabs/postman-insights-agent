@@ -140,9 +140,9 @@ type Args struct {
 	ReproMode bool
 
 	// Args for running apidump as daemonset in Kubernetes
-	TargetNetworkNamespace string
-	StopChan               chan error
-	PodName                string
+	TargetNetworkNamespaceOpt optionals.Optional[string]
+	StopChan                  <-chan error
+	PodName                   optionals.Optional[string]
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -183,8 +183,8 @@ func (a *apidump) LookupService() error {
 		return nil
 	}
 	var frontClient rest.FrontClient
-	if a.PodName != "" {
-		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, a.PodName)
+	if podName, exists := a.PodName.Get(); exists {
+		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, podName)
 	} else {
 		frontClient = rest.NewFrontClient(a.Domain, a.ClientID)
 	}
@@ -207,11 +207,9 @@ func (a *apidump) LookupService() error {
 		a.backendSvcName = serviceName
 	}
 
-	if a.PodName != "" {
-		frontClient = rest.NewFrontClientForDaemonset(a.Domain, a.ClientID, a.PodName)
-		a.learnClient = rest.NewLearnClientForDaemonset(a.Domain, a.ClientID, a.backendSvc, a.PodName)
+	if podName, exists := a.PodName.Get(); exists {
+		a.learnClient = rest.NewLearnClientForDaemonset(a.Domain, a.ClientID, a.backendSvc, podName)
 	} else {
-		frontClient = rest.NewFrontClient(a.Domain, a.ClientID)
 		a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc)
 	}
 	return nil
@@ -511,7 +509,7 @@ func (a *apidump) Run() error {
 	}
 
 	// Get the interfaces to listen on.
-	interfaces, err := getEligibleInterfaces(args.Interfaces, args.TargetNetworkNamespace)
+	interfaces, err := getEligibleInterfaces(args.Interfaces, args.TargetNetworkNamespaceOpt)
 	if err != nil {
 		a.SendErrorTelemetry(GetErrorTypeWithDefault(err, api_schema.ApidumpError_PCAPInterfaceOther), err)
 		return errors.Wrap(err, "No network interfaces could be used")
@@ -783,7 +781,7 @@ func (a *apidump) Run() error {
 			go func(interfaceName, filter string) {
 				defer doneWG.Done()
 				// Collect trace. This blocks until stop is closed or an error occurs.
-				if err := pcap.Collect(stop, interfaceName, filter, args.TargetNetworkNamespace, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
+				if err := pcap.Collect(stop, interfaceName, filter, args.TargetNetworkNamespaceOpt, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
 						err:           errors.Wrapf(err, "failed to collect trace on interface %s", interfaceName),
