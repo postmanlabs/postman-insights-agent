@@ -248,7 +248,10 @@ func (d *Daemonset) checkPodsHealth() {
 			}
 
 			isSameStage, err := podArgs.validatePodTrafficMonitorStage(PodTerminated, TrafficMonitoringStarted)
-			if isSameStage || err != nil {
+			if err != nil {
+				printer.Errorf("pod %s is in invalid state %d", podName, podArgs.PodTrafficMonitorStage)
+			}
+			if isSameStage {
 				printer.Errorf("pod %s is already in state %d", podName, podArgs.PodTrafficMonitorStage)
 			}
 
