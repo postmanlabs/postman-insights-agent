@@ -9,7 +9,6 @@ import (
 
 func baseAuthHandler(req *http.Request) error {
 	postmanAPIKey, postmanEnv := cfg.GetPostmanAPIKeyAndEnvironment()
-	postmanInsightsVerificationToken := cfg.GetPostmanInsightsVerificationToken()
 
 	if postmanAPIKey != "" {
 		// Set postman API key as header
@@ -19,9 +18,6 @@ func baseAuthHandler(req *http.Request) error {
 		if postmanEnv != "" {
 			req.Header.Set("x-postman-env", postmanEnv)
 		}
-	} else if postmanInsightsVerificationToken != "" {
-		// Set postman team verification token as header
-		req.Header.Set("postman-insights-verification-token ", postmanInsightsVerificationToken)
 	} else {
 		// XXX Integration tests still use Akita API keys.
 		apiKeyID, apiKeySecret := cfg.GetAPIKeyAndSecret()
@@ -40,9 +36,7 @@ func baseAuthHandler(req *http.Request) error {
 	return nil
 }
 
-func daemonsetAuthHandler(podName string) func(*http.Request) error {
-	postmanAPIKey, postmanEnv := cfg.GetPodPostmanAPIKeyAndEnvironment(podName)
-
+func ApiDumpDaemonsetAuthHandler(postmanAPIKey string, postmanEnv string) func(*http.Request) error {
 	return func(req *http.Request) error {
 		if postmanAPIKey == "" {
 			return errors.New("Postman API key is empty")
@@ -52,6 +46,16 @@ func daemonsetAuthHandler(podName string) func(*http.Request) error {
 		if postmanEnv != "" {
 			req.Header.Set("x-postman-env", postmanEnv)
 		}
+		return nil
+	}
+}
+
+func DaemonsetAuthHandler(postmanInsightsVerificationToken string) func(*http.Request) error {
+	return func(req *http.Request) error {
+		if postmanInsightsVerificationToken == "" {
+			return errors.New("Postman Insights verification token is empty")
+		}
+		req.Header.Set("postman-insights-verification-token", postmanInsightsVerificationToken)
 		return nil
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
-	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -54,10 +53,17 @@ type Daemonset struct {
 }
 
 func StartDaemonset() error {
-	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID())
+	// Initialize the front client
+	postmanInsightsVerificationToken := os.Getenv("POSTMAN_INSIGHTS_VERIFICATION_TOKEN")
+	frontClient := rest.NewFrontClient(
+		rest.Domain,
+		telemetry.GetClientID(),
+		rest.DaemonsetAuthHandler(postmanInsightsVerificationToken),
+	)
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
 
+	// Send initial telemetry
 	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
 	telemetryInterval := apispec.DefaultTelemetryInterval_seconds * time.Second
 	if clusterName == "" {
@@ -71,10 +77,11 @@ func StartDaemonset() error {
 		// Send Initial telemetry
 		err := frontClient.PostDaemonsetAgentTelemetry(ctx, clusterName)
 		if err != nil {
-			printer.Errorf("Failed to send daemonset agent telemetry: %v", err)
+			printer.Errorf("Failed to send initial daemonset agent telemetry: %v", err)
 			printer.Infof(
-				"Telemetry will not be sent from this agent, it will not be tracked on our end, " +
-					"and it will not appear in the app's list of clusters where the agent is running.",
+				"Agent will try to send telemetry again, if the error still persists, agent " +
+					"will not be tracked on our end, and it will not appear in the app's list of " +
+					"clusters where the agent is running.",
 			)
 		}
 	}
@@ -189,18 +196,20 @@ func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs, podCreds PodCreds) erro
 	stopChan := make(chan error)
 
 	apidumpArgs := apidump.Args{
-		ClientID:                  telemetry.GetClientID(),
-		Domain:                    rest.Domain,
-		ServiceID:                 podArgs.InsightsProjectID,
-		TargetNetworkNamespaceOpt: optionals.Some(networkNamespace),
-		ReproMode:                 podArgs.InsightsReproModeEnabled,
-		StopChan:                  stopChan,
-		PodName:                   optionals.Some(podArgs.PodName),
+		ClientID:  telemetry.GetClientID(),
+		Domain:    rest.Domain,
+		ServiceID: podArgs.InsightsProjectID,
+		DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
+			TargetNetworkNamespaceOpt: networkNamespace,
+			StopChan:                  stopChan,
+			APIKey:                    podCreds.InsightsAPIKey,
+			Environment:               podCreds.InsightsEnvironment,
+		}),
+		ReproMode: podArgs.InsightsReproModeEnabled,
 	}
 
 	// Put the process stop channel map and start the process in separate go routine
 	d.PodNameStopChanMap.Put(podArgs.PodName, stopChan)
-	cfg.SetPodPostmanAPIKeyAndEnvironment(podArgs.PodName, podCreds.InsightsAPIKey, podCreds.InsightsEnvironment)
 	go func() {
 		if err := apidump.Run(apidumpArgs); err != nil {
 			printer.Errorf("failed to run API dump process for pod %s: %v", podArgs.PodName, err)
@@ -215,7 +224,6 @@ func (d *Daemonset) StopApiDumpProcess(podName string, err error) error {
 		printer.Infof("stopping API dump process for pod %s", podName)
 		stopChan <- err
 		d.PodNameStopChanMap.Delete(podName)
-		cfg.UnsetPodPostmanAPIKeyAndEnvironment(podName)
 		return nil
 	} else {
 		printer.Errorf("failed to stop API dump process for pod %s: stop channel not found", podName)

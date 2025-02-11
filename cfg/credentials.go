@@ -71,8 +71,6 @@ func initCreds() {
 	creds.BindEnv("default.postman_api_key", "POSTMAN_API_KEY")
 	creds.BindEnv("default.postman_env", "POSTMAN_ENV")
 
-	creds.BindEnv("default.postman_insights_verification_token", "POSTMAN_INSIGHTS_VERIFICATION_TOKEN")
-
 	if err := creds.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// Ignore config file not found error since the config may be set by
@@ -140,34 +138,4 @@ func CredentialsPresent() bool {
 func DistinctIDFromCredentials() string {
 	key, _ := GetAPIKeyAndSecret()
 	return key
-}
-
-// Get Postman team verification token from config
-func GetPostmanInsightsVerificationToken() string {
-	return creds.GetString("default.postman_insights_verification_token")
-}
-
-// Sets Postman API Key and environment in the config
-// with pod name as profile
-func SetPodPostmanAPIKeyAndEnvironment(podName, postmanAPIKey, postmanEnv string) error {
-	if postmanAPIKey == "" {
-		return errors.New("Postman API key is empty")
-	} else {
-		creds.Set(podName+".postman_api_key", postmanAPIKey)
-	}
-
-	if postmanEnv != "" {
-		creds.Set(podName+".postman_env", postmanEnv)
-	}
-	return nil
-}
-
-// Get Postman API Key and environment from config for given pod name
-func GetPodPostmanAPIKeyAndEnvironment(podName string) (string, string) {
-	return creds.GetString(podName + ".postman_api_key"), creds.GetString(podName + ".postman_env")
-}
-
-func UnsetPodPostmanAPIKeyAndEnvironment(podName string) {
-	creds.Set(podName+".postman_api_key", nil)
-	creds.Set(podName+".postman_env", nil)
 }
