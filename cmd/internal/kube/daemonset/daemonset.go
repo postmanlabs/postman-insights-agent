@@ -18,6 +18,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	coreV1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -48,7 +49,8 @@ type Daemonset struct {
 
 	PodNameStopChanMap maps.Map[string, chan error]
 
-	TelemetryInterval time.Duration
+	PodHealthCheckInterval time.Duration
+	TelemetryInterval      time.Duration
 }
 
 func StartDaemonset() error {
@@ -140,8 +142,41 @@ func (d *Daemonset) KubernetesEventsWorker() {
 	// Not implemented
 }
 
-func (d *Daemonset) PodsHealthWorker() {
-	// Not implemented
+func (d *Daemonset) checkPodsHealth() {
+	podNames := d.PodNameStopChanMap.Keys()
+
+	podStatuses, err := d.KubeClient.GetPodsStatus(podNames)
+	if err != nil {
+		printer.Errorf("failed to get pods status: %v", err)
+		return
+	}
+
+	for podName, podStatus := range podStatuses {
+		if podStatus == string(coreV1.PodSucceeded) || podStatus == string(coreV1.PodFailed) {
+			printer.Infof("pod %s has stopped running", podStatus)
+			d.StopApiDumpProcess(
+				podStatus,
+				fmt.Errorf("pod %s has stopped running, status: %s", podName, podStatus),
+			)
+		}
+	}
+}
+
+func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
+	if d.PodHealthCheckInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(d.PodHealthCheckInterval)
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			d.checkPodsHealth()
+		}
+	}
+
 }
 
 func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs, podCreds PodCreds) error {
