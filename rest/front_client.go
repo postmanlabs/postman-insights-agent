@@ -5,6 +5,7 @@ import (
 	"path"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/daemon"
 )
 
@@ -85,4 +86,12 @@ func (c *frontClientImpl) CreateService(ctx context.Context, serviceName string,
 	err := c.Post(ctx, "/v1/services", body, &resp)
 
 	return resp, err
+}
+
+func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error {
+	req := api_schema.PostDaemonsetTelemetryRequest{
+		KubernetesCluster: clusterName,
+	}
+	path := "/v2/agent/daemonset/telemetry"
+	return c.Post(ctx, path, req, nil)
 }
