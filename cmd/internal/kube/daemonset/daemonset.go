@@ -25,9 +25,8 @@ const (
 
 type PodArgs struct {
 	// apidump related fields
-	InsightsProjectID        akid.ServiceID
-	InsightsAPIKey           string
-	InsightsReproModeEnabled bool
+	InsightsProjectID akid.ServiceID
+	InsightsAPIKey    string
 
 	// Pod related fields
 	PodName       string
@@ -35,7 +34,8 @@ type PodArgs struct {
 }
 
 type Daemonset struct {
-	ClusterName string
+	ClusterName              string
+	InsightsReproModeEnabled bool
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -72,6 +72,8 @@ func StartDaemonset() error {
 		}
 	}
 
+	insightsReproModeEnabled := os.Getenv("POSTMAN_INSIGHTS_REPRO_MODE_ENABLED") == "true"
+
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
 		return fmt.Errorf("failed to create kube client: %w", err)
@@ -84,11 +86,12 @@ func StartDaemonset() error {
 
 	go func() {
 		daemonsetRun := &Daemonset{
-			ClusterName:       clusterName,
-			KubeClient:        kubeClient,
-			CRIClient:         criClient,
-			FrontClient:       frontClient,
-			TelemetryInterval: telemetryInterval,
+			ClusterName:              clusterName,
+			InsightsReproModeEnabled: insightsReproModeEnabled,
+			KubeClient:               kubeClient,
+			CRIClient:                criClient,
+			FrontClient:              frontClient,
+			TelemetryInterval:        telemetryInterval,
 		}
 		daemonsetRun.Run()
 	}()
@@ -153,7 +156,7 @@ func (d *Daemonset) StartApiDumpProcess(podArgs PodArgs) error {
 		Domain:                    rest.Domain,
 		ServiceID:                 podArgs.InsightsProjectID,
 		TargetNetworkNamespaceOpt: optionals.Some(networkNamespace),
-		ReproMode:                 podArgs.InsightsReproModeEnabled,
+		ReproMode:                 d.InsightsReproModeEnabled,
 		StopChan:                  stopChan,
 	}
 
