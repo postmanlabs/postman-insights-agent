@@ -165,7 +165,7 @@ func getUserIdentity() (string, string, error) {
 		// API key.
 		ctx, cancel := context.WithTimeout(context.Background(), userAPITimeout)
 		defer cancel()
-		frontClient := rest.NewFrontClient(rest.Domain, GetClientID())
+		frontClient := rest.NewFrontClient(rest.Domain, GetClientID(), nil)
 		userResponse, err := frontClient.GetUser(ctx)
 		if err == nil {
 			return fmt.Sprint(userResponse.ID), fmt.Sprint(userResponse.TeamID), nil

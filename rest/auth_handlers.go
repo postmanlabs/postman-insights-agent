@@ -7,6 +7,9 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 )
 
+// baseAuthHandler is the default auth handler for all requests.
+// It uses PostmanAPIKey from the config to authenticate the request,
+// and fallbacks to the Akita API key if PostmanAPIKey is not set.
 func baseAuthHandler(req *http.Request) error {
 	postmanAPIKey, postmanEnv := cfg.GetPostmanAPIKeyAndEnvironment()
 
@@ -36,6 +39,9 @@ func baseAuthHandler(req *http.Request) error {
 	return nil
 }
 
+// ApiDumpDaemonsetAuthandler is used by the apidump functions if it is started
+// by the kube daemonSet process. It excepts the postmanAPIKey and postmanEnv
+// as arguments instead of reading it from the config.
 func ApiDumpDaemonsetAuthHandler(postmanAPIKey string, postmanEnv string) func(*http.Request) error {
 	return func(req *http.Request) error {
 		if postmanAPIKey == "" {
@@ -50,6 +56,8 @@ func ApiDumpDaemonsetAuthHandler(postmanAPIKey string, postmanEnv string) func(*
 	}
 }
 
+// DaemonsetAuthHandler is used by the daemonset process to authenticate the telemetry requests.
+// it uses the postmanInsightsVerificationToken to authenticate the request.
 func DaemonsetAuthHandler(postmanInsightsVerificationToken string) func(*http.Request) error {
 	return func(req *http.Request) error {
 		if postmanInsightsVerificationToken == "" {
