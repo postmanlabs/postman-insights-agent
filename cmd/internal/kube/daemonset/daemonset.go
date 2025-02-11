@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -28,8 +29,7 @@ const (
 type PodTrafficMonitorStage int
 
 // These are different stages of pod traffic monitoring
-// PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/PodTerminated ->
-// -> TrafficMonitoringStopped -> PodRemovedFromMap
+// PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> PodRemovedFromMap
 const (
 	// When agent finds an already running pod
 	PodDetected PodTrafficMonitorStage = iota
@@ -42,6 +42,9 @@ const (
 
 	// When apidump process is errored for the pod
 	TrafficMonitoringFailed
+
+	// When apidump process is ended without any issue for the pod
+	TrafficMonitoringEnded
 
 	// When agent will receive pod deleted event
 	PodTerminated
@@ -95,7 +98,8 @@ func (p *PodArgs) validatePodTrafficMonitorStage(
 		return true, nil
 	}
 
-	return false, errors.New(fmt.Sprintf("Invalid prior state for pod %s: %d", p.PodName, p.PodTrafficMonitorStage))
+	return false, errors.New(fmt.Sprintf("Invalid prior state for pod %s: %d", p.PodName,
+		p.PodTrafficMonitorStage))
 }
 
 type Daemonset struct {
@@ -318,12 +322,25 @@ func (d *Daemonset) StartApiDumpProcess(podName string) error {
 	podArgs.StopChan = stopChan
 	podArgs.setPodTrafficMonitorStage(TrafficMonitoringStarted)
 	go func() {
-		if err := apidump.Run(apidumpArgs); err != nil {
-			printer.Errorf("apidump process failed for pod %s: %v", podArgs.PodName, err)
-			podArgs.setPodTrafficMonitorStage(TrafficMonitoringFailed)
+		// If apidump process panics, do not crash the main agent. Instead log the error and stacktrace
+		// and stop the apidump process
+		defer func() {
+			if err := recover(); err != nil {
+				printer.Errorf("Panic occurred in apidump process for pod %s, err: %v\n%v\n",
+					podArgs.PodName, err, string(debug.Stack()))
+				podArgs.setPodTrafficMonitorStage(TrafficMonitoringFailed)
+			}
 			// It is possible that the apidump process is already stopped and the stopChannel is of no use
 			// This is just a safety check
 			d.StopApiDumpProcess(podName, err)
+		}()
+
+		if err := apidump.Run(apidumpArgs); err != nil {
+			printer.Errorf("Apidump process failed for pod %s: %v", podArgs.PodName, err)
+			podArgs.setPodTrafficMonitorStage(TrafficMonitoringFailed)
+		} else {
+			printer.Infof("Apidump process ended for pod %s", podArgs.PodName)
+			podArgs.setPodTrafficMonitorStage(TrafficMonitoringEnded)
 		}
 	}()
 
@@ -336,7 +353,10 @@ func (d *Daemonset) StopApiDumpProcess(podName string, err error) error {
 		return err
 	}
 
-	isSameStage, stageErr := podArgs.validatePodTrafficMonitorStage(TrafficMonitoringStopped, PodTerminated, TrafficMonitoringFailed)
+	isSameStage, stageErr := podArgs.validatePodTrafficMonitorStage(
+		TrafficMonitoringStopped,
+		PodTerminated, TrafficMonitoringFailed, TrafficMonitoringEnded,
+	)
 	if isSameStage || stageErr != nil {
 		return stageErr
 	}
