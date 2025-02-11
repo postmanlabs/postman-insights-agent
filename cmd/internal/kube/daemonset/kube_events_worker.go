@@ -9,6 +9,12 @@ import (
 	coreV1 "k8s.io/api/core/v1"
 )
 
+const (
+	allRequiredEnvVarsAbsentMsg    = "All required environment variables are absent."
+	requiredEnvVarMissingMsgFormat = "One or more required environment variables are missing." +
+		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets. EnvVar: %s"
+)
+
 func (d *Daemonset) handlePodAddEvent(podName string) {
 	pods, err := d.KubeClient.GetPods([]string{podName})
 	if err != nil {
@@ -33,7 +39,9 @@ func (d *Daemonset) handlePodAddEvent(podName string) {
 
 	apidumpArgs, err := d.inspectPodForEnvVars(podsWithoutAgentSidecar[0])
 	if err != nil {
-		printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", podName, err)
+		if err.Error() != allRequiredEnvVarsAbsentMsg {
+			printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", podName, err)
+		}
 		return
 	}
 
@@ -82,12 +90,16 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (ApidumpArgs, error) {
 		}
 	}
 
-	if (insightsProjectID == akid.ServiceID{}) || insightsAPIKey == "" {
-		errorMsg := fmt.Sprintf("Required environment variables missing: %[1]s or %[2]s.\n"+
-			"Postman API key must be specified in the %[1]s environment variable and "+
-			"Postman Insights project ID must be specified in the %[2]s environment variable.",
-			POSTMAN_INSIGHTS_API_KEY, POSTMAN_INSIGHTS_PROJECT_ID)
-		return ApidumpArgs{}, errors.New(errorMsg)
+	if (insightsProjectID == akid.ServiceID{}) && insightsAPIKey == "" {
+		return ApidumpArgs{}, errors.New(allRequiredEnvVarsAbsentMsg)
+	}
+
+	if (insightsProjectID == akid.ServiceID{}) {
+		return ApidumpArgs{}, errors.New(fmt.Sprintf(requiredEnvVarMissingMsgFormat, POSTMAN_INSIGHTS_PROJECT_ID))
+	}
+
+	if insightsAPIKey == "" {
+		return ApidumpArgs{}, errors.New(fmt.Sprintf(requiredEnvVarMissingMsgFormat, POSTMAN_INSIGHTS_API_KEY))
 	}
 
 	return ApidumpArgs{insightsProjectID, insightsAPIKey}, nil

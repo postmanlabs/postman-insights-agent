@@ -137,7 +137,12 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	for _, pod := range podsWithoutAgentSidecar {
 		args, err := d.inspectPodForEnvVars(pod)
 		if err != nil {
-			printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
+			if err.Error() == allRequiredEnvVarsAbsentMsg {
+				printer.Debugf("None of the required env vars present, skipping pod: %s", pod.Name)
+			} else {
+				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
+			}
+			continue
 		}
 
 		// TODO(K8S-MNS): Handle all errors and send that at once
