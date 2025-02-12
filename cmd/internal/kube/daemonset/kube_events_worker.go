@@ -1,18 +1,16 @@
 package daemonset
 
 import (
-	"fmt"
-
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 )
 
-const (
-	allRequiredEnvVarsAbsentMsg    = "All required environment variables are absent."
-	requiredEnvVarMissingMsgFormat = "One or more required environment variables are missing." +
-		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets. EnvVar: %s"
+var (
+	allRequiredEnvVarsAbsentErr = errors.New("All required environment variables are absent.")
+	requiredEnvVarMissingErr    = errors.New("One or more required environment variables are missing. " +
+		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets.")
 )
 
 func (d *Daemonset) handlePodAddEvent(podName string) {
@@ -39,8 +37,13 @@ func (d *Daemonset) handlePodAddEvent(podName string) {
 
 	apidumpArgs, err := d.inspectPodForEnvVars(podsWithoutAgentSidecar[0])
 	if err != nil {
-		if err.Error() != allRequiredEnvVarsAbsentMsg {
-			printer.Errorf("failed to inspect pod for env vars, pod name: %s, error: %v", podName, err)
+		switch err {
+		case allRequiredEnvVarsAbsentErr:
+			printer.Debugf("None of the required env vars present, skipping pod: %s", podName)
+		case requiredEnvVarMissingErr:
+			printer.Errorf("Required env var missing, skipping pod: %s", podName)
+		default:
+			printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", podName, err)
 		}
 		return
 	}
@@ -91,15 +94,17 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (ApidumpArgs, error) {
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) && insightsAPIKey == "" {
-		return ApidumpArgs{}, errors.New(allRequiredEnvVarsAbsentMsg)
+		return ApidumpArgs{}, allRequiredEnvVarsAbsentErr
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) {
-		return ApidumpArgs{}, errors.New(fmt.Sprintf(requiredEnvVarMissingMsgFormat, POSTMAN_INSIGHTS_PROJECT_ID))
+		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
+		return ApidumpArgs{}, requiredEnvVarMissingErr
 	}
 
 	if insightsAPIKey == "" {
-		return ApidumpArgs{}, errors.New(fmt.Sprintf(requiredEnvVarMissingMsgFormat, POSTMAN_INSIGHTS_API_KEY))
+		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s", POSTMAN_INSIGHTS_API_KEY, pod.Name)
+		return ApidumpArgs{}, requiredEnvVarMissingErr
 	}
 
 	return ApidumpArgs{insightsProjectID, insightsAPIKey}, nil
