@@ -73,6 +73,7 @@ func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 	if err != nil {
 		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
+		return
 	}
 
 	err = d.StopApiDumpProcess(podUID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))

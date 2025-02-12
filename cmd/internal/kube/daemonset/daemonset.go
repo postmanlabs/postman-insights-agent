@@ -32,8 +32,10 @@ type PodTrafficMonitorState int
 // These are different states of pod traffic monitoring
 // PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> PodRemovedFromMap
 const (
+	_ PodTrafficMonitorState = iota
+
 	// When agent finds an already running pod
-	PodDetected PodTrafficMonitorState = iota
+	PodDetected
 
 	// When agent will receive pod created event
 	PodInitialized
@@ -279,6 +281,7 @@ func (d *Daemonset) checkPodsHealth() {
 			if err != nil {
 				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
+				continue
 			}
 
 			err = d.StopApiDumpProcess(podUID, errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus))
@@ -314,8 +317,8 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStarted, PodDetected, PodInitialized)
 	if err != nil {
-		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
-			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStarted, err)
+		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
 	}
 
 	go func() (funcErr error) {
@@ -338,11 +341,15 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			if err != nil {
 				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
+				return
 			}
 
 			// It is possible that the apidump process is already stopped and the stopChannel is of no use
 			// This is just a safety check
-			d.StopApiDumpProcess(podUID, err)
+			err := d.StopApiDumpProcess(podUID, err)
+			if err != nil {
+				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+			}
 		}()
 
 		networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
@@ -383,8 +390,8 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, err error) error {
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStopped,
 		PodTerminated, TrafficMonitoringFailed, TrafficMonitoringEnded)
 	if err != nil {
-		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
-			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped, err)
+		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
 	}
 
 	printer.Infof("Stopping API dump process for pod %s", podArgs.PodName)
