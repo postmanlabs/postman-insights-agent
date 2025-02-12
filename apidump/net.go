@@ -11,12 +11,11 @@ import (
 
 	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/go-utils/optionals"
-	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/google/gopacket/pcap"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/env"
+	"github.com/postmanlabs/postman-insights-agent/pcap"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
@@ -196,40 +195,13 @@ func checkPcapPermissions(interfaces map[string]interfaceInfo, targetNetworkName
 	for iface := range interfaces {
 		go func(iface string) {
 			defer wg.Done()
-			if targetNetworkNamespace, exists := targetNetworkNamespaceOpt.Get(); exists {
-				// Switch to the target network namespace.
-				targetNs, err := ns.GetNS(targetNetworkNamespace)
-				if err != nil {
-					telemetry.Error("pcap permissions", err)
-					errChan <- &pcapPermErr{iface: iface, err: err}
-					return
-				}
-				defer targetNs.Close()
-
-				err = targetNs.Do(func(host ns.NetNS) error {
-					var err error
-					h, err := pcap.OpenLive(iface, 1600, true, pcap.BlockForever)
-					if err != nil {
-						return err
-					}
-					h.Close()
-					return nil
-				})
-
-				if err != nil {
-					telemetry.Error("pcap permissions", err)
-					errChan <- &pcapPermErr{iface: iface, err: err}
-					return
-				}
-			} else {
-				h, err := pcap.OpenLive(iface, 1600, true, pcap.BlockForever)
-				if err != nil {
-					telemetry.Error("pcap permissions", err)
-					errChan <- &pcapPermErr{iface: iface, err: err}
-					return
-				}
-				h.Close()
+			h, err := pcap.GetPcapHandle(iface, 1600, true, pcap.BlockForever, targetNetworkNamespaceOpt)
+			if err != nil {
+				telemetry.Error("pcap permissions", err)
+				errChan <- &pcapPermErr{iface: iface, err: err}
+				return
 			}
+			h.Close()
 		}(iface)
 	}
 

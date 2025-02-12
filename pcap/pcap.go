@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/akitasoftware/go-utils/optionals"
-	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/google/gopacket"
 	_ "github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -16,6 +15,7 @@ import (
 const (
 	// The same default as tcpdump.
 	defaultSnapLen = 262144
+	BlockForever   = pcap.BlockForever
 )
 
 type pcapWrapper interface {
@@ -26,38 +26,9 @@ type pcapWrapper interface {
 type pcapImpl struct{}
 
 func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
-	var (
-		handle *pcap.Handle
-		err    error
-	)
-
-	if targetNetworkNamespace, exists := targetNetworkNamespaceOpt.Get(); exists {
-		// Switch to the target network namespace.
-		targetNs, err := ns.GetNS(targetNetworkNamespace)
-		if err != nil {
-			return nil, errors.Wrapf(err, "can't get network namespace %s", targetNetworkNamespace)
-		}
-		//TODO(K8s-MNS) Is this right place to close? Same in net.go
-		defer targetNs.Close()
-
-		// Open the pcap handle in the target network namespace.
-		err = targetNs.Do(func(host ns.NetNS) error {
-			var err error
-			handle, err = pcap.OpenLive(interfaceName, defaultSnapLen, true, pcap.BlockForever)
-			if err != nil {
-				return errors.Wrapf(err, "failed to open pcap to %s/%s", targetNetworkNamespace, interfaceName)
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// Open the pcap handle in the agent's network namespace.
-		handle, err = pcap.OpenLive(interfaceName, defaultSnapLen, true, pcap.BlockForever)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to open pcap to %s", interfaceName)
-		}
+	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, targetNetworkNamespaceOpt)
+	if err != nil {
+		return nil, err
 	}
 
 	if bpfFilter != "" {
@@ -94,7 +65,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 					wrappedChan <- pkt
 
 					if count == 0 {
-						ttfp := time.Now().Sub(startTime)
+						ttfp := time.Since(startTime)
 						printer.Debugf("Time to first packet on %s: %s\n", interfaceName, ttfp)
 					}
 					count += 1
