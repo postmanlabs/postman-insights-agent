@@ -2,9 +2,9 @@ package cri_apis
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
@@ -64,7 +64,7 @@ func newRemoteRuntimeService(endpoint string, connectionTimeout time.Duration) (
 	}
 
 	if err := service.validateServiceConnection(ctx, conn, endpoint); err != nil {
-		return nil, fmt.Errorf("validate service connection: %w", err)
+		return nil, errors.Wrap(err, "validate service connection: %w")
 	}
 
 	return service, nil
@@ -77,7 +77,7 @@ func (r *remoteRuntimeService) validateServiceConnection(ctx context.Context, co
 	r.runtimeClient = runtimeapi.NewRuntimeServiceClient(conn)
 
 	if _, err := r.runtimeClient.Version(ctx, &runtimeapi.VersionRequest{}); err != nil {
-		return fmt.Errorf("validate CRI v1 runtime API for endpoint %q failed, err: %w", endpoint, err)
+		return errors.Wrapf(err, "validate CRI v1 runtime API for endpoint %q failed", endpoint)
 	}
 
 	printer.Debugf("Validated CRI v1 runtime API")

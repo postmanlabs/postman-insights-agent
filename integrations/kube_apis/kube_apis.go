@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/akitasoftware/go-utils/maps"
+	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,17 +34,17 @@ func NewKubeClient() (KubeClient, error) {
 		kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return KubeClient{}, fmt.Errorf("error building kubeconfig: %v", err)
+			return KubeClient{}, errors.Wrap(err, "error building kubeconfig")
 		}
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return KubeClient{}, fmt.Errorf("error creating clientset: %v", err)
+		return KubeClient{}, errors.Wrap(err, "error creating clientset")
 	}
 
 	agentNodeName := os.Getenv("POSTMAN_K8S_NODE")
 	if agentNodeName == "" {
-		return KubeClient{}, fmt.Errorf("POSTMAN_K8S_NODE environment variable not set")
+		return KubeClient{}, errors.New("POSTMAN_K8S_NODE environment variable not set")
 	}
 
 	kubeClient := KubeClient{
@@ -72,7 +73,7 @@ func (kc *KubeClient) initEventWatcher() error {
 		FieldSelector: "involvedObject.kind=Pod",
 	})
 	if err != nil {
-		return fmt.Errorf("error creating watcher: %v", err)
+		return errors.Wrap(err, "error creating watcher")
 	}
 
 	kc.EventWatch = watcher
@@ -86,7 +87,7 @@ func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
 		FieldSelector: fieldSelector,
 	})
 	if err != nil {
-		return []coreV1.Pod{}, fmt.Errorf("error getting pods: %v", err)
+		return []coreV1.Pod{}, errors.Wrap(err, "error getting pods")
 	}
 
 	return pods.Items, nil
@@ -99,7 +100,7 @@ func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
 		return []coreV1.Pod{}, err
 	}
 	if len(pods) == 0 {
-		return []coreV1.Pod{}, fmt.Errorf("no pods in node: %s", kc.AgentNode)
+		return []coreV1.Pod{}, errors.Errorf("no pods in node: %s", kc.AgentNode)
 	}
 
 	podMap := maps.NewMap[types.UID, coreV1.Pod]()
@@ -111,14 +112,14 @@ func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
 	for _, uid := range podUIDs {
 		pod, ok := podMap.Get(uid).Get()
 		if !ok {
-			printer.Debugf("pod not found with UID: %v\n", uid)
+			printer.Debugf("Pod not found with UID: %v\n", uid)
 			continue
 		}
 		filteredPods = append(filteredPods, pod)
 	}
 
 	if len(filteredPods) == 0 {
-		return []coreV1.Pod{}, fmt.Errorf("no pods found with names: %v", podUIDs)
+		return []coreV1.Pod{}, errors.Errorf("no pods found with names: %v", podUIDs)
 	}
 
 	return filteredPods, nil
@@ -150,11 +151,11 @@ func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 		if len(parts) == 2 {
 			return parts[1], nil
 		} else {
-			return "", fmt.Errorf("invalid container ID: %s", containerID)
+			return "", errors.Errorf("invalid container ID: %s", containerID)
 		}
 	}
 
-	return "", fmt.Errorf("no containers found for pod: %s", pod.Name)
+	return "", errors.Errorf("no containers found for pod: %s", pod.Name)
 }
 
 // GetPodsStatus returns the statuses for list of pods

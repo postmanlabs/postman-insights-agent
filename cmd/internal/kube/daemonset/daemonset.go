@@ -159,7 +159,7 @@ func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingSta
 				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
 		}
 	} else {
-		printer.Errorf("pod is already loaded in the map and is in state %d", argsFromMap.PodTrafficMonitorState)
+		printer.Errorf("Pod is already loaded in the map and is in state %d", argsFromMap.PodTrafficMonitorState)
 	}
 }
 
@@ -223,7 +223,7 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		d.addPodArgsToMap(pod.UID, &args, PodDetected)
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
-			printer.Errorf("failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
+			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
 		}
 	}
 
@@ -238,12 +238,12 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 		case event := <-d.KubeClient.EventWatch.ResultChan():
 			switch event.Type {
 			case watch.Added:
-				printer.Debugf("k8s added event: %v", event.Object)
+				printer.Debugf("Got k8s added event: %v", event.Object)
 				if e, ok := event.Object.(*coreV1.Event); ok {
 					go d.handlePodAddEvent(e.InvolvedObject.UID)
 				}
 			case watch.Deleted:
-				printer.Debugf("k8s deleted event: %v", event.Object)
+				printer.Debugf("Got k8s deleted event: %v", event.Object)
 				if e, ok := event.Object.(*coreV1.Event); ok {
 					go d.handlePodDeleteEvent(e.InvolvedObject.UID)
 				}
@@ -261,17 +261,17 @@ func (d *Daemonset) checkPodsHealth() {
 
 	podStatuses, err := d.KubeClient.GetPodsStatusByUIDs(podUIDs)
 	if err != nil {
-		printer.Errorf("failed to get pods status: %v", err)
+		printer.Errorf("Failed to get pods status: %v", err)
 		return
 	}
 
 	for podUID, podStatus := range podStatuses {
 		if podStatus == coreV1.PodSucceeded || podStatus == coreV1.PodFailed {
-			printer.Infof("pod %s has stopped running", podStatus)
+			printer.Infof("Pod %s has stopped running", podStatus)
 
 			podArgs, err := d.getPodArgsFromMap(podUID)
 			if err != nil {
-				printer.Errorf("failed to get podArgs for podUID %s: %v", podUID, err)
+				printer.Errorf("Failed to get podArgs for podUID %s: %v", podUID, err)
 				continue
 			}
 
@@ -283,7 +283,7 @@ func (d *Daemonset) checkPodsHealth() {
 
 			err = d.StopApiDumpProcess(podUID, errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus))
 			if err != nil {
-				printer.Errorf("failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
 			}
 		}
 	}
@@ -387,7 +387,7 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, err error) error {
 			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped, err)
 	}
 
-	printer.Infof("stopping API dump process for pod %s", podArgs.PodName)
+	printer.Infof("Stopping API dump process for pod %s", podArgs.PodName)
 	podArgs.StopChan <- err
 
 	return nil
