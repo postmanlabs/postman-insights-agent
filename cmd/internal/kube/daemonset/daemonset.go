@@ -13,10 +13,13 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	coreV1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
 const (
 	apiContextTimeout = 20 * time.Second
+	agentImage        = "public.ecr.aws/postman/postman-insights-agent:latest"
 )
 
 type ApidumpArgs struct {
@@ -115,12 +118,63 @@ func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
 	}
 }
 
+// StartProcessInExistingPods starts apidump process in existing pods
+// that do not have the agent sidecar container and required env vars.
 func (d *Daemonset) StartProcessInExistingPods() error {
-	return fmt.Errorf("not implemented")
+	// Get all pods in the node where the agent is running
+	pods, err := d.KubeClient.GetPodsInAgentNode()
+	if err != nil {
+		return fmt.Errorf("failed to get pods in node: %w", err)
+	}
+
+	// Filter out pods that do not have the agent sidecar container
+	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
+	if err != nil {
+		return fmt.Errorf("failed to filter pods by container image: %w", err)
+	}
+
+	// Iterate over each pod without the agent sidecar
+	for _, pod := range podsWithoutAgentSidecar {
+		args, err := d.inspectPodForEnvVars(pod)
+		if err != nil {
+			switch err {
+			case allRequiredEnvVarsAbsentErr:
+				printer.Debugf("None of the required env vars present, skipping pod: %s", pod.Name)
+			case requiredEnvVarMissingErr:
+				printer.Errorf("Required env var missing, skipping pod: %s", pod.Name)
+			default:
+				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
+			}
+			continue
+		}
+
+		// TODO(K8S-MNS): Handle all errors and send that at once
+		d.StartApiDumpProcess(args)
+	}
+
+	return nil
 }
 
-func (d *Daemonset) KubernetesEventsWorker() {
-	// Not implemented
+func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case event := <-d.KubeClient.EventWatch.ResultChan():
+			switch event.Type {
+			case watch.Added:
+				printer.Debugf("k8s added event: %v", event.Object)
+				if e, ok := event.Object.(*coreV1.Event); ok {
+					go d.handlePodAddEvent(e.InvolvedObject.Name)
+				}
+			case watch.Deleted:
+				printer.Debugf("k8s deleted event: %v", event.Object)
+				if e, ok := event.Object.(*coreV1.Event); ok {
+					go d.handlePodDeleteEvent(e.InvolvedObject.Name)
+				}
+			}
+		}
+	}
 }
 
 func (d *Daemonset) PodsHealthWorker() {
@@ -131,6 +185,6 @@ func (d *Daemonset) StartApiDumpProcess(args ApidumpArgs) error {
 	return fmt.Errorf("not implemented")
 }
 
-func (d *Daemonset) StopApiDumpProcess() error {
+func (d *Daemonset) StopApiDumpProcess(podName string) error {
 	return fmt.Errorf("not implemented")
 }
