@@ -21,6 +21,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func k8s_funcs() (string, error) {
@@ -57,7 +58,7 @@ func k8s_funcs() (string, error) {
 	printer.Infof("Pod Names: %s\n", podNames)
 
 	// Get single pod info
-	pods, err := kubeClient.GetPods([]string{podsInNode[0].Name})
+	pods, err := kubeClient.GetPodsByUIDs([]types.UID{podsInNode[0].UID})
 	if err != nil {
 		return "", fmt.Errorf("failed to get pod info: %v", err)
 	}
@@ -67,7 +68,7 @@ func k8s_funcs() (string, error) {
 	pod := pods[0]
 
 	// GetPodStatus
-	podStatuses, err := kubeClient.GetPodsStatus([]string{pod.Name})
+	podStatuses, err := kubeClient.GetPodsStatusByUIDs([]types.UID{pod.UID})
 	if err != nil {
 		return "", fmt.Errorf("failed to get pod status: %v", err)
 	}

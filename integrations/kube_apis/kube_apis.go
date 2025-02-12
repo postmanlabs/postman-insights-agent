@@ -10,6 +10,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -92,7 +93,7 @@ func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
 }
 
 // GetPods returns a list of pods running on the agent node with the given names
-func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
+func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
 	pods, err := kc.GetPodsInAgentNode()
 	if err != nil {
 		return []coreV1.Pod{}, err
@@ -101,23 +102,23 @@ func (kc *KubeClient) GetPods(podNames []string) ([]coreV1.Pod, error) {
 		return []coreV1.Pod{}, fmt.Errorf("no pods in node: %s", kc.AgentNode)
 	}
 
-	podMap := make(map[string]coreV1.Pod)
+	podMap := maps.NewMap[types.UID, coreV1.Pod]()
 	for _, pod := range pods {
-		podMap[pod.Name] = pod
+		podMap.Put(pod.UID, pod)
 	}
 
 	var filteredPods []coreV1.Pod
-	for _, name := range podNames {
-		pod, ok := podMap[name]
+	for _, uid := range podUIDs {
+		pod, ok := podMap.Get(uid).Get()
 		if !ok {
-			printer.Debugf("pod not found with name: %v\n", name)
+			printer.Debugf("pod not found with UID: %v\n", uid)
 			continue
 		}
 		filteredPods = append(filteredPods, pod)
 	}
 
 	if len(filteredPods) == 0 {
-		return []coreV1.Pod{}, fmt.Errorf("no pods found with names: %v", podNames)
+		return []coreV1.Pod{}, fmt.Errorf("no pods found with names: %v", podUIDs)
 	}
 
 	return filteredPods, nil
@@ -157,15 +158,15 @@ func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 }
 
 // GetPodsStatus returns the statuses for list of pods
-func (kc *KubeClient) GetPodsStatus(podNames []string) (maps.Map[string, string], error) {
-	pods, err := kc.GetPods(podNames)
+func (kc *KubeClient) GetPodsStatusByUIDs(podUIDs []types.UID) (maps.Map[types.UID, coreV1.PodPhase], error) {
+	pods, err := kc.GetPodsByUIDs(podUIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	statuses := maps.NewMap[string, string]()
+	statuses := maps.NewMap[types.UID, coreV1.PodPhase]()
 	for _, pod := range pods {
-		statuses[pod.Name] = string(pod.Status.Phase)
+		statuses[pod.UID] = pod.Status.Phase
 	}
 
 	return statuses, nil

@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"slices"
 	"sync"
 	"time"
 
-	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
@@ -20,6 +18,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	coreV1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 )
 
@@ -57,51 +56,6 @@ const (
 	// Final stage after which pod will be removed from the map
 	PodRemovedFromMap
 )
-
-type PodCreds struct {
-	InsightsAPIKey      string
-	InsightsEnvironment string
-}
-
-type PodArgs struct {
-	// apidump related fields
-	InsightsProjectID akid.ServiceID
-
-	// Pod related fields
-	PodName       string
-	ContainerUUID string
-	PodCreds      PodCreds
-
-	// for state management
-	PodTrafficMonitorStage PodTrafficMonitorStage
-	StageChangeMutex       *sync.Mutex
-
-	// send stop signal to apidump process
-	StopChan chan error
-}
-
-func (p *PodArgs) setPodTrafficMonitorStage(stage PodTrafficMonitorStage) {
-	p.StageChangeMutex.Lock()
-	defer p.StageChangeMutex.Unlock()
-	p.PodTrafficMonitorStage = stage
-}
-
-func (p *PodArgs) validatePodTrafficMonitorStage(
-	nextStage PodTrafficMonitorStage,
-	allowedPriorStages ...PodTrafficMonitorStage,
-) (bool, error) {
-	if slices.Contains(allowedPriorStages, p.PodTrafficMonitorStage) {
-		return false, nil
-	}
-
-	if p.PodTrafficMonitorStage == nextStage {
-		printer.Debugf("API dump process for pod %s is already in state %d", p.PodName, nextStage)
-		return true, nil
-	}
-
-	return false, errors.New(fmt.Sprintf("Invalid prior state for pod %s: %d", p.PodName,
-		p.PodTrafficMonitorStage))
-}
 
 type Daemonset struct {
 	ClusterName              string
@@ -182,12 +136,12 @@ func (d *Daemonset) Run() error {
 	return fmt.Errorf("not implemented")
 }
 
-func (d *Daemonset) getPodArgsFromMap(podName string) (*PodArgs, error) {
+func (d *Daemonset) getPodArgsFromMap(podUID types.UID) (*PodArgs, error) {
 	var podArgs *PodArgs
-	if p, ok := d.PodArgsByNameMap.Load(podName); ok {
+	if p, ok := d.PodArgsByNameMap.Load(podUID); ok {
 		podArgs = p.(*PodArgs)
 	} else {
-		return podArgs, errors.Errorf("podArgs not found for podName: %s", podName)
+		return podArgs, errors.Errorf("podArgs not found for podId: %s", podUID)
 	}
 
 	return podArgs, nil
@@ -250,10 +204,13 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			continue
 		}
 
+		// Set the pod stage to PodDetected, store it in the map and start the apidump process
 		args.setPodTrafficMonitorStage(PodDetected)
-
-		// TODO(K8S-MNS): Handle all errors and send that at once
-		d.StartApiDumpProcess(pod.Name)
+		d.PodArgsByNameMap.Store(pod.UID, args)
+		err = d.StartApiDumpProcess(pod.UID)
+		if err != nil {
+			printer.Errorf("failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
+		}
 	}
 
 	return nil
@@ -269,12 +226,12 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 			case watch.Added:
 				printer.Debugf("k8s added event: %v", event.Object)
 				if e, ok := event.Object.(*coreV1.Event); ok {
-					go d.handlePodAddEvent(e.InvolvedObject.Name)
+					go d.handlePodAddEvent(e.InvolvedObject.UID)
 				}
 			case watch.Deleted:
 				printer.Debugf("k8s deleted event: %v", event.Object)
 				if e, ok := event.Object.(*coreV1.Event); ok {
-					go d.handlePodDeleteEvent(e.InvolvedObject.Name)
+					go d.handlePodDeleteEvent(e.InvolvedObject.UID)
 				}
 			}
 		}
@@ -282,42 +239,41 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 }
 
 func (d *Daemonset) checkPodsHealth() {
-	var podNames []string
-	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
-		e := v.(*PodArgs)
-		podNames = append(podNames, e.PodName)
+	var podUIDs []types.UID
+	d.PodArgsByNameMap.Range(func(k, _ interface{}) bool {
+		podUIDs = append(podUIDs, k.(types.UID))
 		return true
 	})
 
-	podStatuses, err := d.KubeClient.GetPodsStatus(podNames)
+	podStatuses, err := d.KubeClient.GetPodsStatusByUIDs(podUIDs)
 	if err != nil {
 		printer.Errorf("failed to get pods status: %v", err)
 		return
 	}
 
-	for podName, podStatus := range podStatuses {
-		if podStatus == string(coreV1.PodSucceeded) || podStatus == string(coreV1.PodFailed) {
+	for podUID, podStatus := range podStatuses {
+		if podStatus == coreV1.PodSucceeded || podStatus == coreV1.PodFailed {
 			printer.Infof("pod %s has stopped running", podStatus)
 
-			podArgs, err := d.getPodArgsFromMap(podName)
+			podArgs, err := d.getPodArgsFromMap(podUID)
 			if err != nil {
-				printer.Errorf("failed to get podArgs for pod %s: %v", podName, err)
+				printer.Errorf("failed to get podArgs for podUID %s: %v", podUID, err)
 				continue
 			}
 
 			isSameStage, err := podArgs.validatePodTrafficMonitorStage(PodTerminated, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Errorf("pod %s is in invalid state %d", podName, podArgs.PodTrafficMonitorStage)
+				printer.Errorf("pod %s is in invalid state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
 			}
 			if isSameStage {
-				printer.Errorf("pod %s is already in state %d", podName, podArgs.PodTrafficMonitorStage)
+				printer.Errorf("pod %s is already in state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
 			}
 
 			podArgs.setPodTrafficMonitorStage(PodTerminated)
 
 			d.StopApiDumpProcess(
-				podName,
-				errors.Errorf("pod %s has stopped running, status: %s", podName, podStatus),
+				podUID,
+				errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus),
 			)
 		}
 	}
@@ -340,8 +296,8 @@ func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 
 }
 
-func (d *Daemonset) StartApiDumpProcess(podName string) error {
-	podArgs, err := d.getPodArgsFromMap(podName)
+func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
+	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
 		return err
 	}
@@ -386,7 +342,7 @@ func (d *Daemonset) StartApiDumpProcess(podName string) error {
 			}
 			// It is possible that the apidump process is already stopped and the stopChannel is of no use
 			// This is just a safety check
-			d.StopApiDumpProcess(podName, err)
+			d.StopApiDumpProcess(podUID, err)
 		}()
 
 		if err := apidump.Run(apidumpArgs); err != nil {
@@ -401,8 +357,8 @@ func (d *Daemonset) StartApiDumpProcess(podName string) error {
 	return nil
 }
 
-func (d *Daemonset) StopApiDumpProcess(podName string, err error) error {
-	podArgs, err := d.getPodArgsFromMap(podName)
+func (d *Daemonset) StopApiDumpProcess(podUID types.UID, err error) error {
+	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
 		return err
 	}
@@ -415,7 +371,7 @@ func (d *Daemonset) StopApiDumpProcess(podName string, err error) error {
 		return stageErr
 	}
 
-	printer.Infof("stopping API dump process for pod %s", podName)
+	printer.Infof("stopping API dump process for pod %s", podArgs.PodName)
 	podArgs.StopChan <- err
 	podArgs.setPodTrafficMonitorStage(TrafficMonitoringStopped)
 

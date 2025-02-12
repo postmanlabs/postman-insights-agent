@@ -5,6 +5,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
@@ -13,14 +14,18 @@ var (
 		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets.")
 )
 
-func (d *Daemonset) handlePodAddEvent(podName string) {
-	pods, err := d.KubeClient.GetPods([]string{podName})
+func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
+	pods, err := d.KubeClient.GetPodsByUIDs([]types.UID{podUID})
 	if err != nil {
-		printer.Errorf("failed to get pod for k8s added event, pod name: %s, error: %v", podName, err)
+		printer.Errorf("failed to get pod for k8s added event, podUID: %s, error: %v", podUID, err)
 		return
 	}
 	if len(pods) == 0 {
-		printer.Infof("no pod found for k8s added event, pod name: %s", podName)
+		printer.Infof("no pod found for k8s added event, podUID: %s", podUID)
+		return
+	}
+	if len(pods) > 1 {
+		printer.Errorf("multiple pods found for single UID, this should not happen, podUID: %s", podUID)
 		return
 	}
 
@@ -31,51 +36,54 @@ func (d *Daemonset) handlePodAddEvent(podName string) {
 		return
 	}
 	if len(podsWithoutAgentSidecar) == 0 {
-		printer.Infof("pod already has agent sidecar container, skipping, pod name: %s", podName)
+		printer.Infof("pod already has agent sidecar container, skipping, podUID: %s", podUID)
 		return
 	}
 
-	args, err := d.inspectPodForEnvVars(podsWithoutAgentSidecar[0])
+	pod := podsWithoutAgentSidecar[0]
+
+	args, err := d.inspectPodForEnvVars(pod)
 	if err != nil {
 		switch err {
 		case allRequiredEnvVarsAbsentErr:
-			printer.Debugf("None of the required env vars present, skipping pod: %s", podName)
+			printer.Debugf("None of the required env vars present, skipping pod: %s", pod.Name)
 		case requiredEnvVarMissingErr:
-			printer.Errorf("Required env var missing, skipping pod: %s", podName)
+			printer.Errorf("Required env var missing, skipping pod: %s", pod.Name)
 		default:
-			printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", podName, err)
+			printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
 		}
 		return
 	}
 
+	// Set the pod stage to PodInitialized, store it in the map and start the apidump process
 	args.setPodTrafficMonitorStage(PodInitialized)
-
-	err = d.StartApiDumpProcess(podName)
+	d.PodArgsByNameMap.Store(pod.UID, args)
+	err = d.StartApiDumpProcess(pod.UID)
 	if err != nil {
-		printer.Errorf("failed to start api dump process, pod name: %s, error: %v", podName, err)
+		printer.Errorf("failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
 	}
 }
 
-func (d *Daemonset) handlePodDeleteEvent(podName string) {
-	podArgs, err := d.getPodArgsFromMap(podName)
+func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
+	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
-		printer.Errorf("failed to get podArgs for pod %s: %v", podName, err)
+		printer.Errorf("failed to get podArgs for pod UID %s: %v", podUID, err)
 		return
 	}
 
 	isSameStage, err := podArgs.validatePodTrafficMonitorStage(PodTerminated, TrafficMonitoringStarted)
 	if err != nil {
-		printer.Errorf("pod %s is in invalid state %d", podName, podArgs.PodTrafficMonitorStage)
+		printer.Errorf("pod %s is in invalid state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
 	}
 	if isSameStage {
-		printer.Errorf("pod %s is already in state %d", podName, podArgs.PodTrafficMonitorStage)
+		printer.Errorf("pod %s is already in state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
 	}
 
 	podArgs.setPodTrafficMonitorStage(PodTerminated)
 
-	err = d.StopApiDumpProcess(podName, errors.Errorf("got pod delete event, pod: %s", podName))
+	err = d.StopApiDumpProcess(podUID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
 	if err != nil {
-		printer.Errorf("failed to stop api dump process, pod name: %s, error: %v", podName, err)
+		printer.Errorf("failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
 	}
 }
 
