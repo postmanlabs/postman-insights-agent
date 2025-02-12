@@ -9,6 +9,42 @@ import (
 	"github.com/pkg/errors"
 )
 
+type PodTrafficMonitorState int
+
+// These are different states of pod traffic monitoring
+// PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> RemovePodFromMap
+// DaemonSetShutdown is a special state which is used to stop the daemonset agent and can be triggered at any time
+const (
+	_ PodTrafficMonitorState = iota
+
+	// When agent finds an already running pod
+	PodDetected
+
+	// When agent will receive pod created event
+	PodInitialized
+
+	// When apidump process is started for the pod
+	TrafficMonitoringStarted
+
+	// When apidump process is errored for the pod
+	TrafficMonitoringFailed
+
+	// When apidump process is ended without any issue for the pod
+	TrafficMonitoringEnded
+
+	// When agent will receive pod deleted event or pod is in terminal state while checking status
+	PodTerminated
+
+	// When the daemonset agent starts the shutdown process
+	DaemonSetShutdown
+
+	// When apidump process is stopped for the pod
+	TrafficMonitoringStopped
+
+	// Final state after which pod will be removed from the map
+	RemovePodFromMap
+)
+
 type PodCreds struct {
 	InsightsAPIKey      string
 	InsightsEnvironment string
