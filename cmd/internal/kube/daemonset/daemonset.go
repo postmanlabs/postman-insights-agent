@@ -48,7 +48,7 @@ const (
 	// When apidump process is ended without any issue for the pod
 	TrafficMonitoringEnded
 
-	// When agent will receive pod deleted event
+	// When agent will receive pod deleted event or pod is in terminal state while checking status
 	PodTerminated
 
 	// When apidump process is stopped for the pod
@@ -65,8 +65,7 @@ type PodCreds struct {
 
 type PodArgs struct {
 	// apidump related fields
-	InsightsProjectID        akid.ServiceID
-	InsightsReproModeEnabled bool
+	InsightsProjectID akid.ServiceID
 
 	// Pod related fields
 	PodName       string
@@ -156,12 +155,12 @@ func StartDaemonset() error {
 
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
-		return fmt.Errorf("failed to create kube client: %w", err)
+		return errors.Errorf("failed to create kube client: %w", err)
 	}
 
 	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
-		return fmt.Errorf("failed to create CRI client: %w", err)
+		return errors.Errorf("failed to create CRI client: %w", err)
 	}
 
 	go func() {
@@ -227,13 +226,13 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	// Get all pods in the node where the agent is running
 	pods, err := d.KubeClient.GetPodsInAgentNode()
 	if err != nil {
-		return fmt.Errorf("failed to get pods in node: %w", err)
+		return errors.Errorf("failed to get pods in node: %w", err)
 	}
 
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
 	if err != nil {
-		return fmt.Errorf("failed to filter pods by container image: %w", err)
+		return errors.Errorf("failed to filter pods by container image: %w", err)
 	}
 
 	// Iterate over each pod without the agent sidecar
@@ -251,8 +250,10 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			continue
 		}
 
+		args.setPodTrafficMonitorStage(PodDetected)
+
 		// TODO(K8S-MNS): Handle all errors and send that at once
-		d.StartApiDumpProcess(args)
+		d.StartApiDumpProcess(pod.Name)
 	}
 
 	return nil
@@ -316,7 +317,7 @@ func (d *Daemonset) checkPodsHealth() {
 
 			d.StopApiDumpProcess(
 				podName,
-				fmt.Errorf("pod %s has stopped running, status: %s", podName, podStatus),
+				errors.Errorf("pod %s has stopped running, status: %s", podName, podStatus),
 			)
 		}
 	}

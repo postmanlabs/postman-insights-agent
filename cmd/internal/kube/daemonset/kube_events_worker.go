@@ -35,7 +35,7 @@ func (d *Daemonset) handlePodAddEvent(podName string) {
 		return
 	}
 
-	apidumpArgs, err := d.inspectPodForEnvVars(podsWithoutAgentSidecar[0])
+	args, err := d.inspectPodForEnvVars(podsWithoutAgentSidecar[0])
 	if err != nil {
 		switch err {
 		case allRequiredEnvVarsAbsentErr:
@@ -48,64 +48,94 @@ func (d *Daemonset) handlePodAddEvent(podName string) {
 		return
 	}
 
-	err = d.StartApiDumpProcess(apidumpArgs)
+	args.setPodTrafficMonitorStage(PodInitialized)
+
+	err = d.StartApiDumpProcess(podName)
 	if err != nil {
 		printer.Errorf("failed to start api dump process, pod name: %s, error: %v", podName, err)
 	}
 }
 
 func (d *Daemonset) handlePodDeleteEvent(podName string) {
-	// TODO (K8S-MNS): Add check where we are already listining from this pod or not
-	// Added as a part of apidump wrapper PR changes
-	err := d.StopApiDumpProcess(podName)
+	podArgs, err := d.getPodArgsFromMap(podName)
+	if err != nil {
+		printer.Errorf("failed to get podArgs for pod %s: %v", podName, err)
+		return
+	}
+
+	isSameStage, err := podArgs.validatePodTrafficMonitorStage(PodTerminated, TrafficMonitoringStarted)
+	if err != nil {
+		printer.Errorf("pod %s is in invalid state %d", podName, podArgs.PodTrafficMonitorStage)
+	}
+	if isSameStage {
+		printer.Errorf("pod %s is already in state %d", podName, podArgs.PodTrafficMonitorStage)
+	}
+
+	podArgs.setPodTrafficMonitorStage(PodTerminated)
+
+	err = d.StopApiDumpProcess(podName, errors.Errorf("got pod delete event, pod: %s", podName))
 	if err != nil {
 		printer.Errorf("failed to stop api dump process, pod name: %s, error: %v", podName, err)
 	}
 }
 
-func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (ApidumpArgs, error) {
+func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 	// Get the UUID of the main container in the pod
 	containerUUID, err := d.KubeClient.GetMainContainerUUID(pod)
 	if err != nil {
-		return ApidumpArgs{}, errors.Wrapf(err, "failed to get main container UUID for pod: %s", pod.Name)
+		return PodArgs{}, errors.Wrapf(err, "failed to get main container UUID for pod: %s", pod.Name)
 	}
 
 	// Get the environment variables of the main container
 	envVars, err := d.CRIClient.GetEnvVars(containerUUID)
 	if err != nil {
-		return ApidumpArgs{}, errors.Wrapf(err, "failed to get environment variables for pod/container : %s/%s", pod.Name, containerUUID)
+		return PodArgs{}, errors.Wrapf(err, "failed to get environment variables for pod/container : %s/%s", pod.Name, containerUUID)
 	}
 
 	var (
-		insightsProjectID akid.ServiceID
-		insightsAPIKey    string
+		insightsProjectID   akid.ServiceID
+		insightsAPIKey      string
+		insightsEnvironment string
 	)
 
 	// Extract the necessary environment variables
 	for key, value := range envVars {
-		if key == string(POSTMAN_INSIGHTS_PROJECT_ID) {
+		switch key {
+		case string(POSTMAN_INSIGHTS_PROJECT_ID):
 			err := akid.ParseIDAs(value, &insightsProjectID)
 			if err != nil {
-				return ApidumpArgs{}, errors.Wrap(err, "failed to parse project ID")
+				return PodArgs{}, errors.Wrap(err, "failed to parse project ID")
 			}
-		} else if key == string(POSTMAN_INSIGHTS_API_KEY) {
+		case string(POSTMAN_INSIGHTS_API_KEY):
 			insightsAPIKey = value
+		case string(POSTMAN_INSIGHTS_ENV):
+			insightsEnvironment = value
 		}
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) && insightsAPIKey == "" {
-		return ApidumpArgs{}, allRequiredEnvVarsAbsentErr
+		return PodArgs{}, allRequiredEnvVarsAbsentErr
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) {
 		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
-		return ApidumpArgs{}, requiredEnvVarMissingErr
+		return PodArgs{}, requiredEnvVarMissingErr
 	}
 
 	if insightsAPIKey == "" {
 		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s", POSTMAN_INSIGHTS_API_KEY, pod.Name)
-		return ApidumpArgs{}, requiredEnvVarMissingErr
+		return PodArgs{}, requiredEnvVarMissingErr
 	}
 
-	return ApidumpArgs{insightsProjectID, insightsAPIKey}, nil
+	args := PodArgs{
+		PodName:           pod.Name,
+		ContainerUUID:     containerUUID,
+		InsightsProjectID: insightsProjectID,
+		PodCreds: PodCreds{
+			InsightsAPIKey:      insightsAPIKey,
+			InsightsEnvironment: insightsEnvironment,
+		},
+	}
+
+	return args, nil
 }
