@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/api_schema"
+	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/google/gopacket/pcap"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
@@ -96,7 +98,7 @@ func showPermissionErrors(sampleError error) error {
 // Get the list of interface names that we should listen on. By default, this is
 // all interfaces on the machine that are up. User may override this with
 // --interface flag.
-func getEligibleInterfaces(userSpecified []string) (map[string]interfaceInfo, error) {
+func getEligibleInterfaces(userSpecified []string, targetNetworkNamespaceOpt optionals.Optional[string]) (map[string]interfaceInfo, error) {
 	if len(userSpecified) > 0 {
 		results := make(map[string]interfaceInfo, len(userSpecified))
 		for _, n := range userSpecified {
@@ -107,7 +109,7 @@ func getEligibleInterfaces(userSpecified []string) (map[string]interfaceInfo, er
 			results[n] = iface
 		}
 
-		ifaceErrs := checkPcapPermissions(results)
+		ifaceErrs := checkPcapPermissions(results, targetNetworkNamespaceOpt)
 		for i, err := range ifaceErrs {
 			// Return error if we're not able to listen on a user-specified interface.
 			printer.Errorf("Error on interface %q: %v\n", i, err)
@@ -140,7 +142,7 @@ func getEligibleInterfaces(userSpecified []string) (map[string]interfaceInfo, er
 	// Don't return error if we're unable to listen to one of the available
 	// interfaces, and just listen to the interfaces we have the permissions
 	// for.
-	ifaceErrs := checkPcapPermissions(results)
+	ifaceErrs := checkPcapPermissions(results, targetNetworkNamespaceOpt)
 	var sampleError error
 	for ifaceName, err := range ifaceErrs {
 		printer.Warningf("Skipping interface %s for collecting packets because of error: %v\n", ifaceName, err)
@@ -184,7 +186,7 @@ func (pe pcapPermErr) Error() string {
 
 // Check if we have permission to capture packets on the given set of
 // interfaces.
-func checkPcapPermissions(interfaces map[string]interfaceInfo) map[string]error {
+func checkPcapPermissions(interfaces map[string]interfaceInfo, targetNetworkNamespaceOpt optionals.Optional[string]) map[string]error {
 	printer.Debugf("Checking pcap permissions...\n")
 	start := time.Now()
 
@@ -194,13 +196,40 @@ func checkPcapPermissions(interfaces map[string]interfaceInfo) map[string]error 
 	for iface := range interfaces {
 		go func(iface string) {
 			defer wg.Done()
-			h, err := pcap.OpenLive(iface, 1600, true, pcap.BlockForever)
-			if err != nil {
-				telemetry.Error("pcap permissions", err)
-				errChan <- &pcapPermErr{iface: iface, err: err}
-				return
+			if targetNetworkNamespace, exists := targetNetworkNamespaceOpt.Get(); exists {
+				// Switch to the target network namespace.
+				targetNs, err := ns.GetNS(targetNetworkNamespace)
+				if err != nil {
+					telemetry.Error("pcap permissions", err)
+					errChan <- &pcapPermErr{iface: iface, err: err}
+					return
+				}
+				defer targetNs.Close()
+
+				err = targetNs.Do(func(host ns.NetNS) error {
+					var err error
+					h, err := pcap.OpenLive(iface, 1600, true, pcap.BlockForever)
+					if err != nil {
+						return err
+					}
+					h.Close()
+					return nil
+				})
+
+				if err != nil {
+					telemetry.Error("pcap permissions", err)
+					errChan <- &pcapPermErr{iface: iface, err: err}
+					return
+				}
+			} else {
+				h, err := pcap.OpenLive(iface, 1600, true, pcap.BlockForever)
+				if err != nil {
+					telemetry.Error("pcap permissions", err)
+					errChan <- &pcapPermErr{iface: iface, err: err}
+					return
+				}
+				h.Close()
 			}
-			h.Close()
 		}(iface)
 	}
 

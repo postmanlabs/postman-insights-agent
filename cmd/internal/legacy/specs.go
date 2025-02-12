@@ -117,7 +117,7 @@ func runGetSpec(specIdentifier string) error {
 
 	clientID := akid.GenerateClientID()
 
-	frontClient := rest.NewFrontClient(rest.Domain, clientID)
+	frontClient := rest.NewFrontClient(rest.Domain, clientID, nil)
 
 	// Convert service name to service ID.
 	serviceID, err := getServiceIDByName(frontClient, getSpecServiceFlag)
@@ -125,7 +125,7 @@ func runGetSpec(specIdentifier string) error {
 		return err
 	}
 
-	learnClient := rest.NewLearnClient(rest.Domain, clientID, serviceID)
+	learnClient := rest.NewLearnClient(rest.Domain, clientID, serviceID, nil)
 
 	// Check to see if the user specified an AkID or a version name.
 	var specID akid.APISpecID

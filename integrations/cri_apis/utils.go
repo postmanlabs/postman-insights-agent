@@ -3,9 +3,10 @@ package cri_apis
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/url"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -20,7 +21,7 @@ func getAddressAndDialer(endpoint string) (string, func(ctx context.Context, add
 		return "", nil, err
 	}
 	if protocol != unixProtocol {
-		return "", nil, fmt.Errorf("only support unix socket endpoint")
+		return "", nil, errors.New("only support unix socket endpoint")
 	}
 
 	return addr, dial, nil
@@ -55,10 +56,10 @@ func parseEndpoint(endpoint string) (string, string, error) {
 		return "unix", u.Path, nil
 
 	case "":
-		return "", "", fmt.Errorf("using %q as endpoint is deprecated, please consider using full url format", endpoint)
+		return "", "", errors.Errorf("using %q as endpoint is deprecated, please consider using full url format", endpoint)
 
 	default:
-		return u.Scheme, "", fmt.Errorf("protocol %q not supported", u.Scheme)
+		return u.Scheme, "", errors.Errorf("protocol %q not supported", u.Scheme)
 	}
 }
 
@@ -69,7 +70,7 @@ func convertContainerInfo(info map[string]string) (ContainerInfo, error) {
 
 	infoString, ok := info["info"]
 	if !ok {
-		return ContainerInfo{}, fmt.Errorf("info field not found in container info")
+		return ContainerInfo{}, errors.New("info field not found in container info")
 	}
 
 	// Unmarshal JSON to struct
