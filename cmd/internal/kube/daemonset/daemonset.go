@@ -155,12 +155,12 @@ func StartDaemonset() error {
 
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
-		return errors.Errorf("failed to create kube client: %w", err)
+		return errors.Wrap(err, "failed to create kube client")
 	}
 
 	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
-		return errors.Errorf("failed to create CRI client: %w", err)
+		return errors.Wrap(err, "failed to create CRI client")
 	}
 
 	go func() {
@@ -226,13 +226,13 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	// Get all pods in the node where the agent is running
 	pods, err := d.KubeClient.GetPodsInAgentNode()
 	if err != nil {
-		return errors.Errorf("failed to get pods in node: %w", err)
+		return errors.Wrap(err, "failed to get pods in node")
 	}
 
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
 	if err != nil {
-		return errors.Errorf("failed to filter pods by container image: %w", err)
+		return errors.Wrap(err, "failed to filter pods by container image")
 	}
 
 	// Iterate over each pod without the agent sidecar
