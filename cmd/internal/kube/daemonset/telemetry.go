@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/spf13/viper"
 )
 
 func (d *Daemonset) sendTelemetry() {
@@ -17,4 +18,23 @@ func (d *Daemonset) sendTelemetry() {
 	if err != nil {
 		printer.Errorf("Failed to send telemetry: %v\n", err)
 	}
+}
+
+func (d *Daemonset) dumpPodsApiDumpProcessState() {
+	if !viper.GetBool("debug") {
+		return
+	}
+	logf := printer.Debugf
+
+	logf("========================================================\n")
+	logf("Pods active and their states:\n")
+	logf("%15v %15v %25v\n", "podName", "projectID", "currentState")
+	logf("========================================================\n")
+
+	d.PodArgsByNameMap.Range(func(_, v interface{}) bool {
+		podArgs := v.(*PodArgs)
+		logf("%15v %15v %25v\n", podArgs.PodName, podArgs.InsightsProjectID, podArgs.PodTrafficMonitorState)
+		return true
+	})
+	logf("========================================================\n")
 }

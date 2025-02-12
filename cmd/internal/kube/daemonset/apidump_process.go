@@ -91,7 +91,7 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 	}
 
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStopped,
-		PodTerminated, TrafficMonitoringFailed, TrafficMonitoringEnded)
+		PodTerminated, DaemonSetShutdown, TrafficMonitoringFailed, TrafficMonitoringEnded)
 	if err != nil {
 		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)

@@ -48,3 +48,27 @@ func (d *Daemonset) checkPodsHealth() {
 		}
 	}
 }
+
+// pruneStoppedProcesses removes the stopped processes from the map
+// In first iteration, it changes the state of the pod to RemovePodFromMap
+// In second iteration, it removes the pod from the map
+func (d *Daemonset) pruneStoppedProcesses() {
+	printer.Debugf("Pruning stopped processes, time: %s", time.Now().UTC())
+
+	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
+		podUID := k.(types.UID)
+		podArgs := v.(*PodArgs)
+
+		switch podArgs.PodTrafficMonitorState {
+		case TrafficMonitoringStopped:
+			err := podArgs.changePodTrafficMonitorState(RemovePodFromMap, TrafficMonitoringStopped)
+			if err != nil {
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d",
+					podArgs.PodName, podArgs.PodTrafficMonitorState, RemovePodFromMap)
+			}
+		case RemovePodFromMap:
+			d.PodArgsByNameMap.Delete(podUID)
+		}
+		return true
+	})
+}

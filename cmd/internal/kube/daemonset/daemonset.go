@@ -2,9 +2,10 @@ package daemonset
 
 import (
 	"context"
-	"fmt"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
@@ -49,11 +50,14 @@ const (
 	// When agent will receive pod deleted event or pod is in terminal state while checking status
 	PodTerminated
 
+	// When the daemonset agent starts the shutdown process
+	DaemonSetShutdown
+
 	// When apidump process is stopped for the pod
 	TrafficMonitoringStopped
 
 	// Final state after which pod will be removed from the map
-	PodRemovedFromMap
+	RemovePodFromMap
 )
 
 type Daemonset struct {
@@ -132,7 +136,53 @@ func StartDaemonset() error {
 }
 
 func (d *Daemonset) Run() error {
-	return fmt.Errorf("not implemented")
+	done := make(chan struct{})
+
+	// Start the telemetry worker
+	go d.TelemetryWorker(done)
+
+	// Start the kubernetes events worker
+	go d.KubernetesEventsWorker(done)
+
+	// Start the pods health worker
+	go d.PodsHealthWorker(done)
+
+	// Start the process in the existing pods
+	err := d.StartProcessInExistingPods()
+	if err != nil {
+		printer.Errorf("Failed to start process in existing pods, error: %v", err)
+		printer.Errorf("Agent will not listen traffic from existing pods")
+	}
+
+	printer.Infof("Send SIGINT (Ctrl-C) to stop...\n")
+
+	// Wait for signal to stop
+	{
+		sig := make(chan os.Signal, 2)
+		signal.Notify(sig, os.Interrupt)
+		signal.Notify(sig, syscall.SIGTERM)
+
+		// Continue until an interrupt
+	DoneWaitingForSignal:
+		for {
+			select {
+			case received := <-sig:
+				printer.Stderr.Infof("Received %v, stopping daemonset...\n", received.String())
+				break DoneWaitingForSignal
+			}
+		}
+	}
+
+	// Signal all workers to stop
+	printer.Debugf("Signaling all workers to stop...\n")
+	close(done)
+
+	// Stop all apidump processes
+	printer.Debugf("Stopping all apidump processes...\n")
+	d.StopAllApiDumpProcesses()
+
+	printer.Infof("Exiting daemonset agent...\n")
+	return nil
 }
 
 func (d *Daemonset) getPodArgsFromMap(podUID types.UID) (*PodArgs, error) {
@@ -175,6 +225,7 @@ func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
 			return
 		case <-ticker.C:
 			d.sendTelemetry()
+			d.dumpPodsApiDumpProcessState()
 		}
 	}
 }
@@ -253,6 +304,31 @@ func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 			return
 		case <-ticker.C:
 			d.checkPodsHealth()
+			d.pruneStoppedProcesses()
 		}
 	}
+}
+
+func (d *Daemonset) StopAllApiDumpProcesses() {
+	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
+		podUID := k.(types.UID)
+		podArgs := v.(*PodArgs)
+
+		// Since this state can happen at any time so no check for allowed current states
+		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
+		if err != nil {
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+				podArgs.PodName, podArgs.PodTrafficMonitorState, DaemonSetShutdown, err)
+			return true
+		}
+
+		err = d.StopApiDumpProcess(podUID, errors.Errorf("Daemonset agent is shutting down, stopping pod: %s", podArgs.PodName))
+		if err != nil {
+			printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+		}
+
+		// Remove the pod from the map
+		d.PodArgsByNameMap.Delete(podUID)
+		return true
+	})
 }
