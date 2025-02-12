@@ -27,13 +27,13 @@ const (
 	agentImage        = "public.ecr.aws/postman/postman-insights-agent:latest"
 )
 
-type PodTrafficMonitorStage int
+type PodTrafficMonitorState int
 
-// These are different stages of pod traffic monitoring
+// These are different states of pod traffic monitoring
 // PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> PodRemovedFromMap
 const (
 	// When agent finds an already running pod
-	PodDetected PodTrafficMonitorStage = iota
+	PodDetected PodTrafficMonitorState = iota
 
 	// When agent will receive pod created event
 	PodInitialized
@@ -53,7 +53,7 @@ const (
 	// When apidump process is stopped for the pod
 	TrafficMonitoringStopped
 
-	// Final stage after which pod will be removed from the map
+	// Final state after which pod will be removed from the map
 	PodRemovedFromMap
 )
 
@@ -147,6 +147,22 @@ func (d *Daemonset) getPodArgsFromMap(podUID types.UID) (*PodArgs, error) {
 	return podArgs, nil
 }
 
+// addPodArgsToMap adds the podArgs to the map with the podUID as the key
+// This funciton ensures that the pod is not already loaded in the map
+func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingState PodTrafficMonitorState) {
+	value, loaded := d.PodArgsByNameMap.LoadOrStore(podUID, args)
+	argsFromMap := value.(*PodArgs)
+	if loaded {
+		err := argsFromMap.changePodTrafficMonitorState(startingState)
+		if err != nil {
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
+		}
+	} else {
+		printer.Errorf("pod is already loaded in the map and is in state %d", argsFromMap.PodTrafficMonitorState)
+	}
+}
+
 func (d *Daemonset) sendTelemetry() {
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
@@ -204,9 +220,7 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			continue
 		}
 
-		// Set the pod stage to PodDetected, store it in the map and start the apidump process
-		args.setPodTrafficMonitorStage(PodDetected)
-		d.PodArgsByNameMap.Store(pod.UID, args)
+		d.addPodArgsToMap(pod.UID, &args, PodDetected)
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
 			printer.Errorf("failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
@@ -261,20 +275,16 @@ func (d *Daemonset) checkPodsHealth() {
 				continue
 			}
 
-			isSameStage, err := podArgs.validatePodTrafficMonitorStage(PodTerminated, TrafficMonitoringStarted)
+			err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Errorf("pod %s is in invalid state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
-			}
-			if isSameStage {
-				printer.Errorf("pod %s is already in state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+					podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 			}
 
-			podArgs.setPodTrafficMonitorStage(PodTerminated)
-
-			d.StopApiDumpProcess(
-				podUID,
-				errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus),
-			)
+			err = d.StopApiDumpProcess(podUID, errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus))
+			if err != nil {
+				printer.Errorf("failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+			}
 		}
 	}
 }
@@ -302,56 +312,63 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		return err
 	}
 
-	isSameStage, err := podArgs.validatePodTrafficMonitorStage(TrafficMonitoringStarted, PodDetected, PodInitialized)
-	if isSameStage || err != nil {
-		return err
-	}
-
-	networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
+	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStarted, PodDetected, PodInitialized)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get network namespace for pod/containerUUID: %s/%s",
-			podArgs.PodName, podArgs.ContainerUUID)
+		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStarted, err)
 	}
 
-	// Channel to stop the API dump process
-	stopChan := make(chan error)
-
-	apidumpArgs := apidump.Args{
-		ClientID:  telemetry.GetClientID(),
-		Domain:    rest.Domain,
-		ServiceID: podArgs.InsightsProjectID,
-		ReproMode: d.InsightsReproModeEnabled,
-		DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
-			TargetNetworkNamespaceOpt: networkNamespace,
-			StopChan:                  stopChan,
-			APIKey:                    podArgs.PodCreds.InsightsAPIKey,
-			Environment:               podArgs.PodCreds.InsightsEnvironment,
-		}),
-	}
-
-	podArgs.StopChan = stopChan
-	podArgs.setPodTrafficMonitorStage(TrafficMonitoringStarted)
-	go func() {
-		// If apidump process panics, do not crash the main agent. Instead log the error and stacktrace
-		// and stop the apidump process
+	go func() (funcErr error) {
+		// defer function handle the error (if any) in the apidump process and change the pod state accordingly
 		defer func() {
+			nextState := TrafficMonitoringEnded
+
 			if err := recover(); err != nil {
 				printer.Errorf("Panic occurred in apidump process for pod %s, err: %v\n%v\n",
 					podArgs.PodName, err, string(debug.Stack()))
-				podArgs.setPodTrafficMonitorStage(TrafficMonitoringFailed)
+				nextState = TrafficMonitoringFailed
+			} else if funcErr != nil {
+				printer.Errorf("Error occurred in apidump process for pod %s, err: %v", podArgs.PodName, funcErr)
+				nextState = TrafficMonitoringFailed
+			} else {
+				printer.Infof("Apidump process ended for pod %s", podArgs.PodName)
 			}
+
+			err = podArgs.changePodTrafficMonitorState(nextState, TrafficMonitoringStarted)
+			if err != nil {
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
+			}
+
 			// It is possible that the apidump process is already stopped and the stopChannel is of no use
 			// This is just a safety check
 			d.StopApiDumpProcess(podUID, err)
 		}()
 
-		if err := apidump.Run(apidumpArgs); err != nil {
-			printer.Errorf("Apidump process failed for pod %s: %v", podArgs.PodName, err)
-			podArgs.setPodTrafficMonitorStage(TrafficMonitoringFailed)
-		} else {
-			printer.Infof("Apidump process ended for pod %s", podArgs.PodName)
-			podArgs.setPodTrafficMonitorStage(TrafficMonitoringEnded)
+		networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
+		if err != nil {
+			funcErr = errors.Errorf("Failed to get network namespace for pod/containerUUID: %s/%s, err: %v",
+				podArgs.PodName, podArgs.ContainerUUID, err)
+			return
 		}
+
+		apidumpArgs := apidump.Args{
+			ClientID:  telemetry.GetClientID(),
+			Domain:    rest.Domain,
+			ServiceID: podArgs.InsightsProjectID,
+			ReproMode: d.InsightsReproModeEnabled,
+			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
+				TargetNetworkNamespaceOpt: networkNamespace,
+				StopChan:                  podArgs.StopChan,
+				APIKey:                    podArgs.PodCreds.InsightsAPIKey,
+				Environment:               podArgs.PodCreds.InsightsEnvironment,
+			}),
+		}
+
+		if err := apidump.Run(apidumpArgs); err != nil {
+			funcErr = errors.Wrapf(err, "Failed to run apidump process for pod %s", podArgs.PodName)
+		}
+		return
 	}()
 
 	return nil
@@ -363,17 +380,15 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, err error) error {
 		return err
 	}
 
-	isSameStage, stageErr := podArgs.validatePodTrafficMonitorStage(
-		TrafficMonitoringStopped,
-		PodTerminated, TrafficMonitoringFailed, TrafficMonitoringEnded,
-	)
-	if isSameStage || stageErr != nil {
-		return stageErr
+	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStopped,
+		PodTerminated, TrafficMonitoringFailed, TrafficMonitoringEnded)
+	if err != nil {
+		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped, err)
 	}
 
 	printer.Infof("stopping API dump process for pod %s", podArgs.PodName)
 	podArgs.StopChan <- err
-	podArgs.setPodTrafficMonitorStage(TrafficMonitoringStopped)
 
 	return nil
 }

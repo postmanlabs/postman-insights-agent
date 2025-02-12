@@ -55,9 +55,7 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 		return
 	}
 
-	// Set the pod stage to PodInitialized, store it in the map and start the apidump process
-	args.setPodTrafficMonitorStage(PodInitialized)
-	d.PodArgsByNameMap.Store(pod.UID, args)
+	d.addPodArgsToMap(pod.UID, &args, PodInitialized)
 	err = d.StartApiDumpProcess(pod.UID)
 	if err != nil {
 		printer.Errorf("failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
@@ -71,15 +69,11 @@ func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 		return
 	}
 
-	isSameStage, err := podArgs.validatePodTrafficMonitorStage(PodTerminated, TrafficMonitoringStarted)
+	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 	if err != nil {
-		printer.Errorf("pod %s is in invalid state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
+		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 	}
-	if isSameStage {
-		printer.Errorf("pod %s is already in state %d", podArgs.PodName, podArgs.PodTrafficMonitorStage)
-	}
-
-	podArgs.setPodTrafficMonitorStage(PodTerminated)
 
 	err = d.StopApiDumpProcess(podUID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
 	if err != nil {
@@ -143,6 +137,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 			InsightsAPIKey:      insightsAPIKey,
 			InsightsEnvironment: insightsEnvironment,
 		},
+		StopChan: make(chan error),
 	}
 
 	return args, nil
