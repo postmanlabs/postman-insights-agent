@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -40,6 +41,11 @@ type Daemonset struct {
 }
 
 func StartDaemonset() error {
+	// Check if the agent is running in a linux environment
+	if runtime.GOOS != "linux" {
+		return errors.New("This command is only supported on linux images")
+	}
+
 	// Initialize the front client
 	postmanInsightsVerificationToken := os.Getenv("POSTMAN_INSIGHTS_VERIFICATION_TOKEN")
 	frontClient := rest.NewFrontClient(

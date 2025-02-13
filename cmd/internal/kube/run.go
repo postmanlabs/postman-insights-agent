@@ -22,8 +22,8 @@ func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet",
-	Long:  "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet to collect and send data to Postman Insights",
+	Short: "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet. [Only supported for linux images]",
+	Long:  "Run the Postman Insights Agent in your Kubernetes cluster as a daemonSet to collect and send data to Postman Insights. [Only supported for linux images]",
 	RunE:  StartDaemonsetAndHibernateOnError,
 }
 
