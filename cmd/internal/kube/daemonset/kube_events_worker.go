@@ -138,7 +138,8 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 			InsightsAPIKey:      insightsAPIKey,
 			InsightsEnvironment: insightsEnvironment,
 		},
-		StopChan: make(chan error),
+		// though 1 buffer size is enough, keeping 2 for safety
+		StopChan: make(chan error, 2),
 	}
 
 	return args, nil
