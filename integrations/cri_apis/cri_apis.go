@@ -2,10 +2,10 @@ package cri_apis
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -45,7 +45,7 @@ func NewCRIClient() (*CriClient, error) {
 	}
 
 	if service == nil {
-		return nil, fmt.Errorf("failed to connect to CRI endpoint")
+		return nil, errors.New("failed to connect to CRI endpoint")
 	}
 
 	criClient := CriClient{
@@ -93,7 +93,7 @@ func (cc *CriClient) GetNetworkNamespace(containerID string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("network namespace not found")
+	return "", errors.New("network namespace not found")
 }
 
 // GetEnvVars returns the environment variables of a given container

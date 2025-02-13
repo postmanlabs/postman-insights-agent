@@ -2,6 +2,7 @@ package apidump
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -69,6 +70,14 @@ const (
 	matchedFilter    filterState = "MATCHED"
 	notMatchedFilter filterState = "UNMATCHED"
 )
+
+// Args for running apidump as daemonset in Kubernetes
+type DaemonsetArgs struct {
+	TargetNetworkNamespaceOpt string
+	StopChan                  <-chan error
+	APIKey                    string
+	Environment               string
+}
 
 type Args struct {
 	// Required args
@@ -138,6 +147,8 @@ type Args struct {
 
 	// Whether to enable repro mode and include request/response payloads when uploading witnesses.
 	ReproMode bool
+
+	DaemonsetArgs optionals.Optional[DaemonsetArgs]
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -177,7 +188,14 @@ func (a *apidump) LookupService() error {
 	if !a.TargetIsRemote() {
 		return nil
 	}
-	frontClient := rest.NewFrontClient(a.Domain, a.ClientID)
+
+	// Set auth handler for processes starting via daemonset
+	var authHandler func(*http.Request) error
+	if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
+		authHandler = rest.ApiDumpDaemonsetAuthHandler(daemonsetArgs.APIKey, daemonsetArgs.Environment)
+	}
+
+	frontClient := rest.NewFrontClient(a.Domain, a.ClientID, authHandler)
 
 	if a.PostmanCollectionID != "" {
 		backendSvc, err := util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, a.PostmanCollectionID)
@@ -197,7 +215,7 @@ func (a *apidump) LookupService() error {
 		a.backendSvcName = serviceName
 	}
 
-	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc)
+	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler)
 	return nil
 }
 
@@ -494,8 +512,17 @@ func (a *apidump) Run() error {
 		printer.Debugln("Capturing filtered traffic for debugging.")
 	}
 
+	var (
+		targetNetworkNamespace   optionals.Optional[string]
+		daemonSetProcessStopChan <-chan error
+	)
+	if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
+		targetNetworkNamespace = optionals.Some(daemonsetArgs.TargetNetworkNamespaceOpt)
+		daemonSetProcessStopChan = daemonsetArgs.StopChan
+	}
+
 	// Get the interfaces to listen on.
-	interfaces, err := getEligibleInterfaces(args.Interfaces)
+	interfaces, err := getEligibleInterfaces(args.Interfaces, targetNetworkNamespace)
 	if err != nil {
 		a.SendErrorTelemetry(GetErrorTypeWithDefault(err, api_schema.ApidumpError_PCAPInterfaceOther), err)
 		return errors.Wrap(err, "No network interfaces could be used")
@@ -767,7 +794,7 @@ func (a *apidump) Run() error {
 			go func(interfaceName, filter string) {
 				defer doneWG.Done()
 				// Collect trace. This blocks until stop is closed or an error occurs.
-				if err := pcap.Collect(stop, interfaceName, filter, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
+				if err := pcap.Collect(stop, interfaceName, filter, targetNetworkNamespace, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
 						err:           errors.Wrapf(err, "failed to collect trace on interface %s", interfaceName),
@@ -884,6 +911,9 @@ func (a *apidump) Run() error {
 						printer.Stderr.Errorf("Encountered an error on interface %s.  Error: %s\n", interfaceErr.interfaceName, interfaceErr.err.Error())
 						break DoneWaitingForSignal
 					}
+				case externalStopError := <-daemonSetProcessStopChan:
+					printer.Stderr.Infof("Received external stop signal, error: %v\n", externalStopError)
+					break DoneWaitingForSignal
 				}
 			}
 		}

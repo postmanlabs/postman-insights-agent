@@ -71,8 +71,6 @@ func initCreds() {
 	creds.BindEnv("default.postman_api_key", "POSTMAN_API_KEY")
 	creds.BindEnv("default.postman_env", "POSTMAN_ENV")
 
-	creds.BindEnv("default.postman_insights_verification_token", "POSTMAN_INSIGHTS_VERIFICATION_TOKEN")
-
 	if err := creds.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// Ignore config file not found error since the config may be set by
@@ -140,9 +138,4 @@ func CredentialsPresent() bool {
 func DistinctIDFromCredentials() string {
 	key, _ := GetAPIKeyAndSecret()
 	return key
-}
-
-// Get Postman team verification token from config
-func GetPostmanInsightsVerificationToken() string {
-	return creds.GetString("default.postman_insights_verification_token")
 }
