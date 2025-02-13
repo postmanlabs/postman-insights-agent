@@ -30,13 +30,13 @@ func (d *Daemonset) checkPodsHealth() {
 
 			podArgs, err := d.getPodArgsFromMap(podUID)
 			if err != nil {
-				printer.Errorf("Failed to get podArgs for podUID %s: %v", podUID, err)
+				printer.Infof("Failed to get podArgs for podUID %s: %v", podUID, err)
 				continue
 			}
 
 			err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+				printer.Infof("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 				continue
 			}
