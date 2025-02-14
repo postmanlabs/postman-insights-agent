@@ -23,6 +23,7 @@ type KubeClient struct {
 	Clientset  *kubernetes.Clientset
 	EventWatch watch.Interface
 	AgentNode  string
+	AgentHost  string
 }
 
 // NewKubeClient initializes a new Kubernetes client
@@ -47,9 +48,15 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, errors.New("POSTMAN_K8S_NODE environment variable not set")
 	}
 
+	agentHostName, err := os.Hostname()
+	if err != nil {
+		return KubeClient{}, errors.Wrap(err, "error getting hostname")
+	}
+
 	kubeClient := KubeClient{
 		Clientset: clientset,
 		AgentNode: agentNodeName,
+		AgentHost: agentHostName,
 	}
 
 	// Initialize event watcher
@@ -68,9 +75,21 @@ func (kc *KubeClient) Close() {
 
 // initEventWatcher creates a new go-channel to listen for pod events in the cluster
 func (kc *KubeClient) initEventWatcher() error {
+	// Fetch own pod details
+	fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
+	pod, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		return errors.Wrap(err, "error getting own pod details")
+	}
+
+	// Create a watcher for pod events
+	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
 	watcher, err := kc.Clientset.CoreV1().Events("").Watch(context.Background(), metaV1.ListOptions{
-		Watch:         true,
-		FieldSelector: "involvedObject.kind=Pod",
+		Watch:           true,
+		FieldSelector:   "involvedObject.kind=Pod",
+		ResourceVersion: pod.ResourceVersion,
 	})
 	if err != nil {
 		return errors.Wrap(err, "error creating watcher")

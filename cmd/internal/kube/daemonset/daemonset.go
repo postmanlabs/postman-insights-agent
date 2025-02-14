@@ -162,6 +162,10 @@ func (d *Daemonset) Run() error {
 	printer.Debugf("Stopping all apidump processes...\n")
 	d.StopAllApiDumpProcesses()
 
+	// Stop K8s Watcher
+	printer.Debugf("Stopping k8s watcher...\n")
+	d.KubeClient.Close()
+
 	printer.Infof("Exiting daemonset agent...\n")
 	return nil
 }
@@ -192,7 +196,7 @@ func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingSta
 				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
 		}
 	} else {
-		printer.Errorf("Pod is already loaded in the map and is in state %d\n", argsFromMap.PodTrafficMonitorState)
+		printer.Errorf("Pod is already loaded in the map and is in state %s\n", argsFromMap.PodTrafficMonitorState)
 	}
 }
 
