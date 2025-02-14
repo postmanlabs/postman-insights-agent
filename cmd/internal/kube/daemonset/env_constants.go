@@ -1,0 +1,9 @@
+package daemonset
+
+type podEnvVars string
+
+const (
+	POSTMAN_INSIGHTS_PROJECT_ID podEnvVars = "POSTMAN_INSIGHTS_PROJECT_ID"
+	POSTMAN_INSIGHTS_API_KEY    podEnvVars = "POSTMAN_INSIGHTS_API_KEY"
+	POSTMAN_INSIGHTS_ENV        podEnvVars = "POSTMAN_INSIGHTS_ENV"
+)

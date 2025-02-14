@@ -13,7 +13,6 @@ import (
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/version"
@@ -108,7 +107,7 @@ func initHTTPClient() {
 	HTTPClient.ErrorHandler = retryablehttp.PassthroughErrorHandler
 }
 
-func sendRequest(ctx context.Context, req *http.Request) ([]byte, error) {
+func sendRequest(ctx context.Context, req *http.Request, authHandler func(*http.Request) error) ([]byte, error) {
 	initHTTPClientOnce.Do(initHTTPClient)
 
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -117,30 +116,10 @@ func sendRequest(ctx context.Context, req *http.Request) ([]byte, error) {
 		ctx = c
 	}
 
-	postmanAPIKey, postmanEnv := cfg.GetPostmanAPIKeyAndEnvironment()
-
-	if postmanAPIKey == "" {
-		// XXX Integration tests still use Akita API keys.
-		apiKeyID, apiKeySecret := cfg.GetAPIKeyAndSecret()
-
-		if apiKeyID == "" {
-			return nil, errors.New(`Missing or incomplete credentials. Ensure the POSTMAN_API_KEY environment variable has a valid API key for Postman.`)
-		}
-
-		if apiKeySecret == "" {
-			return nil, errors.New(`Akita API key secret not found, run "login" or use AKITA_API_KEY_SECRET environment variable. If using with Postman, ensure the POSTMAN_API_KEY environment variable has a valid API key for Postman.`)
-		}
-
-		req.SetBasicAuth(apiKeyID, apiKeySecret)
-	} else {
-		// Set postman API key as header
-		req.Header.Set("x-api-key", postmanAPIKey)
-
-		// Set postman env header if it exists
-		if postmanEnv != "" {
-			req.Header.Set("x-postman-env", postmanEnv)
-		}
-
+	// Apply authentication headers.
+	err := authHandler(req)
+	if err != nil {
+		return nil, err
 	}
 
 	req.Header.Set("user-agent", GetUserAgent())

@@ -159,13 +159,13 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		startTime:  time.Now(),
 	}
 
-	frontClient := rest.NewFrontClient(args.Domain, args.ClientID)
+	frontClient := rest.NewFrontClient(args.Domain, args.ClientID, nil)
 	backendSvc, err := util.GetServiceIDByName(frontClient, args.ServiceName)
 	if err != nil {
 		return nil, err
 	}
 	b.backendSvc = backendSvc
-	b.learnClient = rest.NewLearnClient(args.Domain, args.ClientID, backendSvc)
+	b.learnClient = rest.NewLearnClient(args.Domain, args.ClientID, backendSvc, nil)
 
 	traceTags := map[tags.Key]string{
 		tags.XAkitaSource: "nginx",
