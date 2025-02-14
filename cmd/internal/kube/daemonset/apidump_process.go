@@ -64,6 +64,8 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				podArgs.PodName, podArgs.ContainerUUID, err)
 			return
 		}
+		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
+		networkNamespace = "/host" + networkNamespace
 
 		apidumpArgs := apidump.Args{
 			ClientID:  telemetry.GetClientID(),
