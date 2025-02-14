@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -58,7 +57,7 @@ func StartDaemonset() error {
 
 	// Send initial telemetry
 	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
-	telemetryInterval := apispec.DefaultTelemetryInterval_seconds * time.Second
+	telemetryInterval := DefaultTelemetryInterval
 	if clusterName == "" {
 		printer.Infof(
 			"The cluster name is missing. Telemetry will not be sent from this agent, " +
@@ -99,6 +98,7 @@ func StartDaemonset() error {
 			CRIClient:                criClient,
 			FrontClient:              frontClient,
 			TelemetryInterval:        telemetryInterval,
+			PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
 		}
 		daemonsetRun.Run()
 	}()
@@ -115,18 +115,23 @@ func StartDaemonset() error {
 // 7. Stops all apidump processes.
 // 8. Exits the daemonset agent.
 func (d *Daemonset) Run() error {
+	printer.Infof("Starting daemonset agent...\n")
 	done := make(chan struct{})
 
 	// Start the telemetry worker
+	printer.Infof("Starting telemetry worker...\n")
 	go d.TelemetryWorker(done)
 
 	// Start the kubernetes events worker
+	printer.Infof("Starting kubernetes events worker...\n")
 	go d.KubernetesEventsWorker(done)
 
 	// Start the pods health worker
+	printer.Infof("Starting pods health worker...\n")
 	go d.PodsHealthWorker(done)
 
 	// Start the process in the existing pods
+	printer.Infof("Starting process in existing pods...\n")
 	err := d.StartProcessInExistingPods()
 	if err != nil {
 		printer.Errorf("Failed to start process in existing pods, error: %v\n", err)
@@ -198,6 +203,7 @@ func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingSta
 // The worker runs until the provided done channel is closed.
 func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
 	if d.TelemetryInterval <= 0 {
+		printer.Debugf("Telemetry interval is set to 0, telemetry worker will not run\n")
 		return
 	}
 
@@ -282,6 +288,7 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 // It runs until the provided done channel is closed.
 func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 	if d.PodHealthCheckInterval <= 0 {
+		printer.Debugf("Pod health check interval is set to 0, pods health worker will not run\n")
 		return
 	}
 

@@ -119,7 +119,7 @@ func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
 	}
 
 	if len(filteredPods) == 0 {
-		return []coreV1.Pod{}, errors.Errorf("no pods found with names: %v", podUIDs)
+		return []coreV1.Pod{}, errors.Errorf("no pods found with UIDs: %v", podUIDs)
 	}
 
 	return filteredPods, nil
