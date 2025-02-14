@@ -14,6 +14,12 @@ var (
 		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets.")
 )
 
+// handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
+// It performs the following steps:
+// 1. Retrieves the pod by its UID.
+// 4. Filters out pods that already have the agent sidecar container.
+// 5. Inspects the pod for required environment variables.
+// 6. Adds the pod arguments to a map and starts the API dump process.
 func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 	pods, err := d.KubeClient.GetPodsByUIDs([]types.UID{podUID})
 	if err != nil {
@@ -62,6 +68,11 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 	}
 }
 
+// handlePodDeleteEvent handles the deletion event of a pod.
+// It performs the following actions:
+// 1. Retrieves the pod arguments from the internal map using the pod UID.
+// 2. Changes the pod traffic monitor state to PodTerminated.
+// 3. Stops the API dump process for the pod.
 func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
@@ -82,6 +93,10 @@ func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 	}
 }
 
+// inspectPodForEnvVars inspects a given pod to extract specific environment variables
+// required for the Postman Insights project. It retrieves the UUID of the main container
+// in the pod, fetches the environment variables of that container, and extracts the
+// necessary variables such as the project ID, API key, and environment.
 func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 	// Get the UUID of the main container in the pod
 	containerUUID, err := d.KubeClient.GetMainContainerUUID(pod)

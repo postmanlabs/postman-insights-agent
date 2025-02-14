@@ -12,6 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// StartApiDumpProcess initiates the API dump process for a given pod identified by its UID.
+// It retrieves the pod arguments, changes the pod's traffic monitoring state, and starts the API dump process in a separate goroutine.
+// The goroutine handles errors and state changes, and ensures the process is stopped properly.
 func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
@@ -84,6 +87,9 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	return nil
 }
 
+// StopApiDumpProcess stops the API dump process for a given pod identified by its UID.
+// It retrieves the pod arguments from a map and changes the pod's traffic monitor state.
+// If successful, it sends a stop signal through the pod's stop channel.
 func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {

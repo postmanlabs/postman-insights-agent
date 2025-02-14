@@ -9,6 +9,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// checkPodsHealth checks the health status of pods managed by the Daemonset.
+// It retrieves the current status of each pod and performs actions based on their status.
+// If a pod has stopped running (either succeeded or failed), it updates the pod's traffic monitor state
+// and stops the API dump process for that pod.
 func (d *Daemonset) checkPodsHealth() {
 	printer.Debugf("Checking pods health, time: %s", time.Now().UTC())
 

@@ -11,9 +11,10 @@ import (
 
 type PodTrafficMonitorState int
 
-// These are different states of pod traffic monitoring
+// Different states of pod traffic monitoring
+// The state transition is as follows:
 // PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> RemovePodFromMap
-// DaemonSetShutdown is a special state which is used to stop the daemonset agent and can be triggered at any time
+// 'DaemonSetShutdown' is a special state which is used to stop the daemonset agent and can be triggered at any time
 const (
 	_ PodTrafficMonitorState = iota
 
@@ -67,6 +68,17 @@ type PodArgs struct {
 	StopChan chan error
 }
 
+// changePodTrafficMonitorState changes the state of the pod traffic monitor to the specified next state.
+// It ensures that the current state is one of the allowed states before making the change.
+//
+// Parameters:
+//   - nextState: The desired state to transition to.
+//   - allowedCurrentStates: A variadic parameter representing the states from which the transition is allowed.
+//
+// Returns:
+//   - error: An error if the current state is not allowed or if the pod is already in the desired state.
+//
+// The function locks the state change using a mutex to ensure thread safety.
 func (p *PodArgs) changePodTrafficMonitorState(
 	nextState PodTrafficMonitorState,
 	allowedCurrentStates ...PodTrafficMonitorState,

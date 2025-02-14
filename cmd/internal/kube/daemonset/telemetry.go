@@ -8,6 +8,10 @@ import (
 	"github.com/spf13/viper"
 )
 
+// sendTelemetry sends telemetry data for the Daemonset.
+// It logs the current time when telemetry is being sent and creates a context with a timeout.
+// The telemetry data is sent using the FrontClient's PostDaemonsetAgentTelemetry method.
+// If there is an error during the process, it logs the error.
 func (d *Daemonset) sendTelemetry() {
 	printer.Debugf("Sending telemetry, time: %s", time.Now().UTC())
 
@@ -20,6 +24,8 @@ func (d *Daemonset) sendTelemetry() {
 	}
 }
 
+// dumpPodsApiDumpProcessState logs the current state of active pods if the debug mode is enabled.
+// It prints a formatted table with the pod name, project ID, and current state for each pod.
 func (d *Daemonset) dumpPodsApiDumpProcessState() {
 	if !viper.GetBool("debug") {
 		return

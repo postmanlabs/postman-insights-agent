@@ -106,6 +106,14 @@ func StartDaemonset() error {
 	return nil
 }
 
+// Run starts the Daemonset and its workers, and waits for a termination signal.
+// It performs the following steps:
+// 1. Starts all the workers.
+// 4. Starts the process in the existing pods.
+// 5. Waits for a termination signal (SIGINT or SIGTERM).
+// 6. Signals all workers to stop.
+// 7. Stops all apidump processes.
+// 8. Exits the daemonset agent.
 func (d *Daemonset) Run() error {
 	done := make(chan struct{})
 
@@ -156,6 +164,9 @@ func (d *Daemonset) Run() error {
 	return nil
 }
 
+// getPodArgsFromMap retrieves the PodArgs associated with the given podUID from the PodArgsByNameMap.
+// If the PodArgs are found, they are returned. Otherwise, an error is returned indicating that the PodArgs
+// were not found for the specified podUID.
 func (d *Daemonset) getPodArgsFromMap(podUID types.UID) (*PodArgs, error) {
 	var podArgs *PodArgs
 	if p, ok := d.PodArgsByNameMap.Load(podUID); ok {
@@ -183,6 +194,8 @@ func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingSta
 	}
 }
 
+// TelemetryWorker starts a worker that periodically sends telemetry data and dumps the state of the Pods API dump process.
+// The worker runs until the provided done channel is closed.
 func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
 	if d.TelemetryInterval <= 0 {
 		return
@@ -241,6 +254,8 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	return nil
 }
 
+// KubernetesEventsWorker listens for Kubernetes events and handles them accordingly.
+// It runs indefinitely until the provided done channel is closed.
 func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 	for {
 		select {
@@ -263,6 +278,8 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 	}
 }
 
+// PodsHealthWorker periodically checks the health of the pods and prunes stopped processes.
+// It runs until the provided done channel is closed.
 func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 	if d.PodHealthCheckInterval <= 0 {
 		return
@@ -280,6 +297,12 @@ func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 	}
 }
 
+// StopAllApiDumpProcesses stops all API dump processes for the Daemonset.
+// It iterates over the PodArgsByNameMap and performs the following actions for each pod:
+// 1. Changes the pod's traffic monitor state to DaemonSetShutdown.
+// 2. Stops the API dump process for the pod.
+// 3. Logs any errors encountered during the state change or stopping process.
+// 4. Removes the pod from the PodArgsByNameMap.
 func (d *Daemonset) StopAllApiDumpProcesses() {
 	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
 		podUID := k.(types.UID)
