@@ -148,12 +148,9 @@ func (d *Daemonset) Run() error {
 
 		// Continue until an interrupt
 	DoneWaitingForSignal:
-		for {
-			select {
-			case received := <-sig:
-				printer.Stderr.Infof("Received %v, stopping daemonset...\n", received.String())
-				break DoneWaitingForSignal
-			}
+		for received := range sig {
+			printer.Stderr.Infof("Received %v, stopping daemonset...\n", received.String())
+			break DoneWaitingForSignal
 		}
 	}
 
