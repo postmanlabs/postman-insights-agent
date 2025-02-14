@@ -62,7 +62,7 @@ type PodArgs struct {
 
 	// for state management
 	PodTrafficMonitorState PodTrafficMonitorState
-	StateChangeMutex       *sync.Mutex
+	StateChangeMutex       sync.Mutex
 
 	// send stop signal to apidump process
 	StopChan chan error
