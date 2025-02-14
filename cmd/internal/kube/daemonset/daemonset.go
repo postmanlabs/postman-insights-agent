@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -90,18 +91,18 @@ func StartDaemonset() error {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
-	go func() {
-		daemonsetRun := &Daemonset{
-			ClusterName:              clusterName,
-			InsightsReproModeEnabled: insightsReproModeEnabled,
-			KubeClient:               kubeClient,
-			CRIClient:                criClient,
-			FrontClient:              frontClient,
-			TelemetryInterval:        telemetryInterval,
-			PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
-		}
-		daemonsetRun.Run()
-	}()
+	daemonsetRun := &Daemonset{
+		ClusterName:              clusterName,
+		InsightsReproModeEnabled: insightsReproModeEnabled,
+		KubeClient:               kubeClient,
+		CRIClient:                criClient,
+		FrontClient:              frontClient,
+		TelemetryInterval:        telemetryInterval,
+		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
+	}
+	if err := daemonsetRun.Run(); err != nil {
+		return cmderr.AkitaErr{Err: err}
+	}
 
 	return nil
 }
