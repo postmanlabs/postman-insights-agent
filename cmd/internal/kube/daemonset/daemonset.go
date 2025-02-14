@@ -191,7 +191,7 @@ func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingSta
 	if loaded {
 		err := argsFromMap.changePodTrafficMonitorState(startingState)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
 		}
 	} else {
@@ -318,7 +318,7 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 		// Since this state can happen at any time so no check for allowed current states
 		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 				podArgs.PodName, podArgs.PodTrafficMonitorState, DaemonSetShutdown, err)
 			return true
 		}

@@ -23,8 +23,8 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStarted, PodDetected, PodInitialized)
 	if err != nil {
-		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
-			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
+		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStarted)
 	}
 
 	go func() (funcErr error) {
@@ -45,7 +45,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 			err = podArgs.changePodTrafficMonitorState(nextState, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
 				return
 			}
@@ -99,7 +99,7 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStopped,
 		PodTerminated, DaemonSetShutdown, TrafficMonitoringFailed, TrafficMonitoringEnded)
 	if err != nil {
-		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
+		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
 	}
 

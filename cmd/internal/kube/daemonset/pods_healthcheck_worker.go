@@ -40,7 +40,7 @@ func (d *Daemonset) checkPodsHealth() {
 
 			err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Infof("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+				printer.Infof("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 				continue
 			}
@@ -67,7 +67,7 @@ func (d *Daemonset) pruneStoppedProcesses() {
 		case TrafficMonitoringStopped:
 			err := podArgs.changePodTrafficMonitorState(RemovePodFromMap, TrafficMonitoringStopped)
 			if err != nil {
-				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d\n",
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, RemovePodFromMap)
 			}
 		case RemovePodFromMap:

@@ -82,7 +82,7 @@ func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 
 	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 	if err != nil {
-		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+		printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 		return
 	}
