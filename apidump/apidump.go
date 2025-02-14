@@ -416,7 +416,7 @@ func (a *apidump) RotateLearnSession(done <-chan struct{}, collectors []trace.Le
 
 		case <-t.C:
 			traceName := util.RandomLearnSessionName()
-			backendLrn, err := util.NewLearnSession(args.Domain, args.ClientID, a.backendSvc, traceName, traceTags, nil)
+			backendLrn, err := util.NewLearnSession(a.learnClient, traceName, traceTags, nil)
 			if err != nil {
 				telemetry.Error("new learn session", err)
 				printer.Errorf("Failed to create trace %s: %v\n", traceName, err)
@@ -605,7 +605,7 @@ func (a *apidump) Run() error {
 	var backendLrn akid.LearnSessionID
 	if a.TargetIsRemote() {
 		uri := a.Out.AkitaURI
-		backendLrn, err = util.NewLearnSession(args.Domain, args.ClientID, a.backendSvc, uri.ObjectName, traceTags, nil)
+		backendLrn, err = util.NewLearnSession(a.learnClient, uri.ObjectName, traceTags, nil)
 		if err == nil {
 			printer.Infof("Created new trace on Postman Cloud: %s\n", uri)
 		} else {
