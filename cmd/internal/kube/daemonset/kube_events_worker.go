@@ -61,7 +61,12 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 		return
 	}
 
-	d.addPodArgsToMap(pod.UID, args, PodInitialized)
+	err = d.addPodArgsToMap(pod.UID, args, PodInitialized)
+	if err != nil {
+		printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
+		return
+	}
+
 	err = d.StartApiDumpProcess(pod.UID)
 	if err != nil {
 		printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)

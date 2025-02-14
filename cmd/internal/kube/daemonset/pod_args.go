@@ -67,7 +67,9 @@ func (p *PodArgs) changePodTrafficMonitorState(
 	p.StateChangeMutex.Lock()
 	defer p.StateChangeMutex.Unlock()
 
-	if !slices.Contains(allowedCurrentStates, p.PodTrafficMonitorState) {
+	// Check if the current state is allowed for the transition
+	// If the allowedCurrentStates is empty, then any state is allowed
+	if len(allowedCurrentStates) != 0 && !slices.Contains(allowedCurrentStates, p.PodTrafficMonitorState) {
 		return errors.New(fmt.Sprintf("Invalid current state for pod %s: %s", p.PodName, p.PodTrafficMonitorState))
 	}
 

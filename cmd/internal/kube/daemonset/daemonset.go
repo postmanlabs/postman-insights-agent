@@ -187,18 +187,20 @@ func (d *Daemonset) getPodArgsFromMap(podUID types.UID) (*PodArgs, error) {
 
 // addPodArgsToMap adds the podArgs to the map with the podUID as the key
 // This function ensures that the pod is not already loaded in the map
-func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingState PodTrafficMonitorState) {
+func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingState PodTrafficMonitorState) error {
 	value, loaded := d.PodArgsByNameMap.LoadOrStore(podUID, args)
 	argsFromMap := value.(*PodArgs)
-	if loaded {
+	if !loaded {
 		err := argsFromMap.changePodTrafficMonitorState(startingState)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
-				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
+			return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
+				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState)
 		}
 	} else {
-		printer.Errorf("Pod is already loaded in the map and is in state %s\n", argsFromMap.PodTrafficMonitorState)
+		return errors.Errorf("pod is already loaded in the map and is in state %s", argsFromMap.PodTrafficMonitorState)
 	}
+
+	return nil
 }
 
 // TelemetryWorker starts a worker that periodically sends telemetry data and dumps the state of the Pods API dump process.
@@ -252,7 +254,12 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			continue
 		}
 
-		d.addPodArgsToMap(pod.UID, args, PodDetected)
+		err = d.addPodArgsToMap(pod.UID, args, PodDetected)
+		if err != nil {
+			printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
+			continue
+		}
+
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
