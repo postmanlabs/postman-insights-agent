@@ -14,7 +14,7 @@ import (
 // If a pod has stopped running (either succeeded or failed), it updates the pod's traffic monitor state
 // and stops the API dump process for that pod.
 func (d *Daemonset) checkPodsHealth() {
-	printer.Debugf("Checking pods health, time: %s", time.Now().UTC())
+	printer.Debugf("Checking pods health, time: %s\n", time.Now().UTC())
 
 	var podUIDs []types.UID
 	d.PodArgsByNameMap.Range(func(k, _ interface{}) bool {
@@ -24,30 +24,30 @@ func (d *Daemonset) checkPodsHealth() {
 
 	podStatuses, err := d.KubeClient.GetPodsStatusByUIDs(podUIDs)
 	if err != nil {
-		printer.Errorf("Failed to get pods status: %v", err)
+		printer.Errorf("Failed to get pods status: %v\n", err)
 		return
 	}
 
 	for podUID, podStatus := range podStatuses {
 		if podStatus == coreV1.PodSucceeded || podStatus == coreV1.PodFailed {
-			printer.Infof("Pod %s has stopped running", podStatus)
+			printer.Infof("Pod %s has stopped running\n", podStatus)
 
 			podArgs, err := d.getPodArgsFromMap(podUID)
 			if err != nil {
-				printer.Infof("Failed to get podArgs for podUID %s: %v", podUID, err)
+				printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
 				continue
 			}
 
 			err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Infof("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+				printer.Infof("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 				continue
 			}
 
 			err = d.StopApiDumpProcess(podUID, errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus))
 			if err != nil {
-				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 			}
 		}
 	}
@@ -57,7 +57,7 @@ func (d *Daemonset) checkPodsHealth() {
 // In first iteration, it changes the state of the pod to RemovePodFromMap
 // In second iteration, it removes the pod from the map
 func (d *Daemonset) pruneStoppedProcesses() {
-	printer.Debugf("Pruning stopped processes, time: %s", time.Now().UTC())
+	printer.Debugf("Pruning stopped processes, time: %s\n", time.Now().UTC())
 
 	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
 		podUID := k.(types.UID)
@@ -67,7 +67,7 @@ func (d *Daemonset) pruneStoppedProcesses() {
 		case TrafficMonitoringStopped:
 			err := podArgs.changePodTrafficMonitorState(RemovePodFromMap, TrafficMonitoringStopped)
 			if err != nil {
-				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d",
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, RemovePodFromMap)
 			}
 		case RemovePodFromMap:

@@ -14,8 +14,8 @@ func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 	}
 
 	// Log the error and wait forever.
-	printer.Stderr.Errorf("Error while starting the process: %v\n", err)
-	printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
+	printer.Errorf("Error while starting the process: %v\n", err)
+	printer.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
 
 	select {}
 }

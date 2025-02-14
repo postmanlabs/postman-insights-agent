@@ -37,7 +37,7 @@ func NewCRIClient() (*CriClient, error) {
 			return nil, err
 		}
 	} else {
-		printer.Infoln("No CRI endpoint provided, trying default CRI endpoint")
+		printer.Infof("No CRI endpoint provided, trying default CRI endpoint\n")
 		service, err = newRemoteRuntimeService(containerdCRIEndpoint, connectionTimeout)
 		if err != nil {
 			printer.Errorf("Failed to connect to %s: %v\n", containerdCRIEndpoint, err)

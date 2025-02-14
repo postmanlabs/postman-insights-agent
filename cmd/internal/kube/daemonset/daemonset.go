@@ -63,18 +63,18 @@ func StartDaemonset() error {
 		printer.Infof(
 			"The cluster name is missing. Telemetry will not be sent from this agent, " +
 				"it will not be tracked on our end, and it will not appear in the app's " +
-				"list of clusters where the agent is running.",
+				"list of clusters where the agent is running.\n",
 		)
 		telemetryInterval = 0
 	} else {
 		// Send Initial telemetry
 		err := frontClient.PostDaemonsetAgentTelemetry(ctx, clusterName)
 		if err != nil {
-			printer.Errorf("Failed to send initial daemonset agent telemetry: %v", err)
+			printer.Errorf("Failed to send initial daemonset agent telemetry: %v\n", err)
 			printer.Infof(
 				"Agent will try to send telemetry again, if the error still persists, agent " +
 					"will not be tracked on our end, and it will not appear in the app's list of " +
-					"clusters where the agent is running.",
+					"clusters where the agent is running.\n",
 			)
 		}
 	}
@@ -129,8 +129,8 @@ func (d *Daemonset) Run() error {
 	// Start the process in the existing pods
 	err := d.StartProcessInExistingPods()
 	if err != nil {
-		printer.Errorf("Failed to start process in existing pods, error: %v", err)
-		printer.Errorf("Agent will not listen traffic from existing pods")
+		printer.Errorf("Failed to start process in existing pods, error: %v\n", err)
+		printer.Errorf("Agent will not listen traffic from existing pods\n")
 	}
 
 	printer.Infof("Send SIGINT (Ctrl-C) to stop...\n")
@@ -186,11 +186,11 @@ func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingSta
 	if loaded {
 		err := argsFromMap.changePodTrafficMonitorState(startingState)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
 				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
 		}
 	} else {
-		printer.Errorf("Pod is already loaded in the map and is in state %d", argsFromMap.PodTrafficMonitorState)
+		printer.Errorf("Pod is already loaded in the map and is in state %d\n", argsFromMap.PodTrafficMonitorState)
 	}
 }
 
@@ -235,11 +235,11 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		if err != nil {
 			switch err {
 			case allRequiredEnvVarsAbsentErr:
-				printer.Debugf("None of the required env vars present, skipping pod: %s", pod.Name)
+				printer.Debugf("None of the required env vars present, skipping pod: %s\n", pod.Name)
 			case requiredEnvVarMissingErr:
-				printer.Errorf("Required env var missing, skipping pod: %s", pod.Name)
+				printer.Errorf("Required env var missing, skipping pod: %s\n", pod.Name)
 			default:
-				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
+				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v\n", pod.Name, err)
 			}
 			continue
 		}
@@ -247,7 +247,7 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		d.addPodArgsToMap(pod.UID, &args, PodDetected)
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
-			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
+			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
 		}
 	}
 
@@ -264,12 +264,12 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 		case event := <-d.KubeClient.EventWatch.ResultChan():
 			switch event.Type {
 			case watch.Added:
-				printer.Debugf("Got k8s added event: %v", event.Object)
+				printer.Debugf("Got k8s added event: %v\n", event.Object)
 				if e, ok := event.Object.(*coreV1.Event); ok {
 					go d.handlePodAddEvent(e.InvolvedObject.UID)
 				}
 			case watch.Deleted:
-				printer.Debugf("Got k8s deleted event: %v", event.Object)
+				printer.Debugf("Got k8s deleted event: %v\n", event.Object)
 				if e, ok := event.Object.(*coreV1.Event); ok {
 					go d.handlePodDeleteEvent(e.InvolvedObject.UID)
 				}
@@ -311,14 +311,14 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 		// Since this state can happen at any time so no check for allowed current states
 		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
 				podArgs.PodName, podArgs.PodTrafficMonitorState, DaemonSetShutdown, err)
 			return true
 		}
 
 		err = d.StopApiDumpProcess(podUID, errors.Errorf("Daemonset agent is shutting down, stopping pod: %s", podArgs.PodName))
 		if err != nil {
-			printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+			printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 		}
 
 		// Remove the pod from the map

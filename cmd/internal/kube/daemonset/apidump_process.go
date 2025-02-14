@@ -37,7 +37,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 					podArgs.PodName, err, string(debug.Stack()))
 				nextState = TrafficMonitoringFailed
 			} else if funcErr != nil {
-				printer.Errorf("Error occurred in apidump process for pod %s, err: %v", podArgs.PodName, funcErr)
+				printer.Errorf("Error occurred in apidump process for pod %s, err: %v\n", podArgs.PodName, funcErr)
 				nextState = TrafficMonitoringFailed
 			} else {
 				printer.Infof("Apidump process ended for pod %s", podArgs.PodName)
@@ -45,7 +45,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 			err = podArgs.changePodTrafficMonitorState(nextState, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
 				return
 			}
@@ -54,7 +54,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			// This is just a safety check
 			err := d.StopApiDumpProcess(podUID, err)
 			if err != nil {
-				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 			}
 		}()
 
@@ -103,7 +103,7 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
 	}
 
-	printer.Infof("Stopping API dump process for pod %s", podArgs.PodName)
+	printer.Infof("Stopping API dump process for pod %s\n", podArgs.PodName)
 	podArgs.StopChan <- stopErr
 
 	return nil

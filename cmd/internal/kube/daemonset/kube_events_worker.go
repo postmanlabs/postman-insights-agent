@@ -23,26 +23,26 @@ var (
 func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 	pods, err := d.KubeClient.GetPodsByUIDs([]types.UID{podUID})
 	if err != nil {
-		printer.Errorf("failed to get pod for k8s added event, podUID: %s, error: %v", podUID, err)
+		printer.Errorf("Failed to get pod for k8s added event, podUID: %s, error: %v\n", podUID, err)
 		return
 	}
 	if len(pods) == 0 {
-		printer.Infof("no pod found for k8s added event, podUID: %s", podUID)
+		printer.Infof("No pod found for k8s added event, podUID: %s\n", podUID)
 		return
 	}
 	if len(pods) > 1 {
-		printer.Errorf("multiple pods found for single UID, this should not happen, podUID: %s", podUID)
+		printer.Errorf("Multiple pods found for single UID, this should not happen, podUID: %s\n", podUID)
 		return
 	}
 
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
 	if err != nil {
-		printer.Errorf("failed to filter pod by container image: %v", err)
+		printer.Errorf("Failed to filter pod by container image: %v\n", err)
 		return
 	}
 	if len(podsWithoutAgentSidecar) == 0 {
-		printer.Infof("pod already has agent sidecar container, skipping, podUID: %s", podUID)
+		printer.Infof("Pod already has agent sidecar container, skipping, podUID: %s\n", podUID)
 		return
 	}
 
@@ -52,11 +52,11 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 	if err != nil {
 		switch err {
 		case allRequiredEnvVarsAbsentErr:
-			printer.Debugf("None of the required env vars present, skipping pod: %s", pod.Name)
+			printer.Debugf("None of the required env vars present, skipping pod: %s\n", pod.Name)
 		case requiredEnvVarMissingErr:
-			printer.Errorf("Required env var missing, skipping pod: %s", pod.Name)
+			printer.Errorf("Required env var missing, skipping pod: %s\n", pod.Name)
 		default:
-			printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v", pod.Name, err)
+			printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v\n", pod.Name, err)
 		}
 		return
 	}
@@ -64,7 +64,7 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 	d.addPodArgsToMap(pod.UID, &args, PodInitialized)
 	err = d.StartApiDumpProcess(pod.UID)
 	if err != nil {
-		printer.Errorf("failed to start api dump process, pod name: %s, error: %v", pod.Name, err)
+		printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
 	}
 }
 
@@ -76,20 +76,20 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
-		printer.Errorf("failed to get podArgs for pod UID %s: %v", podUID, err)
+		printer.Errorf("Failed to get podArgs for pod UID %s: %v\n", podUID, err)
 		return
 	}
 
 	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 	if err != nil {
-		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v",
+		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 		return
 	}
 
 	err = d.StopApiDumpProcess(podUID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
 	if err != nil {
-		printer.Errorf("failed to stop api dump process, pod name: %s, error: %v", podArgs.PodName, err)
+		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 	}
 }
 
@@ -136,12 +136,12 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) {
-		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
+		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
 		return PodArgs{}, requiredEnvVarMissingErr
 	}
 
 	if insightsAPIKey == "" {
-		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s", POSTMAN_INSIGHTS_API_KEY, pod.Name)
+		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_API_KEY, pod.Name)
 		return PodArgs{}, requiredEnvVarMissingErr
 	}
 

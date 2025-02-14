@@ -13,7 +13,7 @@ import (
 // The telemetry data is sent using the FrontClient's PostDaemonsetAgentTelemetry method.
 // If there is an error during the process, it logs the error.
 func (d *Daemonset) sendTelemetry() {
-	printer.Debugf("Sending telemetry, time: %s", time.Now().UTC())
+	printer.Debugf("Sending telemetry, time: %s\n", time.Now().UTC())
 
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
