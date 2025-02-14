@@ -29,7 +29,8 @@ func (d *Daemonset) checkPodsHealth() {
 	}
 
 	for podUID, podStatus := range podStatuses {
-		if podStatus == coreV1.PodSucceeded || podStatus == coreV1.PodFailed {
+		switch podStatus {
+		case coreV1.PodSucceeded, coreV1.PodFailed:
 			printer.Infof("Pod %s has stopped running\n", podStatus)
 
 			podArgs, err := d.getPodArgsFromMap(podUID)
@@ -48,6 +49,24 @@ func (d *Daemonset) checkPodsHealth() {
 			err = d.StopApiDumpProcess(podUID, errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus))
 			if err != nil {
 				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
+			}
+		case coreV1.PodRunning:
+			printer.Debugf("Pod %s is running\n", podStatus)
+
+			podArgs, err := d.getPodArgsFromMap(podUID)
+			if err != nil {
+				printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
+				continue
+			}
+
+			// If pod's monitoring state is still in PodDetected or PodInitialized, it means there is a bug.
+			// The program should have started the API dump process if it is stored in the map.
+			if podArgs.PodTrafficMonitorState == PodDetected || podArgs.PodTrafficMonitorState == PodInitialized {
+				printer.Debugf("Apidump process not started for pod %s during it's initialization, starting now\n", podArgs.PodName)
+				err = d.StartApiDumpProcess(podUID)
+				if err != nil {
+					printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
+				}
 			}
 		}
 	}
