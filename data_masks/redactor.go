@@ -111,6 +111,14 @@ func NewRedactor(
 }
 
 func (o *Redactor) StopPeriodicUpdates() {
+	// Handle the panic state when closing the already closed channel
+	// This will happen when apidump process is listening to multiple interfaces,
+	// since we are using same redactor instance for all the interfaces's collectors.
+	defer func() {
+		if err := recover(); err != nil {
+			printer.Debugf("Recovered from panic while closing redactor exit channel: %v\n", err)
+		}
+	}()
 	close(o.exitChannel)
 }
 
