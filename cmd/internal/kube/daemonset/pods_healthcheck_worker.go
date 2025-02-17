@@ -25,49 +25,63 @@ func (d *Daemonset) checkPodsHealth() {
 	podStatuses, err := d.KubeClient.GetPodsStatusByUIDs(podUIDs)
 	if err != nil {
 		printer.Errorf("Failed to get pods status: %v\n", err)
-		return
 	}
 
-	for podUID, podStatus := range podStatuses {
+	for _, podUID := range podUIDs {
+		podStatus, ok := podStatuses[podUID]
+		if !ok {
+			printer.Infof("Pod status not found for podUID %s, Pod doesn't exists anymore\n", podUID)
+			d.handleTerminatedPod(podUID, errors.Errorf("pod %s doesn't exists anymore", podUID))
+		}
+
 		switch podStatus {
 		case coreV1.PodSucceeded, coreV1.PodFailed:
 			printer.Infof("Pod %s has stopped running\n", podStatus)
-
-			podArgs, err := d.getPodArgsFromMap(podUID)
-			if err != nil {
-				printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
-				continue
-			}
-
-			err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
-			if err != nil {
-				printer.Infof("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
-					podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
-				continue
-			}
-
-			err = d.StopApiDumpProcess(podUID, errors.Errorf("pod %s has stopped running, status: %s", podArgs.PodName, podStatus))
-			if err != nil {
-				printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
-			}
+			d.handleTerminatedPod(podUID, errors.Errorf("pod %s has stopped running, status: %s", podUID, podStatus))
 		case coreV1.PodRunning:
 			printer.Debugf("Pod %s is running\n", podStatus)
+			d.handleUnmonitoredPod(podUID)
+		}
+	}
+}
 
-			podArgs, err := d.getPodArgsFromMap(podUID)
-			if err != nil {
-				printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
-				continue
-			}
+// handleTerminatedPod handles the terminated pod by changing the pod's traffic monitor state to PodTerminated
+// and stopping the API dump process for that pod.
+func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error) {
+	podArgs, err := d.getPodArgsFromMap(podUID)
+	if err != nil {
+		printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
+		return
+	}
 
-			// If pod's monitoring state is still in PodDetected or PodInitialized, it means there is a bug.
-			// The program should have started the API dump process if it is stored in the map.
-			if podArgs.PodTrafficMonitorState == PodDetected || podArgs.PodTrafficMonitorState == PodInitialized {
-				printer.Debugf("Apidump process not started for pod %s during it's initialization, starting now\n", podArgs.PodName)
-				err = d.StartApiDumpProcess(podUID)
-				if err != nil {
-					printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
-				}
-			}
+	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
+	if err != nil {
+		printer.Infof("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
+		return
+	}
+
+	err = d.StopApiDumpProcess(podUID, podStatusErr)
+	if err != nil {
+		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
+	}
+}
+
+// handleUnmonitoredPod starts the API dump process for the pod if it is not already started.
+// If pod's monitoring state is still in PodDetected or PodInitialized, it means there is a bug.
+// The program should have started the API dump process if it is stored in the map.
+func (d *Daemonset) handleUnmonitoredPod(podUID types.UID) {
+	podArgs, err := d.getPodArgsFromMap(podUID)
+	if err != nil {
+		printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
+		return
+	}
+
+	if podArgs.PodTrafficMonitorState == PodDetected || podArgs.PodTrafficMonitorState == PodInitialized {
+		printer.Debugf("Apidump process not started for pod %s during it's initialization, starting now\n", podArgs.PodName)
+		err = d.StartApiDumpProcess(podUID)
+		if err != nil {
+			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 		}
 	}
 }
