@@ -96,5 +96,6 @@ func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clust
 		KubernetesCluster: clusterName,
 	}
 	path := "/v2/agent/daemonset/telemetry"
-	return c.Post(ctx, path, req, nil)
+	var resp struct{}
+	return c.Post(ctx, path, req, &resp)
 }

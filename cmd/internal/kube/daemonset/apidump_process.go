@@ -6,6 +6,7 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -23,8 +24,8 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStarted, PodDetected, PodInitialized)
 	if err != nil {
-		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
-			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
+		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStarted)
 	}
 
 	go func() (funcErr error) {
@@ -45,7 +46,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 			err = podArgs.changePodTrafficMonitorState(nextState, TrafficMonitoringStarted)
 			if err != nil {
-				printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+				printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
 				return
 			}
@@ -64,12 +65,22 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				podArgs.PodName, podArgs.ContainerUUID, err)
 			return
 		}
+		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
+		networkNamespace = "/host" + networkNamespace
 
 		apidumpArgs := apidump.Args{
-			ClientID:  telemetry.GetClientID(),
-			Domain:    rest.Domain,
-			ServiceID: podArgs.InsightsProjectID,
-			ReproMode: d.InsightsReproModeEnabled,
+			ClientID:                telemetry.GetClientID(),
+			Domain:                  rest.Domain,
+			ServiceID:               podArgs.InsightsProjectID,
+			SampleRate:              apispec.DefaultSampleRate,
+			WitnessesPerMinute:      apispec.DefaultRateLimit,
+			LearnSessionLifetime:    apispec.DefaultTraceRotateInterval,
+			TelemetryInterval:       apispec.DefaultTelemetryInterval_seconds,
+			ProcFSPollingInterval:   apispec.DefaultProcFSPollingInterval_seconds,
+			CollectTCPAndTLSReports: apispec.DefaultCollectTCPAndTLSReports,
+			ParseTLSHandshakes:      apispec.DefaultParseTLSHandshakes,
+			MaxWitnessSize_bytes:    apispec.DefaultMaxWitnessSize_bytes,
+			ReproMode:               d.InsightsReproModeEnabled,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
@@ -99,7 +110,7 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStopped,
 		PodTerminated, DaemonSetShutdown, TrafficMonitoringFailed, TrafficMonitoringEnded)
 	if err != nil {
-		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %d to: %d",
+		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
 	}
 
