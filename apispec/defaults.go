@@ -35,4 +35,7 @@ const (
 
 	// How often to rotate traces in the back end.
 	DefaultTraceRotateInterval = time.Hour
+
+	// Process all possible witness data
+	DefaultSampleRate = 1.0
 )

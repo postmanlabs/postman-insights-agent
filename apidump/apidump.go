@@ -74,7 +74,7 @@ const (
 // Args for running apidump as daemonset in Kubernetes
 type DaemonsetArgs struct {
 	TargetNetworkNamespaceOpt string
-	StopChan                  <-chan error
+	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
 	Environment               string
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -68,10 +69,18 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		networkNamespace = "/host" + networkNamespace
 
 		apidumpArgs := apidump.Args{
-			ClientID:  telemetry.GetClientID(),
-			Domain:    rest.Domain,
-			ServiceID: podArgs.InsightsProjectID,
-			ReproMode: d.InsightsReproModeEnabled,
+			ClientID:                telemetry.GetClientID(),
+			Domain:                  rest.Domain,
+			ServiceID:               podArgs.InsightsProjectID,
+			SampleRate:              apispec.DefaultSampleRate,
+			WitnessesPerMinute:      apispec.DefaultRateLimit,
+			LearnSessionLifetime:    apispec.DefaultTraceRotateInterval,
+			TelemetryInterval:       apispec.DefaultTelemetryInterval_seconds,
+			ProcFSPollingInterval:   apispec.DefaultProcFSPollingInterval_seconds,
+			CollectTCPAndTLSReports: apispec.DefaultCollectTCPAndTLSReports,
+			ParseTLSHandshakes:      apispec.DefaultParseTLSHandshakes,
+			MaxWitnessSize_bytes:    apispec.DefaultMaxWitnessSize_bytes,
+			ReproMode:               d.InsightsReproModeEnabled,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
