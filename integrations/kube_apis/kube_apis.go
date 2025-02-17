@@ -179,12 +179,13 @@ func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 
 // GetPodsStatus returns the statuses for list of pods
 func (kc *KubeClient) GetPodsStatusByUIDs(podUIDs []types.UID) (maps.Map[types.UID, coreV1.PodPhase], error) {
+	statuses := maps.NewMap[types.UID, coreV1.PodPhase]()
+
 	pods, err := kc.GetPodsByUIDs(podUIDs)
 	if err != nil {
-		return nil, err
+		return statuses, err
 	}
 
-	statuses := maps.NewMap[types.UID, coreV1.PodPhase]()
 	for _, pod := range pods {
 		statuses[pod.UID] = pod.Status.Phase
 	}

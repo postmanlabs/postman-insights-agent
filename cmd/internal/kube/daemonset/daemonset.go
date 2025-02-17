@@ -34,6 +34,8 @@ type Daemonset struct {
 	CRIClient   *cri_apis.CriClient
 	FrontClient rest.FrontClient
 
+	// Note: Only filtered pods are stored in this map, i.e., they have required env vars
+	// and do not have the agent sidecar container
 	PodArgsByNameMap sync.Map
 
 	PodHealthCheckInterval time.Duration
