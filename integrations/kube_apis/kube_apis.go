@@ -75,9 +75,9 @@ func (kc *KubeClient) Close() {
 
 // initPodsEventsWatcher creates a new go-channel to listen for pod events in the cluster
 func (kc *KubeClient) initPodsEventsWatcher() error {
-	// Fetch own pod details
+	// Fetch own pod details and get the ResourceVersion
 	fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
-	pod, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
 	})
 	if err != nil {
@@ -86,10 +86,11 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 
 	// Create a watcher for pod events
 	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
+	fieldSelector = fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
 	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
 		Watch:           true,
 		FieldSelector:   "spec.nodeName=" + kc.AgentNode,
-		ResourceVersion: pod.ResourceVersion,
+		ResourceVersion: pods.ResourceVersion,
 	})
 	if err != nil {
 		return errors.Wrap(err, "error creating watcher")

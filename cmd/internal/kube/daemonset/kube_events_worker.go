@@ -16,7 +16,6 @@ var (
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
 // It performs the following steps:
 // 1. Check if the pod does not have the agent sidecar container.
-// 2. Inspects the pod for required environment variables.
 // 3. Adds the pod arguments to a map and change state to PodPending.
 func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 
@@ -48,13 +47,18 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 // handlePodDeleteEvent handles the deletion event of a pod.
 // It performs the following actions:
 // 1. Retrieves the pod arguments from the internal map using the pod UID.
-// 2. Changes the pod traffic monitor state to PodSucceeded/PodFailed.
+// 2. Changes the pod traffic monitor state to PodSucceeded/PodFailed/PodTerminated.
 // 3. Stops the API dump process for the pod.
 func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 	// Check if we are interested in the pod
 	podArgs, err := d.getPodArgsFromMap(pod.UID)
 	if err != nil {
-		printer.Errorf("Failed to get podArgs for pod UID %s: %v\n", pod.UID, err)
+		printer.Debugf("Failed to get podArgs for pod UID %s: %v\n", pod.UID, err)
+		return
+	}
+
+	if podArgs.isEndState() {
+		printer.Debugf("Pod %s already stopped monitoring, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
 		return
 	}
 
@@ -69,7 +73,7 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 		podStatus = PodTerminated
 	}
 
-	err = podArgs.changePodTrafficMonitorState(podStatus, TrafficMonitoringStarted)
+	err = podArgs.changePodTrafficMonitorState(podStatus, TrafficMonitoringRunning)
 	if err != nil {
 		printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, podStatus, err)
@@ -86,12 +90,13 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 // It performs the following actions:
 // 1. Retrieves the pod arguments from the internal map using the pod UID.
 // 2. Changes the pod traffic monitor state to PodRunning if the pod status is running.
-// 3. Starts the API dump process for the pod.
+// 3. Inspects the pod for required environment variables.
+// 4. Starts the API dump process for the pod.
 func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 	// Check if we are interested in the pod
 	podArgs, err := d.getPodArgsFromMap(pod.UID)
 	if err != nil {
-		printer.Errorf("Failed to get podArgs for pod UID %s: %v\n", pod.UID, err)
+		printer.Debugf("Failed to get podArgs for pod UID %s: %v\n", pod.UID, err)
 		return
 	}
 
@@ -108,6 +113,9 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 			default:
 				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v\n", pod.Name, err)
 			}
+
+			// remove pod from map if required env vars are missing
+			d.PodArgsByNameMap.Delete(pod.UID)
 			return
 		}
 

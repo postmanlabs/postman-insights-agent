@@ -38,6 +38,9 @@ type Daemonset struct {
 	// and do not have the agent sidecar container
 	PodArgsByNameMap sync.Map
 
+	// WaitGroup to wait for all apidump processes to stop
+	ApidumpProcessesWG sync.WaitGroup
+
 	PodHealthCheckInterval time.Duration
 	TelemetryInterval      time.Duration
 }
@@ -335,10 +338,16 @@ func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 // 2. Stops the API dump process for the pod.
 // 3. Logs any errors encountered during the state change or stopping process.
 // 4. Removes the pod from the PodArgsByNameMap.
+// 5. Wait for all the apidump processes to stop.
 func (d *Daemonset) StopAllApiDumpProcesses() {
 	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
 		podUID := k.(types.UID)
 		podArgs := v.(*PodArgs)
+
+		if podArgs.isEndState() {
+			printer.Debugf("API dump process for pod %s already stopped, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
+			return true
+		}
 
 		// Since this state can happen at any time so no check for allowed current states
 		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
@@ -357,4 +366,8 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 		d.PodArgsByNameMap.Delete(podUID)
 		return true
 	})
+
+	// Wait for all apidump processes to stop
+	printer.Debugf("Waiting for all apidump processes to stop...\n")
+	d.ApidumpProcessesWG.Wait()
 }

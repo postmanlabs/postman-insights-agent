@@ -22,15 +22,21 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		return err
 	}
 
-	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStarted, PodRunning)
+	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringRunning, PodRunning)
 	if err != nil {
 		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
-			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStarted)
+			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringRunning)
 	}
+
+	// Increment the wait group counter
+	d.ApidumpProcessesWG.Add(1)
 
 	go func() (funcErr error) {
 		// defer function handle the error (if any) in the apidump process and change the pod state accordingly
 		defer func() {
+			// Decrement the wait group counter
+			d.ApidumpProcessesWG.Done()
+
 			nextState := TrafficMonitoringEnded
 
 			if err := recover(); err != nil {
@@ -44,7 +50,9 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				printer.Infof("Apidump process ended for pod %s\n", podArgs.PodName)
 			}
 
-			err = podArgs.changePodTrafficMonitorState(nextState, TrafficMonitoringStarted)
+			// Move monitoring state to final apidump processing state
+			err = podArgs.changePodTrafficMonitorState(nextState,
+				TrafficMonitoringRunning, PodSucceeded, PodFailed, PodTerminated, DaemonSetShutdown)
 			if err != nil {
 				printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
@@ -83,7 +91,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		}
 
 		if err := apidump.Run(apidumpArgs); err != nil {
-			funcErr = errors.Wrapf(err, "Failed to run apidump process for pod %s", podArgs.PodName)
+			funcErr = errors.Wrapf(err, "failed to run apidump process for pod %s", podArgs.PodName)
 		}
 		return
 	}()
@@ -91,24 +99,18 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	return nil
 }
 
-// StopApiDumpProcess stops the API dump process for a given pod identified by its UID.
-// It retrieves the pod arguments from a map and changes the pod's traffic monitor state.
-// If successful, it sends a stop signal through the pod's stop channel.
+// StopApiDumpProcess signals the API dump process to stop for a given pod
+// identified by its UID. It retrieves the process's stop channel object from a map
+// and sends a stop signal to trigger apidump shutdown.
 func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
 		return err
 	}
 
-	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringStopped,
-		PodSucceeded, PodFailed, DaemonSetShutdown)
-	if err != nil {
-		return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
-			podArgs.PodName, podArgs.PodTrafficMonitorState, TrafficMonitoringStopped)
-	}
-
 	printer.Infof("Stopping API dump process for pod %s\n", podArgs.PodName)
 	podArgs.StopChan <- stopErr
+	close(podArgs.StopChan)
 
 	return nil
 }
