@@ -13,18 +13,27 @@ type PodTrafficMonitorState string
 
 // Different states of pod traffic monitoring
 // The state transition is as follows:
-// PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> RemovePodFromMap
+// Start
+// PodPending -> PodRunning -> TrafficMonitoringStarted ->  TrafficMonitoringFailed/TrafficMonitoringEnded/PodSucceeded/PodFailed/PodTerminated -> TrafficMonitoringStopped -> RemovePodFromMap
 // 'DaemonSetShutdown' is a special state which is used to stop the daemonset agent and can be triggered at any time
+// State diagram: https://whimsical.com/pod-monitoring-state-diagram-Ny5HqFJxz2fntz6ZM6bj2k
 const (
-	PodDetected              PodTrafficMonitorState = "PodDetected"              // When agent finds an already running pod
-	PodInitialized           PodTrafficMonitorState = "PodInitialized"           // When agent will receive pod created event
+	// Pod Lifecycle states
+	PodPending       PodTrafficMonitorState = "PodStarting"      // When agent will receive pod added event
+	PodRunning       PodTrafficMonitorState = "PodDetected"      // When the pod is running and agent can start the apidump process
+	PodSucceeded     PodTrafficMonitorState = "PodSucceeded"     // When the pod is terminated successfully, agent will receive pod deleted event
+	PodFailed        PodTrafficMonitorState = "PodFailed"        // When the pod is terminated with failure, agent will receive pod deleted event
+	PodTerminated    PodTrafficMonitorState = "PodTerminated"    // When the pod is terminated with unknown status, can happen during healthcheck
+	RemovePodFromMap PodTrafficMonitorState = "RemovePodFromMap" // custom: Final state after which pod will be removed from the map
+
+	// Traffic monitoring states
 	TrafficMonitoringStarted PodTrafficMonitorState = "TrafficMonitoringStarted" // When apidump process is started for the pod
 	TrafficMonitoringFailed  PodTrafficMonitorState = "TrafficMonitoringFailed"  // When apidump process is errored for the pod
 	TrafficMonitoringEnded   PodTrafficMonitorState = "TrafficMonitoringEnded"   // When apidump process is ended without any issue for the pod
-	PodTerminated            PodTrafficMonitorState = "PodTerminated"            // When agent will receive pod deleted event or pod is in terminal state while checking status
-	DaemonSetShutdown        PodTrafficMonitorState = "DaemonSetShutdown"        // When the daemonset agent starts the shutdown process
 	TrafficMonitoringStopped PodTrafficMonitorState = "TrafficMonitoringStopped" // When apidump process is stopped for the pod
-	RemovePodFromMap         PodTrafficMonitorState = "RemovePodFromMap"         // Final state after which pod will be removed from the map
+
+	// Daemonset shutdown state
+	DaemonSetShutdown PodTrafficMonitorState = "DaemonSetShutdown" // When the daemonset agent starts the shutdown process
 )
 
 type PodCreds struct {

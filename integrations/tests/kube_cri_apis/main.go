@@ -29,7 +29,7 @@ import (
 
 func k8s_watcher(kubeClient kube_apis.KubeClient) {
 	// Watch for pod events
-	for event := range kubeClient.EventWatch.ResultChan() {
+	for event := range kubeClient.PodEventWatch.ResultChan() {
 		printer.Infof("Received event: %v\n", event.Type)
 		switch event.Type {
 		case watch.Added, watch.Deleted:
