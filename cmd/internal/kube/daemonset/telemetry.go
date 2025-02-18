@@ -6,6 +6,7 @@ import (
 
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // sendTelemetry sends telemetry data for the Daemonset.
@@ -32,17 +33,25 @@ func (d *Daemonset) dumpPodsApiDumpProcessState() {
 	}
 	logf := printer.Debugf
 
+	const hrBr = "================================================================================" +
+		"===========================================================================================\n"
+
 	logf("Dumping pods api dump process state, time: %s\n", time.Now().UTC())
 
-	logf("========================================================\n")
-	logf("Pods active and their states:\n")
-	logf("%15v %15v %25v\n", "podName", "projectID", "currentState")
-	logf("========================================================\n")
+	logf(hrBr)
+	logf(" %-30v%-30v%-40v%-70v\n", "projectID", "currentState", "podUID", "podName")
+	logf(hrBr)
 
-	d.PodArgsByNameMap.Range(func(_, v interface{}) bool {
+	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
+		podUID := k.(types.UID)
 		podArgs := v.(*PodArgs)
-		logf("%15v %15v %25v\n", podArgs.PodName, podArgs.InsightsProjectID, podArgs.PodTrafficMonitorState)
+		logf(" %-30v%-30v%-40v%-70v\n",
+			podArgs.InsightsProjectID,
+			podArgs.PodTrafficMonitorState,
+			podUID,
+			podArgs.PodName,
+		)
 		return true
 	})
-	logf("========================================================\n")
+	logf(hrBr)
 }
