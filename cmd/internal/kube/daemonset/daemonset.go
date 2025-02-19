@@ -28,6 +28,7 @@ const (
 
 type Daemonset struct {
 	ClusterName              string
+	InsightsEnvironment      string
 	InsightsReproModeEnabled bool
 
 	KubeClient  kube_apis.KubeClient
@@ -52,7 +53,7 @@ func StartDaemonset() error {
 	}
 
 	// Initialize the front client
-	postmanInsightsVerificationToken := os.Getenv("POSTMAN_INSIGHTS_VERIFICATION_TOKEN")
+	postmanInsightsVerificationToken := os.Getenv(POSTMAN_INSIGHTS_VERIFICATION_TOKEN)
 	frontClient := rest.NewFrontClient(
 		rest.Domain,
 		telemetry.GetClientID(),
@@ -62,7 +63,7 @@ func StartDaemonset() error {
 	defer cancel()
 
 	// Send initial telemetry
-	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
+	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
 	telemetryInterval := DefaultTelemetryInterval
 	if clusterName == "" {
 		printer.Infof(
@@ -84,20 +85,23 @@ func StartDaemonset() error {
 		}
 	}
 
-	insightsReproModeEnabled := os.Getenv("POSTMAN_INSIGHTS_REPRO_MODE_ENABLED") == "true"
-
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
 		return errors.Wrap(err, "failed to create kube client")
 	}
 
-	criClient, err := cri_apis.NewCRIClient()
+	criEndpoint := os.Getenv(POSTMAN_INSIGHTS_CRI_ENDPOINT)
+	criClient, err := cri_apis.NewCRIClient(criEndpoint)
 	if err != nil {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
+	insightsReproModeEnabled := os.Getenv(POSTMAN_INSIGHTS_REPRO_MODE_ENABLED) == "true"
+	insightsEnvironment := os.Getenv(POSTMAN_INSIGHTS_ENV)
+
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
+		InsightsEnvironment:      insightsEnvironment,
 		InsightsReproModeEnabled: insightsReproModeEnabled,
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,

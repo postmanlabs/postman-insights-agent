@@ -152,23 +152,20 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	var (
-		insightsProjectID   akid.ServiceID
-		insightsAPIKey      string
-		insightsEnvironment string
+		insightsProjectID akid.ServiceID
+		insightsAPIKey    string
 	)
 
 	// Extract the necessary environment variables
 	for key, value := range envVars {
 		switch key {
-		case string(POSTMAN_INSIGHTS_PROJECT_ID):
+		case POSTMAN_INSIGHTS_PROJECT_ID:
 			err := akid.ParseIDAs(value, &insightsProjectID)
 			if err != nil {
 				return errors.Wrap(err, "failed to parse project ID")
 			}
-		case string(POSTMAN_INSIGHTS_API_KEY):
+		case POSTMAN_INSIGHTS_API_KEY:
 			insightsAPIKey = value
-		case string(POSTMAN_INSIGHTS_ENV):
-			insightsEnvironment = value
 		}
 	}
 
@@ -190,7 +187,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	podArgs.InsightsProjectID = insightsProjectID
 	podArgs.PodCreds = PodCreds{
 		InsightsAPIKey:      insightsAPIKey,
-		InsightsEnvironment: insightsEnvironment,
+		InsightsEnvironment: d.InsightsEnvironment,
 	}
 
 	return nil

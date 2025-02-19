@@ -2,7 +2,6 @@ package cri_apis
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/pkg/errors"
@@ -24,13 +23,12 @@ type CriClient struct {
 }
 
 // NewCRIClient initializes a new CRI client
-func NewCRIClient() (*CriClient, error) {
+func NewCRIClient(criEndpoint string) (*CriClient, error) {
 	var (
 		service *remoteRuntimeService
 		err     error
 	)
 
-	criEndpoint := os.Getenv("POSTMAN_CRI_ENDPOINT")
 	if criEndpoint != "" {
 		service, err = newRemoteRuntimeService(criEndpoint, connectionTimeout)
 		if err != nil {
