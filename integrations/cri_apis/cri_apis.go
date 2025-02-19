@@ -11,6 +11,9 @@ import (
 )
 
 const (
+	// Env variable key for CRI endpoint
+	POSTMAN_INSIGHTS_CRI_ENDPOINT = "POSTMAN_INSIGHTS_CRI_ENDPOINT"
+
 	// Context timeout for all CRI operations
 	connectionTimeout = 5 * time.Second
 
@@ -30,7 +33,7 @@ func NewCRIClient() (*CriClient, error) {
 		err     error
 	)
 
-	criEndpoint := os.Getenv("POSTMAN_CRI_ENDPOINT")
+	criEndpoint := os.Getenv(POSTMAN_INSIGHTS_CRI_ENDPOINT)
 	if criEndpoint != "" {
 		service, err = newRemoteRuntimeService(criEndpoint, connectionTimeout)
 		if err != nil {

@@ -42,10 +42,10 @@ func (d *Daemonset) checkPodsHealth() {
 
 		switch podStatus {
 		case coreV1.PodSucceeded, coreV1.PodFailed:
-			printer.Infof("Pod %s has stopped running\n", podStatus)
+			printer.Infof("Pod with UID %s has stopped running, status: %s\n", podUID, podStatus)
 			d.handleTerminatedPod(podUID, errors.Errorf("pod %s has stopped running, status: %s", podUID, podStatus))
 		case coreV1.PodRunning:
-			printer.Debugf("Pod %s is running\n", podStatus)
+			printer.Debugf("Pod with UID %s, status:%s\n", podUID, podStatus)
 			d.handleUnmonitoredPod(podUID)
 		}
 	}
@@ -60,7 +60,12 @@ func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error) {
 		return
 	}
 
-	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
+	if podArgs.isEndState() {
+		printer.Debugf("Pod %s already stopped monitoring, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
+		return
+	}
+
+	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringRunning)
 	if err != nil {
 		printer.Infof("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
@@ -74,7 +79,7 @@ func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error) {
 }
 
 // handleUnmonitoredPod starts the API dump process for the pod if it is not already started.
-// If pod's monitoring state is still in PodDetected or PodInitialized, it means there is a bug.
+// If pod's monitoring state is still in PodRunning, it means there is a bug.
 // The program should have started the API dump process if it is stored in the map.
 func (d *Daemonset) handleUnmonitoredPod(podUID types.UID) {
 	podArgs, err := d.getPodArgsFromMap(podUID)
@@ -83,7 +88,7 @@ func (d *Daemonset) handleUnmonitoredPod(podUID types.UID) {
 		return
 	}
 
-	if podArgs.PodTrafficMonitorState == PodDetected || podArgs.PodTrafficMonitorState == PodInitialized {
+	if podArgs.PodTrafficMonitorState == PodRunning {
 		printer.Debugf("Apidump process not started for pod %s during its initialization, starting now\n", podArgs.PodName)
 		err = d.StartApiDumpProcess(podUID)
 		if err != nil {
@@ -103,8 +108,8 @@ func (d *Daemonset) pruneStoppedProcesses() {
 		podArgs := v.(*PodArgs)
 
 		switch podArgs.PodTrafficMonitorState {
-		case TrafficMonitoringStopped:
-			err := podArgs.changePodTrafficMonitorState(RemovePodFromMap, TrafficMonitoringStopped)
+		case TrafficMonitoringEnded, TrafficMonitoringFailed:
+			err := podArgs.changePodTrafficMonitorState(RemovePodFromMap, TrafficMonitoringEnded, TrafficMonitoringFailed)
 			if err != nil {
 				printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, RemovePodFromMap)

@@ -18,12 +18,17 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const (
+	// Env variable key for Kubernetes node name
+	POSTMAN_INSIGHTS_K8S_NODE = "POSTMAN_INSIGHTS_K8S_NODE"
+)
+
 // KubeClient struct holds the Kubernetes clientset and event watcher
 type KubeClient struct {
-	Clientset  *kubernetes.Clientset
-	EventWatch watch.Interface
-	AgentNode  string
-	AgentHost  string
+	Clientset     *kubernetes.Clientset
+	PodEventWatch watch.Interface
+	AgentNode     string
+	AgentHost     string
 }
 
 // NewKubeClient initializes a new Kubernetes client
@@ -43,9 +48,9 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, errors.Wrap(err, "error creating clientset")
 	}
 
-	agentNodeName := os.Getenv("POSTMAN_K8S_NODE")
+	agentNodeName := os.Getenv(POSTMAN_INSIGHTS_K8S_NODE)
 	if agentNodeName == "" {
-		return KubeClient{}, errors.New("POSTMAN_K8S_NODE environment variable not set")
+		return KubeClient{}, errors.New(POSTMAN_INSIGHTS_K8S_NODE + " environment variable not set")
 	}
 
 	agentHostName, err := os.Hostname()
@@ -60,7 +65,7 @@ func NewKubeClient() (KubeClient, error) {
 	}
 
 	// Initialize event watcher
-	err = kubeClient.initEventWatcher()
+	err = kubeClient.initPodsEventsWatcher()
 	if err != nil {
 		return KubeClient{}, err
 	}
@@ -70,12 +75,12 @@ func NewKubeClient() (KubeClient, error) {
 
 // Close stops the event watcher
 func (kc *KubeClient) Close() {
-	kc.EventWatch.Stop()
+	kc.PodEventWatch.Stop()
 }
 
-// initEventWatcher creates a new go-channel to listen for pod events in the cluster
-func (kc *KubeClient) initEventWatcher() error {
-	// Fetch own pod details
+// initPodsEventsWatcher creates a new go-channel to listen for pod events in the cluster
+func (kc *KubeClient) initPodsEventsWatcher() error {
+	// Fetch own pod details and get the ResourceVersion
 	fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
 	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
@@ -86,16 +91,17 @@ func (kc *KubeClient) initEventWatcher() error {
 
 	// Create a watcher for pod events
 	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
-	watcher, err := kc.Clientset.CoreV1().Events("").Watch(context.Background(), metaV1.ListOptions{
+	fieldSelector = fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
+	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
 		Watch:           true,
-		FieldSelector:   "involvedObject.kind=Pod",
+		FieldSelector:   fieldSelector,
 		ResourceVersion: pods.ResourceVersion,
 	})
 	if err != nil {
 		return errors.Wrap(err, "error creating watcher")
 	}
 
-	kc.EventWatch = watcher
+	kc.PodEventWatch = watcher
 	return nil
 }
 

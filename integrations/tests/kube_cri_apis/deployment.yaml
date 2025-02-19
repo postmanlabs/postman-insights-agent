@@ -33,11 +33,11 @@ spec:
       - "604800"
     imagePullPolicy: IfNotPresent
     env:
-        - name: POSTMAN_K8S_NODE
+        - name: POSTMAN_INSIGHTS_K8S_NODE
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        - name: POSTMAN_CRI_ENDPOINT
+        - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
           value: /var/run/containerd/containerd.sock
     name: ubuntu
     volumeMounts:

@@ -28,6 +28,7 @@ const (
 
 type Daemonset struct {
 	ClusterName              string
+	InsightsEnvironment      string
 	InsightsReproModeEnabled bool
 
 	KubeClient  kube_apis.KubeClient
@@ -37,6 +38,9 @@ type Daemonset struct {
 	// Note: Only filtered pods are stored in this map, i.e., they have required env vars
 	// and do not have the agent sidecar container
 	PodArgsByNameMap sync.Map
+
+	// WaitGroup to wait for all apidump processes to stop
+	ApidumpProcessesWG sync.WaitGroup
 
 	PodHealthCheckInterval time.Duration
 	TelemetryInterval      time.Duration
@@ -49,7 +53,7 @@ func StartDaemonset() error {
 	}
 
 	// Initialize the front client
-	postmanInsightsVerificationToken := os.Getenv("POSTMAN_INSIGHTS_VERIFICATION_TOKEN")
+	postmanInsightsVerificationToken := os.Getenv(POSTMAN_INSIGHTS_VERIFICATION_TOKEN)
 	frontClient := rest.NewFrontClient(
 		rest.Domain,
 		telemetry.GetClientID(),
@@ -59,7 +63,7 @@ func StartDaemonset() error {
 	defer cancel()
 
 	// Send initial telemetry
-	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
+	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
 	telemetryInterval := DefaultTelemetryInterval
 	if clusterName == "" {
 		printer.Infof(
@@ -81,8 +85,6 @@ func StartDaemonset() error {
 		}
 	}
 
-	insightsReproModeEnabled := os.Getenv("POSTMAN_INSIGHTS_REPRO_MODE_ENABLED") == "true"
-
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
 		return errors.Wrap(err, "failed to create kube client")
@@ -93,8 +95,12 @@ func StartDaemonset() error {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
+	insightsReproModeEnabled := os.Getenv(POSTMAN_INSIGHTS_REPRO_MODE_ENABLED) == "true"
+	insightsEnvironment := os.Getenv(POSTMAN_INSIGHTS_ENV)
+
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
+		InsightsEnvironment:      insightsEnvironment,
 		InsightsReproModeEnabled: insightsReproModeEnabled,
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,
@@ -126,8 +132,8 @@ func (d *Daemonset) Run() error {
 	go d.TelemetryWorker(done)
 
 	// Start the kubernetes events worker
-	printer.Infof("Starting kubernetes events worker...\n")
-	go d.KubernetesEventsWorker(done)
+	printer.Infof("Starting kubernetes pods events worker...\n")
+	go d.KubernetesPodEventsWorker(done)
 
 	// Start the pods health worker
 	printer.Infof("Starting pods health worker...\n")
@@ -241,7 +247,9 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 
 	// Iterate over each pod without the agent sidecar
 	for _, pod := range podsWithoutAgentSidecar {
-		args, err := d.inspectPodForEnvVars(pod)
+		// Empty pod_args object for PodPending state
+		args := NewPodArgs(pod.Name)
+		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
 			switch err {
 			case allRequiredEnvVarsAbsentErr:
@@ -254,7 +262,7 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			continue
 		}
 
-		err = d.addPodArgsToMap(pod.UID, args, PodDetected)
+		err = d.addPodArgsToMap(pod.UID, args, PodRunning)
 		if err != nil {
 			printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
 			continue
@@ -269,26 +277,34 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	return nil
 }
 
-// KubernetesEventsWorker listens for Kubernetes events and handles them accordingly.
+// KubernetesPodEventsWorker listens for Kubernetes events and handles them accordingly.
 // It runs indefinitely until the provided done channel is closed.
-func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
+func (d *Daemonset) KubernetesPodEventsWorker(done <-chan struct{}) {
 	for {
 		select {
 		case <-done:
+			printer.Debugf("Kubernetes pod events worker stopped\n")
 			return
-		case event := <-d.KubeClient.EventWatch.ResultChan():
+		case event := <-d.KubeClient.PodEventWatch.ResultChan():
 			switch event.Type {
 			case watch.Added:
-				printer.Debugf("Got k8s added event: %v\n", event.Object)
-				if e, ok := event.Object.(*coreV1.Event); ok {
-					go d.handlePodAddEvent(e.InvolvedObject.UID)
+				printer.Debugf("Got k8s pod added event: %v\n", event.Object)
+				if p, ok := event.Object.(*coreV1.Pod); ok {
+					go d.handlePodAddEvent(*p)
 				}
+			// A pod is deleted
 			case watch.Deleted:
-				printer.Debugf("Got k8s deleted event: %v\n", event.Object)
-				if e, ok := event.Object.(*coreV1.Event); ok {
-					go d.handlePodDeleteEvent(e.InvolvedObject.UID)
+				printer.Debugf("Got k8s pod deleted event: %v\n", event.Object)
+				if p, ok := event.Object.(*coreV1.Pod); ok {
+					go d.handlePodDeleteEvent(*p)
+				}
+			case watch.Modified:
+				printer.Debugf("Got k8s pod modified event: %v\n", event.Object)
+				if p, ok := event.Object.(*coreV1.Pod); ok {
+					go d.handlePodModifyEvent(*p)
 				}
 			}
+
 		}
 	}
 }
@@ -319,10 +335,16 @@ func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 // 2. Stops the API dump process for the pod.
 // 3. Logs any errors encountered during the state change or stopping process.
 // 4. Removes the pod from the PodArgsByNameMap.
+// 5. Wait for all the apidump processes to stop.
 func (d *Daemonset) StopAllApiDumpProcesses() {
 	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
 		podUID := k.(types.UID)
 		podArgs := v.(*PodArgs)
+
+		if podArgs.isEndState() {
+			printer.Debugf("API dump process for pod %s already stopped, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
+			return true
+		}
 
 		// Since this state can happen at any time so no check for allowed current states
 		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
@@ -341,4 +363,8 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 		d.PodArgsByNameMap.Delete(podUID)
 		return true
 	})
+
+	// Wait for all apidump processes to stop
+	printer.Debugf("Waiting for all apidump processes to stop...\n")
+	d.ApidumpProcessesWG.Wait()
 }
