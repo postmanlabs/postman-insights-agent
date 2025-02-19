@@ -3,21 +3,16 @@ package rest
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
-	"github.com/akitasoftware/akita-libs/api_schema"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/path_trie"
 	"github.com/akitasoftware/akita-libs/tags"
-)
-
-var (
-	// Value that will be marshalled into an empty JSON object.
-	emptyObject = map[string]interface{}{}
 )
 
 type learnClientImpl struct {
@@ -28,9 +23,9 @@ type learnClientImpl struct {
 
 var _ LearnClient = (*learnClientImpl)(nil)
 
-func NewLearnClient(host string, cli akid.ClientID, svc akid.ServiceID) *learnClientImpl {
+func NewLearnClient(host string, cli akid.ClientID, svc akid.ServiceID, authHandler func(*http.Request) error) *learnClientImpl {
 	return &learnClientImpl{
-		BaseClient: NewBaseClient(host, cli),
+		BaseClient: NewBaseClient(host, cli, authHandler),
 		serviceID:  svc,
 	}
 }
@@ -255,7 +250,7 @@ func (c *learnClientImpl) GetTimeline(ctx context.Context, serviceID akid.Servic
 	q.Add("key", "method")
 	q.Add("key", "path")
 	q.Add("key", "code")
-	q.Add("aggregate", string(api_schema.Aggr_99p))
+	q.Add("aggregate", string(kgxapi.Aggr_99p))
 
 	var resp kgxapi.TimelineResponse
 	err := c.GetWithQuery(ctx, path, q, &resp)

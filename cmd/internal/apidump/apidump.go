@@ -256,7 +256,7 @@ func init() {
 	Cmd.Flags().Float64Var(
 		&sampleRateFlag,
 		"sample-rate",
-		1.0,
+		apispec.DefaultSampleRate,
 		"A number between [0.0, 1.0] to control sampling.",
 	)
 	Cmd.Flags().MarkDeprecated("sample-rate", "use --rate-limit instead.")

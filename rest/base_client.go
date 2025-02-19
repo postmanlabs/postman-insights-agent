@@ -47,16 +47,22 @@ func SetAPIErrorHandler(f APIErrorHandler) {
 }
 
 type BaseClient struct {
-	host     string
-	scheme   string // http or https
-	clientID akid.ClientID
+	host        string
+	scheme      string // http or https
+	clientID    akid.ClientID
+	authHandler func(*http.Request) error
 }
 
-func NewBaseClient(rawHost string, cli akid.ClientID) BaseClient {
+func NewBaseClient(rawHost string, cli akid.ClientID, authHandler func(*http.Request) error) BaseClient {
+	if authHandler == nil {
+		authHandler = baseAuthHandler
+	}
+
 	c := BaseClient{
-		scheme:   "https",
-		host:     rawHost,
-		clientID: cli,
+		scheme:      "https",
+		host:        rawHost,
+		clientID:    cli,
+		authHandler: authHandler,
 	}
 	if viper.GetBool("test_only_disable_https") {
 		fmt.Fprintf(os.Stderr, "WARNING: using test backend without SSL\n")
@@ -87,7 +93,7 @@ func (c BaseClient) GetWithQuery(ctx context.Context, path string, query url.Val
 		return errors.Wrap(err, "failed to create HTTP GET request")
 	}
 
-	respContent, err := sendRequest(ctx, req)
+	respContent, err := sendRequest(ctx, req, c.authHandler)
 	if err != nil {
 		return err
 	}
@@ -122,7 +128,7 @@ func (c BaseClient) Post(ctx context.Context, path string, body interface{}, res
 	}
 	req.Header.Set("content-type", "application/json")
 
-	respContent, err := sendRequest(ctx, req)
+	respContent, err := sendRequest(ctx, req, c.authHandler)
 	if err != nil {
 		return err
 	}

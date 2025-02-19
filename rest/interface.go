@@ -81,4 +81,7 @@ type FrontClient interface {
 	// new traces and a set of deactivated traces. An error is returned if the
 	// connection is dropped (e.g., due to timing out).
 	LongPollActiveTracesForService(context context.Context, daemonName string, serviceID akid.ServiceID, currentTraces []akid.LearnSessionID) (daemon.ActiveTraceDiff, error)
+
+	// Post telemetry for the agent running as daemonset mode.
+	PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error
 }

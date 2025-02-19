@@ -2,9 +2,11 @@ package rest
 
 import (
 	"context"
+	"net/http"
 	"path"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/daemon"
 )
 
@@ -12,9 +14,11 @@ type frontClientImpl struct {
 	BaseClient
 }
 
-func NewFrontClient(host string, cli akid.ClientID) *frontClientImpl {
+var _ FrontClient = (*frontClientImpl)(nil)
+
+func NewFrontClient(host string, cli akid.ClientID, authHandler func(*http.Request) error) *frontClientImpl {
 	return &frontClientImpl{
-		BaseClient: NewBaseClient(host, cli),
+		BaseClient: NewBaseClient(host, cli, authHandler),
 	}
 }
 
@@ -85,4 +89,13 @@ func (c *frontClientImpl) CreateService(ctx context.Context, serviceName string,
 	err := c.Post(ctx, "/v1/services", body, &resp)
 
 	return resp, err
+}
+
+func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error {
+	req := api_schema.PostDaemonsetTelemetryRequest{
+		KubernetesCluster: clusterName,
+	}
+	path := "/v2/agent/daemonset/telemetry"
+	var resp struct{}
+	return c.Post(ctx, path, req, &resp)
 }

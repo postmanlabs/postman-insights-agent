@@ -4,6 +4,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
 	_ "github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -14,20 +15,22 @@ import (
 const (
 	// The same default as tcpdump.
 	defaultSnapLen = 262144
+	BlockForever   = pcap.BlockForever
 )
 
 type pcapWrapper interface {
-	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string) (<-chan gopacket.Packet, error)
+	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error)
 	getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
 type pcapImpl struct{}
 
-func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string) (<-chan gopacket.Packet, error) {
-	handle, err := pcap.OpenLive(interfaceName, defaultSnapLen, true, pcap.BlockForever)
+func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
+	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, targetNetworkNamespaceOpt)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open pcap to %s", interfaceName)
+		return nil, err
 	}
+
 	if bpfFilter != "" {
 		if err := handle.SetBPFFilter(bpfFilter); err != nil {
 			handle.Close()
@@ -62,7 +65,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 					wrappedChan <- pkt
 
 					if count == 0 {
-						ttfp := time.Now().Sub(startTime)
+						ttfp := time.Since(startTime)
 						printer.Debugf("Time to first packet on %s: %s\n", interfaceName, ttfp)
 					}
 					count += 1
