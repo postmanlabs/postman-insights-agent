@@ -41,9 +41,12 @@ var (
 	apiTimeout = 20 * time.Second
 )
 
-func NewLearnSession(domain string, clientID akid.ClientID, svc akid.ServiceID, sessionName string, tags map[tags.Key]string, baseSpecRef *kgxapi.APISpecReference) (akid.LearnSessionID, error) {
-	learnClient := rest.NewLearnClient(domain, clientID, svc)
-
+func NewLearnSession(
+	learnClient rest.LearnClient,
+	sessionName string,
+	tags map[tags.Key]string,
+	baseSpecRef *kgxapi.APISpecReference,
+) (akid.LearnSessionID, error) {
 	// Create a new learn session.
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
@@ -314,13 +317,13 @@ func GetTraceURIByTags(domain string, clientID akid.ClientID, serviceName string
 
 	// Resolve ServiceID
 	// TODO: find a better way to overlap this with commands that already do the lookup
-	frontClient := rest.NewFrontClient(domain, clientID)
+	frontClient := rest.NewFrontClient(domain, clientID, nil)
 	serviceID, err := GetServiceIDByName(frontClient, serviceName)
 	if err != nil {
 		return akiuri.URI{}, errors.Wrapf(err, "failed to resolve project name %q", serviceName)
 	}
 
-	learnClient := rest.NewLearnClient(domain, clientID, serviceID)
+	learnClient := rest.NewLearnClient(domain, clientID, serviceID, nil)
 	learnSession, err := GetLearnSessionByTags(learnClient, serviceID, tags)
 	if err != nil {
 		return akiuri.URI{}, errors.Wrapf(err, "failed to list traces for %q", serviceName)

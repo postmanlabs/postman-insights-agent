@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: test-service-account
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: test-view-all-resources-binding
+subjects:
+- kind: ServiceAccount
+  name: test-service-account
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  name: test-pod
+  labels:
+    app: test-pod
+spec:
+  serviceAccountName: test-service-account
+  containers:
+  - image: public.ecr.aws/docker/library/golang:1.23
+    command:
+      - "sleep"
+      - "604800"
+    imagePullPolicy: IfNotPresent
+    env:
+        - name: POSTMAN_INSIGHTS_K8S_NODE
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
+          value: /var/run/containerd/containerd.sock
+    name: ubuntu
+    volumeMounts:
+      - mountPath: /host/proc
+        name: host-procfs
+        readOnly: true
+      - mountPath: /host/var/run/netns
+        mountPropagation: HostToContainer
+        name: host-netns
+        readOnly: true
+      - mountPath: /var/run/containerd/containerd.sock
+        name: containerdsocket
+    securityContext:
+      runAsGroup: 0
+      runAsUser: 0
+      runAsNonRoot: false
+      capabilities:
+        add:
+          - NET_ADMIN
+          - NET_RAW
+          - SYS_PTRACE
+          # open network namespace in /proc?
+          - SYS_ADMIN
+  volumes:
+    - name: host-procfs
+      hostPath:
+        path: /proc
+        type: Directory    
+    - name: host-netns
+      hostPath:
+        path: /var/run/netns
+        type: Directory    
+    - name: containerdsocket
+      hostPath:
+        path: /var/run/containerd/containerd.sock
+  restartPolicy: Always
