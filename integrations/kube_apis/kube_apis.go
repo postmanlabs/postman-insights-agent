@@ -11,11 +11,14 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	watchTool "k8s.io/client-go/tools/watch"
 )
 
 const (
@@ -26,7 +29,7 @@ const (
 // KubeClient struct holds the Kubernetes clientset and event watcher
 type KubeClient struct {
 	Clientset     *kubernetes.Clientset
-	PodEventWatch watch.Interface
+	PodEventWatch *watchTool.RetryWatcher
 	AgentNode     string
 	AgentHost     string
 }
@@ -92,16 +95,21 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 	// Create a watcher for pod events
 	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
 	fieldSelector = fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
-		Watch:           true,
-		FieldSelector:   fieldSelector,
-		ResourceVersion: pods.ResourceVersion,
+	retryWatcher, err := watchTool.NewRetryWatcher(pods.ResourceVersion, &cache.ListWatch{
+		ListFunc: func(options metaV1.ListOptions) (runtime.Object, error) {
+			options.FieldSelector = fieldSelector
+			return kc.Clientset.CoreV1().Pods("").List(context.Background(), options)
+		},
+		WatchFunc: func(options metaV1.ListOptions) (watch.Interface, error) {
+			options.FieldSelector = fieldSelector
+			return kc.Clientset.CoreV1().Pods("").Watch(context.Background(), options)
+		},
 	})
 	if err != nil {
 		return errors.Wrap(err, "error creating watcher")
 	}
 
-	kc.PodEventWatch = watcher
+	kc.PodEventWatch = retryWatcher
 	return nil
 }
 

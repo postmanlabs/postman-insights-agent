@@ -303,8 +303,9 @@ func (d *Daemonset) KubernetesPodEventsWorker(done <-chan struct{}) {
 				if p, ok := event.Object.(*coreV1.Pod); ok {
 					go d.handlePodModifyEvent(*p)
 				}
+			case watch.Error:
+				printer.Errorf("Got k8s watcher error event: %v\n", event.Object)
 			}
-
 		}
 	}
 }
