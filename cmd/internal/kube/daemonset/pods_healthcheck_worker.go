@@ -89,7 +89,7 @@ func (d *Daemonset) handleUnmonitoredPod(podUID types.UID) {
 	}
 
 	if podArgs.PodTrafficMonitorState == PodRunning {
-		printer.Debugf("Apidump process not started for pod %s during it's initialization, starting now\n", podArgs.PodName)
+		printer.Debugf("Apidump process not started for pod %s during its initialization, starting now\n", podArgs.PodName)
 		err = d.StartApiDumpProcess(podUID)
 		if err != nil {
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)

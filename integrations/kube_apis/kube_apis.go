@@ -94,7 +94,7 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 	fieldSelector = fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
 	watcher, err := kc.Clientset.CoreV1().Pods("").Watch(context.Background(), metaV1.ListOptions{
 		Watch:           true,
-		FieldSelector:   "spec.nodeName=" + kc.AgentNode,
+		FieldSelector:   fieldSelector,
 		ResourceVersion: pods.ResourceVersion,
 	})
 	if err != nil {

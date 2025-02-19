@@ -152,14 +152,12 @@ func (d *Daemonset) Run() error {
 	// Wait for signal to stop
 	{
 		sig := make(chan os.Signal, 2)
-		signal.Notify(sig, os.Interrupt)
-		signal.Notify(sig, syscall.SIGTERM)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
 		// Continue until an interrupt
-	DoneWaitingForSignal:
 		for received := range sig {
 			printer.Stderr.Infof("Received %v, stopping daemonset...\n", received.String())
-			break DoneWaitingForSignal
+			break
 		}
 	}
 
