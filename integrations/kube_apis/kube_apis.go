@@ -18,6 +18,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const (
+	// Env variable key for Kubernetes node name
+	POSTMAN_INSIGHTS_K8S_NODE = "POSTMAN_INSIGHTS_K8S_NODE"
+)
+
 // KubeClient struct holds the Kubernetes clientset and event watcher
 type KubeClient struct {
 	Clientset     *kubernetes.Clientset
@@ -43,9 +48,9 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, errors.Wrap(err, "error creating clientset")
 	}
 
-	agentNodeName := os.Getenv("POSTMAN_K8S_NODE")
+	agentNodeName := os.Getenv(POSTMAN_INSIGHTS_K8S_NODE)
 	if agentNodeName == "" {
-		return KubeClient{}, errors.New("POSTMAN_K8S_NODE environment variable not set")
+		return KubeClient{}, errors.New(POSTMAN_INSIGHTS_K8S_NODE + " environment variable not set")
 	}
 
 	agentHostName, err := os.Hostname()

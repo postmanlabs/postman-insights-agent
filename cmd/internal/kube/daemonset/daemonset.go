@@ -90,8 +90,7 @@ func StartDaemonset() error {
 		return errors.Wrap(err, "failed to create kube client")
 	}
 
-	criEndpoint := os.Getenv(POSTMAN_INSIGHTS_CRI_ENDPOINT)
-	criClient, err := cri_apis.NewCRIClient(criEndpoint)
+	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
 		return errors.Wrap(err, "failed to create CRI client")
 	}

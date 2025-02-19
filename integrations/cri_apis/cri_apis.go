@@ -2,6 +2,7 @@ package cri_apis
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/pkg/errors"
@@ -10,6 +11,9 @@ import (
 )
 
 const (
+	// Env variable key for CRI endpoint
+	POSTMAN_INSIGHTS_CRI_ENDPOINT = "POSTMAN_INSIGHTS_CRI_ENDPOINT"
+
 	// Context timeout for all CRI operations
 	connectionTimeout = 5 * time.Second
 
@@ -23,12 +27,13 @@ type CriClient struct {
 }
 
 // NewCRIClient initializes a new CRI client
-func NewCRIClient(criEndpoint string) (*CriClient, error) {
+func NewCRIClient() (*CriClient, error) {
 	var (
 		service *remoteRuntimeService
 		err     error
 	)
 
+	criEndpoint := os.Getenv(POSTMAN_INSIGHTS_CRI_ENDPOINT)
 	if criEndpoint != "" {
 		service, err = newRemoteRuntimeService(criEndpoint, connectionTimeout)
 		if err != nil {
