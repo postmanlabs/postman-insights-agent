@@ -77,7 +77,7 @@ func (kc *KubeClient) Close() {
 func (kc *KubeClient) initEventWatcher() error {
 	// Fetch own pod details
 	fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
-	pod, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
 		FieldSelector: fieldSelector,
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func (kc *KubeClient) initEventWatcher() error {
 	watcher, err := kc.Clientset.CoreV1().Events("").Watch(context.Background(), metaV1.ListOptions{
 		Watch:           true,
 		FieldSelector:   "involvedObject.kind=Pod",
-		ResourceVersion: pod.ResourceVersion,
+		ResourceVersion: pods.ResourceVersion,
 	})
 	if err != nil {
 		return errors.Wrap(err, "error creating watcher")
