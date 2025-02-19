@@ -4,7 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
@@ -36,9 +36,8 @@ type Redactor struct {
 	// userConfig should exit.
 	exitChannel chan struct{}
 
-	// Whether this redactor is still running. False if and only if exitChannel is
-	// closed.
-	running *atomic.Bool
+	// Ensures that exitChannel is closed at most once.
+	closeExitChannelOnce *sync.Once
 }
 
 // Creates a redactor for the given service ID. Uses the given learn client to
@@ -107,22 +106,19 @@ func NewRedactor(
 		}
 	}()
 
-	running := &atomic.Bool{}
-	running.Store(true)
-
 	return &Redactor{
 		SensitiveDataKeys:          sets.NewSet(config.SensitiveKeys...),
 		SensitiveDataValuePatterns: sensitiveDataRegex,
 		userConfig:                 activeUserConfig,
 		exitChannel:                exitChannel,
-		running:                    running,
+		closeExitChannelOnce:       &sync.Once{},
 	}, nil
 }
 
 func (o *Redactor) StopPeriodicUpdates() {
-	if o.running.Swap(false) {
+	o.closeExitChannelOnce.Do(func() {
 		close(o.exitChannel)
-	}
+	})
 }
 
 func (o *Redactor) RedactSensitiveData(m *pb.Method) {
