@@ -61,7 +61,12 @@ func (d *Daemonset) handlePodAddEvent(podUID types.UID) {
 		return
 	}
 
-	d.addPodArgsToMap(pod.UID, &args, PodInitialized)
+	err = d.addPodArgsToMap(pod.UID, args, PodInitialized)
+	if err != nil {
+		printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
+		return
+	}
+
 	err = d.StartApiDumpProcess(pod.UID)
 	if err != nil {
 		printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
@@ -82,7 +87,7 @@ func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 
 	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringStarted)
 	if err != nil {
-		printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+		printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
 		return
 	}
@@ -97,17 +102,17 @@ func (d *Daemonset) handlePodDeleteEvent(podUID types.UID) {
 // required for the Postman Insights project. It retrieves the UUID of the main container
 // in the pod, fetches the environment variables of that container, and extracts the
 // necessary variables such as the project ID, API key, and environment.
-func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
+func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (*PodArgs, error) {
 	// Get the UUID of the main container in the pod
 	containerUUID, err := d.KubeClient.GetMainContainerUUID(pod)
 	if err != nil {
-		return PodArgs{}, errors.Wrapf(err, "failed to get main container UUID for pod: %s", pod.Name)
+		return nil, errors.Wrapf(err, "failed to get main container UUID for pod: %s", pod.Name)
 	}
 
 	// Get the environment variables of the main container
 	envVars, err := d.CRIClient.GetEnvVars(containerUUID)
 	if err != nil {
-		return PodArgs{}, errors.Wrapf(err, "failed to get environment variables for pod/container : %s/%s", pod.Name, containerUUID)
+		return nil, errors.Wrapf(err, "failed to get environment variables for pod/container : %s/%s", pod.Name, containerUUID)
 	}
 
 	var (
@@ -122,7 +127,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 		case string(POSTMAN_INSIGHTS_PROJECT_ID):
 			err := akid.ParseIDAs(value, &insightsProjectID)
 			if err != nil {
-				return PodArgs{}, errors.Wrap(err, "failed to parse project ID")
+				return nil, errors.Wrap(err, "failed to parse project ID")
 			}
 		case string(POSTMAN_INSIGHTS_API_KEY):
 			insightsAPIKey = value
@@ -132,17 +137,17 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) && insightsAPIKey == "" {
-		return PodArgs{}, allRequiredEnvVarsAbsentErr
+		return nil, allRequiredEnvVarsAbsentErr
 	}
 
 	if (insightsProjectID == akid.ServiceID{}) {
 		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
-		return PodArgs{}, requiredEnvVarMissingErr
+		return nil, requiredEnvVarMissingErr
 	}
 
 	if insightsAPIKey == "" {
 		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_API_KEY, pod.Name)
-		return PodArgs{}, requiredEnvVarMissingErr
+		return nil, requiredEnvVarMissingErr
 	}
 
 	args := PodArgs{
@@ -157,5 +162,5 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod) (PodArgs, error) {
 		StopChan: make(chan error, 2),
 	}
 
-	return args, nil
+	return &args, nil
 }

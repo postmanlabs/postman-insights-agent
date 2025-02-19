@@ -9,41 +9,22 @@ import (
 	"github.com/pkg/errors"
 )
 
-type PodTrafficMonitorState int
+type PodTrafficMonitorState string
 
 // Different states of pod traffic monitoring
 // The state transition is as follows:
 // PodDetected/PodInitialized -> TrafficMonitoringStarted -> TrafficMonitoringFailed/TrafficMonitoringEnded/PodTerminated -> TrafficMonitoringStopped -> RemovePodFromMap
 // 'DaemonSetShutdown' is a special state which is used to stop the daemonset agent and can be triggered at any time
 const (
-	_ PodTrafficMonitorState = iota
-
-	// When agent finds an already running pod
-	PodDetected
-
-	// When agent will receive pod created event
-	PodInitialized
-
-	// When apidump process is started for the pod
-	TrafficMonitoringStarted
-
-	// When apidump process is errored for the pod
-	TrafficMonitoringFailed
-
-	// When apidump process is ended without any issue for the pod
-	TrafficMonitoringEnded
-
-	// When agent will receive pod deleted event or pod is in terminal state while checking status
-	PodTerminated
-
-	// When the daemonset agent starts the shutdown process
-	DaemonSetShutdown
-
-	// When apidump process is stopped for the pod
-	TrafficMonitoringStopped
-
-	// Final state after which pod will be removed from the map
-	RemovePodFromMap
+	PodDetected              PodTrafficMonitorState = "PodDetected"              // When agent finds an already running pod
+	PodInitialized           PodTrafficMonitorState = "PodInitialized"           // When agent will receive pod created event
+	TrafficMonitoringStarted PodTrafficMonitorState = "TrafficMonitoringStarted" // When apidump process is started for the pod
+	TrafficMonitoringFailed  PodTrafficMonitorState = "TrafficMonitoringFailed"  // When apidump process is errored for the pod
+	TrafficMonitoringEnded   PodTrafficMonitorState = "TrafficMonitoringEnded"   // When apidump process is ended without any issue for the pod
+	PodTerminated            PodTrafficMonitorState = "PodTerminated"            // When agent will receive pod deleted event or pod is in terminal state while checking status
+	DaemonSetShutdown        PodTrafficMonitorState = "DaemonSetShutdown"        // When the daemonset agent starts the shutdown process
+	TrafficMonitoringStopped PodTrafficMonitorState = "TrafficMonitoringStopped" // When apidump process is stopped for the pod
+	RemovePodFromMap         PodTrafficMonitorState = "RemovePodFromMap"         // Final state after which pod will be removed from the map
 )
 
 type PodCreds struct {
@@ -62,7 +43,7 @@ type PodArgs struct {
 
 	// for state management
 	PodTrafficMonitorState PodTrafficMonitorState
-	StateChangeMutex       *sync.Mutex
+	StateChangeMutex       sync.Mutex
 
 	// send stop signal to apidump process
 	StopChan chan error
@@ -86,12 +67,14 @@ func (p *PodArgs) changePodTrafficMonitorState(
 	p.StateChangeMutex.Lock()
 	defer p.StateChangeMutex.Unlock()
 
-	if !slices.Contains(allowedCurrentStates, p.PodTrafficMonitorState) {
-		return errors.New(fmt.Sprintf("Invalid current state for pod %s: %d", p.PodName, p.PodTrafficMonitorState))
+	// Check if the current state is allowed for the transition
+	// If the allowedCurrentStates is empty, then any state is allowed
+	if len(allowedCurrentStates) != 0 && !slices.Contains(allowedCurrentStates, p.PodTrafficMonitorState) {
+		return errors.New(fmt.Sprintf("Invalid current state for pod %s: %s", p.PodName, p.PodTrafficMonitorState))
 	}
 
 	if p.PodTrafficMonitorState == nextState {
-		return errors.New(fmt.Sprintf("API dump process for pod %s is already in state %d", p.PodName, nextState))
+		return errors.New(fmt.Sprintf("API dump process for pod %s is already in state %s", p.PodName, nextState))
 	}
 
 	p.PodTrafficMonitorState = nextState

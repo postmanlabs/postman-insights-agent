@@ -16,22 +16,38 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	coreV1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
-func k8s_funcs() (string, error) {
-	// Initialize KubeClient
-	kubeClient, err := kube_apis.NewKubeClient()
-	if err != nil {
-		return "", fmt.Errorf("failed to create KubeClient: %v", err)
+func k8s_watcher(kubeClient kube_apis.KubeClient) {
+	// Watch for pod events
+	for event := range kubeClient.EventWatch.ResultChan() {
+		printer.Infof("Received event: %v\n", event.Type)
+		switch event.Type {
+		case watch.Added, watch.Deleted:
+			if e, ok := event.Object.(*coreV1.Event); ok {
+				jsonData, err := json.Marshal(e)
+				if err != nil {
+					printer.Errorf("Failed to marshal event data: %v\n", err)
+					continue
+				}
+				printer.Infof("Event data: %s\n", string(jsonData))
+			}
+		default:
+			printer.Infof("Unhandled event type: %v\n", event.Type)
+		}
 	}
-	defer kubeClient.Close()
+}
 
+func k8s_funcs(kubeClient kube_apis.KubeClient) (string, error) {
 	// GetPodsInNode
 	podsInNode, err := kubeClient.GetPodsInAgentNode()
 	if err != nil {
@@ -109,19 +125,30 @@ func cri_funcs(containerUUID string) error {
 }
 
 func main() {
+	// Initialize KubeClient
+	kubeClient, err := kube_apis.NewKubeClient()
+	if err != nil {
+		printer.Errorf("Failed to create KubeClient: %v\n", err)
+		return
+	}
+	defer kubeClient.Close()
+
 	// Call k8s_funcs
-	containerUUID, err := k8s_funcs()
+	containerUUID, err := k8s_funcs(kubeClient)
 	if err != nil {
 		printer.Errorf("Error from k8s_funcs: %v\n", err)
 	}
 
 	// Call cri_funcs
 	if containerUUID == "" {
-		printer.Infoln("Container UUID not found, exiting...")
-		return
+		printer.Infoln("Container UUID not found, skipping CRI functions...")
+	} else {
+		err = cri_funcs(containerUUID)
+		if err != nil {
+			printer.Errorf("Error from cri_funcs: %v\n", err)
+		}
 	}
-	err = cri_funcs(containerUUID)
-	if err != nil {
-		printer.Errorf("Error from cri_funcs: %v\n", err)
-	}
+
+	// Watch for pod events
+	k8s_watcher(kubeClient)
 }

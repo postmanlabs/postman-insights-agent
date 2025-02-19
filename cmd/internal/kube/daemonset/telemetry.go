@@ -32,6 +32,8 @@ func (d *Daemonset) dumpPodsApiDumpProcessState() {
 	}
 	logf := printer.Debugf
 
+	logf("Dumping pods api dump process state, time: %s\n", time.Now().UTC())
+
 	logf("========================================================\n")
 	logf("Pods active and their states:\n")
 	logf("%15v %15v %25v\n", "podName", "projectID", "currentState")

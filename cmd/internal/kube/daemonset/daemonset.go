@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -34,6 +34,8 @@ type Daemonset struct {
 	CRIClient   *cri_apis.CriClient
 	FrontClient rest.FrontClient
 
+	// Note: Only filtered pods are stored in this map, i.e., they have required env vars
+	// and do not have the agent sidecar container
 	PodArgsByNameMap sync.Map
 
 	PodHealthCheckInterval time.Duration
@@ -58,7 +60,7 @@ func StartDaemonset() error {
 
 	// Send initial telemetry
 	clusterName := os.Getenv("POSTMAN_CLUSTER_NAME")
-	telemetryInterval := apispec.DefaultTelemetryInterval_seconds * time.Second
+	telemetryInterval := DefaultTelemetryInterval
 	if clusterName == "" {
 		printer.Infof(
 			"The cluster name is missing. Telemetry will not be sent from this agent, " +
@@ -91,17 +93,18 @@ func StartDaemonset() error {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
-	go func() {
-		daemonsetRun := &Daemonset{
-			ClusterName:              clusterName,
-			InsightsReproModeEnabled: insightsReproModeEnabled,
-			KubeClient:               kubeClient,
-			CRIClient:                criClient,
-			FrontClient:              frontClient,
-			TelemetryInterval:        telemetryInterval,
-		}
-		daemonsetRun.Run()
-	}()
+	daemonsetRun := &Daemonset{
+		ClusterName:              clusterName,
+		InsightsReproModeEnabled: insightsReproModeEnabled,
+		KubeClient:               kubeClient,
+		CRIClient:                criClient,
+		FrontClient:              frontClient,
+		TelemetryInterval:        telemetryInterval,
+		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
+	}
+	if err := daemonsetRun.Run(); err != nil {
+		return cmderr.AkitaErr{Err: err}
+	}
 
 	return nil
 }
@@ -115,18 +118,23 @@ func StartDaemonset() error {
 // 7. Stops all apidump processes.
 // 8. Exits the daemonset agent.
 func (d *Daemonset) Run() error {
+	printer.Infof("Starting daemonset agent...\n")
 	done := make(chan struct{})
 
 	// Start the telemetry worker
+	printer.Infof("Starting telemetry worker...\n")
 	go d.TelemetryWorker(done)
 
 	// Start the kubernetes events worker
+	printer.Infof("Starting kubernetes events worker...\n")
 	go d.KubernetesEventsWorker(done)
 
 	// Start the pods health worker
+	printer.Infof("Starting pods health worker...\n")
 	go d.PodsHealthWorker(done)
 
 	// Start the process in the existing pods
+	printer.Infof("Starting process in existing pods...\n")
 	err := d.StartProcessInExistingPods()
 	if err != nil {
 		printer.Errorf("Failed to start process in existing pods, error: %v\n", err)
@@ -138,17 +146,12 @@ func (d *Daemonset) Run() error {
 	// Wait for signal to stop
 	{
 		sig := make(chan os.Signal, 2)
-		signal.Notify(sig, os.Interrupt)
-		signal.Notify(sig, syscall.SIGTERM)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
 		// Continue until an interrupt
-	DoneWaitingForSignal:
-		for {
-			select {
-			case received := <-sig:
-				printer.Stderr.Infof("Received %v, stopping daemonset...\n", received.String())
-				break DoneWaitingForSignal
-			}
+		for received := range sig {
+			printer.Stderr.Infof("Received %v, stopping daemonset...\n", received.String())
+			break
 		}
 	}
 
@@ -159,6 +162,10 @@ func (d *Daemonset) Run() error {
 	// Stop all apidump processes
 	printer.Debugf("Stopping all apidump processes...\n")
 	d.StopAllApiDumpProcesses()
+
+	// Stop K8s Watcher
+	printer.Debugf("Stopping k8s watcher...\n")
+	d.KubeClient.Close()
 
 	printer.Infof("Exiting daemonset agent...\n")
 	return nil
@@ -180,24 +187,27 @@ func (d *Daemonset) getPodArgsFromMap(podUID types.UID) (*PodArgs, error) {
 
 // addPodArgsToMap adds the podArgs to the map with the podUID as the key
 // This function ensures that the pod is not already loaded in the map
-func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingState PodTrafficMonitorState) {
+func (d *Daemonset) addPodArgsToMap(podUID types.UID, args *PodArgs, startingState PodTrafficMonitorState) error {
 	value, loaded := d.PodArgsByNameMap.LoadOrStore(podUID, args)
 	argsFromMap := value.(*PodArgs)
-	if loaded {
+	if !loaded {
 		err := argsFromMap.changePodTrafficMonitorState(startingState)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
-				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState, err)
+			return errors.Wrapf(err, "failed to change pod state, pod name: %s, from: %s to: %s",
+				argsFromMap.PodName, argsFromMap.PodTrafficMonitorState, startingState)
 		}
 	} else {
-		printer.Errorf("Pod is already loaded in the map and is in state %d\n", argsFromMap.PodTrafficMonitorState)
+		return errors.Errorf("pod is already loaded in the map and is in state %s", argsFromMap.PodTrafficMonitorState)
 	}
+
+	return nil
 }
 
 // TelemetryWorker starts a worker that periodically sends telemetry data and dumps the state of the Pods API dump process.
 // The worker runs until the provided done channel is closed.
 func (d *Daemonset) TelemetryWorker(done <-chan struct{}) {
 	if d.TelemetryInterval <= 0 {
+		printer.Debugf("Telemetry interval is set to 0, telemetry worker will not run\n")
 		return
 	}
 
@@ -244,7 +254,12 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			continue
 		}
 
-		d.addPodArgsToMap(pod.UID, &args, PodDetected)
+		err = d.addPodArgsToMap(pod.UID, args, PodDetected)
+		if err != nil {
+			printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
+			continue
+		}
+
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
@@ -282,6 +297,7 @@ func (d *Daemonset) KubernetesEventsWorker(done <-chan struct{}) {
 // It runs until the provided done channel is closed.
 func (d *Daemonset) PodsHealthWorker(done <-chan struct{}) {
 	if d.PodHealthCheckInterval <= 0 {
+		printer.Debugf("Pod health check interval is set to 0, pods health worker will not run\n")
 		return
 	}
 
@@ -311,7 +327,7 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 		// Since this state can happen at any time so no check for allowed current states
 		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
 		if err != nil {
-			printer.Errorf("Failed to change pod state, pod name: %s, from: %d to: %d, error: %v\n",
+			printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 				podArgs.PodName, podArgs.PodTrafficMonitorState, DaemonSetShutdown, err)
 			return true
 		}

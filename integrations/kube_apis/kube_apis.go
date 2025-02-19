@@ -23,6 +23,7 @@ type KubeClient struct {
 	Clientset  *kubernetes.Clientset
 	EventWatch watch.Interface
 	AgentNode  string
+	AgentHost  string
 }
 
 // NewKubeClient initializes a new Kubernetes client
@@ -47,9 +48,15 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, errors.New("POSTMAN_K8S_NODE environment variable not set")
 	}
 
+	agentHostName, err := os.Hostname()
+	if err != nil {
+		return KubeClient{}, errors.Wrap(err, "error getting hostname")
+	}
+
 	kubeClient := KubeClient{
 		Clientset: clientset,
 		AgentNode: agentNodeName,
+		AgentHost: agentHostName,
 	}
 
 	// Initialize event watcher
@@ -68,9 +75,21 @@ func (kc *KubeClient) Close() {
 
 // initEventWatcher creates a new go-channel to listen for pod events in the cluster
 func (kc *KubeClient) initEventWatcher() error {
+	// Fetch own pod details
+	fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
+	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		return errors.Wrap(err, "error getting own pod details")
+	}
+
+	// Create a watcher for pod events
+	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
 	watcher, err := kc.Clientset.CoreV1().Events("").Watch(context.Background(), metaV1.ListOptions{
-		Watch:         true,
-		FieldSelector: "involvedObject.kind=Pod",
+		Watch:           true,
+		FieldSelector:   "involvedObject.kind=Pod",
+		ResourceVersion: pods.ResourceVersion,
 	})
 	if err != nil {
 		return errors.Wrap(err, "error creating watcher")
@@ -119,7 +138,7 @@ func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
 	}
 
 	if len(filteredPods) == 0 {
-		return []coreV1.Pod{}, errors.Errorf("no pods found with names: %v", podUIDs)
+		return []coreV1.Pod{}, errors.Errorf("no pods found with UIDs: %v", podUIDs)
 	}
 
 	return filteredPods, nil
@@ -160,12 +179,13 @@ func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
 
 // GetPodsStatus returns the statuses for list of pods
 func (kc *KubeClient) GetPodsStatusByUIDs(podUIDs []types.UID) (maps.Map[types.UID, coreV1.PodPhase], error) {
+	statuses := maps.NewMap[types.UID, coreV1.PodPhase]()
+
 	pods, err := kc.GetPodsByUIDs(podUIDs)
 	if err != nil {
-		return nil, err
+		return statuses, err
 	}
 
-	statuses := maps.NewMap[types.UID, coreV1.PodPhase]()
 	for _, pod := range pods {
 		statuses[pod.UID] = pod.Status.Phase
 	}

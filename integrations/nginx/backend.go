@@ -171,7 +171,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		tags.XAkitaSource: "nginx",
 	}
 	traceName := util.RandomLearnSessionName()
-	backendLrn, err := util.NewLearnSession(args.Domain, args.ClientID, b.backendSvc, traceName, traceTags, nil)
+	backendLrn, err := util.NewLearnSession(b.learnClient, traceName, traceTags, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create trace or fetch existing trace")
 	}

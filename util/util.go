@@ -41,9 +41,12 @@ var (
 	apiTimeout = 20 * time.Second
 )
 
-func NewLearnSession(domain string, clientID akid.ClientID, svc akid.ServiceID, sessionName string, tags map[tags.Key]string, baseSpecRef *kgxapi.APISpecReference) (akid.LearnSessionID, error) {
-	learnClient := rest.NewLearnClient(domain, clientID, svc, nil)
-
+func NewLearnSession(
+	learnClient rest.LearnClient,
+	sessionName string,
+	tags map[tags.Key]string,
+	baseSpecRef *kgxapi.APISpecReference,
+) (akid.LearnSessionID, error) {
 	// Create a new learn session.
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
