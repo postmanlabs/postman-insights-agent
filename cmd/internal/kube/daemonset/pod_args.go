@@ -54,6 +54,14 @@ type PodArgs struct {
 	StopChan chan error
 }
 
+func NewPodArgs(podName string) *PodArgs {
+	return &PodArgs{
+		PodName: podName,
+		// though 1 buffer size is enough, keeping 2 for safety
+		StopChan: make(chan error, 2),
+	}
+}
+
 // changePodTrafficMonitorState changes the state of the pod traffic monitor to the specified next state.
 // It ensures that the current state is one of the allowed states before making the change.
 //

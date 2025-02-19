@@ -248,11 +248,7 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	// Iterate over each pod without the agent sidecar
 	for _, pod := range podsWithoutAgentSidecar {
 		// Empty pod_args object for PodPending state
-		args := &PodArgs{
-			PodName: pod.Name,
-			// though 1 buffer size is enough, keeping 2 for safety
-			StopChan: make(chan error, 2),
-		}
+		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
 			switch err {

@@ -31,12 +31,8 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 	}
 
 	// Empty podArgs object for PodPending state
-	args := &PodArgs{
-		PodName: pod.Name,
-		// though 1 buffer size is enough, keeping 2 for safety
-		StopChan: make(chan error, 2),
-	}
-	printer.Debugf("Pod in pending state added to map, pod name: %s\n", pod.Name)
+	args := NewPodArgs(pod.Name)
+	printer.Debugf("Pod is in pending state. Adding it to the map, pod name: %s\n", pod.Name)
 
 	err = d.addPodArgsToMap(pod.UID, args, PodPending)
 	if err != nil {
