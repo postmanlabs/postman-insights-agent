@@ -96,5 +96,10 @@ func (p *PodArgs) changePodTrafficMonitorState(
 
 // isEndState checks if the pod traffic monitor state is in the final state.
 func (p *PodArgs) isEndState() bool {
-	return p.PodTrafficMonitorState == TrafficMonitoringEnded || p.PodTrafficMonitorState == TrafficMonitoringFailed
+	switch p.PodTrafficMonitorState {
+	case TrafficMonitoringEnded, TrafficMonitoringFailed, RemovePodFromMap:
+		return true
+	default:
+		return false
+	}
 }
