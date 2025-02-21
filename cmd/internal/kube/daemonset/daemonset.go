@@ -26,6 +26,10 @@ const (
 	agentImage        = "public.ecr.aws/postman/postman-insights-agent:latest"
 )
 
+type DaemonsetArgs struct {
+	ReproMode bool
+}
+
 type Daemonset struct {
 	ClusterName              string
 	InsightsEnvironment      string
@@ -46,7 +50,7 @@ type Daemonset struct {
 	TelemetryInterval      time.Duration
 }
 
-func StartDaemonset() error {
+func StartDaemonset(args DaemonsetArgs) error {
 	// Check if the agent is running in a linux environment
 	if runtime.GOOS != "linux" {
 		return errors.New("This command is only supported on linux images")
@@ -95,7 +99,12 @@ func StartDaemonset() error {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
-	insightsReproModeEnabled := os.Getenv(POSTMAN_INSIGHTS_REPRO_MODE_ENABLED) == "true"
+	insightsReproModeEnabled := args.ReproMode
+	// override the repro mode if the environment variable is set
+	if envReproMode := os.Getenv(POSTMAN_INSIGHTS_REPRO_MODE_ENABLED) == "true"; envReproMode {
+		insightsReproModeEnabled = envReproMode
+	}
+
 	insightsEnvironment := os.Getenv(POSTMAN_INSIGHTS_ENV)
 
 	daemonsetRun := &Daemonset{
