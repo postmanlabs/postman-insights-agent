@@ -99,18 +99,10 @@ func StartDaemonset(args DaemonsetArgs) error {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
-	insightsReproModeEnabled := args.ReproMode
-	// override the repro mode if the environment variable is set
-	if envReproMode := os.Getenv(POSTMAN_INSIGHTS_REPRO_MODE_ENABLED) == "true"; envReproMode {
-		insightsReproModeEnabled = envReproMode
-	}
-
-	insightsEnvironment := os.Getenv(POSTMAN_INSIGHTS_ENV)
-
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
-		InsightsEnvironment:      insightsEnvironment,
-		InsightsReproModeEnabled: insightsReproModeEnabled,
+		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
+		InsightsReproModeEnabled: args.ReproMode,
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,
 		FrontClient:              frontClient,
