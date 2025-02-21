@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/pkg/errors"
 )
 
@@ -40,6 +41,7 @@ type PodCreds struct {
 type PodArgs struct {
 	// apidump related fields
 	InsightsProjectID akid.ServiceID
+	TraceTags         tags.SingletonTags
 
 	// Pod related fields
 	PodName       string
