@@ -51,7 +51,7 @@ func (d Deployment) String() string {
 
 // Use envToTag map to see if any of the environment variables are present.
 // Return true if so, and update the tagset.
-func (d Deployment) getTagsFromEnvironment(envVarsMap map[string]string, tagset map[tags.Key]string) bool {
+func (d Deployment) getTagsFromEnvironment(tagset map[tags.Key]string, envVarsMap map[string]string) bool {
 	var getEnvVar func(string) (string, bool)
 
 	if envVarsMap != nil {
@@ -87,19 +87,19 @@ func GetDeploymentInfo(envVars map[string]string) (Deployment, map[tags.Key]stri
 	// Allow the user to specify the name (not type) of deployment environment,
 	// even if it's of an unknown type.
 	// If there is a git commit associated with this deployment, then record it.
-	if Any.getTagsFromEnvironment(envVars, tagset) {
+	if Any.getTagsFromEnvironment(tagset, envVars) {
 		deploymentType = Unknown
 	}
 
-	if AWS_ECS.getTagsFromEnvironment(envVars, tagset) {
+	if AWS_ECS.getTagsFromEnvironment(tagset, envVars) {
 		printer.Infof("Found AWS ECS environment variables.\n")
 		deploymentType = AWS_ECS
-	} else if AWS.getTagsFromEnvironment(envVars, tagset) {
+	} else if AWS.getTagsFromEnvironment(tagset, envVars) {
 		printer.Infof("Found AWS environment variables.\n")
 		deploymentType = AWS
 	}
 
-	if Kubernetes.getTagsFromEnvironment(envVars, tagset) {
+	if Kubernetes.getTagsFromEnvironment(tagset, envVars) {
 		printer.Infof("Found Kubernetes environment variables.\n")
 		deploymentType = Kubernetes
 	}
