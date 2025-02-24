@@ -180,7 +180,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		return requiredEnvVarMissingErr
 	}
 
-	// Set the trace tags for the pod from the environment variables
+	// Set the trace tags for apidump process from the pod info
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
 	podArgs.ContainerUUID = containerUUID
