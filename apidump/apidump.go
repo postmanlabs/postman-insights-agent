@@ -384,7 +384,7 @@ func collectTraceTags(args *Args) map[tags.Key]string {
 			traceTags[k] = v
 		}
 	} else {
-		deployment.UpdateTags(traceTags, nil)
+		deployment.UpdateTags(traceTags)
 		hostname, err := os.Hostname()
 		if err == nil {
 			traceTags[tags.XInsightsHostname] = hostname

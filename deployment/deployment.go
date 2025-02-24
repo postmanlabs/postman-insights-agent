@@ -5,6 +5,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	coreV1 "k8s.io/api/core/v1"
 )
 
 // Internal type of the deployment, automatically discovered.
@@ -51,28 +52,10 @@ func (d Deployment) String() string {
 
 // Use envToTag map to see if any of the environment variables are present.
 // Return true if so, and update the tagset.
-func (d Deployment) getTagsFromEnvironment(tagset map[tags.Key]string, envVarsMap map[string]string) bool {
-	var getEnvVar func(string) (string, bool)
-
-	if envVarsMap != nil {
-		getEnvVar = func(envVar string) (string, bool) {
-			if v, present := envVarsMap[envVar]; present {
-				return v, true
-			}
-			return "", false
-		}
-	} else {
-		getEnvVar = func(envVar string) (string, bool) {
-			if v := os.Getenv(envVar); v != "" {
-				return v, true
-			}
-			return "", false
-		}
-	}
-
+func (d Deployment) getTagsFromEnvironment(tagset map[tags.Key]string) bool {
 	found := false
 	for envVar, tag := range environmentToTag[d] {
-		if v, present := getEnvVar(envVar); present {
+		if v := os.Getenv(envVar); v != "" {
 			tagset[tag] = v
 			found = true
 		}
@@ -80,26 +63,26 @@ func (d Deployment) getTagsFromEnvironment(tagset map[tags.Key]string, envVarsMa
 	return found
 }
 
-func GetDeploymentInfo(envVars map[string]string) (Deployment, map[tags.Key]string) {
+func GetDeploymentInfo() (Deployment, map[tags.Key]string) {
 	deploymentType := None
 	tagset := make(map[tags.Key]string)
 
 	// Allow the user to specify the name (not type) of deployment environment,
 	// even if it's of an unknown type.
 	// If there is a git commit associated with this deployment, then record it.
-	if Any.getTagsFromEnvironment(tagset, envVars) {
+	if Any.getTagsFromEnvironment(tagset) {
 		deploymentType = Unknown
 	}
 
-	if AWS_ECS.getTagsFromEnvironment(tagset, envVars) {
+	if AWS_ECS.getTagsFromEnvironment(tagset) {
 		printer.Infof("Found AWS ECS environment variables.\n")
 		deploymentType = AWS_ECS
-	} else if AWS.getTagsFromEnvironment(tagset, envVars) {
+	} else if AWS.getTagsFromEnvironment(tagset) {
 		printer.Infof("Found AWS environment variables.\n")
 		deploymentType = AWS
 	}
 
-	if Kubernetes.getTagsFromEnvironment(tagset, envVars) {
+	if Kubernetes.getTagsFromEnvironment(tagset) {
 		printer.Infof("Found Kubernetes environment variables.\n")
 		deploymentType = Kubernetes
 	}
@@ -109,8 +92,8 @@ func GetDeploymentInfo(envVars map[string]string) (Deployment, map[tags.Key]stri
 
 // Import information about production or staging environment
 // if it is available in environment variables.
-func UpdateTags(argsTags map[tags.Key]string, envVars map[string]string) {
-	deploymentType, deploymentTags := GetDeploymentInfo(envVars)
+func UpdateTags(argsTags map[tags.Key]string) {
+	deploymentType, deploymentTags := GetDeploymentInfo()
 
 	// Only specify source if no source is already set.
 	if deploymentType != None {
@@ -123,4 +106,15 @@ func UpdateTags(argsTags map[tags.Key]string, envVars map[string]string) {
 	for k, v := range deploymentTags {
 		argsTags[k] = v
 	}
+}
+
+// SetK8sTraceTags sets Kubernetes-specific tags in the trace tags.
+// This is used by daemonset to set tags for traces from a specific pod.
+func SetK8sTraceTags(pod coreV1.Pod, traceTags tags.SingletonTags) {
+	traceTags[tags.XAkitaKubernetesNamespace] = pod.Namespace
+	traceTags[tags.XAkitaKubernetesNode] = pod.Spec.NodeName
+	traceTags[tags.XAkitaKubernetesPod] = pod.Name
+	traceTags[tags.XAkitaKubernetesPodIP] = pod.Status.PodIP
+	traceTags[tags.XAkitaKubernetesHostIP] = pod.Status.HostIP
+	traceTags[tags.XInsightsHostname] = pod.Name
 }

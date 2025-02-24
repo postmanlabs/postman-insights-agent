@@ -6,7 +6,6 @@ const (
 	// Pod environment variables
 	POSTMAN_INSIGHTS_PROJECT_ID = "POSTMAN_INSIGHTS_PROJECT_ID"
 	POSTMAN_INSIGHTS_API_KEY    = "POSTMAN_INSIGHTS_API_KEY"
-	HOSTNAME                    = "HOSTNAME"
 
 	// Daemonset environment variables
 	POSTMAN_INSIGHTS_ENV                = "POSTMAN_ENV" // This is same as root POSTMAN_ENV
