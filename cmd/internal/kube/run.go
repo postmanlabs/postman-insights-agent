@@ -6,9 +6,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
-	err := daemonset.StartDaemonset()
+var (
+	reproMode bool
+)
 
+func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
+	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{ReproMode: reproMode})
 	if err == nil {
 		return nil
 	}
@@ -28,6 +31,14 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
+	runCmd.PersistentFlags().BoolVar(
+		&reproMode,
+		"repro-mode",
+		false,
+		"Enable Repro Mode to capture request and response payloads for debugging.",
+	)
+	_ = runCmd.PersistentFlags().MarkHidden("repro-mode")
+
 	Cmd.AddCommand(runCmd)
 
 	// Mark the inherited `project` flag as hidden

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/printer"
-	"github.com/spf13/viper"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -25,12 +24,9 @@ func (d *Daemonset) sendTelemetry() {
 	}
 }
 
-// dumpPodsApiDumpProcessState logs the current state of active pods if the debug mode is enabled.
+// dumpPodsApiDumpProcessState logs the current state of active pods.
 // It prints a formatted table with the pod name, project ID, and current state for each pod.
 func (d *Daemonset) dumpPodsApiDumpProcessState() {
-	if !viper.GetBool("debug") {
-		return
-	}
 	logf := printer.Debugf
 
 	const hrBr = "================================================================================" +
