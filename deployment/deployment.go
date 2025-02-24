@@ -52,17 +52,17 @@ func (d Deployment) String() string {
 // Use envToTag map to see if any of the environment variables are present.
 // Return true if so, and update the tagset.
 func (d Deployment) getTagsFromEnvironment(envVarsMap map[string]string, tagset map[tags.Key]string) bool {
-	var funcA func(string) (string, bool)
+	var getEnvVar func(string) (string, bool)
 
 	if envVarsMap != nil {
-		funcA = func(envVar string) (string, bool) {
+		getEnvVar = func(envVar string) (string, bool) {
 			if v, present := envVarsMap[envVar]; present {
 				return v, true
 			}
 			return "", false
 		}
 	} else {
-		funcA = func(envVar string) (string, bool) {
+		getEnvVar = func(envVar string) (string, bool) {
 			if v := os.Getenv(envVar); v != "" {
 				return v, true
 			}
@@ -72,7 +72,7 @@ func (d Deployment) getTagsFromEnvironment(envVarsMap map[string]string, tagset 
 
 	found := false
 	for envVar, tag := range environmentToTag[d] {
-		if v, present := funcA(envVar); present {
+		if v, present := getEnvVar(envVar); present {
 			tagset[tag] = v
 			found = true
 		}
