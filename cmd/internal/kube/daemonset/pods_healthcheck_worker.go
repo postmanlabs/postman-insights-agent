@@ -37,13 +37,13 @@ func (d *Daemonset) checkPodsHealth() {
 		podStatus, ok := podStatuses[podUID]
 		if !ok {
 			printer.Infof("Pod status not found for podUID %s, Pod doesn't exists anymore\n", podUID)
-			d.handleTerminatedPod(podUID, errors.Errorf("pod %s doesn't exists anymore", podUID))
+			d.handleTerminatedPod(podUID, errors.Errorf("pod %s doesn't exists anymore", podUID), true)
 		}
 
 		switch podStatus {
 		case coreV1.PodSucceeded, coreV1.PodFailed:
 			printer.Infof("Pod with UID %s has stopped running, status: %s\n", podUID, podStatus)
-			d.handleTerminatedPod(podUID, errors.Errorf("pod %s has stopped running, status: %s", podUID, podStatus))
+			d.handleTerminatedPod(podUID, errors.Errorf("pod %s has stopped running, status: %s", podUID, podStatus), false)
 		case coreV1.PodRunning:
 			printer.Debugf("Pod with UID %s, status:%s\n", podUID, podStatus)
 			d.handleUnmonitoredPod(podUID)
@@ -53,7 +53,7 @@ func (d *Daemonset) checkPodsHealth() {
 
 // handleTerminatedPod handles the terminated pod by changing the pod's traffic monitor state to PodTerminated
 // and stopping the API dump process for that pod.
-func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error) {
+func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error, podDoesNotExists bool) {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
 		printer.Infof("Failed to get podArgs for podUID %s: %v\n", podUID, err)
@@ -65,7 +65,13 @@ func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error) {
 		return
 	}
 
-	err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringRunning)
+	// If pod doesn't exists anymore, we don't need to check the pod status
+	// We can directly change the state to PodTerminated
+	if podDoesNotExists {
+		err = podArgs.changePodTrafficMonitorState(PodTerminated)
+	} else {
+		err = podArgs.changePodTrafficMonitorState(PodTerminated, TrafficMonitoringRunning)
+	}
 	if err != nil {
 		printer.Infof("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 			podArgs.PodName, podArgs.PodTrafficMonitorState, PodTerminated, err)
