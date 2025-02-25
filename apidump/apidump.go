@@ -77,6 +77,7 @@ type DaemonsetArgs struct {
 	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
 	Environment               string
+	TraceTags                 tags.SingletonTags
 }
 
 type Args struct {
@@ -374,17 +375,25 @@ func collectTraceTags(args *Args) map[tags.Key]string {
 	// Set legacy deployment tags.
 	traceTags[tags.XAkitaDeployment] = apispec.DefaultDeployment
 	traceTags[tags.XAkitaSource] = tags.DeploymentSource
-	deployment.UpdateTags(traceTags)
+
+	// Set tags from the daemonSet apidump process
+	// Here we expect that the parent go routine has already set the tags
+	// if DaemonsetArgs is set.
+	if dArgs, exists := args.DaemonsetArgs.Get(); exists {
+		for k, v := range dArgs.TraceTags {
+			traceTags[k] = v
+		}
+	} else {
+		deployment.UpdateTags(traceTags)
+		hostname, err := os.Hostname()
+		if err == nil {
+			traceTags[tags.XInsightsHostname] = hostname
+		}
+	}
 
 	// Set source to user by default (if not CI or deployment)
 	if _, ok := traceTags[tags.XAkitaSource]; !ok {
 		traceTags[tags.XAkitaSource] = tags.UserSource
-	}
-
-	// Set hostname tag
-	hostname, err := os.Hostname()
-	if err == nil {
-		traceTags[tags.XInsightsHostname] = hostname
 	}
 
 	printer.Debugln("trace tags:", traceTags)

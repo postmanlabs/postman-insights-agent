@@ -3,6 +3,7 @@ package daemonset
 import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 )
@@ -178,6 +179,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_API_KEY, pod.Name)
 		return requiredEnvVarMissingErr
 	}
+
+	// Set the trace tags for apidump process from the pod info
+	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
 	podArgs.ContainerUUID = containerUUID
 	podArgs.InsightsProjectID = insightsProjectID

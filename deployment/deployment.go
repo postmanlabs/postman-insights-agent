@@ -5,6 +5,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	coreV1 "k8s.io/api/core/v1"
 )
 
 // Internal type of the deployment, automatically discovered.
@@ -105,4 +106,15 @@ func UpdateTags(argsTags map[tags.Key]string) {
 	for k, v := range deploymentTags {
 		argsTags[k] = v
 	}
+}
+
+// SetK8sTraceTags sets Kubernetes-specific tags in the trace tags.
+// This is used by daemonset to set tags for traces from a specific pod.
+func SetK8sTraceTags(pod coreV1.Pod, traceTags tags.SingletonTags) {
+	traceTags[tags.XAkitaKubernetesNamespace] = pod.Namespace
+	traceTags[tags.XAkitaKubernetesNode] = pod.Spec.NodeName
+	traceTags[tags.XAkitaKubernetesPod] = pod.Name
+	traceTags[tags.XAkitaKubernetesPodIP] = pod.Status.PodIP
+	traceTags[tags.XAkitaKubernetesHostIP] = pod.Status.HostIP
+	traceTags[tags.XInsightsHostname] = pod.Name
 }
