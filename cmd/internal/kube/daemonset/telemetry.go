@@ -27,7 +27,7 @@ func (d *Daemonset) sendTelemetry() {
 // dumpPodsApiDumpProcessState logs the current state of active pods.
 // It prints a formatted table with the pod name, project ID, and current state for each pod.
 func (d *Daemonset) dumpPodsApiDumpProcessState() {
-	logf := printer.Debugf
+	logf := printer.Infof
 
 	const hrBr = "================================================================================" +
 		"===========================================================================================\n"
