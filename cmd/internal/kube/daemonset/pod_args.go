@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/pkg/errors"
 )
 
@@ -40,6 +41,7 @@ type PodCreds struct {
 type PodArgs struct {
 	// apidump related fields
 	InsightsProjectID akid.ServiceID
+	TraceTags         tags.SingletonTags
 
 	// Pod related fields
 	PodName       string
@@ -48,15 +50,16 @@ type PodArgs struct {
 
 	// for state management
 	PodTrafficMonitorState PodTrafficMonitorState
-	StateChangeMutex       sync.Mutex
+	StateChangeMutex       sync.Mutex `json:"-"`
 
 	// send stop signal to apidump process
-	StopChan chan error
+	StopChan chan error `json:"-"`
 }
 
 func NewPodArgs(podName string) *PodArgs {
 	return &PodArgs{
-		PodName: podName,
+		TraceTags: tags.SingletonTags{},
+		PodName:   podName,
 		// though 1 buffer size is enough, keeping 2 for safety
 		StopChan: make(chan error, 2),
 	}

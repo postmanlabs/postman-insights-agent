@@ -87,6 +87,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				StopChan:                  podArgs.StopChan,
 				APIKey:                    podArgs.PodCreds.InsightsAPIKey,
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
+				TraceTags:                 podArgs.TraceTags,
 			}),
 		}
 
