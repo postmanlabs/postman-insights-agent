@@ -1,18 +1,45 @@
 package daemonset
 
 import (
+	"fmt"
+
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/akitasoftware/go-utils/maps"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
 )
 
-var (
-	allRequiredEnvVarsAbsentErr = errors.New("All required environment variables are absent.")
-	requiredEnvVarMissingErr    = errors.New("One or more required environment variables are missing. " +
-		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets.")
-)
+type baseEnvVarsError struct {
+	podName      string
+	missingAttrs []string
+}
+
+type allRequiredEnvVarsAbsentError struct {
+	baseEnvVarsError
+}
+
+func (e *allRequiredEnvVarsAbsentError) Error() string {
+	errMsg := fmt.Sprintf("All required environment variables are absent. "+
+		"PodName: %s Missing env vars: %v\n", e.podName, e.missingAttrs)
+	return errMsg
+}
+
+type requiredEnvVarMissingError struct {
+	baseEnvVarsError
+}
+
+func (e *requiredEnvVarMissingError) Error() string {
+	errMsg := fmt.Sprintf("One or more required environment variables are missing. "+
+		"PodName: %s Missing env vars: %v\n", e.podName, e.missingAttrs)
+	return errMsg
+}
+
+type requiredContainerConfig struct {
+	projectID string
+	apiKey    string
+}
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
 // It performs the following steps:
@@ -102,11 +129,11 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		printer.Debugf("Pod is running, starting api dump process, pod name: %s\n", podArgs.PodName)
 		err := d.inspectPodForEnvVars(pod, podArgs)
 		if err != nil {
-			switch err {
-			case allRequiredEnvVarsAbsentErr:
-				printer.Debugf("None of the required env vars present, skipping pod: %s\n", pod.Name)
-			case requiredEnvVarMissingErr:
-				printer.Errorf("Required env var missing, skipping pod: %s\n", pod.Name)
+			switch e := err.(type) {
+			case *allRequiredEnvVarsAbsentError:
+				printer.Debugf(e.Error())
+			case *requiredEnvVarMissingError:
+				printer.Errorf(e.Error())
 			default:
 				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v\n", pod.Name, err)
 			}
@@ -136,59 +163,102 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 // in the pod, fetches the environment variables of that container, and extracts the
 // necessary variables such as the project ID, API key, and environment.
 func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error {
-	// Get the UUID of the main container in the pod
-	containerUUID, err := d.KubeClient.GetMainContainerUUID(pod)
+	// Get the UUIDs of all containers in the pod
+	containerUUIDs, err := d.KubeClient.GetContainerUUIDs(pod)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get main container UUID for pod: %s", pod.Name)
+		return errors.Wrapf(err, "failed to get container UUIDs for pod: %s", pod.Name)
 	}
 
-	// Get the environment variables of the main container
-	envVars, err := d.CRIClient.GetEnvVars(containerUUID)
-	if err != nil {
-		return errors.Wrapf(err, "failed to get environment variables for pod/container : %s/%s", pod.Name, containerUUID)
+	if len(containerUUIDs) == 0 {
+		return errors.New("no running containers found in the pod")
 	}
 
-	var (
-		insightsProjectID akid.ServiceID
-		insightsAPIKey    string
-	)
+	containerConfigMap := maps.NewMap[string, requiredContainerConfig]()
 
-	// Extract the necessary environment variables
-	for key, value := range envVars {
-		switch key {
-		case POSTMAN_INSIGHTS_PROJECT_ID:
-			err := akid.ParseIDAs(value, &insightsProjectID)
-			if err != nil {
-				return errors.Wrap(err, "failed to parse project ID")
-			}
-		case POSTMAN_INSIGHTS_API_KEY:
-			insightsAPIKey = value
+	// Iterate over all containers in the pod to check for the required environment variables
+	for _, containerUUID := range containerUUIDs {
+		envVars, err := d.CRIClient.GetEnvVars(containerUUID)
+		if err != nil {
+			printer.Debugf("Failed to get environment variables for pod/container : %s/%s\n", pod.Name, containerUUID)
+			continue
+		}
+
+		containerEnvVars := requiredContainerConfig{}
+		if projectID, exists := envVars[POSTMAN_INSIGHTS_PROJECT_ID]; exists {
+			containerEnvVars.projectID = projectID
+		}
+		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
+			containerEnvVars.apiKey = apiKey
+		}
+		containerConfigMap[containerUUID] = containerEnvVars
+	}
+
+	mainContainerUUID := ""
+	mainContainerConfig := requiredContainerConfig{}
+	mainContainerMissingAttrs := []string{}
+	maxSetAttrs := -1
+
+	for uuid, config := range containerConfigMap {
+		attrCount, missingAttrs := countSetAttributes(config)
+		if attrCount > maxSetAttrs {
+			maxSetAttrs = attrCount
+			mainContainerMissingAttrs = missingAttrs
+			mainContainerUUID = uuid
+			mainContainerConfig = config
 		}
 	}
 
-	if (insightsProjectID == akid.ServiceID{}) && insightsAPIKey == "" {
-		return allRequiredEnvVarsAbsentErr
+	// If all required environment variables are absent, return an error
+	if maxSetAttrs == 0 {
+		return &allRequiredEnvVarsAbsentError{
+			baseEnvVarsError: baseEnvVarsError{
+				missingAttrs: mainContainerMissingAttrs,
+				podName:      pod.Name,
+			},
+		}
 	}
 
-	if (insightsProjectID == akid.ServiceID{}) {
-		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
-		return requiredEnvVarMissingErr
-	}
-
-	if insightsAPIKey == "" {
-		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_API_KEY, pod.Name)
-		return requiredEnvVarMissingErr
+	// If one or more required environment variables are missing, return an error
+	if len(mainContainerMissingAttrs) > 0 {
+		return &requiredEnvVarMissingError{
+			baseEnvVarsError: baseEnvVarsError{
+				missingAttrs: mainContainerMissingAttrs,
+				podName:      pod.Name,
+			},
+		}
 	}
 
 	// Set the trace tags for apidump process from the pod info
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
-	podArgs.ContainerUUID = containerUUID
-	podArgs.InsightsProjectID = insightsProjectID
+	podArgs.ContainerUUID = mainContainerUUID
+	err = akid.ParseIDAs(mainContainerConfig.projectID, &podArgs.InsightsProjectID)
+	if err != nil {
+		return errors.Wrap(err, "failed to parse project ID")
+	}
 	podArgs.PodCreds = PodCreds{
-		InsightsAPIKey:      insightsAPIKey,
+		InsightsAPIKey:      mainContainerConfig.apiKey,
 		InsightsEnvironment: d.InsightsEnvironment,
 	}
 
 	return nil
+}
+
+// Function to count non-zero attributes in a struct
+func countSetAttributes(config requiredContainerConfig) (int, []string) {
+	count := 0
+	missingAttrs := []string{}
+
+	checkAttr := func(attr, name string) {
+		if attr != "" {
+			count++
+		} else {
+			missingAttrs = append(missingAttrs, name)
+		}
+	}
+
+	checkAttr(config.apiKey, POSTMAN_INSIGHTS_API_KEY)
+	checkAttr(config.projectID, POSTMAN_INSIGHTS_PROJECT_ID)
+
+	return count, missingAttrs
 }
