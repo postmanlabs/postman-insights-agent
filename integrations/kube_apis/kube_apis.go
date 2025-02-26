@@ -174,21 +174,23 @@ func (kc *KubeClient) FilterPodsByContainerImage(pods []coreV1.Pod, containerIma
 	return filteredPods, nil
 }
 
-// GetMainContainerUUID returns the UUID of the main container of a given pod
-func (kc *KubeClient) GetMainContainerUUID(pod coreV1.Pod) (string, error) {
-	if len(pod.Status.ContainerStatuses) > 0 {
-		containerID := pod.Status.ContainerStatuses[0].ContainerID
+// GetContainerUUIDs returns the UUIDs of all containers in a given pod
+func (kc *KubeClient) GetContainerUUIDs(pod coreV1.Pod) ([]string, error) {
+	var containerUUIDs []string
+
+	for _, containerStatus := range pod.Status.ContainerStatuses {
+		containerID := containerStatus.ContainerID
 
 		// Extract UUID from the container ID
 		parts := strings.Split(containerID, "://")
 		if len(parts) == 2 {
-			return parts[1], nil
+			containerUUIDs = append(containerUUIDs, parts[1])
 		} else {
-			return "", errors.Errorf("invalid container ID: %s", containerID)
+			printer.Debugf("invalid container ID: %s\n", containerID)
 		}
 	}
 
-	return "", errors.Errorf("no containers found for pod: %s", pod.Name)
+	return containerUUIDs, nil
 }
 
 // GetPodsStatus returns the statuses for list of pods

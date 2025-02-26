@@ -91,13 +91,13 @@ func k8s_funcs(kubeClient kube_apis.KubeClient) (string, error) {
 	printer.Infof("Pod Status: %s\n", podStatuses)
 
 	// Get Main Container UUID
-	containerUUID, err := kubeClient.GetMainContainerUUID(pod)
+	containerUUIDs, err := kubeClient.GetContainerUUIDs(pod)
 	if err != nil {
 		return "", fmt.Errorf("failed to get main container UUID: %v", err)
 	}
-	printer.Infof("Main Container UUID: %s\n", containerUUID)
+	printer.Infof("Container UUIDs: %s\n", containerUUIDs)
 
-	return containerUUID, nil
+	return containerUUIDs[0], nil
 }
 
 func cri_funcs(containerUUID string) error {
