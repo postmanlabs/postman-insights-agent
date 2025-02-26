@@ -252,9 +252,11 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
-			switch err {
-			case requiredEnvVarMissingErr:
-				printer.Errorf("Required env var missing, skipping pod: %s\n", pod.Name)
+			switch e := err.(type) {
+			case *allRequiredEnvVarsAbsentError:
+				printer.Debugf(e.Error())
+			case *requiredEnvVarMissingError:
+				printer.Errorf(e.Error())
 			default:
 				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v\n", pod.Name, err)
 			}
