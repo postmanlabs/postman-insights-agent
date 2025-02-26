@@ -9,9 +9,7 @@ import (
 )
 
 var (
-	allRequiredEnvVarsAbsentErr = errors.New("All required environment variables are absent.")
-	requiredEnvVarMissingErr    = errors.New("One or more required environment variables are missing. " +
-		"Ensure all the necessary environment variables are set correctly via ConfigMaps or Secrets.")
+	requiredEnvVarMissingErr = errors.New("required environment variables missing")
 )
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -103,8 +101,6 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		err := d.inspectPodForEnvVars(pod, podArgs)
 		if err != nil {
 			switch err {
-			case allRequiredEnvVarsAbsentErr:
-				printer.Debugf("None of the required env vars present, skipping pod: %s\n", pod.Name)
 			case requiredEnvVarMissingErr:
 				printer.Errorf("Required env var missing, skipping pod: %s\n", pod.Name)
 			default:
@@ -136,54 +132,59 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 // in the pod, fetches the environment variables of that container, and extracts the
 // necessary variables such as the project ID, API key, and environment.
 func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error {
-	// Get the UUID of the main container in the pod
-	containerUUID, err := d.KubeClient.GetMainContainerUUID(pod)
+	// Get the UUIDs of all containers in the pod
+	containerUUIDs, err := d.KubeClient.GetContainerUUIDs(pod)
 	if err != nil {
-		return errors.Wrapf(err, "failed to get main container UUID for pod: %s", pod.Name)
-	}
-
-	// Get the environment variables of the main container
-	envVars, err := d.CRIClient.GetEnvVars(containerUUID)
-	if err != nil {
-		return errors.Wrapf(err, "failed to get environment variables for pod/container : %s/%s", pod.Name, containerUUID)
+		return errors.Wrapf(err, "failed to get container UUIDs for pod: %s", pod.Name)
 	}
 
 	var (
+		mainContainerUUID string
 		insightsProjectID akid.ServiceID
 		insightsAPIKey    string
 	)
 
-	// Extract the necessary environment variables
-	for key, value := range envVars {
-		switch key {
-		case POSTMAN_INSIGHTS_PROJECT_ID:
-			err := akid.ParseIDAs(value, &insightsProjectID)
+	// Iterate over all containers in the pod to check for the required environment variables
+	for _, containerUUID := range containerUUIDs {
+		envVars, err := d.CRIClient.GetEnvVars(containerUUID)
+		if err != nil {
+			printer.Debugf("Failed to get environment variables for pod/container : %s/%s\n", pod.Name, containerUUID)
+			continue
+		}
+
+		insightsProjectIDString, exists := envVars[POSTMAN_INSIGHTS_PROJECT_ID]
+		if !exists {
+			printer.Debugf("Project ID is missing, pod name: %s\n", pod.Name)
+			insightsProjectID = akid.ServiceID{}
+			continue
+		} else {
+			err := akid.ParseIDAs(insightsProjectIDString, &insightsProjectID)
 			if err != nil {
 				return errors.Wrap(err, "failed to parse project ID")
 			}
-		case POSTMAN_INSIGHTS_API_KEY:
-			insightsAPIKey = value
+		}
+
+		insightsAPIKey, exists = envVars[POSTMAN_INSIGHTS_API_KEY]
+		if !exists {
+			printer.Debugf("API key is missing, pod name: %s\n", pod.Name)
+			continue
+		}
+
+		if (insightsProjectID != akid.ServiceID{}) && insightsAPIKey != "" {
+			printer.Debugf("Found project ID and API key in container %s, pod name: %s\n", containerUUID, pod.Name)
+			mainContainerUUID = containerUUID
+			break
 		}
 	}
 
-	if (insightsProjectID == akid.ServiceID{}) && insightsAPIKey == "" {
-		return allRequiredEnvVarsAbsentErr
-	}
-
-	if (insightsProjectID == akid.ServiceID{}) {
-		printer.Errorf("Project ID is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_PROJECT_ID, pod.Name)
-		return requiredEnvVarMissingErr
-	}
-
-	if insightsAPIKey == "" {
-		printer.Errorf("API key is missing, set it using the environment variable %s, pod name: %s\n", POSTMAN_INSIGHTS_API_KEY, pod.Name)
+	if (insightsProjectID == akid.ServiceID{}) || insightsAPIKey == "" {
 		return requiredEnvVarMissingErr
 	}
 
 	// Set the trace tags for apidump process from the pod info
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
-	podArgs.ContainerUUID = containerUUID
+	podArgs.ContainerUUID = mainContainerUUID
 	podArgs.InsightsProjectID = insightsProjectID
 	podArgs.PodCreds = PodCreds{
 		InsightsAPIKey:      insightsAPIKey,
