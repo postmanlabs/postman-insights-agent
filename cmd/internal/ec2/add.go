@@ -269,6 +269,27 @@ func enablePostmanInsightsAgent() error {
 	if err != nil {
 		return errors.Wrapf(err, "failed to run systemctl daemon-reload")
 	}
+
+	// systemctl get status of postman-insights-agent.service
+	cmd = exec.Command("systemctl", []string{"status", serviceFileName}...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.Wrapf(err, "failed to run systemctl status")
+	}
+
+	// If service is running then restart it
+	if strings.Contains(string(output), "Active: active (running)") {
+		printer.Infof("postman-insights-agent is already running as a systemd service\n")
+		printer.Infof("Restarting the service\n")
+
+		// systemctl restart postman-insights-agent.service
+		cmd = exec.Command("systemctl", []string{"restart", serviceFileName}...)
+		_, err = cmd.CombinedOutput()
+		if err != nil {
+			return errors.Wrapf(err, "failed to run systemctl restart")
+		}
+	}
+
 	// systemctl start postman-insights-agent.service
 	cmd = exec.Command("systemctl", []string{"enable", "--now", serviceFileName}...)
 	_, err = cmd.CombinedOutput()
