@@ -33,6 +33,9 @@ const (
 	enabled     = "enabled"                                                                                     // exit code: 0
 	disabled    = "disabled"                                                                                    // exit code: 1
 	nonExisting = "Failed to get unit file state for postman-insights-agent.service: No such file or directory" // exit code: 1
+
+	// Output of command: systemctl is-active postman-insights-agent
+	active = "active" // exit code: 0
 )
 
 var (
@@ -275,7 +278,7 @@ func enablePostmanInsightsAgent() error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		printer.Infof("Postman Insights Agent is not running as a systemd service, status: %v\n", err)
-	} else if strings.Contains(string(output), "active") {
+	} else if strings.Contains(string(output), active) {
 		printer.Infof("Postman Insights Agent is already running as a systemd service\n")
 		printer.Infof("Restarting the service with new configurations\n")
 
