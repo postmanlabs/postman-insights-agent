@@ -37,6 +37,9 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			// Decrement the wait group counter
 			d.ApidumpProcessesWG.Done()
 
+			// Close the stop channel once the apidump process is exited
+			close(podArgs.StopChan)
+
 			nextState := TrafficMonitoringEnded
 
 			if err := recover(); err != nil {
@@ -111,7 +114,6 @@ func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 
 	printer.Infof("Stopping API dump process for pod %s\n", podArgs.PodName)
 	podArgs.StopChan <- stopErr
-	close(podArgs.StopChan)
 
 	return nil
 }
