@@ -81,11 +81,6 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 		return
 	}
 
-	if podArgs.isEndState() {
-		printer.Debugf("Pod %s already stopped monitoring, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
-		return
-	}
-
 	var podStatus PodTrafficMonitorState
 	switch pod.Status.Phase {
 	case coreV1.PodSucceeded:
