@@ -73,7 +73,7 @@ func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error, po
 		return
 	}
 
-	err = d.StopApiDumpProcess(podUID, podStatusErr)
+	err = d.SignalApiDumpProcessToStop(podUID, podStatusErr)
 	if err != nil {
 		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 	}

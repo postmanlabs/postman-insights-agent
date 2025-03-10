@@ -99,7 +99,7 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 		return
 	}
 
-	err = d.StopApiDumpProcess(pod.UID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
+	err = d.SignalApiDumpProcessToStop(pod.UID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
 	if err != nil {
 		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 	}

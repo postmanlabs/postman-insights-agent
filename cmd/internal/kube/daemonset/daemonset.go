@@ -351,7 +351,7 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 			return true
 		}
 
-		err = d.StopApiDumpProcess(podUID, errors.Errorf("Daemonset agent is shutting down, stopping pod: %s", podArgs.PodName))
+		err = d.SignalApiDumpProcessToStop(podUID, errors.Errorf("Daemonset agent is shutting down, stopping pod: %s", podArgs.PodName))
 		if err != nil {
 			printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 		}
