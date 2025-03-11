@@ -33,6 +33,9 @@ const (
 	enabled     = "enabled"                                                                                     // exit code: 0
 	disabled    = "disabled"                                                                                    // exit code: 1
 	nonExisting = "Failed to get unit file state for postman-insights-agent.service: No such file or directory" // exit code: 1
+
+	// Output of command: systemctl is-active postman-insights-agent
+	active = "active" // exit code: 0
 )
 
 var (
@@ -269,6 +272,26 @@ func enablePostmanInsightsAgent() error {
 	if err != nil {
 		return errors.Wrapf(err, "failed to run systemctl daemon-reload")
 	}
+
+	// systemctl check if postman-insights-agent.service is active
+	cmd = exec.Command("systemctl", []string{"is-active", serviceFileName}...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		printer.Infof("Postman Insights Agent is not running as a systemd service, status: %v\n", err)
+	} else if strings.Contains(string(output), active) {
+		printer.Infof("Postman Insights Agent is already running as a systemd service\n")
+		printer.Infof("Restarting the service with new configurations\n")
+
+		// systemctl restart postman-insights-agent.service
+		cmd = exec.Command("systemctl", []string{"restart", serviceFileName}...)
+		_, err = cmd.CombinedOutput()
+		if err != nil {
+			printer.Errorf("Failed to restart the service. Err: %v", err)
+			printer.Errorf("Please run the below command to restart the service\n")
+			printer.Errorf("systemctl restart postman-insights-agent\n")
+		}
+	}
+
 	// systemctl start postman-insights-agent.service
 	cmd = exec.Command("systemctl", []string{"enable", "--now", serviceFileName}...)
 	_, err = cmd.CombinedOutput()
