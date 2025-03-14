@@ -143,12 +143,10 @@ func stopProfiling(cmd *cobra.Command, args []string) {
 
 func printFlagsWarning(cmd *cobra.Command) {
 	if enabled, err := cmd.Flags().GetBool("repro-mode"); err == nil && enabled {
-		warningMsg := "Turning on the %s flag enables the Postman Insights Agent to send payload data to the Postman cloud.\n\n" +
-			"The Postman Insights Agent will automatically redact values in a default list of sensitive fields, as well as any additionally specified fields.\n" +
-			"For more information, please see: %s.\n"
-		printer.Warningf(warningMsg,
-			printer.Color.Yellow("--repro-mode"),
-			printer.Color.Blue("https://postmanlabs.atlassian.net/wiki/spaces/PIIUG/pages/5513740658/Data+handling+and+access#When-Repro-Mode-is-enabled"))
+		util.PrintReproModeWarning("--repro-mode")
+	}
+	if enabled, err := cmd.Flags().GetBool("send-witness-payloads"); err == nil && enabled {
+		util.PrintReproModeWarning("--send-witness-payloads")
 	}
 
 	testingFlags := make(map[string]string)
