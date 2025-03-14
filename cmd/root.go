@@ -42,23 +42,21 @@ var (
 	logFormatFlag                       string
 )
 
-var (
-	rootCmd = &cobra.Command{
-		Use:           "postman-insights-agent",
-		Short:         "The Postman Insights Agent",
-		Long:          "Documentation is available at https://learning.postman.com/docs/insights/insights-early-access/",
-		Version:       version.CLIDisplayString(),
-		SilenceErrors: true, // We print our own errors from subcommands in Execute function
-		// Don't print usage after error, we only print help if we cannot parse
-		// flags. See init function below.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
-		},
-		PersistentPreRun:  preRun,
-		PersistentPostRun: stopProfiling,
-	}
-)
+var rootCmd = &cobra.Command{
+	Use:           "postman-insights-agent",
+	Short:         "The Postman Insights Agent",
+	Long:          "Documentation is available at https://learning.postman.com/docs/insights/insights-early-access/",
+	Version:       version.CLIDisplayString(),
+	SilenceErrors: true, // We print our own errors from subcommands in Execute function
+	// Don't print usage after error, we only print help if we cannot parse
+	// flags. See init function below.
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	},
+	PersistentPreRun:  preRun,
+	PersistentPostRun: stopProfiling,
+}
 
 func preRun(cmd *cobra.Command, args []string) {
 	// Decide on the domain name to use, _before_ initializing telemetry,
@@ -96,7 +94,7 @@ func preRun(cmd *cobra.Command, args []string) {
 
 	startProfiling(cmd, args)
 
-	printFlagsWarning()
+	printFlagsWarning(cmd)
 }
 
 func startProfiling(cmd *cobra.Command, args []string) {
@@ -143,7 +141,14 @@ func stopProfiling(cmd *cobra.Command, args []string) {
 	}
 }
 
-func printFlagsWarning() {
+func printFlagsWarning(cmd *cobra.Command) {
+	if enabled, err := cmd.Flags().GetBool("repro-mode"); err == nil && enabled {
+		util.PrintReproModeWarning("--repro-mode")
+	}
+	if enabled, err := cmd.Flags().GetBool("send-witness-payloads"); err == nil && enabled {
+		util.PrintReproModeWarning("--send-witness-payloads")
+	}
+
 	testingFlags := make(map[string]string)
 
 	if testOnlyUseHTTPSFlag {

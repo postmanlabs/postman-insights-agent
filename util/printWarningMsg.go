@@ -36,3 +36,15 @@ func PrintFlagsWarning(warningFlags map[string]string) {
 	// Print new line
 	fmt.Printf("\n")
 }
+
+const reproModeMessage = `Turning on the %s flag enables the Postman Insights Agent to send payload data to the Postman cloud.
+
+The Postman Insights Agent will automatically redact values in a default list of sensitive fields, as well as any additionally specified fields.
+For more information, please see: %s.
+`
+
+func PrintReproModeWarning(flag string) {
+	printer.Warningf(reproModeMessage,
+		printer.Color.Yellow(flag),
+		printer.Color.Blue("https://postmanlabs.atlassian.net/wiki/spaces/PIIUG/pages/5513740658/Data+handling+and+access#When-Repro-Mode-is-enabled"))
+}
