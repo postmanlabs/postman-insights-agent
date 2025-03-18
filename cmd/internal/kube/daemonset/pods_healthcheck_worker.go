@@ -60,11 +60,6 @@ func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error, po
 		return
 	}
 
-	if podArgs.isEndState() {
-		printer.Debugf("Pod %s already stopped monitoring, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
-		return
-	}
-
 	// If pod doesn't exists anymore, we don't need to check the pod status
 	// We can directly change the state to PodTerminated
 	if podDoesNotExists {
@@ -78,7 +73,7 @@ func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error, po
 		return
 	}
 
-	err = d.StopApiDumpProcess(podUID, podStatusErr)
+	err = d.SignalApiDumpProcessToStop(podUID, podStatusErr)
 	if err != nil {
 		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 	}
