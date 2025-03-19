@@ -2,6 +2,7 @@ package daemonset
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
@@ -39,6 +40,11 @@ func (e *requiredEnvVarMissingError) Error() string {
 type requiredContainerConfig struct {
 	projectID string
 	apiKey    string
+}
+
+type containerConfig struct {
+	requiredContainerConfig requiredContainerConfig
+	disableReproMode        string
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -173,7 +179,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		return errors.New("no running containers found in the pod")
 	}
 
-	containerConfigMap := maps.NewMap[string, requiredContainerConfig]()
+	containerConfigMap := maps.NewMap[string, containerConfig]()
 
 	// Iterate over all containers in the pod to check for the required environment variables
 	for _, containerUUID := range containerUUIDs {
@@ -183,23 +189,30 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 			continue
 		}
 
-		containerEnvVars := requiredContainerConfig{}
+		containerEnvVars := containerConfig{
+			requiredContainerConfig: requiredContainerConfig{},
+		}
 		if projectID, exists := envVars[POSTMAN_INSIGHTS_PROJECT_ID]; exists {
-			containerEnvVars.projectID = projectID
+			containerEnvVars.requiredContainerConfig.projectID = projectID
 		}
 		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
-			containerEnvVars.apiKey = apiKey
+			containerEnvVars.requiredContainerConfig.apiKey = apiKey
+		}
+		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
+			containerEnvVars.disableReproMode = disableReproMode
 		}
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
 	mainContainerUUID := ""
-	mainContainerConfig := requiredContainerConfig{}
+	mainContainerConfig := containerConfig{
+		requiredContainerConfig: requiredContainerConfig{},
+	}
 	mainContainerMissingAttrs := []string{}
 	maxSetAttrs := -1
 
 	for uuid, config := range containerConfigMap {
-		attrCount, missingAttrs := countSetAttributes(config)
+		attrCount, missingAttrs := countSetAttributes(config.requiredContainerConfig)
 		if attrCount > maxSetAttrs {
 			maxSetAttrs = attrCount
 			mainContainerMissingAttrs = missingAttrs
@@ -232,13 +245,23 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
 	podArgs.ContainerUUID = mainContainerUUID
-	err = akid.ParseIDAs(mainContainerConfig.projectID, &podArgs.InsightsProjectID)
+	err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
 	if err != nil {
 		return errors.Wrap(err, "failed to parse project ID")
 	}
 	podArgs.PodCreds = PodCreds{
-		InsightsAPIKey:      mainContainerConfig.apiKey,
+		InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
 		InsightsEnvironment: d.InsightsEnvironment,
+	}
+
+	// Set ReproMode flag for apidump process
+	reproModeAtDaemonSetLevel := d.InsightsReproModeEnabled
+	reproModeAtPodLevel := !strings.EqualFold(mainContainerConfig.disableReproMode, "true")
+	podArgs.ReproMode = reproModeAtDaemonSetLevel && reproModeAtPodLevel
+	if !reproModeAtDaemonSetLevel {
+		printer.Infof("Repro mode is disabled at the daemonset level for pod: %s\n", pod.Name)
+	} else if !reproModeAtPodLevel {
+		printer.Infof("Repro mode is disabled at the pod level for pod: %s\n", pod.Name)
 	}
 
 	return nil
