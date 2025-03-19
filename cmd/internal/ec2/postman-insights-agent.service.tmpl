@@ -10,5 +10,18 @@ EnvironmentFile=/etc/default/postman-insights-agent
 # Reference: https://www.freedesktop.org/software/systemd/man/systemd.service.html#Command%20lines
 ExecStart={{.AgentInstallPath}} apidump --project "${PROJECT_ID}" --interfaces "${INTERFACES}" --filter "${FILTER}" {{.ExtraApidumpArgs}} $EXTRA_APIDUMP_ARGS
 
+# CPU resource controls
+CPUWeight=90       # lower relative CPU priority; default is 100. In case of contention main process will be prioritized.
+CPUQuota=85%       # aboslute CPU time limit (85% of CPU core). Process won't be able to take advantage of multi core.
+
+# Memory resource controls
+MemoryHigh=750M    # requested limit
+MemoryMax=1G       # hard limit that triggers OOM kill if exceeded
+
+# Restart on OOMs
+Restart=on-failure
+RestartSec=10s
+
+
 [Install]
 WantedBy=multi-user.target
