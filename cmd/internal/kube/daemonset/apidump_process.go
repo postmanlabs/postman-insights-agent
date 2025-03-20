@@ -84,7 +84,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			CollectTCPAndTLSReports: apispec.DefaultCollectTCPAndTLSReports,
 			ParseTLSHandshakes:      apispec.DefaultParseTLSHandshakes,
 			MaxWitnessSize_bytes:    apispec.DefaultMaxWitnessSize_bytes,
-			ReproMode:               d.InsightsReproModeEnabled,
+			ReproMode:               podArgs.ReproMode,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,

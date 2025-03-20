@@ -35,15 +35,16 @@ func (d *Daemonset) dumpPodsApiDumpProcessState() {
 	logf("Dumping pods api dump process state, time: %s\n", time.Now().UTC())
 
 	logf(hrBr)
-	logf(" %-30v%-30v%-40v%-70v\n", "projectID", "currentState", "podUID", "podName")
+	logf(" %-30v%-30v%-10v%-40v%-70v\n", "projectID", "currentState", "reproMode", "podUID", "podName")
 	logf(hrBr)
 
 	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
 		podUID := k.(types.UID)
 		podArgs := v.(*PodArgs)
-		logf(" %-30v%-30v%-40v%-70v\n",
+		logf(" %-30v%-30v%-10v%-40v%-70v\n",
 			podArgs.InsightsProjectID,
 			podArgs.PodTrafficMonitorState,
+			podArgs.ReproMode,
 			podUID,
 			podArgs.PodName,
 		)
