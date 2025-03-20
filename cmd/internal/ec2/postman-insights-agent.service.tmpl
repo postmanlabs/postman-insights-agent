@@ -12,7 +12,7 @@ ExecStart={{.AgentInstallPath}} apidump --project "${PROJECT_ID}" --interfaces "
 
 # CPU resource controls
 CPUWeight=90       # lower relative CPU priority; default is 100. In case of contention main process will be prioritized.
-CPUQuota=85%       # aboslute CPU time limit (85% of CPU core). Process won't be able to take advantage of multi core.
+CPUQuota=50%       # aboslute CPU time limit (85% of CPU core). Process won't be able to take advantage of multi core.
 
 # Memory resource controls
 MemoryHigh=750M    # requested limit
