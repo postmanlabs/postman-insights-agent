@@ -42,6 +42,7 @@ type PodArgs struct {
 	// apidump related fields
 	InsightsProjectID akid.ServiceID
 	TraceTags         tags.SingletonTags
+	ReproMode         bool
 
 	// Pod related fields
 	PodName       string
