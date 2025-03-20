@@ -2,7 +2,7 @@ package daemonset
 
 import (
 	"fmt"
-	"strings"
+	"strconv"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
@@ -256,7 +256,11 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	// Set ReproMode flag for apidump process
 	reproModeAtDaemonSetLevel := d.InsightsReproModeEnabled
-	reproModeAtPodLevel := !strings.EqualFold(mainContainerConfig.disableReproMode, "true")
+	reproModeAtPodLevel, err := strconv.ParseBool(mainContainerConfig.disableReproMode)
+	if err != nil {
+		printer.Errorf("Failed to parse disableReproMode value for pod: %s, error: %v. Falling back to DaemonSet flag.\n", pod.Name, err)
+		reproModeAtPodLevel = true
+	}
 	podArgs.ReproMode = reproModeAtDaemonSetLevel && reproModeAtPodLevel
 	if !reproModeAtDaemonSetLevel {
 		printer.Infof("Repro mode is disabled at the daemonset level for pod: %s\n", pod.Name)
