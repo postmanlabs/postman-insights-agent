@@ -37,9 +37,6 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			// Decrement the wait group counter
 			d.ApidumpProcessesWG.Done()
 
-			// Close the stop channel once the apidump process is exited
-			close(podArgs.StopChan)
-
 			nextState := TrafficMonitoringEnded
 
 			if err := recover(); err != nil {
@@ -103,10 +100,10 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	return nil
 }
 
-// SignalApiDumpProcessToStop signals the API dump process to stop for a given pod
+// StopApiDumpProcess signals the API dump process to stop for a given pod
 // identified by its UID. It retrieves the process's stop channel object from a map
 // and sends a stop signal to trigger apidump shutdown.
-func (d *Daemonset) SignalApiDumpProcessToStop(podUID types.UID, stopErr error) error {
+func (d *Daemonset) StopApiDumpProcess(podUID types.UID, stopErr error) error {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
 		return err
@@ -114,6 +111,7 @@ func (d *Daemonset) SignalApiDumpProcessToStop(podUID types.UID, stopErr error) 
 
 	printer.Infof("Stopping API dump process for pod %s\n", podArgs.PodName)
 	podArgs.StopChan <- stopErr
+	close(podArgs.StopChan)
 
 	return nil
 }
