@@ -254,18 +254,23 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		InsightsEnvironment: d.InsightsEnvironment,
 	}
 
-	// Set ReproMode flag for apidump process
-	reproModeAtDaemonSetLevel := d.InsightsReproModeEnabled
-	reproModeAtPodLevel, err := strconv.ParseBool(mainContainerConfig.disableReproMode)
-	if err != nil {
-		printer.Errorf("Failed to parse disableReproMode value for pod: %s, error: %v. Falling back to DaemonSet flag.\n", pod.Name, err)
-		reproModeAtPodLevel = true
+	// Determine ReproMode flag for the apidump process
+	podArgs.ReproMode = d.InsightsReproModeEnabled
+
+	if !d.InsightsReproModeEnabled {
+		printer.Infof("Repro mode is disabled at the DaemonSet level for pod: %s\n", pod.Name)
+		return nil
 	}
-	podArgs.ReproMode = reproModeAtDaemonSetLevel && reproModeAtPodLevel
-	if !reproModeAtDaemonSetLevel {
-		printer.Infof("Repro mode is disabled at the daemonset level for pod: %s\n", pod.Name)
-	} else if !reproModeAtPodLevel {
-		printer.Infof("Repro mode is disabled at the pod level for pod: %s\n", pod.Name)
+
+	// Check if ReproMode is explicitly disabled at the pod level
+	if mainContainerConfig.disableReproMode != "" {
+		reproModeDisabled, err := strconv.ParseBool(mainContainerConfig.disableReproMode)
+		if err != nil {
+			printer.Errorf("Invalid disableReproMode value for pod: %s, error: %v. Defaulting to DaemonSet-level setting.\n", pod.Name, err)
+		} else if reproModeDisabled {
+			podArgs.ReproMode = false
+			printer.Infof("Repro mode is explicitly disabled at the pod level for pod: %s\n", pod.Name)
+		}
 	}
 
 	return nil
