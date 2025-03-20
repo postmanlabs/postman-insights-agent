@@ -343,6 +343,11 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 		podUID := k.(types.UID)
 		podArgs := v.(*PodArgs)
 
+		if podArgs.isEndState() {
+			printer.Debugf("API dump process for pod %s already stopped, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
+			return true
+		}
+
 		// Since this state can happen at any time so no check for allowed current states
 		err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
 		if err != nil {
@@ -351,7 +356,7 @@ func (d *Daemonset) StopAllApiDumpProcesses() {
 			return true
 		}
 
-		err = d.SignalApiDumpProcessToStop(podUID, errors.Errorf("Daemonset agent is shutting down, stopping pod: %s", podArgs.PodName))
+		err = d.StopApiDumpProcess(podUID, errors.Errorf("Daemonset agent is shutting down, stopping pod: %s", podArgs.PodName))
 		if err != nil {
 			printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 		}

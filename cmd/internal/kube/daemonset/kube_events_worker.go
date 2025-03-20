@@ -87,6 +87,11 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 		return
 	}
 
+	if podArgs.isEndState() {
+		printer.Debugf("Pod %s already stopped monitoring, state: %s\n", podArgs.PodName, podArgs.PodTrafficMonitorState)
+		return
+	}
+
 	var podStatus PodTrafficMonitorState
 	switch pod.Status.Phase {
 	case coreV1.PodSucceeded:
@@ -105,7 +110,7 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 		return
 	}
 
-	err = d.SignalApiDumpProcessToStop(pod.UID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
+	err = d.StopApiDumpProcess(pod.UID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
 	if err != nil {
 		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 	}

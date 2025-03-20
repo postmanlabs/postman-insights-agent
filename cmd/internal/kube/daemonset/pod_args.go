@@ -84,10 +84,6 @@ func (p *PodArgs) changePodTrafficMonitorState(
 	p.StateChangeMutex.Lock()
 	defer p.StateChangeMutex.Unlock()
 
-	if isTrafficMonitoringInFinalState(p) {
-		return errors.New(fmt.Sprintf("API dump process for pod %s already in final state, state: %s\n", p.PodName, p.PodTrafficMonitorState))
-	}
-
 	// Check if the current state is allowed for the transition
 	// If the allowedCurrentStates is empty, then any state is allowed
 	if len(allowedCurrentStates) != 0 && !slices.Contains(allowedCurrentStates, p.PodTrafficMonitorState) {
@@ -102,8 +98,8 @@ func (p *PodArgs) changePodTrafficMonitorState(
 	return nil
 }
 
-// isTrafficMonitoringInFinalState checks if the pod traffic monitor state is in the final state.
-func isTrafficMonitoringInFinalState(p *PodArgs) bool {
+// isEndState checks if the pod traffic monitor state is in the final state.
+func (p *PodArgs) isEndState() bool {
 	switch p.PodTrafficMonitorState {
 	case TrafficMonitoringEnded, TrafficMonitoringFailed, RemovePodFromMap:
 		return true
