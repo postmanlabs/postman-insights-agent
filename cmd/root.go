@@ -34,7 +34,7 @@ var (
 	testOnlyDisableGitHubTeamsCheckFlag bool
 	dogfoodFlag                         bool
 	debugFlag                           bool
-	dropNginxSidecarTrafficFlag         bool
+	dropNginxTrafficFlag                bool
 	cpuProfile                          string
 	cpuProfileOut                       *os.File
 	heapProfile                         string
@@ -231,9 +231,9 @@ func init() {
 	rootCmd.PersistentFlags().MarkHidden("dogfood")
 	viper.BindPFlag("dogfood", rootCmd.PersistentFlags().Lookup("dogfood"))
 
-	rootCmd.PersistentFlags().BoolVar(&dropNginxSidecarTrafficFlag, "drop-nginx-sidecar-traffic", false, "Drop traffic from the Nginx sidecar container in the service deployment")
-	rootCmd.PersistentFlags().MarkHidden("drop-nginx-sidecar-traffic")
-	viper.BindPFlag("drop-nginx-sidecar-traffic", rootCmd.PersistentFlags().Lookup("drop-nginx-sidecar-traffic"))
+	rootCmd.PersistentFlags().BoolVar(&dropNginxTrafficFlag, "drop-nginx-traffic", false, "Drop traffic from the Nginx container in the service deployment")
+	rootCmd.PersistentFlags().MarkHidden("drop-nginx-traffic")
+	viper.BindPFlag("drop-nginx-traffic", rootCmd.PersistentFlags().Lookup("drop-nginx-traffic"))
 
 	rootCmd.PersistentFlags().BoolVar(&testOnlyDisableGitHubTeamsCheckFlag, "test_only_disable_github_teams_check", false, "TEST ONLY - whether to disable the GitHub teams check, even though the environment suggests the CLI is being run as part of CI")
 	rootCmd.PersistentFlags().MarkHidden("test_only_disable_github_teams_check")

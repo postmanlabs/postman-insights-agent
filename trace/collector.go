@@ -87,9 +87,9 @@ func (sc *SamplingCollector) Close() error {
 }
 
 type UserTrafficCollector struct {
-	Collector               Collector
-	DropDogfoodTraffic      bool // Filters out CLI's own traffic to Akita APIs.
-	DropNginxSidecarTraffic bool // Filters out traffic to/from the nginx sidecar.
+	Collector          Collector
+	DropDogfoodTraffic bool // Filters out CLI's own traffic to Akita APIs.
+	DropNginxTraffic   bool // Filters out traffic to/from the nginx.
 }
 
 func (sc *UserTrafficCollector) Process(t akinet.ParsedNetworkTraffic) error {
@@ -97,7 +97,7 @@ func (sc *UserTrafficCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		return nil
 	}
 
-	if sc.DropNginxSidecarTraffic && util.ContainsNginxSidecarTraffic(t) {
+	if sc.DropNginxTraffic && util.ContainsNginxTraffic(t) {
 		return nil
 	}
 

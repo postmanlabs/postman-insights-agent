@@ -409,7 +409,7 @@ func ContainsCLITraffic(t akinet.ParsedNetworkTraffic) bool {
 	return false
 }
 
-func ContainsNginxSidecarTraffic(t akinet.ParsedNetworkTraffic) bool {
+func ContainsNginxTraffic(t akinet.ParsedNetworkTraffic) bool {
 	var header http.Header
 	switch tc := t.Content.(type) {
 	case akinet.HTTPRequest:

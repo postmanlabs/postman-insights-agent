@@ -45,6 +45,7 @@ type requiredContainerConfig struct {
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
 	disableReproMode        string
+	dropNginxTraffic        string
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -201,6 +202,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
 		}
+		if dropNginxTraffic, exists := envVars[POSTMAN_INSIGHTS_DROP_NGINX_TRAFFIC]; exists {
+			containerEnvVars.dropNginxTraffic = dropNginxTraffic
+		}
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
@@ -270,6 +274,17 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		} else if reproModeDisabled {
 			podArgs.ReproMode = false
 			printer.Infof("Repro mode is explicitly disabled at the pod level for pod: %s\n", pod.Name)
+		}
+	}
+
+	// Check if Nginx traffic should be dropped
+	if mainContainerConfig.dropNginxTraffic != "" {
+		dropNginxTraffic, err := strconv.ParseBool(mainContainerConfig.dropNginxTraffic)
+		if err != nil {
+			printer.Errorf("Invalid dropNginxTraffic value for pod: %s, error: %v. Defaulting to false.\n", pod.Name, err)
+		} else {
+			podArgs.DropNginxTraffic = dropNginxTraffic
+			printer.Infof("Nginx traffic drop is enabled for pod: %s\n", pod.Name)
 		}
 	}
 
