@@ -771,9 +771,17 @@ func (a *apidump) Run() error {
 			}
 
 			// Eliminate Akita CLI traffic, unless --dogfood has been specified
-			if !viper.GetBool("dogfood") {
+			dropDogfoodTraffic := !viper.GetBool("dogfood")
+
+			// Eliminate Nginx sidecar traffic, if --drop-nginx-sidecar-traffic has been specified
+			dropNginxSidecarTraffic := viper.GetBool("drop-nginx-sidecar-traffic")
+
+			// Construct userTrafficCollector
+			if dropDogfoodTraffic || dropNginxSidecarTraffic {
 				collector = &trace.UserTrafficCollector{
-					Collector: collector,
+					Collector:               collector,
+					DropDogfoodTraffic:      dropDogfoodTraffic,
+					DropNginxSidecarTraffic: dropNginxSidecarTraffic,
 				}
 			}
 

@@ -34,6 +34,7 @@ var (
 	testOnlyDisableGitHubTeamsCheckFlag bool
 	dogfoodFlag                         bool
 	debugFlag                           bool
+	dropNginxSidecarTrafficFlag         bool
 	cpuProfile                          string
 	cpuProfileOut                       *os.File
 	heapProfile                         string
@@ -229,6 +230,10 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&dogfoodFlag, "dogfood", false, "Capture HTTP traffic to Postman services that would ordinarily be filtered, and enable assertions")
 	rootCmd.PersistentFlags().MarkHidden("dogfood")
 	viper.BindPFlag("dogfood", rootCmd.PersistentFlags().Lookup("dogfood"))
+
+	rootCmd.PersistentFlags().BoolVar(&dropNginxSidecarTrafficFlag, "drop-nginx-sidecar-traffic", false, "Drop traffic from the Nginx sidecar container in the service deployment")
+	rootCmd.PersistentFlags().MarkHidden("drop-nginx-sidecar-traffic")
+	viper.BindPFlag("drop-nginx-sidecar-traffic", rootCmd.PersistentFlags().Lookup("drop-nginx-sidecar-traffic"))
 
 	rootCmd.PersistentFlags().BoolVar(&testOnlyDisableGitHubTeamsCheckFlag, "test_only_disable_github_teams_check", false, "TEST ONLY - whether to disable the GitHub teams check, even though the environment suggests the CLI is being run as part of CI")
 	rootCmd.PersistentFlags().MarkHidden("test_only_disable_github_teams_check")
