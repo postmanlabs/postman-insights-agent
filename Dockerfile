@@ -27,9 +27,6 @@ RUN go mod download
 # Copy the rest of of the source code for building.
 COPY . .
 
-# Make sure all generated data files are created.
-# RUN make embed-data
-
 # Produce a statically linked binary.
 RUN go build -tags osusergo,netgo -ldflags "-linkmode external -extldflags '-static'" -o /out/postman-insights-agent .
 
