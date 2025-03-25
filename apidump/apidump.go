@@ -244,6 +244,14 @@ func (a *apidump) SendInitialTelemetry() {
 		DockerDesktop:             env.HasDockerInternalHostAddress(),
 	}
 
+	if pod, present := a.Args.Tags[tags.XAkitaKubernetesPod]; present {
+		req.MonitoredPodName = pod
+		hostname, err := os.Hostname()
+		if err != nil {
+			req.AgentPodName = hostname
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), telemetryTimeout)
 	defer cancel()
 	err := a.learnClient.PostInitialClientTelemetry(ctx, a.backendSvc, req)
