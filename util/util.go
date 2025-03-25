@@ -409,6 +409,21 @@ func ContainsCLITraffic(t akinet.ParsedNetworkTraffic) bool {
 	return false
 }
 
+// Detect Nginx traffic
+func ContainsNginxTraffic(t akinet.ParsedNetworkTraffic) bool {
+	var header http.Header
+	switch tc := t.Content.(type) {
+	case akinet.HTTPRequest:
+		header = tc.Header
+	case akinet.HTTPResponse:
+		header = tc.Header
+	default:
+		return false
+	}
+
+	return strings.Contains(strings.ToLower(header.Get("Server")), "nginx")
+}
+
 func ParseTags(tagsArg []string) (map[tags.Key]string, error) {
 	tagSet, err := tags.FromPairs(tagsArg)
 	if err != nil {

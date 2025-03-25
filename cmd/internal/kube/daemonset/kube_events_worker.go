@@ -45,6 +45,7 @@ type requiredContainerConfig struct {
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
 	disableReproMode        string
+	dropNginxTraffic        string
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -201,6 +202,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
 		}
+		if dropNginxTraffic, exists := envVars[POSTMAN_INSIGHTS_DROP_NGINX_TRAFFIC]; exists {
+			containerEnvVars.dropNginxTraffic = dropNginxTraffic
+		}
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
@@ -254,6 +258,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		InsightsEnvironment: d.InsightsEnvironment,
 	}
 
+	// Check if Nginx traffic should be dropped, with a default value of true
+	podArgs.DropNginxTraffic = parseBoolConfig(mainContainerConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, true)
+
 	// Determine ReproMode flag for the apidump process
 	podArgs.ReproMode = d.InsightsReproModeEnabled
 
@@ -263,17 +270,26 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	// Check if ReproMode is explicitly disabled at the pod level
-	if mainContainerConfig.disableReproMode != "" {
-		reproModeDisabled, err := strconv.ParseBool(mainContainerConfig.disableReproMode)
-		if err != nil {
-			printer.Errorf("Invalid disableReproMode value for pod: %s, error: %v. Defaulting to DaemonSet-level setting.\n", pod.Name, err)
-		} else if reproModeDisabled {
-			podArgs.ReproMode = false
-			printer.Infof("Repro mode is explicitly disabled at the pod level for pod: %s\n", pod.Name)
-		}
-	}
+	podArgs.ReproMode = !parseBoolConfig(mainContainerConfig.disableReproMode, "disableReproMode", pod.Name, !d.InsightsReproModeEnabled)
 
 	return nil
+}
+
+// parseBoolConfig parses a boolean configuration value, logs errors if parsing fails,
+// and returns the parsed value along with a default fallback.
+func parseBoolConfig(configValue, configName, podName string, defaultValue bool) bool {
+	if configValue == "" {
+		return defaultValue
+	}
+
+	parsedValue, err := strconv.ParseBool(configValue)
+	if err != nil {
+		printer.Errorf("Invalid value for %s in pod %s: %s. Error: %v. Defaulting to %v.\n", configName, podName, configValue, err, defaultValue)
+		return defaultValue
+	}
+
+	printer.Infof("%s is set to %v for pod: %s\n", configName, parsedValue, podName)
+	return parsedValue
 }
 
 // Function to count non-zero attributes in a struct

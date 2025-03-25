@@ -149,6 +149,9 @@ type Args struct {
 	// Whether to enable repro mode and include request/response payloads when uploading witnesses.
 	ReproMode bool
 
+	// Whether to drop traffic to/from nginx
+	DropNginxTraffic bool
+
 	DaemonsetArgs optionals.Optional[DaemonsetArgs]
 }
 
@@ -771,9 +774,18 @@ func (a *apidump) Run() error {
 			}
 
 			// Eliminate Akita CLI traffic, unless --dogfood has been specified
-			if !viper.GetBool("dogfood") {
+			dropDogfoodTraffic := !viper.GetBool("dogfood")
+
+			// Always eliminate Nginx traffic.
+			// Default value of both flags is true, unless explicitly set to false.
+			dropNginxTraffic := a.DropNginxTraffic && viper.GetBool("drop-nginx-traffic")
+
+			// Construct userTrafficCollector
+			if dropDogfoodTraffic || dropNginxTraffic {
 				collector = &trace.UserTrafficCollector{
-					Collector: collector,
+					Collector:          collector,
+					DropDogfoodTraffic: dropDogfoodTraffic,
+					DropNginxTraffic:   dropNginxTraffic,
 				}
 			}
 

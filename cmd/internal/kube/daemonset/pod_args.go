@@ -43,6 +43,7 @@ type PodArgs struct {
 	InsightsProjectID akid.ServiceID
 	TraceTags         tags.SingletonTags
 	ReproMode         bool
+	DropNginxTraffic  bool
 
 	// Pod related fields
 	PodName       string
