@@ -11,7 +11,7 @@ FROM golang:1.20.5-buster AS build
 # Attempting to update the base image to one that provides 1.21.0 means having
 # to update to at least Debian Bullseye. But on Bullseye, libpcap is built with
 # D-Bus support, which means we'd need to pull in D-Bus too.
-COPY replace-go.sh .
+COPY build-scripts/replace-go.sh .
 RUN chmod u+rwx replace-go.sh
 RUN ./replace-go.sh
 
@@ -21,11 +21,11 @@ RUN apt-get update && apt-get install -y libpcap-dev
 WORKDIR /src
 
 # Download go dependencies first so docker can cache them if nothing changed.
-COPY go.* ./
+COPY ../go.* ./
 RUN go mod download
 
 # Copy the rest of of the source code for building.
-COPY . .
+COPY ../ ./
 
 # Produce a statically linked binary.
 RUN go build -tags osusergo,netgo -ldflags "-linkmode external -extldflags '-static'" -o /out/postman-insights-agent .

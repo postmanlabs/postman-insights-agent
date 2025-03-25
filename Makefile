@@ -6,7 +6,7 @@ build: clean
 	go build -o bin/postman-insights-agent .
 
 docker-build:
-	docker build --target bin --output type=local,dest=/tmp,include=/postman-insights-agent --provenance false . 
+	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile . 
 
 clean:
 	go clean
