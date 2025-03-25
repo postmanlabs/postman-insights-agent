@@ -258,8 +258,8 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		InsightsEnvironment: d.InsightsEnvironment,
 	}
 
-	// Check if Nginx traffic should be dropped
-	podArgs.DropNginxTraffic = parseBoolConfig(mainContainerConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, false)
+	// Check if Nginx traffic should be dropped, with a default value of true
+	podArgs.DropNginxTraffic = parseBoolConfig(mainContainerConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, true)
 
 	// Determine ReproMode flag for the apidump process
 	podArgs.ReproMode = d.InsightsReproModeEnabled

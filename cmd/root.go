@@ -231,7 +231,7 @@ func init() {
 	rootCmd.PersistentFlags().MarkHidden("dogfood")
 	viper.BindPFlag("dogfood", rootCmd.PersistentFlags().Lookup("dogfood"))
 
-	rootCmd.PersistentFlags().BoolVar(&dropNginxTrafficFlag, "drop-nginx-traffic", false, "Drop traffic from the Nginx container in the service deployment")
+	rootCmd.PersistentFlags().BoolVar(&dropNginxTrafficFlag, "drop-nginx-traffic", true, "Drop traffic from the Nginx container in the service deployment")
 	rootCmd.PersistentFlags().MarkHidden("drop-nginx-traffic")
 	viper.BindPFlag("drop-nginx-traffic", rootCmd.PersistentFlags().Lookup("drop-nginx-traffic"))
 
