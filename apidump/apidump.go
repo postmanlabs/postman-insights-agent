@@ -71,6 +71,8 @@ const (
 	notMatchedFilter filterState = "UNMATCHED"
 )
 
+var ProcessSignalErr = errors.New("process received exit signal")
+
 // Args for running apidump as daemonset in Kubernetes
 type DaemonsetArgs struct {
 	TargetNetworkNamespaceOpt string
@@ -857,6 +859,8 @@ func (a *apidump) Run() error {
 		printer.Stderr.Infof("%s\n", printer.Color.Yellow("--filter flag is not set; capturing all network traffic to and from your services."))
 	}
 
+	// Lets us track if the process has received a signal like SIGINT and SIGTERM.
+	var processReceivedSignal os.Signal
 	// Keep track of errors by interface, as well as errors from the subcommand
 	// if applicable.
 	errorsByInterface := make(map[string]error)
@@ -927,8 +931,8 @@ func (a *apidump) Run() error {
 		DoneWaitingForSignal:
 			for {
 				select {
-				case received := <-sig:
-					printer.Stderr.Infof("Received %v, stopping trace collection...\n", received.String())
+				case processReceivedSignal = <-sig:
+					printer.Stderr.Infof("Received %v, stopping trace collection...\n", processReceivedSignal.String())
 					break DoneWaitingForSignal
 				case interfaceErr := <-errChan:
 					errorsByInterface[interfaceErr.interfaceName] = interfaceErr.err
@@ -991,9 +995,13 @@ func (a *apidump) Run() error {
 
 	if a.dumpSummary.IsEmpty() {
 		telemetry.Failure("empty API trace")
-		return errors.New("API trace is empty")
+	} else {
+		printer.Stderr.Infof("%s 🎉\n\n", printer.Color.Green("Success!"))
 	}
 
-	printer.Stderr.Infof("%s 🎉\n\n", printer.Color.Green("Success!"))
+	if processReceivedSignal != nil {
+		return ProcessSignalErr
+	}
+
 	return nil
 }

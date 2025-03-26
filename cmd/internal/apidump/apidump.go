@@ -18,7 +18,6 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 var (
@@ -100,13 +99,12 @@ func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Log the error and wait forever.
-	printer.Stderr.Errorf("Error during initiaization: %v\n", err)
-
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !errors.Is(err, apidump.ProcessSignalErr) {
+		printer.Stderr.Errorf("Error during initiaization: %v\n", err)
 		printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
 		select {}
 	}
+
 	return nil
 }
 
