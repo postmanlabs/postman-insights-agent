@@ -18,6 +18,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -95,16 +96,19 @@ func applyRandomizedStart() {
 // think there is a reliable way to tell the context otherwise.
 func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
 	err := apidumpRunInternal(cmd, args)
-
 	if err == nil {
 		return nil
 	}
 
-	// Log the error and wait forever.
-	printer.Stderr.Errorf("Error during initiaization: %v\n", err)
-	printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
+	if !errors.Is(err, apidump.ProcessSignalErr) {
+		printer.Stderr.Errorf("Error during initiaization: %v\n", err)
+		if !term.IsTerminal(int(os.Stdout.Fd())) {
+			printer.Stdout.Infof("This process will not exit, to avoid boot loops. Please correct the command line flags or environment and retry.\n")
+			select {}
+		}
+	}
 
-	select {}
+	return nil
 }
 
 func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
