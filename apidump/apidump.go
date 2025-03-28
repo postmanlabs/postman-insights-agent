@@ -786,16 +786,12 @@ func (a *apidump) Run() error {
 			// Eliminate Akita CLI traffic, unless --dogfood has been specified
 			dropDogfoodTraffic := !viper.GetBool("dogfood")
 
-			// Always eliminate Nginx traffic.
-			// Default value of both flags is true, unless explicitly set to false.
-			dropNginxTraffic := a.DropNginxTraffic && viper.GetBool("drop-nginx-traffic")
-
 			// Construct userTrafficCollector
-			if dropDogfoodTraffic || dropNginxTraffic {
+			if dropDogfoodTraffic || a.DropNginxTraffic {
 				collector = &trace.UserTrafficCollector{
 					Collector:          collector,
 					DropDogfoodTraffic: dropDogfoodTraffic,
-					DropNginxTraffic:   dropNginxTraffic,
+					DropNginxTraffic:   a.DropNginxTraffic,
 				}
 			}
 

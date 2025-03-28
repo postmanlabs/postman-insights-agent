@@ -18,6 +18,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"golang.org/x/term"
 )
 
@@ -222,6 +223,7 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 		MaxWitnessSize_bytes:    maxWitnessSize_bytes,
 		DockerExtensionMode:     dockerExtensionMode,
 		HealthCheckPort:         healthCheckPort,
+		DropNginxTraffic:        viper.GetBool("drop-nginx-traffic"),
 
 		// TODO: remove the SendWitnessPayloads flag once all existing users are migrated to new flag.
 		ReproMode: commonApidumpFlags.EnableReproMode || commonApidumpFlags.SendWitnessPayloads,
