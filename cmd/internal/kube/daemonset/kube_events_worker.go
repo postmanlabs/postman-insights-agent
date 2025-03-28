@@ -9,6 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/spf13/viper"
 	coreV1 "k8s.io/api/core/v1"
 )
 
@@ -258,8 +259,8 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		InsightsEnvironment: d.InsightsEnvironment,
 	}
 
-	// Check if Nginx traffic should be dropped, with a default value of true
-	podArgs.DropNginxTraffic = parseBoolConfig(mainContainerConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, true)
+	// Check if Nginx traffic should be dropped, with a default fallback to the DaemonSet config
+	podArgs.DropNginxTraffic = parseBoolConfig(mainContainerConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, viper.GetBool("drop-nginx-traffic"))
 
 	// Determine ReproMode flag for the apidump process
 	podArgs.ReproMode = d.InsightsReproModeEnabled
