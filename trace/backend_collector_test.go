@@ -421,6 +421,8 @@ func TestTiming(t *testing.T) {
 			ExpectedLatencies: []float32{3.0, 3.0},
 		},
 		{
+			// Here we are testing the existance of a bug (the two requests get matched together and the two responses get matched together)
+			// If it suddenly starts failing there is a very good chance that you fixed the bug!
 			Name: "pipelined request + response pairs",
 			PNTs: []akinet.ParsedNetworkTraffic{
 				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),

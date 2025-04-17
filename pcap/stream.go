@@ -230,15 +230,22 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	c akinet.ParsedNetworkContent,
 ) akinet.ParsedNetworkTraffic {
 	if firstPacketTime.IsZero() || lastPacketTime.IsZero() {
-		firstPacketTime = f.clock.Now()
-		lastPacketTime = firstPacketTime
-		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. first: %v last: %v", firstPacketTime, lastPacketTime)
+		now := f.clock.Now()
+		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. first: %v last: %v now: %v", firstPacketTime, lastPacketTime, now)
 		atomic.AddUint64(&CountZeroValuePacketTimestamp, 1)
+
+		if firstPacketTime.IsZero() {
+			firstPacketTime = now
+		}
+		if lastPacketTime.IsZero() {
+			lastPacketTime = now
+		}
 	}
 	if lastPacketTime.Before(firstPacketTime) {
-		lastPacketTime = firstPacketTime
 		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. first: %v last: %v", firstPacketTime, lastPacketTime)
 		atomic.AddUint64(&CountLastPacketBeforeFirstPacket, 1)
+
+		lastPacketTime = firstPacketTime
 	}
 
 	// Endpoint interpretation logic from
