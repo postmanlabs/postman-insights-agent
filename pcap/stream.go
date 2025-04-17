@@ -31,6 +31,14 @@ var CountNilAssemblerContextAfterParse uint64
 // happen at all.
 var CountBadAssemblerContextType uint64
 
+// Number of times we got parsed network traffic where either the firstPacket or lastPacket
+// timestamp is the default zero value.
+var CountZeroValuePacketTimestamp uint64
+
+// Number of times we got parsed network traffic where the firstPacket timestamp
+// is before the lastPacket timestamp.
+var CountLastPacketBeforeFirstPacket uint64
+
 // tcpFlow represents a uni-directional flow of TCP segments along with a
 // bidirectional ID that identifies the tcpFlow in the opposite direction.
 // Writes come from TCP assembler via tcpStream, while reads come from users
@@ -219,12 +227,18 @@ func (f *tcpFlow) reassemblyComplete() {
 }
 
 func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
-	c akinet.ParsedNetworkContent) akinet.ParsedNetworkTraffic {
-	if firstPacketTime.IsZero() {
+	c akinet.ParsedNetworkContent,
+) akinet.ParsedNetworkTraffic {
+	if firstPacketTime.IsZero() || lastPacketTime.IsZero() {
 		firstPacketTime = f.clock.Now()
-	}
-	if lastPacketTime.IsZero() {
 		lastPacketTime = firstPacketTime
+		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. first: %v last: %v", firstPacketTime, lastPacketTime)
+		atomic.AddUint64(&CountZeroValuePacketTimestamp, 1)
+	}
+	if lastPacketTime.Before(firstPacketTime) {
+		lastPacketTime = firstPacketTime
+		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. first: %v last: %v", firstPacketTime, lastPacketTime)
+		atomic.AddUint64(&CountLastPacketBeforeFirstPacket, 1)
 	}
 
 	// Endpoint interpretation logic from

@@ -264,73 +264,222 @@ func newTestCookieSpec(d *pb.Data, key string, responseCode int) *pb.Data {
 
 // Verify processing latency computation
 func TestTiming(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	mockClient := mockrest.NewMockLearnClient(ctrl)
-	defer ctrl.Finish()
-
-	var rec witnessRecorder
-	mockClient.
-		EXPECT().
-		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
-		Do(rec.recordAsyncReportsUpload).
-		AnyTimes().
-		Return(nil)
-
-	mockClient.
-		EXPECT().
-		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
-		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
-
 	streamID := uuid.New()
+	seq := 1023
 	startTime := time.Now()
 
-	req := akinet.ParsedNetworkTraffic{
-		Content: akinet.HTTPRequest{
-			StreamID: streamID,
-			Seq:      1203,
-			Method:   "GET",
-			URL: &url.URL{
-				Path: "/v1/doggos",
+	request := func(streamID uuid.UUID, seq int, observationTime, finalPacketTime time.Time) akinet.ParsedNetworkTraffic {
+		return akinet.ParsedNetworkTraffic{
+			Content: akinet.HTTPRequest{
+				StreamID: streamID,
+				Seq:      seq,
+				Method:   "GET",
+				URL: &url.URL{
+					Path: "/v1/doggos",
+				},
+				Host: "example.com",
 			},
-			Host: "example.com",
-		},
-		ObservationTime: startTime,
-		FinalPacketTime: startTime.Add(2 * time.Millisecond),
+			ObservationTime: observationTime,
+			FinalPacketTime: finalPacketTime,
+		}
+	}
+	response := func(streamID uuid.UUID, seq int, observationTime, finalPacketTime time.Time) akinet.ParsedNetworkTraffic {
+		return akinet.ParsedNetworkTraffic{
+			Content: akinet.HTTPResponse{
+				StreamID:   streamID,
+				Seq:        seq,
+				StatusCode: 200,
+			},
+			ObservationTime: observationTime,
+			FinalPacketTime: finalPacketTime,
+		}
 	}
 
-	resp := akinet.ParsedNetworkTraffic{
-		Content: akinet.HTTPResponse{
-			StreamID:   streamID,
-			Seq:        1203,
-			StatusCode: 200,
+	cases := []struct {
+		Name              string
+		PNTs              []akinet.ParsedNetworkTraffic
+		ExpectedWitnesses int
+		ExpectedLatencies []float32
+	}{
+		{
+			Name: "request + response 8 ms appart",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+				response(streamID, seq, startTime.Add(10*time.Millisecond), startTime.Add(13*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{8.0},
 		},
-		ObservationTime: startTime.Add(10 * time.Millisecond),
-		FinalPacketTime: startTime.Add(13 * time.Millisecond),
+		{
+			Name: "response + request 8 ms appart",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				response(streamID, seq, startTime.Add(10*time.Millisecond), startTime.Add(13*time.Millisecond)),
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{8.0},
+		},
+		{
+			Name: "request + response 0 ms appart",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+				response(streamID, seq, startTime.Add(2*time.Millisecond), startTime.Add(13*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{0.0},
+		},
+		{
+			Name: "response + request 0 ms appart",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				response(streamID, seq, startTime.Add(2*time.Millisecond), startTime.Add(13*time.Millisecond)),
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{0.0},
+		},
+		{
+			Name: "request + response 1 ms overlap",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+				response(streamID, seq, startTime.Add(1*time.Millisecond), startTime.Add(3*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{-1.0},
+		},
+		{
+			Name: "response + request 1 ms overlap",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				response(streamID, seq, startTime.Add(1*time.Millisecond), startTime.Add(3*time.Millisecond)),
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{-1.0},
+		},
+		{
+			Name: "request + response fully overlapping",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime, startTime),
+				response(streamID, seq, startTime, startTime),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{0.0},
+		},
+		{
+			Name: "response + request fully overlapping",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				response(streamID, seq, startTime, startTime),
+				request(streamID, seq, startTime, startTime),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{0.0},
+		},
+		{
+			Name: "request + response out of order",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime.Add(3*time.Millisecond), startTime.Add(4*time.Millisecond)),
+				response(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{-4.0},
+		},
+		{
+			Name: "response + request out of order",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				response(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+				request(streamID, seq, startTime.Add(3*time.Millisecond), startTime.Add(4*time.Millisecond)),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{-4.0},
+		},
+		{
+			Name: "request + response zero timestamps",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, time.Time{}, time.Time{}),
+				response(streamID, seq, time.Time{}, time.Time{}),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{0.0},
+		},
+		{
+			Name: "response + request zero timestamps",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				response(streamID, seq, time.Time{}, time.Time{}),
+				request(streamID, seq, time.Time{}, time.Time{}),
+			},
+			ExpectedWitnesses: 1,
+			ExpectedLatencies: []float32{0.0},
+		},
+		{
+			Name: "interleaved request + response pairs",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+				request(streamID, seq+1, startTime.Add(1*time.Millisecond), startTime.Add(3*time.Millisecond)),
+				response(streamID, seq, startTime.Add(5*time.Millisecond), startTime.Add(7*time.Millisecond)),
+				response(streamID, seq+1, startTime.Add(6*time.Millisecond), startTime.Add(8*time.Millisecond)),
+			},
+			ExpectedWitnesses: 2,
+			ExpectedLatencies: []float32{3.0, 3.0},
+		},
+		{
+			Name: "pipelined request + response pairs",
+			PNTs: []akinet.ParsedNetworkTraffic{
+				request(streamID, seq, startTime, startTime.Add(2*time.Millisecond)),
+				request(streamID, seq, startTime.Add(1*time.Millisecond), startTime.Add(3*time.Millisecond)),
+				response(streamID, seq, startTime.Add(5*time.Millisecond), startTime.Add(7*time.Millisecond)),
+				response(streamID, seq, startTime.Add(6*time.Millisecond), startTime.Add(8*time.Millisecond)),
+			},
+			ExpectedWitnesses: 2,
+			ExpectedLatencies: []float32{0.0, 0.0},
+		},
 	}
 
-	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
-	assert.NoError(t, err)
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			defer ctrl.Finish()
 
-	col := NewBackendCollector(
-		fakeSvc,
-		fakeLrn,
-		mockClient,
-		redactor,
-		optionals.None[int](),
-		NewPacketCounter(),
-		false,
-		nil,
-	)
-	assert.NoError(t, col.Process(req))
-	assert.NoError(t, col.Process(resp))
-	assert.NoError(t, col.Close())
+			var rec witnessRecorder
+			mockClient.
+				EXPECT().
+				AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+				Do(rec.recordAsyncReportsUpload).
+				AnyTimes().
+				Return(nil)
 
-	assert.Equal(t, 1, len(rec.witnesses))
-	actual := rec.witnesses[0]
-	meta := spec_util.HTTPMetaFromMethod(actual.Method)
-	assert.NotNil(t, meta)
-	assert.InDelta(t, 8.0, meta.ProcessingLatency, 0.001)
+			mockClient.
+				EXPECT().
+				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+				AnyTimes().
+				Return(kgxapi.NewServiceAgentConfig(), nil)
+
+			redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+			assert.NoError(t, err)
+
+			col := NewBackendCollector(
+				fakeSvc,
+				fakeLrn,
+				mockClient,
+				redactor,
+				optionals.None[int](),
+				NewPacketCounter(),
+				false,
+				nil,
+			)
+			for _, pnt := range test.PNTs {
+				assert.NoError(t, col.Process(pnt))
+			}
+			assert.NoError(t, col.Close())
+
+			assert.Equal(t, test.ExpectedWitnesses, len(rec.witnesses))
+			for i, expectedLatency := range test.ExpectedLatencies {
+				witness := rec.witnesses[i]
+				meta := spec_util.HTTPMetaFromMethod(witness.Method)
+				assert.NotNil(t, meta)
+				assert.InDelta(t, expectedLatency, meta.ProcessingLatency, 0.001)
+			}
+		})
+	}
 }
 
 // Demonstrate race condition with multiple interfaces
