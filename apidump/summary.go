@@ -265,11 +265,17 @@ func (s *Summary) printHostHighlights(top *client_telemetry.PacketCountSummary) 
 // any packets, capturing packets but failing to parse them, etc.
 func (s *Summary) PrintWarnings() {
 	// Report on recoverable error counts during trace
-	if pcap.CountNilAssemblerContext > 0 || pcap.CountNilAssemblerContextAfterParse > 0 || pcap.CountBadAssemblerContextType > 0 {
-		printer.Stderr.Infof("Detected packet assembly context problems during capture: %v empty, %v bad type, %v empty after parse. ",
+	if pcap.CountNilAssemblerContext > 0 ||
+		pcap.CountNilAssemblerContextAfterParse > 0 ||
+		pcap.CountBadAssemblerContextType > 0 ||
+		pcap.CountZeroValuePacketTimestamp > 0 ||
+		pcap.CountLastPacketBeforeFirstPacket > 0 {
+		printer.Stderr.Infof("Detected packet assembly context problems during capture: %v empty, %v bad type, %v empty after parse, %v zero timestamp, %v last before first timestamp. ",
 			pcap.CountNilAssemblerContext,
 			pcap.CountBadAssemblerContextType,
-			pcap.CountNilAssemblerContextAfterParse)
+			pcap.CountNilAssemblerContextAfterParse,
+			pcap.CountZeroValuePacketTimestamp,
+			pcap.CountLastPacketBeforeFirstPacket)
 		printer.Stderr.Infof("These errors may cause some packets to be missing from the trace.\n")
 	}
 
@@ -383,5 +389,4 @@ func DumpPacketCounters(logf func(f string, args ...interface{}), interfaces map
 	}
 
 	logf("==================================================\n")
-
 }
