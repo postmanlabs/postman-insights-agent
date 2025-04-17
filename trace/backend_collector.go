@@ -52,9 +52,9 @@ type witnessWithInfo struct {
 	dstIP           net.IP // The HTTP server's IP address.
 	dstPort         uint16 // The HTTP server's port number.
 	observationTime time.Time
+	finalPacketTime time.Time
 	id              akid.WitnessID
-	requestEnd      time.Time
-	responseStart   time.Time
+	isRequest       bool
 
 	// Mutex protecting witness while it is being processed and/or flushed.
 	witnessMutex sync.Mutex
@@ -89,36 +89,41 @@ func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 	}, nil
 }
 
-func (w *witnessWithInfo) recordTimestamp(isRequest bool, t akinet.ParsedNetworkTraffic) {
-	if isRequest {
-		w.requestEnd = t.FinalPacketTime
-	} else {
-		w.responseStart = t.ObservationTime
+func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
+	if w.isRequest == isRequest {
+		if isRequest {
+			printer.Debugln("Skipping latency calculation. Matched 2 requests together.")
+		} else {
+			printer.Debugln("Skipping latency calculation. Matched 2 responses together.")
+		}
+		return
 	}
 
-}
-
-func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
 	// Processing latency is the time from the last packet of the request,
 	// to the first packet of the response.
-	requestEnd := w.requestEnd
-	responseStart := t.ObservationTime
-
-	// handle arrival in opposite order
-	if isRequest {
+	var requestEnd, responseStart time.Time
+	if w.isRequest {
+		requestEnd = w.finalPacketTime
+		responseStart = t.ObservationTime
+	} else {
 		requestEnd = t.FinalPacketTime
-		responseStart = w.responseStart
+		responseStart = w.observationTime
 	}
 
 	// Missing data, leave as default value in protobuf
 	if requestEnd.IsZero() || responseStart.IsZero() {
+		printer.Debugf("Skipping latency calculation. Zero value timestamps. RequestEnd: %v ResponseStart %v.\n", requestEnd, responseStart)
 		return
+	}
+
+	latency := float32(responseStart.Sub(requestEnd).Microseconds()) / 1000.0
+	if latency < 0.0 {
+		printer.Debugf("Negative latency calculation: %v\n", latency)
 	}
 
 	// HTTPMethodMetadata only for now
 	if meta := spec_util.HTTPMetaFromMethod(w.witness.Method); meta != nil {
-		latency := responseStart.Sub(requestEnd)
-		meta.ProcessingLatency = float32(latency.Microseconds()) / 1000.0
+		meta.ProcessingLatency = latency
 	}
 }
 
@@ -251,10 +256,10 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			dstPort:         uint16(t.DstPort),
 			witness:         partial.Witness,
 			observationTime: t.ObservationTime,
+			finalPacketTime: t.FinalPacketTime,
 			id:              partial.PairKey,
+			isRequest:       isRequest,
 		}
-		// Store whichever timestamp brackets the processing interval.
-		w.recordTimestamp(isRequest, t)
 		c.pairCache.Store(partial.PairKey, w)
 		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",
 			partial.PairKey, isRequest, t.ObservationTime, t.FinalPacketTime)
@@ -299,8 +304,10 @@ func (c *BackendCollector) processTLSHandshake(tls akinet.TLSHandshakeMetadata) 
 	return nil
 }
 
-var cloudAPIEnvironmentsPathRE = regexp.MustCompile(`^/environments/[^/]+$`)
-var cloudAPIHostnames = sets.NewSet[string]()
+var (
+	cloudAPIEnvironmentsPathRE = regexp.MustCompile(`^/environments/[^/]+$`)
+	cloudAPIHostnames          = sets.NewSet[string]()
+)
 
 func init() {
 	cloudAPIHostnames.Insert("api.getpostman-stage.com")
@@ -317,7 +324,6 @@ func init() {
 // XXX This is a stop-gap hack to exclude certain endpoints for Cloud API from
 // Repro Mode.
 func excludeWitnessFromReproMode(w *pb.Witness) bool {
-
 	httpMeta := w.GetMethod().GetMeta().GetHttp()
 	if httpMeta == nil {
 		return false
