@@ -269,6 +269,7 @@ func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.Pa
 }
 
 func contextFromTCPPacket(p gopacket.Packet, t *layers.TCP) *assemblerCtxWithSeq {
+	printer.V(6).Debugf("contextFromTCPPacket created with packet timestamp: %v", p.Metadata().CaptureInfo.Timestamp)
 	return &assemblerCtxWithSeq{
 		ci:  p.Metadata().CaptureInfo,
 		seq: reassembly.Sequence(t.Seq),
