@@ -230,9 +230,21 @@ func (f *tcpFlow) reassemblyComplete() {
 func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	c akinet.ParsedNetworkContent,
 ) akinet.ParsedNetworkTraffic {
+	pncType := func() string {
+		switch c.(type) {
+		case akinet.HTTPRequest:
+			return "request"
+		case akinet.HTTPResponse:
+			return "response"
+		case akinet.DroppedBytes:
+			return "dropped_bytes"
+		default:
+			return "unknown"
+		}
+	}
 	if firstPacketTime.IsZero() || lastPacketTime.IsZero() {
 		now := f.clock.Now()
-		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. first: %v last: %v now: %v", firstPacketTime, lastPacketTime, now)
+		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. type: %v first: %v last: %v now: %v", pncType(), firstPacketTime, lastPacketTime, now)
 		atomic.AddUint64(&CountZeroValuePacketTimestamp, 1)
 
 		if firstPacketTime.IsZero() {
@@ -243,7 +255,7 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 		}
 	}
 	if lastPacketTime.Before(firstPacketTime) {
-		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. first: %v last: %v", firstPacketTime, lastPacketTime)
+		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. type: %v first: %v last: %v", pncType(), firstPacketTime, lastPacketTime)
 		atomic.AddUint64(&CountLastPacketBeforeFirstPacket, 1)
 
 		lastPacketTime = firstPacketTime
