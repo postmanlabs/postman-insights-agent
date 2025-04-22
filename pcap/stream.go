@@ -211,6 +211,7 @@ func (f *tcpFlow) reassemblyComplete() {
 		if err != nil {
 			f.handleUnparseable(t, numBytesConsumed)
 		} else if pnc != nil {
+			printer.V(6).Infof("ReassemblyComplete parsed additional network traffic with ts: %v", t)
 			f.outChan <- f.toPNT(t, t, pnc)
 			f.handleUnparseable(t, unused.Len())
 		}
