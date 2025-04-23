@@ -157,7 +157,13 @@ func poll(pollingInterval time.Duration) error {
 		float64(allStat.CPUStatAll.System-lastAllStat.CPUStatAll.System) +
 		float64(allStat.CPUStatAll.Idle-lastAllStat.CPUStatAll.Idle)
 
-	relativeCPU := selfCPU / allCPU
+	var relativeCPU float64 = 0.0
+	if allCPU > 0.0 {
+		// If allCPU is `0.0` we would get a `NaN` value which would
+		// result in all subsequent operations involving `relativeCPU`
+		// also resulting in a `NaN` value.
+		relativeCPU = selfCPU / allCPU
+	}
 	peakRelativeCPU = math.Max(peakRelativeCPU, relativeCPU)
 
 	coresUsed := relativeCPU * float64(len(allStat.CPUStats))
