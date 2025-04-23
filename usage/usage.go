@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/api_schema"
-	akimath "github.com/akitasoftware/go-utils/math"
+	"github.com/akitasoftware/go-utils/math"
 	"github.com/akitasoftware/go-utils/queues"
 	"github.com/c9s/goprocinfo/linux"
 	"github.com/pkg/errors"
@@ -164,18 +164,18 @@ func poll(pollingInterval time.Duration) error {
 		// also resulting in a `NaN` value.
 		relativeCPU = selfCPU / allCPU
 	}
-	peakRelativeCPU = akimath.Max(peakRelativeCPU, relativeCPU)
+	peakRelativeCPU = math.Max(peakRelativeCPU, relativeCPU)
 
 	coresUsed := relativeCPU * float64(len(allStat.CPUStats))
-	peakCoresUsed = akimath.Max(peakCoresUsed, coresUsed)
+	peakCoresUsed = math.Max(peakCoresUsed, coresUsed)
 
 	// Get highest recorded VM high water mark.
 	vmHWM := status.VmHWM
 	history.ForEach(func(h statHistory) {
-		vmHWM = akimath.Max(vmHWM, h.status.VmHWM)
+		vmHWM = math.Max(vmHWM, h.status.VmHWM)
 	})
 
-	peakVM = akimath.Max(peakVM, vmHWM)
+	peakVM = math.Max(peakVM, vmHWM)
 
 	// Update history.
 	observedAt := time.Now()
@@ -188,7 +188,7 @@ func poll(pollingInterval time.Duration) error {
 
 	// If the history has filled the sliding window, evict the oldest.  There
 	// will always be at least one element in the history.
-	if history.Size() > akimath.Max(int(slidingWindowSize/pollingInterval), 1) {
+	if history.Size() > math.Max(int(slidingWindowSize/pollingInterval), 1) {
 		history.Dequeue()
 	}
 
