@@ -1,7 +1,6 @@
 package usage
 
 import (
-	"math"
 	"os"
 	"sync"
 	"time"
@@ -158,12 +157,12 @@ func poll(pollingInterval time.Duration) error {
 		float64(allStat.CPUStatAll.System-lastAllStat.CPUStatAll.System) +
 		float64(allStat.CPUStatAll.Idle-lastAllStat.CPUStatAll.Idle)
 
-	relativeCPU := selfCPU / allCPU
-	// If selfCPU and allCPU are both zero we will end up with NaN
-	// any operation using a NaN value results in a NaN value.
-	// So we must ensure that we don't end up with NaN.
-	if math.IsNaN(relativeCPU) {
-		relativeCPU = 0.0
+	var relativeCPU float64 = 0.0
+	if allCPU > 0.0 {
+		// If allCPU is `0.0` we would get a `NaN` value which would
+		// result in all subsequent operations involving `relativeCPU`
+		// also resulting in a `NaN` value.
+		relativeCPU = selfCPU / allCPU
 	}
 	peakRelativeCPU = akimath.Max(peakRelativeCPU, relativeCPU)
 
