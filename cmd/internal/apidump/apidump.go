@@ -190,11 +190,15 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 	} else if envRateLimit := os.Getenv("POSTMAN_INSIGHTS_AGENT_RATE_LIMIT"); envRateLimit != "" {
 		if limit, err := strconv.ParseFloat(envRateLimit, 64); err == nil {
 			agentRateLimit = limit
+		} else {
+			printer.Stderr.Warningf(
+				"POSTMAN_INSIGHTS_AGENT_RATE_LIMIT value: '%v' could not be parsed: %v, using default: '%v'\n",
+				envRateLimit, err, apispec.DefaultRateLimit)
 		}
 	}
 	// Rate limit must be greater than zero.
 	if agentRateLimit <= 0.0 {
-		agentRateLimit = 1000.0
+		agentRateLimit = apispec.DefaultRateLimit
 	}
 
 	// If we collect TLS information, we have to parse it

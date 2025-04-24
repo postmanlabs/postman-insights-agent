@@ -281,6 +281,10 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	if mainContainerConfig.agentRateLimit != "" {
 		if limit, err := strconv.ParseFloat(mainContainerConfig.agentRateLimit, 64); err == nil {
 			podArgs.AgentRateLimit = limit
+		} else {
+			printer.Stderr.Warningf(
+				"POSTMAN_INSIGHTS_AGENT_RATE_LIMIT value: '%v' could not be parsed: %v, using default: '%v'\n",
+				mainContainerConfig.agentRateLimit, err, apispec.DefaultRateLimit)
 		}
 	}
 	if podArgs.AgentRateLimit <= 0.0 {
