@@ -7,6 +7,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
@@ -47,6 +48,7 @@ type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
 	disableReproMode        string
 	dropNginxTraffic        string
+	agentRateLimit          string
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -54,7 +56,6 @@ type containerConfig struct {
 // 1. Check if the pod does not have the agent sidecar container.
 // 3. Adds the pod arguments to a map and change state to PodPending.
 func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
-
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage([]coreV1.Pod{pod}, agentImage, true)
 	if err != nil {
@@ -206,6 +207,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if dropNginxTraffic, exists := envVars[POSTMAN_INSIGHTS_DROP_NGINX_TRAFFIC]; exists {
 			containerEnvVars.dropNginxTraffic = dropNginxTraffic
 		}
+		if agentRateLimit, exists := envVars[POSTMAN_INSIGHTS_AGENT_RATE_LIMIT]; exists {
+			containerEnvVars.agentRateLimit = agentRateLimit
+		}
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
@@ -272,6 +276,20 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	// Check if ReproMode is explicitly disabled at the pod level
 	podArgs.ReproMode = !parseBoolConfig(mainContainerConfig.disableReproMode, "disableReproMode", pod.Name, !d.InsightsReproModeEnabled)
+
+	podArgs.AgentRateLimit = 0.0
+	if mainContainerConfig.agentRateLimit != "" {
+		if limit, err := strconv.ParseFloat(mainContainerConfig.agentRateLimit, 64); err == nil {
+			podArgs.AgentRateLimit = limit
+		} else {
+			printer.Stderr.Warningf(
+				"POSTMAN_INSIGHTS_AGENT_RATE_LIMIT value: '%v' could not be parsed: %v, using default: '%v'\n",
+				mainContainerConfig.agentRateLimit, err, apispec.DefaultRateLimit)
+		}
+	}
+	if podArgs.AgentRateLimit <= 0.0 {
+		podArgs.AgentRateLimit = apispec.DefaultRateLimit
+	}
 
 	return nil
 }
