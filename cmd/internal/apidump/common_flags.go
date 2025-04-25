@@ -3,7 +3,6 @@ package apidump
 import (
 	"strconv"
 
-	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/spf13/cobra"
 )
 
@@ -76,7 +75,7 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 	cmd.PersistentFlags().Float64Var(
 		&flags.RateLimit,
 		"rate-limit",
-		apispec.DefaultRateLimit,
+		0.0,
 		"Number of requests per minute to capture.",
 	)
 
@@ -110,7 +109,7 @@ func ConvertCommonApiDumpFlagsToArgs(flags *CommonApidumpFlags) []string {
 		commonApidumpArgs = append(commonApidumpArgs, "--randomized-start", strconv.Itoa(flags.RandomizedStart))
 	}
 
-	if flags.RateLimit != apispec.DefaultRateLimit {
+	if flags.RateLimit != 0.0 {
 		commonApidumpArgs = append(commonApidumpArgs, "--rate-limit", strconv.FormatFloat(flags.RateLimit, 'f', -1, 64))
 	}
 

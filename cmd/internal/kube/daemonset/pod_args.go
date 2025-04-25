@@ -44,6 +44,7 @@ type PodArgs struct {
 	TraceTags         tags.SingletonTags
 	ReproMode         bool
 	DropNginxTraffic  bool
+	AgentRateLimit    float64
 
 	// Pod related fields
 	PodName       string

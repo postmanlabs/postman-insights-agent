@@ -74,7 +74,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			Domain:                  rest.Domain,
 			ServiceID:               podArgs.InsightsProjectID,
 			SampleRate:              apispec.DefaultSampleRate,
-			WitnessesPerMinute:      apispec.DefaultRateLimit,
+			WitnessesPerMinute:      podArgs.AgentRateLimit,
 			LearnSessionLifetime:    apispec.DefaultTraceRotateInterval,
 			TelemetryInterval:       apispec.DefaultTelemetryInterval_seconds,
 			ProcFSPollingInterval:   apispec.DefaultProcFSPollingInterval_seconds,
