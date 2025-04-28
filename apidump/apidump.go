@@ -244,6 +244,7 @@ func (a *apidump) SendInitialTelemetry() {
 		CLITargetArch:             architecture.GetCanonicalArch(),
 		AkitaDockerRelease:        env.InDocker(),
 		DockerDesktop:             env.HasDockerInternalHostAddress(),
+		AgentRateLimit:            a.WitnessesPerMinute,
 	}
 
 	if pod, present := a.Args.Tags[tags.XAkitaKubernetesPod]; present {
@@ -285,6 +286,7 @@ func (a *apidump) SendPacketTelemetry(observedDuration int) {
 	req := &kgxapi.PostClientPacketCaptureStatsRequest{
 		AgentResourceUsage:        usage.Get(),
 		ObservedDurationInSeconds: observedDuration,
+		AgentRateLimit:            a.WitnessesPerMinute,
 	}
 	if a.dumpSummary != nil {
 		req.PacketCountSummary = a.dumpSummary.FilterSummary.Summary(topNForSummary)
@@ -766,7 +768,7 @@ func (a *apidump) Run() error {
 			// Subsampling.
 			collector = trace.NewSamplingCollector(args.SampleRate, collector)
 			if rateLimit != nil {
-				collector = rateLimit.NewCollector(collector)
+				collector = rateLimit.NewCollector(collector, summary)
 			}
 
 			// Path and host filters.
