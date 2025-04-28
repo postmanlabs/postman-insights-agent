@@ -44,7 +44,8 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	start := time.Now()
 	cc := &countingCollector{}
 	rl := NewRateLimit(1.0)
-	c := rl.NewCollector(cc, NewPacketCounter()).(*rateLimitCollector)
+	pc := NewPacketCounter()
+	c := rl.NewCollector(cc, pc).(*rateLimitCollector)
 
 	// Sample packet from another test
 	streamID := uuid.New()
@@ -94,6 +95,9 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	}
 	if cc.GetNumPackets() != 5 {
 		t.Errorf("Expected 5 packets in collector, got %v", cc.GetNumPackets())
+	}
+	if pc.total.HTTPRequestsRateLimited != 5 {
+		t.Errorf("Expected 5 rate limited request, got %v", pc.total.HTTPRequestsRateLimited)
 	}
 	if rl.FirstEstimate {
 		t.Errorf("Expected FirstEstimate to be false")

@@ -246,6 +246,10 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			r.RequestArrivalTimes[key] = pnt.ObservationTime
 		} else {
 			r.packetCount.Update(client_telemetry.PacketCounts{
+				Interface:               pnt.Interface,
+				DstHost:                 c.Host,
+				SrcPort:                 pnt.SrcPort,
+				DstPort:                 pnt.DstPort,
 				HTTPRequestsRateLimited: 1,
 			})
 		}
