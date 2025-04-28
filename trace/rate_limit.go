@@ -217,6 +217,7 @@ func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountC
 		NextCollector:       next,
 		RequestArrivalTimes: make(map[requestKey]time.Time),
 		epochCh:             make(chan time.Time, 1),
+		packetCount:         packetCounts,
 	}
 	r.lock.Lock()
 	defer r.lock.Unlock()
