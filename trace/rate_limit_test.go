@@ -44,7 +44,7 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	start := time.Now()
 	cc := &countingCollector{}
 	rl := NewRateLimit(1.0)
-	c := rl.NewCollector(cc).(*rateLimitCollector)
+	c := rl.NewCollector(cc, NewPacketCounter()).(*rateLimitCollector)
 
 	// Sample packet from another test
 	streamID := uuid.New()
