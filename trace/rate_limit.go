@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/akitasoftware/akita-libs/client_telemetry"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
 )
@@ -90,8 +91,7 @@ func (r *SharedRateLimit) endInterval(end time.Time) {
 		r.FirstEstimate = false
 	} else {
 		alpha := viper.GetFloat64(RateLimitExponentialAlpha)
-		exponentialMovingAverage :=
-			(1-alpha)*float64(r.EstimatedSampleInterval) + alpha*float64(intervalLength)
+		exponentialMovingAverage := (1-alpha)*float64(r.EstimatedSampleInterval) + alpha*float64(intervalLength)
 		printer.Debugln("New estimate:", exponentialMovingAverage)
 		r.EstimatedSampleInterval = time.Duration(uint64(exponentialMovingAverage))
 	}
@@ -206,9 +206,12 @@ type rateLimitCollector struct {
 
 	// Channel from RateLimit for epoch starts
 	epochCh chan time.Time
+
+	// Packet counter
+	packetCount PacketCountConsumer
 }
 
-func (r *SharedRateLimit) NewCollector(next Collector) Collector {
+func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer) Collector {
 	c := &rateLimitCollector{
 		RateLimit:           r,
 		NextCollector:       next,
@@ -240,6 +243,10 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			r.NextCollector.Process(pnt)
 			key := requestKey{c.StreamID.String(), c.Seq}
 			r.RequestArrivalTimes[key] = pnt.ObservationTime
+		} else {
+			r.packetCount.Update(client_telemetry.PacketCounts{
+				HTTPRequestsRateLimited: 1,
+			})
 		}
 	case akinet.HTTPResponse:
 		// Collect iff the request is in our map. (This means responses to calls
