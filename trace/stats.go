@@ -21,8 +21,7 @@ type PacketCountConsumer interface {
 }
 
 // Discard the count
-type PacketCountDiscard struct {
-}
+type PacketCountDiscard struct{}
 
 func (d *PacketCountDiscard) Update(_ PacketCounts) {
 }
@@ -37,10 +36,11 @@ func (d *PacketCountDiscard) Update(_ PacketCounts) {
 // Imposes a hard limit on the number of ports, interfaces, and hosts that
 // are individually tracked.
 type PacketCounter struct {
-	total       PacketCounts
-	byPort      *BoundedPacketCounter[int]
-	byInterface *BoundedPacketCounter[string]
-	mutex       sync.RWMutex
+	total             PacketCounts
+	observationWindow PacketCounts
+	byPort            *BoundedPacketCounter[int]
+	byInterface       *BoundedPacketCounter[string]
+	mutex             sync.RWMutex
 
 	// XXX(cns): Only counts HTTPRequest and TLSHello.  Other metrics are not
 	//   easily tracked per-host.
@@ -127,6 +127,7 @@ func (s *PacketCounter) Update(c PacketCounts) {
 		return new
 	})
 
+	s.observationWindow.Add(c)
 	s.total.Add(c)
 }
 
@@ -210,11 +211,12 @@ func (s *PacketCounter) Summary(n int) *PacketCountSummary {
 	}
 
 	return &PacketCountSummary{
-		Version:        Version,
-		Total:          s.total,
-		TopByPort:      topByPort,
-		TopByInterface: topByInterface,
-		TopByHost:      topByHost,
+		Version:           Version,
+		Total:             s.total,
+		ObservationWindow: *s.observationWindow.CopyAndReset(),
+		TopByPort:         topByPort,
+		TopByInterface:    topByInterface,
+		TopByHost:         topByHost,
 
 		ByPortOverflowLimit:      maxKeys,
 		ByInterfaceOverflowLimit: maxKeys,
