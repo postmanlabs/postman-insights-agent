@@ -286,7 +286,7 @@ func (a *apidump) SendPacketTelemetry(observationDuration int, windowStartTime t
 	req := &kgxapi.PostClientPacketCaptureStatsRequest{
 		AgentResourceUsage:              usage.Get(),
 		ObservedDurationInSeconds:       observationDuration,
-		ObservedWindowStartAt:           windowStartTime,
+		ObservedWindowStartingAt:        windowStartTime,
 		ObservedWindowDurationInSeconds: windowDuration,
 		AgentRateLimit:                  a.WitnessesPerMinute,
 	}
