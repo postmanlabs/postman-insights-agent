@@ -282,11 +282,13 @@ func isBpfFilterError(e error) bool {
 }
 
 // Update the backend with new current capture stats.
-func (a *apidump) SendPacketTelemetry(observedDuration int) {
+func (a *apidump) SendPacketTelemetry(observationDuration int, windowStartTime time.Time, windowDuration int) {
 	req := &kgxapi.PostClientPacketCaptureStatsRequest{
-		AgentResourceUsage:        usage.Get(),
-		ObservedDurationInSeconds: observedDuration,
-		AgentRateLimit:            a.WitnessesPerMinute,
+		AgentResourceUsage:              usage.Get(),
+		ObservedDurationInSeconds:       observationDuration,
+		ObservedWindowStartingAt:        windowStartTime,
+		ObservedWindowDurationInSeconds: windowDuration,
+		AgentRateLimit:                  a.WitnessesPerMinute,
 	}
 	if a.dumpSummary != nil {
 		req.PacketCountSummary = a.dumpSummary.FilterSummary.Summary(topNForSummary)
@@ -470,18 +472,25 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 	if a.TelemetryInterval > 0 {
 		ticker := time.NewTicker(time.Duration(a.TelemetryInterval) * time.Second)
 
+		lastReport := time.Now()
 		for {
 			select {
 			case <-done:
 				return
 			case now := <-ticker.C:
-				duration := int(now.Sub(a.startTime) / time.Second)
-				a.SendPacketTelemetry(duration)
+				observationDuration := int(now.Sub(a.startTime) / time.Second)
+				windowStart := lastReport
+				windowDuration := int(now.Sub(windowStart) / time.Second)
+				lastReport = time.Now()
+				a.SendPacketTelemetry(observationDuration, windowStart, windowDuration)
 				subsequentTelemetrySent = true
 			case <-a.successTelemetry.Channel:
 				if !subsequentTelemetrySent {
-					duration := int(time.Since(a.startTime) / time.Second)
-					a.SendPacketTelemetry(duration)
+					observationDuration := int(time.Since(a.startTime) / time.Second)
+					windowStart := lastReport
+					windowDuration := int(time.Since(windowStart) / time.Second)
+					lastReport = time.Now()
+					a.SendPacketTelemetry(observationDuration, windowStart, windowDuration)
 				}
 			}
 		}

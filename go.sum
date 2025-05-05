@@ -36,6 +36,8 @@ github.com/akitasoftware/akita-libs v0.0.0-20250428180153-cb2e977a2ee3 h1:ANLqfV
 github.com/akitasoftware/akita-libs v0.0.0-20250428180153-cb2e977a2ee3/go.mod h1:Fg14kX6+N7we3KdP1c11W/SzbKsgapV1hP5d4Z/Hqwc=
 github.com/akitasoftware/akita-libs v0.0.0-20250430223533-06e05e3725df h1:NLeQdXerlr1FOXvVgwrYpAat2UeIFKyb+AmRlOz2otQ=
 github.com/akitasoftware/akita-libs v0.0.0-20250430223533-06e05e3725df/go.mod h1:Fg14kX6+N7we3KdP1c11W/SzbKsgapV1hP5d4Z/Hqwc=
+github.com/akitasoftware/akita-libs v0.0.0-20250505211512-67888a517c64 h1:DYjWUWnXOwvuMle72HdQokPDGtzs4cfHLsKHBfnGHiI=
+github.com/akitasoftware/akita-libs v0.0.0-20250505211512-67888a517c64/go.mod h1:Fg14kX6+N7we3KdP1c11W/SzbKsgapV1hP5d4Z/Hqwc=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803 h1:ebIh/EFuaP8GczzMe8EwVID/blSv5Tej6S8NE4xyarQ=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803/go.mod h1:+IOXf7l/QCAQECJzjJwhTp1sBkRoJ6WciZwJezUwBa4=
 github.com/akitasoftware/gopacket v1.1.18-0.20240820200020-7289ae956f70 h1:VnU7QLDBwRujpQoHwShs5yu0Ahv1fSalNJa4UijwlmY=
