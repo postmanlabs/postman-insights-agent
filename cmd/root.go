@@ -166,6 +166,12 @@ func printFlagsWarning(cmd *cobra.Command) {
 }
 
 func Execute() {
+	err := runSupervisor()
+	if err != nil {
+		printer.Stderr.Errorf("%s\n", err)
+		os.Exit(1)
+	}
+
 	defer telemetry.Shutdown()
 
 	if cmd, err := rootCmd.ExecuteC(); err != nil {
