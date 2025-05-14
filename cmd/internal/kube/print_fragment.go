@@ -8,12 +8,18 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/spf13/cobra"
 	"github.com/zclconf/go-cty/cty"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
+)
+
+var (
+	printHelmApidumpFlags *apidump.CommonApidumpFlags
+	printTFApidumpFlags   *apidump.CommonApidumpFlags
 )
 
 var printHelmChartFragmentCmd = &cobra.Command{
@@ -38,8 +44,9 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
+	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printHelmApidumpFlags)
 	// Create the Postman Insights Agent sidecar container
-	container := createPostmanSidecar(insightsProjectID, false)
+	container := createPostmanSidecar(insightsProjectID, false, apidumpArgs)
 	// Store it in an array since the fragment will be added to a list of containers
 	containerArray := []v1.Container{container}
 
@@ -102,6 +109,10 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 		args.Add(cty.StringVal("--domain"))
 		args.Add(cty.StringVal(rest.Domain))
 	}
+	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printTFApidumpFlags)
+	for _, arg := range apidumpArgs {
+		args.Add(cty.StringVal(arg))
+	}
 	containerBody.SetAttributeValue("args", args)
 
 	// Add the environment variables to the container
@@ -133,6 +144,9 @@ func indentCodeFragment(codeFragmentInBytes []byte, indentLevel int) string {
 }
 
 func init() {
+	printHelmApidumpFlags = apidump.AddCommonApiDumpFlags(printHelmChartFragmentCmd)
 	Cmd.AddCommand(printHelmChartFragmentCmd)
+
+	printTFApidumpFlags = apidump.AddCommonApiDumpFlags(printTerraformFragmentCmd)
 	Cmd.AddCommand(printTerraformFragmentCmd)
 }
