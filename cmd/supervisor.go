@@ -54,18 +54,18 @@ func runSupervisor() error {
 	maxRuns, err := strconv.ParseUint(os.Getenv("__X_AKITA_MAX_RUNS"), 10, 64)
 	if err != nil {
 		maxRuns = 0
-		printer.Warningln("unable to parse __X_AKITA_MAX_RUNS, using default value of 0 (no restriction)")
+		printer.Debugf("unable to parse __X_AKITA_MAX_RUNS, using default value of 0 (no restriction)\n")
 	}
 
 	delay, err := strconv.ParseInt(os.Getenv("__X_AKITA_DELAY"), 10, 64)
 	if err != nil {
 		delay = 1
-		printer.Warningln("unable to parse __X_AKITA_DELAY, using default value of 1")
+		printer.Debugf("unable to parse __X_AKITA_DELAY, using default value of 1\n")
 	}
 
 	if delay <= 0 {
 		delay = 1
-		printer.Warningln("__X_AKITA_DELAY must be greater than 0, using default value of 1")
+		printer.Debugf("__X_AKITA_DELAY must be greater than 0, using default value of 1\n")
 	}
 
 	pwd, err := os.Getwd()
@@ -76,7 +76,7 @@ func runSupervisor() error {
 	sigs := make(chan os.Signal)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGCHLD)
 
-	printer.Infof("starting the child process, run %d of %d", 1, maxRuns)
+	printer.Debugf("starting the child process, run %d of %d\n", 1, maxRuns)
 
 	pid, numRuns, err := runChild(pwd, 0)
 	if err != nil {
@@ -88,7 +88,7 @@ func runSupervisor() error {
 
 		if sig.(syscall.Signal) == syscall.SIGINT || sig.(syscall.Signal) == syscall.SIGTERM {
 			if pid != 0 {
-				printer.Infof("sending %s to child", sig.(syscall.Signal))
+				printer.Debugf("sending %s to child\n", sig.(syscall.Signal))
 
 				syscall.Kill(pid, sig.(syscall.Signal))
 
@@ -109,7 +109,7 @@ func runSupervisor() error {
 				return err
 			}
 
-			printer.Infof("child exited with %d", status.ExitCode())
+			printer.Debugf("child exited with %d\n", status.ExitCode())
 
 			if status.Success() {
 				break
@@ -121,7 +121,7 @@ func runSupervisor() error {
 				return fmt.Errorf("maximum number of runs reached (%d), bailing out", maxRuns)
 			}
 
-			printer.Errorf("retrying after %d seconds", delay)
+			printer.Debugf("retrying after %d seconds\n", delay)
 
 			go func() {
 				<- time.After(time.Duration(delay) * time.Second)
@@ -130,7 +130,7 @@ func runSupervisor() error {
 		}
 
 		if sig.(syscall.Signal) == syscall.SIGALRM {
-			printer.Infof("starting the child process, run %d of %d", numRuns + 1, maxRuns)
+			printer.Debugf("starting the child process, run %d of %d\n", numRuns + 1, maxRuns)
 
 			pid, numRuns, err = runChild(pwd, numRuns)
 			if err != nil {
