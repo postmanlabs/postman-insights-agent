@@ -100,7 +100,7 @@ func runSupervisor() error {
 				syscall.Exit(status.ExitCode())
 			}
 
-			break
+			syscall.Exit(0)
 		}
 
 		if sig.(syscall.Signal) == syscall.SIGCHLD {
@@ -112,7 +112,7 @@ func runSupervisor() error {
 			printer.Debugf("child exited with %d\n", status.ExitCode())
 
 			if status.Success() {
-				break
+				syscall.Exit(status.ExitCode())
 			}
 
 			pid = 0
@@ -138,6 +138,9 @@ func runSupervisor() error {
 			}
 		}
 	}
+
+	// Unreachable
+	panic("internal error")
 
 	return nil
 }
