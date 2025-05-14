@@ -119,7 +119,7 @@ func runSupervisor() error {
 			printer.Errorf("retrying after %d seconds", delay)
 
 			go func() {
-				<- time.After(time.Duration(delay) * time.Second)
+				<- time.After(time.Duration(int(delay)) * time.Second)
 				sigs <- syscall.SIGALRM
 			} ()
 		}
