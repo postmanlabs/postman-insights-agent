@@ -57,10 +57,15 @@ func runSupervisor() error {
 		printer.Warningln("unable to parse __X_AKITA_MAX_RUNS, using default value of 0 (no restriction)")
 	}
 
-	delay, err := strconv.ParseUint(os.Getenv("__X_AKITA_DELAY"), 10, 64)
+	delay, err := strconv.ParseInt(os.Getenv("__X_AKITA_DELAY"), 10, 64)
 	if err != nil {
 		delay = 1
 		printer.Warningln("unable to parse __X_AKITA_DELAY, using default value of 1")
+	}
+
+	if delay <= 0 {
+		delay = 1
+		printer.Warningln("__X_AKITA_DELAY must be greater than 0, using default value of 1")
 	}
 
 	pwd, err := os.Getwd()
@@ -119,7 +124,7 @@ func runSupervisor() error {
 			printer.Errorf("retrying after %d seconds", delay)
 
 			go func() {
-				<- time.After(time.Duration(int(delay)) * time.Second)
+				<- time.After(time.Duration(delay) * time.Second)
 				sigs <- syscall.SIGALRM
 			} ()
 		}
