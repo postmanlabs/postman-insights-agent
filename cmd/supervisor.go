@@ -123,13 +123,9 @@ func runSupervisor() error {
 					return err
 				}
 
-				if !status.Exited() {
-					continue
-				}
-
 				printer.Debugf("child exited with %d\n", status.ExitCode())
 
-				if status.ExitCode() < 126 {
+				if status.ExitCode() >= 0 && status.ExitCode() < 126 {
 					syscall.Exit(status.ExitCode())
 				}
 
