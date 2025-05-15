@@ -98,7 +98,7 @@ func runSupervisor() error {
 			switch sigNum {
 			case syscall.SIGINT, syscall.SIGTERM:
 				if pid != 0 {
-					printer.Warningf("sending %v to child\n", sigNum)
+					printer.Debugf("sending %v to child\n", sigNum)
 
 					err := syscall.Kill(pid, sigNum)
 					if err != nil {
