@@ -11,7 +11,9 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
-func runChild(pwd string, numRuns uint64) (int, uint64, error) {
+var numRuns uint64 = 0
+
+func runChild(pwd string) (int, error) {
 	numRuns += 1
 
 	args := os.Args
@@ -29,10 +31,10 @@ func runChild(pwd string, numRuns uint64) (int, uint64, error) {
 		Files: []uintptr{0, 1, 2},
 	})
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 
-	return pid, numRuns, nil
+	return pid, nil
 }
 
 func collectStatus(pid int) (*os.ProcessState, error) {
@@ -74,65 +76,81 @@ func runSupervisor() error {
 	}
 
 	sigs := make(chan os.Signal)
+	spawnSignal := make(chan bool)
+
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGCHLD)
 
 	printer.Debugf("starting the child process, run %d of %d\n", 1, maxRuns)
 
-	pid, numRuns, err := runChild(pwd, 0)
+	pid, err := runChild(pwd)
 	if err != nil {
 		return err
 	}
 
 	for {
-		sig := <- sigs
+		select {
+		case sig := <- sigs:
+			sigNum, ok := sig.(syscall.Signal)
+			if !ok {
+				return fmt.Errorf("unable to process the signal %v\n", sig)
+			}
 
-		if sig.(syscall.Signal) == syscall.SIGINT || sig.(syscall.Signal) == syscall.SIGTERM {
-			if pid != 0 {
-				printer.Debugf("sending %s to child\n", sig.(syscall.Signal))
+			switch sigNum {
+			case syscall.SIGINT, syscall.SIGTERM:
+				if pid != 0 {
+					printer.Warningf("sending %v to child\n", sigNum)
 
-				syscall.Kill(pid, sig.(syscall.Signal))
+					err := syscall.Kill(pid, sigNum)
+					if err != nil {
+						return err
+					}
+
+					_, err = collectStatus(pid)
+					if err != nil {
+						return err
+					}
+				}
+
+				syscall.Exit(128 + int(sigNum))
+
+			case syscall.SIGCHLD:
+				if pid == 0 {
+					continue
+				}
 
 				status, err := collectStatus(pid)
 				if err != nil {
 					return err
 				}
 
-				syscall.Exit(status.ExitCode())
+				if !status.Exited() {
+					continue
+				}
+
+				printer.Debugf("child exited with %d\n", status.ExitCode())
+
+				if status.ExitCode() < 126 {
+					syscall.Exit(status.ExitCode())
+				}
+
+				pid = 0
+
+				if numRuns == maxRuns {
+					return fmt.Errorf("maximum number of runs reached (%d), bailing out", maxRuns)
+				}
+
+				printer.Debugf("retrying after %d seconds\n", delay)
+
+				go func() {
+					<- time.After(time.Duration(delay) * time.Second)
+					spawnSignal <- true
+				} ()
 			}
 
-			syscall.Exit(0)
-		}
-
-		if sig.(syscall.Signal) == syscall.SIGCHLD {
-			status, err := collectStatus(pid)
-			if err != nil {
-				return err
-			}
-
-			printer.Debugf("child exited with %d\n", status.ExitCode())
-
-			if status.Success() {
-				syscall.Exit(status.ExitCode())
-			}
-
-			pid = 0
-
-			if numRuns == maxRuns {
-				return fmt.Errorf("maximum number of runs reached (%d), bailing out", maxRuns)
-			}
-
-			printer.Debugf("retrying after %d seconds\n", delay)
-
-			go func() {
-				<- time.After(time.Duration(delay) * time.Second)
-				sigs <- syscall.SIGALRM
-			} ()
-		}
-
-		if sig.(syscall.Signal) == syscall.SIGALRM {
+		case <- spawnSignal:
 			printer.Debugf("starting the child process, run %d of %d\n", numRuns + 1, maxRuns)
 
-			pid, numRuns, err = runChild(pwd, numRuns)
+			pid, err = runChild(pwd)
 			if err != nil {
 				return err
 			}
