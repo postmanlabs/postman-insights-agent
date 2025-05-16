@@ -7,6 +7,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/injector"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -32,6 +33,8 @@ var (
 
 	// Postman related flags
 	insightsProjectID string
+
+	apidumpFlags *apidump.CommonApidumpFlags
 )
 
 var injectCmd = &cobra.Command{
@@ -118,8 +121,9 @@ var injectCmd = &cobra.Command{
 
 		var container v1.Container
 
+		apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
 		// Inject the sidecar into the input file
-		container = createPostmanSidecar(insightsProjectID, true)
+		container = createPostmanSidecar(insightsProjectID, true, apidumpArgs)
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)
 		if err != nil {
@@ -218,6 +222,8 @@ func init() {
 	)
 	// Default value is "true" when the flag is given without an argument.
 	injectCmd.Flags().Lookup("secret").NoOptDefVal = "true"
+
+	apidumpFlags = apidump.AddCommonApiDumpFlags(injectCmd)
 
 	Cmd.AddCommand(injectCmd)
 }
