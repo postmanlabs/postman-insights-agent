@@ -19,7 +19,7 @@ func runChild(pwd string) (int, error) {
 	args := os.Args
 	env := os.Environ()
 
-	env = append(env, "__X_AKITA_NO_FORK=1")
+	env = append(env, "__X_AKITA_CHILD=true")
 	env = append(env, fmt.Sprintf("__X_AKITA_NUM_RUNS=%d", numRuns))
 
 	pid, err := syscall.ForkExec(args[0], args, &syscall.ProcAttr{
@@ -46,10 +46,20 @@ func collectStatus(pid int) (*os.ProcessState, error) {
 	return proc.Wait()
 }
 
-func runSupervisor() error {
-	e := os.Getenv("__X_AKITA_NO_FORK")
+func runningInsideDocker() bool {
+	return os.Getenv("__X_AKITA_CLI_DOCKER") == "true"
+}
 
-	if e == "1" {
+func isChildProcess() bool {
+	return os.Getenv("__X_AKITA_CHILD") == "true"
+}
+
+func runSupervisor() error {
+	if !runningInsideDocker() {
+		return nil
+	}
+
+	if isChildProcess() {
 		return nil
 	}
 
