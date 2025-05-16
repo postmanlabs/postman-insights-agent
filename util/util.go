@@ -306,21 +306,20 @@ func GetLearnSessionByTags(c rest.LearnClient, serviceID akid.ServiceID, tags ma
 
 // Get the most recent trace for a service; helper method for commands to implement the
 // --append-by-tag or --trace-tag flags.
-func GetTraceURIByTags(domain string, clientID akid.ClientID, serviceName string, tags map[tags.Key]string, flagName string) (akiuri.URI, error) {
+func GetTraceURIByTags(
+	domain string,
+	clientID akid.ClientID,
+	serviceName string,
+	serviceID akid.ServiceID,
+	tags map[tags.Key]string,
+	flagName string,
+) (akiuri.URI, error) {
 	if len(tags) == 0 {
 		return akiuri.URI{}, fmt.Errorf("Must specify a tag to match with %q", flagName)
 	}
 
 	if len(tags) > 1 {
 		return akiuri.URI{}, fmt.Errorf("%q currently supports only a single tag", flagName)
-	}
-
-	// Resolve ServiceID
-	// TODO: find a better way to overlap this with commands that already do the lookup
-	frontClient := rest.NewFrontClient(domain, clientID, nil)
-	serviceID, err := GetServiceIDByName(frontClient, serviceName)
-	if err != nil {
-		return akiuri.URI{}, errors.Wrapf(err, "failed to resolve project name %q", serviceName)
 	}
 
 	learnClient := rest.NewLearnClient(domain, clientID, serviceID, nil)
