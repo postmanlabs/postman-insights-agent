@@ -47,11 +47,13 @@ func collectStatus(pid int) (*os.ProcessState, error) {
 }
 
 func runningInsideDocker() bool {
-	return os.Getenv("__X_AKITA_CLI_DOCKER") == "true"
+	c, _ := strconv.ParseBool(os.Getenv("__X_AKITA_CLI_DOCKER"))
+	return c == true
 }
 
 func isChildProcess() bool {
-	return os.Getenv("__X_AKITA_CHILD") == "true"
+	c, _ := strconv.ParseBool(os.Getenv("__X_AKITA_CHILD"))
+	return c == true
 }
 
 func runSupervisor() error {
