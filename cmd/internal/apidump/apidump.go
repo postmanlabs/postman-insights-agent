@@ -157,6 +157,7 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 		destURI, err := util.GetTraceURIByTags(rest.Domain,
 			telemetry.GetClientID(),
 			outFlag.AkitaURI.ServiceName,
+			serviceID,
 			traceTags,
 			"append-by-tag",
 		)

@@ -97,7 +97,7 @@ func NewRedactor(
 				)
 			}()
 			if err != nil {
-				printer.Warningf("failed to update redaction configuration for %s: %v", serviceID, err)
+				printer.Warningf("failed to update redaction configuration for %s: %v\n", serviceID, err)
 				continue
 			}
 

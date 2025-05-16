@@ -47,7 +47,7 @@ You may specify the API spec by version name (e.g. "latest") or an ID (e.g.
 
 // GetSpec flags
 var (
-	getSpecServiceFlag             string
+	getSpecProjectIDFlag           string
 	getSpecOutputFlag              string
 	getSpecTimeoutFlag             time.Duration
 	getSpecWaitFlag                bool
@@ -58,10 +58,10 @@ func init() {
 	SpecsCmd.AddCommand(getSpecCmd)
 
 	getSpecCmd.Flags().StringVar(
-		&getSpecServiceFlag,
-		"service",
+		&getSpecProjectIDFlag,
+		"project",
 		"",
-		"Your Akita service.",
+		"Your Insights project ID.",
 	)
 	cobra.MarkFlagRequired(getSpecCmd.Flags(), "service")
 
@@ -117,14 +117,11 @@ func runGetSpec(specIdentifier string) error {
 
 	clientID := akid.GenerateClientID()
 
-	frontClient := rest.NewFrontClient(rest.Domain, clientID, nil)
-
-	// Convert service name to service ID.
-	serviceID, err := getServiceIDByName(frontClient, getSpecServiceFlag)
+	var serviceID akid.ServiceID
+	err := akid.ParseIDAs(getSpecProjectIDFlag, &serviceID)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to parse project ID")
 	}
-
 	learnClient := rest.NewLearnClient(rest.Domain, clientID, serviceID, nil)
 
 	// Check to see if the user specified an AkID or a version name.
