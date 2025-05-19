@@ -98,21 +98,21 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 		cty.StringVal("NET_RAW"),
 	}))
 
-	// Add the args to the container
-	args := cty.ListVal([]cty.Value{
+	argList := []cty.Value{
 		cty.StringVal("apidump"),
 		cty.StringVal("--project"),
 		cty.StringVal(insightsProjectID),
-	})
+	}
 	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
-		args.Add(cty.StringVal("--domain"))
-		args.Add(cty.StringVal(rest.Domain))
+		argList = append(argList, cty.StringVal("--domain"), cty.StringVal(rest.Domain))
 	}
 	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printTFApidumpFlags)
 	for _, arg := range apidumpArgs {
-		args.Add(cty.StringVal(arg))
+		argList = append(argList, cty.StringVal(arg))
 	}
+	// Add the args to the container
+	args := cty.ListVal(argList)
 	containerBody.SetAttributeValue("args", args)
 
 	// Add the environment variables to the container
