@@ -169,6 +169,10 @@ sensitive_value_regexes:
 - sb_secret_[-_a-zA-Z0-9]{27}
 - \bLTAI[a-zA-Z0-9]{17,21}\b
 - (?i)\beyJhbGciOi[a-z0-9_\-\.]{2,1000}\b
+- (?i)\bfw_[a-zA-Z0-9]{24}\b
+- (?i)\b^lsv2_pt_[0-9a-f]{32}_[0-9a-f]{10}\b
+- (?i)\b(gsk_[a-zA-Z0-9]{52})\b
+- (?i)\b^lsv2_sk_[0-9a-f]{32}_[0-9a-f]{10}\b
 ignored_keys:
 - clientId
 - value
