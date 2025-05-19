@@ -73,13 +73,14 @@ func createFile(path string) (*os.File, error) {
 	return outputFile, nil
 }
 
-func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool) v1.Container {
+func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apidumpArgs []string) v1.Container {
 	args := []string{"apidump", "--project", insightsProjectID}
 
 	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
 		args = append(args, "--domain", rest.Domain)
 	}
+	args = append(args, apidumpArgs...)
 
 	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()
 	envs := []v1.EnvVar{}
