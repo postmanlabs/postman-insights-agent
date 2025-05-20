@@ -277,7 +277,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	// Check if ReproMode is explicitly disabled at the pod level
 	podArgs.ReproMode = !parseBoolConfig(mainContainerConfig.disableReproMode, "disableReproMode", pod.Name, !d.InsightsReproModeEnabled)
 
-	podArgs.AgentRateLimit = 0.0
+	podArgs.AgentRateLimit = d.InsightsRateLimit
 	if mainContainerConfig.agentRateLimit != "" {
 		if limit, err := strconv.ParseFloat(mainContainerConfig.agentRateLimit, 64); err == nil {
 			podArgs.AgentRateLimit = limit
