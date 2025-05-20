@@ -8,10 +8,14 @@ import (
 
 var (
 	reproMode bool
+	rateLimit float64
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
-	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{ReproMode: reproMode})
+	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
+		ReproMode: reproMode,
+		RateLimit: rateLimit,
+	})
 	if err == nil {
 		return nil
 	}
@@ -31,6 +35,12 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
+	runCmd.PersistentFlags().Float64Var(
+		&rateLimit,
+		"rate-limit",
+		0.0,
+		"Number of requests per minute to capture",
+	)
 	runCmd.PersistentFlags().BoolVar(
 		&reproMode,
 		"repro-mode",

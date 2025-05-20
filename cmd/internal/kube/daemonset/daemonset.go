@@ -28,12 +28,14 @@ const (
 
 type DaemonsetArgs struct {
 	ReproMode bool
+	RateLimit float64
 }
 
 type Daemonset struct {
 	ClusterName              string
 	InsightsEnvironment      string
 	InsightsReproModeEnabled bool
+	InsightsRateLimit        float64
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -103,6 +105,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		ClusterName:              clusterName,
 		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
 		InsightsReproModeEnabled: args.ReproMode,
+		InsightsRateLimit:        args.RateLimit,
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,
 		FrontClient:              frontClient,
