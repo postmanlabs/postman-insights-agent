@@ -1,17 +1,25 @@
 package kube
 
 import (
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/daemonset"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/cobra"
 )
 
-var (
-	reproMode bool
-)
-
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
-	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{ReproMode: reproMode})
+	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
+		Interfaces:          apidumpFlags.Interfaces,
+		Filter:              apidumpFlags.Filter,
+		HostAllowlist:       apidumpFlags.HostAllowlist,
+		HostExclusions:      apidumpFlags.HostExclusions,
+		PathAllowlist:       apidumpFlags.PathAllowlist,
+		PathExclusions:      apidumpFlags.PathExclusions,
+		RandomizedStart:     apidumpFlags.RandomizedStart,
+		RateLimit:           apidumpFlags.RateLimit,
+		SendWitnessPayloads: apidumpFlags.SendWitnessPayloads,
+		ReproMode:           apidumpFlags.EnableReproMode,
+	})
 	if err == nil {
 		return nil
 	}
@@ -31,14 +39,7 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.PersistentFlags().BoolVar(
-		&reproMode,
-		"repro-mode",
-		false,
-		"Enable Repro Mode to capture request and response payloads for debugging.",
-	)
-	_ = runCmd.PersistentFlags().MarkHidden("repro-mode")
-
+	apidumpFlags = apidump.AddCommonApiDumpFlags(runCmd)
 	Cmd.AddCommand(runCmd)
 
 	// Mark the inherited `project` flag as hidden

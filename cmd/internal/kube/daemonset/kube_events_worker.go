@@ -267,17 +267,15 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	podArgs.DropNginxTraffic = parseBoolConfig(mainContainerConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, viper.GetBool("drop-nginx-traffic"))
 
 	// Determine ReproMode flag for the apidump process
-	podArgs.ReproMode = d.InsightsReproModeEnabled
-
-	if !d.InsightsReproModeEnabled {
+	podArgs.ReproMode = d.Args.ReproMode
+	if !d.Args.ReproMode {
 		printer.Infof("Repro mode is disabled at the DaemonSet level for pod: %s\n", pod.Name)
 		return nil
 	}
-
 	// Check if ReproMode is explicitly disabled at the pod level
-	podArgs.ReproMode = !parseBoolConfig(mainContainerConfig.disableReproMode, "disableReproMode", pod.Name, !d.InsightsReproModeEnabled)
+	podArgs.ReproMode = !parseBoolConfig(mainContainerConfig.disableReproMode, "disableReproMode", pod.Name, !d.Args.ReproMode)
 
-	podArgs.AgentRateLimit = 0.0
+	podArgs.AgentRateLimit = d.Args.RateLimit
 	if mainContainerConfig.agentRateLimit != "" {
 		if limit, err := strconv.ParseFloat(mainContainerConfig.agentRateLimit, 64); err == nil {
 			podArgs.AgentRateLimit = limit
@@ -290,6 +288,15 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	if podArgs.AgentRateLimit <= 0.0 {
 		podArgs.AgentRateLimit = apispec.DefaultRateLimit
 	}
+
+	podArgs.Filter = d.Args.Filter
+	podArgs.HostAllowlist = d.Args.HostAllowlist
+	podArgs.HostExclusions = d.Args.HostAllowlist
+	podArgs.Interfaces = d.Args.Interfaces
+	podArgs.PathAllowlist = d.Args.PathAllowlist
+	podArgs.PathExclusions = d.Args.PathExclusions
+	podArgs.RandomizedStart = d.Args.RandomizedStart
+	podArgs.SendWitnessPayloads = d.Args.SendWitnessPayloads
 
 	return nil
 }

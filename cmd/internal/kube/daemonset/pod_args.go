@@ -42,9 +42,18 @@ type PodArgs struct {
 	// apidump related fields
 	InsightsProjectID akid.ServiceID
 	TraceTags         tags.SingletonTags
-	ReproMode         bool
 	DropNginxTraffic  bool
-	AgentRateLimit    float64
+
+	Filter              string
+	HostAllowlist       []string
+	HostExclusions      []string
+	Interfaces          []string
+	PathAllowlist       []string
+	PathExclusions      []string
+	RandomizedStart     int
+	AgentRateLimit      float64
+	SendWitnessPayloads bool
+	ReproMode           bool
 
 	// Pod related fields
 	PodName       string

@@ -27,13 +27,22 @@ const (
 )
 
 type DaemonsetArgs struct {
-	ReproMode bool
+	Filter              string
+	HostAllowlist       []string
+	HostExclusions      []string
+	Interfaces          []string
+	PathAllowlist       []string
+	PathExclusions      []string
+	RandomizedStart     int
+	RateLimit           float64
+	SendWitnessPayloads bool
+	ReproMode           bool
 }
 
 type Daemonset struct {
-	ClusterName              string
-	InsightsEnvironment      string
-	InsightsReproModeEnabled bool
+	ClusterName         string
+	InsightsEnvironment string
+	Args                DaemonsetArgs
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -100,14 +109,14 @@ func StartDaemonset(args DaemonsetArgs) error {
 	}
 
 	daemonsetRun := &Daemonset{
-		ClusterName:              clusterName,
-		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
-		InsightsReproModeEnabled: args.ReproMode,
-		KubeClient:               kubeClient,
-		CRIClient:                criClient,
-		FrontClient:              frontClient,
-		TelemetryInterval:        telemetryInterval,
-		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
+		ClusterName:            clusterName,
+		InsightsEnvironment:    os.Getenv(POSTMAN_INSIGHTS_ENV),
+		Args:                   args,
+		KubeClient:             kubeClient,
+		CRIClient:              criClient,
+		FrontClient:            frontClient,
+		TelemetryInterval:      telemetryInterval,
+		PodHealthCheckInterval: DefaultPodHealthCheckInterval,
 	}
 	if err := daemonsetRun.Run(); err != nil {
 		return cmderr.AkitaErr{Err: err}
