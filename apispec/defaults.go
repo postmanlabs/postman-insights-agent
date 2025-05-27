@@ -25,7 +25,7 @@ const (
 	DefaultParseTLSHandshakes = true
 
 	// How many requests to capture per minute.
-	DefaultRateLimit = 1000.0
+	DefaultRateLimit = 12000.0
 
 	// How often to upload client telemetry.
 	DefaultTelemetryInterval_seconds = 5 * 60 // 5 minutes
