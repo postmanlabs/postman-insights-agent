@@ -220,7 +220,7 @@ func (s *redactSensitiveInfoVisitor) isSensitiveString(v string) bool {
 			return true
 		}
 	}
-	return false
+	return s.redactionOptions.userConfig.redactStringRegex(v)
 }
 
 // Determines whether the given Primitive has a sensitive value.
