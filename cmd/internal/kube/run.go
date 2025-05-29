@@ -47,7 +47,6 @@ func init() {
 		false,
 		"Enable Repro Mode to capture request and response payloads for debugging.",
 	)
-	_ = runCmd.PersistentFlags().MarkHidden("repro-mode")
 
 	Cmd.AddCommand(runCmd)
 

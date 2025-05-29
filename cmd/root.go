@@ -46,7 +46,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:           "postman-insights-agent",
 	Short:         "The Postman Insights Agent",
-	Long:          "Documentation is available at https://learning.postman.com/docs/insights/insights-early-access/",
+	Long:          "Documentation is available at https://learning.postman.com/docs/insights/overview",
 	Version:       version.CLIDisplayString(),
 	SilenceErrors: true, // We print our own errors from subcommands in Execute function
 	// Don't print usage after error, we only print help if we cannot parse
