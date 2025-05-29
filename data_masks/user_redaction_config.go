@@ -56,7 +56,12 @@ func (c *userRedactionConfig) redactFieldsNamed(fieldName string) bool {
 func (c *userRedactionConfig) update(
 	agentConfig *api_schema.ServiceAgentConfig,
 ) {
-	newFieldNames := sets.NewSet(agentConfig.FieldsToRedact.FieldNames...)
+	fieldNames := make([]string, 0, len(agentConfig.FieldsToRedact.FieldNames))
+	for _, fieldName := range agentConfig.FieldsToRedact.FieldNames {
+		fieldNames = append(fieldNames, strings.ToLower(fieldName))
+	}
+
+	newFieldNames := sets.NewSet(fieldNames...)
 
 	// Filter out empty regular expressions from the incoming configuration. These
 	// match everything, which is almost certainly not what is intended. If the
