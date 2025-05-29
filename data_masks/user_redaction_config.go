@@ -3,6 +3,7 @@ package data_masks
 import (
 	"regexp"
 	go_slices "slices"
+	"strings"
 	"sync"
 
 	"github.com/akitasoftware/akita-libs/api_schema"
@@ -23,8 +24,13 @@ type userRedactionConfig struct {
 func newUserRedactionConfig(
 	agentConfig *api_schema.ServiceAgentConfig,
 ) *userRedactionConfig {
+	fieldNames := make([]string, 0, len(agentConfig.FieldsToRedact.FieldNames))
+	for _, fieldName := range agentConfig.FieldsToRedact.FieldNames {
+		fieldNames = append(fieldNames, strings.ToLower(fieldName))
+	}
+
 	return &userRedactionConfig{
-		fieldNames:       sets.NewSet(agentConfig.FieldsToRedact.FieldNames...),
+		fieldNames:       sets.NewSet(fieldNames...),
 		fieldNameRegexps: agentConfig.FieldsToRedact.FieldNameRegexps,
 	}
 }
@@ -32,7 +38,7 @@ func newUserRedactionConfig(
 // Determines whether fields with the given name should be redacted according to
 // this configuration.
 func (c *userRedactionConfig) redactFieldsNamed(fieldName string) bool {
-	if c.fieldNames.Contains(fieldName) {
+	if c.fieldNames.Contains(strings.ToLower(fieldName)) {
 		return true
 	}
 
