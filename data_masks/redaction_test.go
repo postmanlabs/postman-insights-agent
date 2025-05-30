@@ -125,6 +125,10 @@ func TestZeroAllPrimitives(t *testing.T) {
 			inputFile:    "001-witness.pb.txt",
 			expectedFile: "001-expected-zero-all-primitives.pb.txt",
 		},
+		"redact secret in path": {
+			inputFile:    "005-witness.pb.txt",
+			expectedFile: "005-expected-redacted-path.pb.txt",
+		},
 	}
 
 	for testName, testCase := range testCases {

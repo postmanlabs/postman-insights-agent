@@ -321,5 +321,5 @@ func (s *zeroPrimitivesVisitor) isSensitiveString(v string) bool {
 			return true
 		}
 	}
-	return false
+	return s.redactionOptions.userConfig.redactStringRegex(v)
 }
