@@ -1,7 +1,6 @@
 package data_masks
 
 import (
-	"fmt"
 	"path/filepath"
 	"regexp"
 	"testing"
@@ -152,8 +151,6 @@ func TestZeroAllPrimitives(t *testing.T) {
 			expectedWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.expectedFile))
 
 			o.ZeroAllPrimitives(testWitness.Method)
-			result := testWitness.String()
-			fmt.Printf("result: %v", result)
 
 			if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
 				t.Errorf("found unexpected diff in test case %q:\n%s", testName, diff)
