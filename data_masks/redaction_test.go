@@ -73,6 +73,14 @@ func TestRedaction(t *testing.T) {
 			inputFile:    "003-witness.pb.txt",
 			expectedFile: "003-expected-redact-by-name-and-by-name-regexp.pb.txt",
 		},
+
+		"agent config: redact by name and by regexp": {
+			agentConfig: optionals.Some(&kgxapi.FieldRedactionConfig{
+				FieldNameRegexps: []*regexp.Regexp{regexp.MustCompile("^value for key[12]$")},
+			}),
+			inputFile:    "004-witness.pb.txt",
+			expectedFile: "004-expected-redact-by-value-regexp.pb.txt",
+		},
 	}
 
 	for testName, testCase := range testCases {
