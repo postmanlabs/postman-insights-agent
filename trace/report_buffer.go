@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"time"
 
+	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/batcher"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
-	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 )
@@ -82,10 +82,12 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 
 	if buf.witnessesHavePayloads {
 		if maxSize, exists := buf.maxWitnessSize_bytes.Get(); exists && len(witnessReport.WitnessProto) > maxSize {
-			// The witness exceeds our per-witness storage limit. Obfuscate it to
-			// reduce its size while retaining its typing information.
-			printer.Debugf("Obfuscating oversized witness (%d MB) captured on interface %s\n", len(witnessReport.WitnessProto)/1_000_000, w.netInterface)
-			data_masks.ZeroAllPrimitivesInMethod(w.witness.GetMethod())
+			if w.witness.GetMethod().GetMeta().GetHttp().Obfuscation != pb.HTTPMethodMeta_ZERO_VALUE {
+				// The witness exceeds our per-witness storage limit. Obfuscate it to
+				// reduce its size while retaining its typing information.
+				printer.Debugf("Obfuscating oversized witness (%d MB) captured on interface %s\n", len(witnessReport.WitnessProto)/1_000_000, w.netInterface)
+				buf.collector.redactor.ZeroAllPrimitives(w.witness.GetMethod())
+			}
 			witnessReport, err = w.toReport()
 			if err != nil {
 				printer.Warningf("Failed to convert obfuscated witness to report: %v\n", err)

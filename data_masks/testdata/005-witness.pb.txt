@@ -1,0 +1,134 @@
+# api_spec.Witness proto
+
+method: {
+  meta: {
+    http: {
+      method: "POST"
+      path_template: "/v1/doggos/SMAK-000000000000000000000000-0000000000000000000000000000000000"
+      host: "example.com"
+    }
+  }
+  args: {
+    key: "KC2RO-pCNJA="
+    value: {
+      primitive: {
+        string_value: {
+          value: "Normal-Value"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Normal-Header"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "4F1vWo8G_-Q="
+    value: {
+      primitive: {
+        string_value: {
+          value: "SECRET"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "x-access-token"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "MWeG2T99uHI="
+    value: {
+      struct: {
+        fields: {
+          key: "name"
+          value: {
+            primitive: {
+              string_value: {
+                value: "error"
+              }
+            }
+          }
+        }
+        fields: {
+          key: "number"
+          value: {
+            primitive: {
+              int64_value: {
+                value: 202410081550
+              }
+            }
+          }
+        }
+        fields: {
+          key: "secret-value"
+          value: {
+            primitive: {
+              string_value: {
+                value: "000000000000000|aaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          }
+        }
+      }
+      meta: {
+        http: {
+          body: {
+            content_type: JSON
+            other_type: "application/json"
+          }
+        }
+      }
+    }
+  }
+  responses: {
+    key: "T7Jfr4mf1Zs="
+    value: {
+      struct: {
+        fields: {
+          key: "homes"
+          value: {
+            list: {
+              elems: {
+                primitive: {
+                  string_value: {
+                    value: "error"
+                  }
+                }
+              }
+              elems: {
+                primitive: {
+                  string_value: {
+                    value: "happened"
+                  }
+                }
+              }
+              elems: {
+                primitive: {
+                  string_value: {
+                    value: "here"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      meta: {
+        http: {
+          body: {
+            content_type: JSON
+            other_type: "application/json"
+          }
+          response_code: 404
+        }
+      }
+    }
+  }
+}

@@ -115,6 +115,54 @@ func TestRedaction(t *testing.T) {
 	}
 }
 
+func TestZeroAllPrimitives(t *testing.T) {
+	testCases := map[string]struct {
+		agentConfig  optionals.Optional[*kgxapi.FieldRedactionConfig]
+		inputFile    string
+		expectedFile string
+	}{
+		"zero all primitives": {
+			inputFile:    "001-witness.pb.txt",
+			expectedFile: "001-expected-zero-all-primitives.pb.txt",
+		},
+		"redact secret in path": {
+			inputFile:    "005-witness.pb.txt",
+			expectedFile: "005-expected-redacted-path.pb.txt",
+		},
+	}
+
+	for testName, testCase := range testCases {
+		func() {
+			ctrl := gomock.NewController(t)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			defer ctrl.Finish()
+
+			agentConfig := kgxapi.NewServiceAgentConfig()
+			if fieldsToRedact, exists := testCase.agentConfig.Get(); exists {
+				agentConfig.FieldsToRedact = fieldsToRedact
+			}
+
+			mockClient.
+				EXPECT().
+				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+				AnyTimes().
+				Return(agentConfig, nil)
+
+			o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
+			assert.NoError(t, err)
+
+			testWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.inputFile))
+			expectedWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.expectedFile))
+
+			o.ZeroAllPrimitives(testWitness.Method)
+
+			if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
+				t.Errorf("found unexpected diff in test case %q:\n%s", testName, diff)
+			}
+		}()
+	}
+}
+
 func BenchmarkRedaction(b *testing.B) {
 	ctrl := gomock.NewController(b)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
@@ -135,5 +183,28 @@ func BenchmarkRedaction(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		o.RedactSensitiveData(testWitness.Method)
+	}
+}
+
+func BenchmarkZeroAllPrimitives(b *testing.B) {
+	ctrl := gomock.NewController(b)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	defer ctrl.Finish()
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
+	o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
+	assert.NoError(b, err)
+
+	testWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", "001-witness.pb.txt"))
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		o.ZeroAllPrimitives(testWitness.Method)
 	}
 }
