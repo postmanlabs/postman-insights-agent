@@ -131,6 +131,18 @@ func (o *Redactor) RedactSensitiveData(m *pb.Method) {
 	vis.Apply(&pov, m)
 }
 
+func (o *Redactor) ZeroAllPrimitives(m *pb.Method) {
+	o.userConfig.RLock()
+	defer o.userConfig.RUnlock()
+
+	zpv := zeroPrimitivesVisitor{
+		redactionOptions: o,
+	}
+	vis.Apply(&zpv, m)
+
+	m.GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_ZERO_VALUE
+}
+
 // Determines whether fields with the given name should be redacted. Caller must
 // hold at least a read lock on muUserConfig.
 func (o *Redactor) redactFieldsNamed(fieldName string) bool {
@@ -260,4 +272,54 @@ func (*redactPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorCon
 // Replaces the value in the given Primitive with the redaction string.
 func redactPrimitive(p *pb.Primitive) {
 	p.Value = spec_util.NewPrimitiveString(RedactionString).Value
+}
+
+// Replaces all primitive values with zero values.
+type zeroPrimitivesVisitor struct {
+	vis.DefaultSpecVisitorImpl
+	redactionOptions *Redactor
+}
+
+var _ vis.DefaultSpecVisitor = (*zeroPrimitivesVisitor)(nil)
+
+// EnterData processes the given data and replaces all the primitive values
+// with zero values, regardless of its metadata.
+func (*zeroPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext, d *pb.Data) Cont {
+	dp := d.GetPrimitive()
+	if dp == nil {
+		return Continue
+	}
+
+	pv, err := spec_util.PrimitiveValueFromProto(dp)
+	if err != nil {
+		printer.Warningf("failed to zero out raw value, dropping\n")
+		d.Value = nil
+		return Continue
+	}
+
+	dp.Value = pv.Obfuscate().ToProto().Value
+	return Continue
+}
+
+func (s *zeroPrimitivesVisitor) EnterHTTPMethodMeta(self interface{}, ctx vis.SpecVisitorContext, meta *pb.HTTPMethodMeta) Cont {
+	pathSegments := strings.Split(meta.PathTemplate, "/")
+
+	for i, segment := range pathSegments {
+		// Check if the path segment contains sensitive information.
+		if s.isSensitiveString(segment) {
+			pathSegments[i] = RedactionString
+		}
+	}
+
+	meta.PathTemplate = strings.Join(pathSegments, "/")
+	return SkipChildren
+}
+
+func (s *zeroPrimitivesVisitor) isSensitiveString(v string) bool {
+	for _, pattern := range s.redactionOptions.SensitiveDataValuePatterns {
+		if pattern.MatchString(v) {
+			return true
+		}
+	}
+	return false
 }

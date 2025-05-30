@@ -137,3 +137,26 @@ func BenchmarkRedaction(b *testing.B) {
 		o.RedactSensitiveData(testWitness.Method)
 	}
 }
+
+func BenchmarkZeroAllPrimitives(b *testing.B) {
+	ctrl := gomock.NewController(b)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	defer ctrl.Finish()
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
+	o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
+	assert.NoError(b, err)
+
+	testWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", "001-witness.pb.txt"))
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		o.ZeroAllPrimitives(testWitness.Method)
+	}
+}
