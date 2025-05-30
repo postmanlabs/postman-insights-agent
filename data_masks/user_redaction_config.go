@@ -3,6 +3,7 @@ package data_masks
 import (
 	"regexp"
 	go_slices "slices"
+	"strings"
 	"sync"
 
 	"github.com/akitasoftware/akita-libs/api_schema"
@@ -12,8 +13,8 @@ import (
 )
 
 type userRedactionConfig struct {
-	fieldNames       sets.Set[string]
-	fieldNameRegexps []*regexp.Regexp
+	fieldNames    sets.Set[string]
+	stringRegexps []*regexp.Regexp
 
 	// Protects this instance.
 	mu sync.RWMutex
@@ -23,22 +24,31 @@ type userRedactionConfig struct {
 func newUserRedactionConfig(
 	agentConfig *api_schema.ServiceAgentConfig,
 ) *userRedactionConfig {
+	fieldNames := make([]string, 0, len(agentConfig.FieldsToRedact.FieldNames))
+	for _, fieldName := range agentConfig.FieldsToRedact.FieldNames {
+		fieldNames = append(fieldNames, strings.ToLower(fieldName))
+	}
+
 	return &userRedactionConfig{
-		fieldNames:       sets.NewSet(agentConfig.FieldsToRedact.FieldNames...),
-		fieldNameRegexps: agentConfig.FieldsToRedact.FieldNameRegexps,
+		fieldNames:    sets.NewSet(fieldNames...),
+		stringRegexps: agentConfig.FieldsToRedact.FieldNameRegexps,
 	}
 }
 
 // Determines whether fields with the given name should be redacted according to
 // this configuration.
 func (c *userRedactionConfig) redactFieldsNamed(fieldName string) bool {
-	if c.fieldNames.Contains(fieldName) {
+	if c.fieldNames.Contains(strings.ToLower(fieldName)) {
 		return true
 	}
 
+	return c.redactStringRegex(fieldName)
+}
+
+func (c *userRedactionConfig) redactStringRegex(v string) bool {
 	// Determine whether to redact based on user-specified regular expressions.
-	for _, re := range c.fieldNameRegexps {
-		if re.MatchString(fieldName) {
+	for _, re := range c.stringRegexps {
+		if re.MatchString(v) {
 			return true
 		}
 	}
@@ -50,13 +60,18 @@ func (c *userRedactionConfig) redactFieldsNamed(fieldName string) bool {
 func (c *userRedactionConfig) update(
 	agentConfig *api_schema.ServiceAgentConfig,
 ) {
-	newFieldNames := sets.NewSet(agentConfig.FieldsToRedact.FieldNames...)
+	fieldNames := make([]string, 0, len(agentConfig.FieldsToRedact.FieldNames))
+	for _, fieldName := range agentConfig.FieldsToRedact.FieldNames {
+		fieldNames = append(fieldNames, strings.ToLower(fieldName))
+	}
+
+	newFieldNames := sets.NewSet(fieldNames...)
 
 	// Filter out empty regular expressions from the incoming configuration. These
 	// match everything, which is almost certainly not what is intended. If the
 	// user wants to match everything, they can use a different regular
 	// expression, such as `$`.
-	newFieldNameRegexps := slices.Filter(
+	newStringRegexps := slices.Filter(
 		agentConfig.FieldsToRedact.FieldNameRegexps,
 		func(re *regexp.Regexp) bool {
 			return len(re.String()) > 0
@@ -73,8 +88,8 @@ func (c *userRedactionConfig) update(
 		}
 
 		if !go_slices.EqualFunc(
-			c.fieldNameRegexps,
-			newFieldNameRegexps,
+			c.stringRegexps,
+			newStringRegexps,
 			func(r1, r2 *regexp.Regexp) bool {
 				return r1.String() == r2.String()
 			},
@@ -96,10 +111,10 @@ func (c *userRedactionConfig) update(
 		c.mu.Unlock()
 		printer.Debugln("Updated user redaction config")
 		printer.Debugf("field names: %v\n", newFieldNames.AsSlice())
-		printer.Debugf("field name regexps: %v\n", newFieldNameRegexps)
+		printer.Debugf("string regexps: %v\n", newStringRegexps)
 	}()
 	c.fieldNames = newFieldNames
-	c.fieldNameRegexps = newFieldNameRegexps
+	c.stringRegexps = newStringRegexps
 }
 
 func (c *userRedactionConfig) RLock() {
