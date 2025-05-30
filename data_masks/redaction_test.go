@@ -1,6 +1,7 @@
 package data_masks
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"testing"
@@ -107,6 +108,52 @@ func TestRedaction(t *testing.T) {
 			expectedWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.expectedFile))
 
 			o.RedactSensitiveData(testWitness.Method)
+
+			if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
+				t.Errorf("found unexpected diff in test case %q:\n%s", testName, diff)
+			}
+		}()
+	}
+}
+
+func TestZeroAllPrimitives(t *testing.T) {
+	testCases := map[string]struct {
+		agentConfig  optionals.Optional[*kgxapi.FieldRedactionConfig]
+		inputFile    string
+		expectedFile string
+	}{
+		"zero all primitives": {
+			inputFile:    "001-witness.pb.txt",
+			expectedFile: "001-expected-zero-all-primitives.pb.txt",
+		},
+	}
+
+	for testName, testCase := range testCases {
+		func() {
+			ctrl := gomock.NewController(t)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			defer ctrl.Finish()
+
+			agentConfig := kgxapi.NewServiceAgentConfig()
+			if fieldsToRedact, exists := testCase.agentConfig.Get(); exists {
+				agentConfig.FieldsToRedact = fieldsToRedact
+			}
+
+			mockClient.
+				EXPECT().
+				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+				AnyTimes().
+				Return(agentConfig, nil)
+
+			o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
+			assert.NoError(t, err)
+
+			testWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.inputFile))
+			expectedWitness := test.LoadWitnessFromFileOrDie(filepath.Join("testdata", testCase.expectedFile))
+
+			o.ZeroAllPrimitives(testWitness.Method)
+			result := testWitness.String()
+			fmt.Printf("result: %v", result)
 
 			if diff := cmp.Diff(expectedWitness, testWitness, cmpOptions...); diff != "" {
 				t.Errorf("found unexpected diff in test case %q:\n%s", testName, diff)
