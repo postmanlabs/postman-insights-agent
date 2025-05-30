@@ -72,7 +72,7 @@ func reportStep(stepName string) {
 func setupAgentForServer(projectID string) error {
 	// Check if the agent is running in a linux environment
 	if runtime.GOOS != "linux" {
-		return errors.New("This command is only supported on linux")
+		return errors.New("This command is only supported on Linux.")
 	}
 
 	err := checkUserPermissions()
