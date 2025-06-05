@@ -1,5 +1,7 @@
 package rest
 
+//go:generate mockgen -source=interface.go -destination=./mock/interface.mock.go
+
 import (
 	"context"
 	"regexp"
