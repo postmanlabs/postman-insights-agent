@@ -14,7 +14,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/postmanlabs/postman-insights-agent/rest"
+	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -86,7 +86,7 @@ func TestRedaction(t *testing.T) {
 	for testName, testCase := range testCases {
 		func() {
 			ctrl := gomock.NewController(t)
-			mockClient := rest.NewMockLearnClient(ctrl)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
 			defer ctrl.Finish()
 
 			agentConfig := kgxapi.NewServiceAgentConfig()
@@ -134,7 +134,7 @@ func TestZeroAllPrimitives(t *testing.T) {
 	for testName, testCase := range testCases {
 		func() {
 			ctrl := gomock.NewController(t)
-			mockClient := rest.NewMockLearnClient(ctrl)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
 			defer ctrl.Finish()
 
 			agentConfig := kgxapi.NewServiceAgentConfig()
@@ -165,7 +165,7 @@ func TestZeroAllPrimitives(t *testing.T) {
 
 func BenchmarkRedaction(b *testing.B) {
 	ctrl := gomock.NewController(b)
-	mockClient := rest.NewMockLearnClient(ctrl)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
 	mockClient.
@@ -188,7 +188,7 @@ func BenchmarkRedaction(b *testing.B) {
 
 func BenchmarkZeroAllPrimitives(b *testing.B) {
 	ctrl := gomock.NewController(b)
-	mockClient := rest.NewMockLearnClient(ctrl)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
 	mockClient.

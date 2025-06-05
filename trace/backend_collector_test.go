@@ -22,7 +22,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
-	"github.com/postmanlabs/postman-insights-agent/rest"
+	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -57,7 +57,7 @@ func (wr *witnessRecorder) recordAsyncReportsUpload(args ...interface{}) {
 // Make sure we redact values before uploading.
 func TestRedact(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	mockClient := rest.NewMockLearnClient(ctrl)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
 	var rec witnessRecorder
@@ -437,7 +437,7 @@ func TestTiming(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.Name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			mockClient := rest.NewMockLearnClient(ctrl)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
 			defer ctrl.Finish()
 
 			var rec witnessRecorder
@@ -486,7 +486,7 @@ func TestTiming(t *testing.T) {
 // Demonstrate race condition with multiple interfaces
 func TestMultipleInterfaces(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	mockClient := rest.NewMockLearnClient(ctrl)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 	mockClient.EXPECT().
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -571,7 +571,7 @@ func TestFlushExit(t *testing.T) {
 
 func TestOnlyRedactNonErrorResponses(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	mockClient := rest.NewMockLearnClient(ctrl)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
 	var rec witnessRecorder
@@ -1441,7 +1441,7 @@ func TestRedactionConfigs(t *testing.T) {
 
 	// Setup for running tests
 	ctrl := gomock.NewController(t)
-	mockClient := rest.NewMockLearnClient(ctrl)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
 	var rec witnessRecorder
