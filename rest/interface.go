@@ -1,6 +1,6 @@
 package rest
 
-//go:generate mockgen -source=interface.go -destination=./mock/interface.mock.go
+//go:generate mockgen -source=interface.go -destination=mock_interface.go -package=rest
 
 import (
 	"context"
