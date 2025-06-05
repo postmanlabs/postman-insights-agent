@@ -1,4 +1,4 @@
-.PHONY: clean build test generate-test-dependencies
+.PHONY: clean build test mock
 
 export GO111MODULE = on
 
@@ -11,8 +11,8 @@ docker-build:
 clean:
 	go clean
 
-generate-test-dependencies:
+mock:
 	go generate ./rest
 
-test: generate-test-dependencies
+test: mock
 	go test ./...
