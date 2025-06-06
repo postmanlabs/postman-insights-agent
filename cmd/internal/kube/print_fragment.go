@@ -32,7 +32,7 @@ var printHelmChartFragmentCmd = &cobra.Command{
 
 var printTerraformFragmentCmd = &cobra.Command{
 	Use:              "tf-fragment",
-	Short:            "Print an Terraform (HCL) code fragment for adding the Postman Insights Agent to an existing kubernetes deployment.",
+	Short:            "Print a Terraform (HCL) code fragment for adding the Postman Insights Agent to an existing kubernetes deployment.",
 	Long:             "Print a Terraform (HCL) code fragment that can be inserted into a Terraform kubernetes_deployment resource spec to add the Postman Insights Agent as a sidecar container.",
 	RunE:             printTerraformFragment,
 	PersistentPreRun: kubeCommandPreRun,

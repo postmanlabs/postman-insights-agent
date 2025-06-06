@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akitasoftware/akita-ir/go/api_spec"
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -23,7 +22,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
-	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
+	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -746,7 +745,7 @@ func TestRedactionConfigs(t *testing.T) {
 	type testCase struct {
 		request           akinet.HTTPRequest
 		response          akinet.HTTPResponse
-		expectedWitnesses *api_spec.Witness
+		expectedWitnesses *pb.Witness
 	}
 	testCases := map[string]testCase{
 		"no sensitive data": {
@@ -1431,7 +1430,7 @@ func TestRedactionConfigs(t *testing.T) {
 								Method:       "POST",
 								PathTemplate: "/",
 								Host:         "example.com",
-								Obfuscation:  api_spec.HTTPMethodMeta_NONE,
+								Obfuscation:  pb.HTTPMethodMeta_NONE,
 							},
 						},
 					},
