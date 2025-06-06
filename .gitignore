@@ -25,3 +25,5 @@ bin/
 
 # Go mocks
 *.mock.go
+mock_*.go
+mock/

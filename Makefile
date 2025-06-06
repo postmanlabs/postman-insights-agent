@@ -12,8 +12,7 @@ clean:
 	go clean
 
 mock:
-	mkdir -p ./rest/mock
-	mockgen -source ./rest/interface.go -destination ./rest/mock/interface.mock.go -package mock
+	go generate ./rest
 
 test: mock
 	go test ./...
