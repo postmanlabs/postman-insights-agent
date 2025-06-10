@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directories:
+      - "**/*"
+    schedule:
+      interval: "daily"
+    # This will prevent Dependabot from opening pull requests for normal updates also
+    # and will only open pull requests for security updates, which is limited to 10 max from Github side
+    # We can still see the alerts for normal updates in Github dependabot alerts.
+    open-pull-requests-limit: 0
+  - package-ecosystem: "gomod"
+    directories:
+      - "**/*"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
