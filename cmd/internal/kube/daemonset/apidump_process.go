@@ -3,13 +3,13 @@ package daemonset
 import (
 	"runtime/debug"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -70,7 +70,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		networkNamespace = "/host" + networkNamespace
 
 		apidumpArgs := apidump.Args{
-			ClientID:                telemetry.GetClientID(),
+			ClientID:                akid.GenerateClientID(),
 			Domain:                  rest.Domain,
 			ServiceID:               podArgs.InsightsProjectID,
 			SampleRate:              apispec.DefaultSampleRate,
