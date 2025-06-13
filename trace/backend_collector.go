@@ -40,7 +40,7 @@ const (
 	uploadBatchMaxSize_bytes = 60_000_000 // 60 MB
 
 	// How often to flush the upload batch.
-	uploadBatchFlushDuration = 30 * time.Second
+	uploadBatchFlushDuration = 5 * time.Second
 )
 
 type witnessWithInfo struct {
