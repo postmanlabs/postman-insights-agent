@@ -250,7 +250,7 @@ func (a *apidump) SendInitialTelemetry() {
 	if pod, present := a.Args.Tags[tags.XAkitaKubernetesPod]; present {
 		req.MonitoredPodName = pod
 		hostname, err := os.Hostname()
-		if err != nil {
+		if err == nil {
 			req.AgentPodName = hostname
 		}
 	}
