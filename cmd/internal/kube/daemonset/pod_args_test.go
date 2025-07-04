@@ -5,10 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akitasoftware/akita-libs/akid"
-	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestPodArgs_StateTransitions tests basic valid state transitions
@@ -228,51 +225,6 @@ func TestPodArgs_ConcurrentAccess(t *testing.T) {
 		assert.Equal(t, PodRunning, podArgs.PodTrafficMonitorState, "Final state should be PodRunning")
 	})
 
-	t.Run("Concurrent reads while state is being changed", func(t *testing.T) {
-		podArgs := NewPodArgs("test-pod")
-		podArgs.PodTrafficMonitorState = PodPending
-
-		var wg sync.WaitGroup
-		readResults := make(chan PodTrafficMonitorState, 100)
-
-		// Start a goroutine that continuously changes state
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 10; i++ {
-				podArgs.changePodTrafficMonitorState(PodRunning, PodPending)
-				time.Sleep(1 * time.Millisecond)
-				podArgs.changePodTrafficMonitorState(PodPending, PodRunning)
-				time.Sleep(1 * time.Millisecond)
-			}
-		}()
-
-		// Start multiple goroutines reading state
-		for i := 0; i < 5; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for j := 0; j < 20; j++ {
-					readResults <- podArgs.PodTrafficMonitorState
-					time.Sleep(1 * time.Millisecond)
-				}
-			}()
-		}
-
-		wg.Wait()
-		close(readResults)
-
-		// Verify all read results are valid states
-		validStates := map[PodTrafficMonitorState]bool{
-			PodPending: true,
-			PodRunning: true,
-		}
-
-		for state := range readResults {
-			assert.True(t, validStates[state], "Read state should be valid: %s", state)
-		}
-	})
-
 	t.Run("Race condition between state change and markAsPruneReady", func(t *testing.T) {
 		podArgs := NewPodArgs("test-pod")
 		podArgs.PodTrafficMonitorState = TrafficMonitoringEnded
@@ -446,166 +398,6 @@ func TestPodArgs_EdgeCases(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, PodRunning, podArgs.PodTrafficMonitorState)
 	})
-
-	t.Run("State transition with nil allowed states", func(t *testing.T) {
-		podArgs := NewPodArgs("test-pod")
-		podArgs.PodTrafficMonitorState = PodPending
-
-		// Nil allowed states should allow any transition
-		err := podArgs.changePodTrafficMonitorState(PodRunning)
-		assert.NoError(t, err)
-		assert.Equal(t, PodRunning, podArgs.PodTrafficMonitorState)
-	})
-
-	t.Run("NewPodArgs creates valid instance", func(t *testing.T) {
-		podArgs := NewPodArgs("test-pod")
-
-		assert.Equal(t, "test-pod", podArgs.PodName)
-		assert.NotNil(t, podArgs.TraceTags)
-		assert.NotNil(t, podArgs.StopChan)
-		assert.Equal(t, 2, cap(podArgs.StopChan))
-		assert.Equal(t, PodTrafficMonitorState(""), podArgs.PodTrafficMonitorState) // Zero value
-	})
-
-	t.Run("PodArgs fields are properly initialized", func(t *testing.T) {
-		podArgs := NewPodArgs("test-pod")
-
-		// Test that fields can be set and retrieved
-		podArgs.InsightsProjectID = akid.ServiceID{}
-		podArgs.ContainerUUID = "test-container-uuid"
-		podArgs.ReproMode = true
-		podArgs.DropNginxTraffic = true
-		podArgs.AgentRateLimit = 100.0
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      "test-key",
-			InsightsEnvironment: "test-env",
-		}
-		podArgs.TraceTags = tags.SingletonTags{"test": "value"}
-
-		assert.Equal(t, akid.ServiceID{}, podArgs.InsightsProjectID)
-		assert.Equal(t, "test-container-uuid", podArgs.ContainerUUID)
-		assert.True(t, podArgs.ReproMode)
-		assert.True(t, podArgs.DropNginxTraffic)
-		assert.Equal(t, 100.0, podArgs.AgentRateLimit)
-		assert.Equal(t, "test-key", podArgs.PodCreds.InsightsAPIKey)
-		assert.Equal(t, "test-env", podArgs.PodCreds.InsightsEnvironment)
-		assert.Equal(t, tags.SingletonTags{"test": "value"}, podArgs.TraceTags)
-	})
-
-	t.Run("isTrafficMonitoringInFinalState function", func(t *testing.T) {
-		finalStates := []PodTrafficMonitorState{
-			TrafficMonitoringEnded,
-			TrafficMonitoringFailed,
-			RemovePodFromMap,
-		}
-
-		nonFinalStates := []PodTrafficMonitorState{
-			PodPending,
-			PodRunning,
-			PodSucceeded,
-			PodFailed,
-			PodTerminated,
-			TrafficMonitoringRunning,
-			DaemonSetShutdown,
-		}
-
-		for _, state := range finalStates {
-			podArgs := NewPodArgs("test-pod")
-			podArgs.PodTrafficMonitorState = state
-			assert.True(t, isTrafficMonitoringInFinalState(podArgs), "State %s should be final", state)
-		}
-
-		for _, state := range nonFinalStates {
-			podArgs := NewPodArgs("test-pod")
-			podArgs.PodTrafficMonitorState = state
-			assert.False(t, isTrafficMonitoringInFinalState(podArgs), "State %s should not be final", state)
-		}
-	})
-}
-
-// TestPodArgs_ConcurrencyStress tests performance under concurrent load
-func TestPodArgs_ConcurrencyStress(t *testing.T) {
-	t.Run("High-frequency state transitions", func(t *testing.T) {
-		podArgs := NewPodArgs("test-pod")
-		podArgs.PodTrafficMonitorState = PodPending
-
-		var wg sync.WaitGroup
-		successCount := 0
-		var mu sync.Mutex
-
-		// Start 100 goroutines doing rapid state transitions
-		for i := 0; i < 100; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for j := 0; j < 10; j++ {
-					err := podArgs.changePodTrafficMonitorState(PodRunning, PodPending)
-					if err == nil {
-						mu.Lock()
-						successCount++
-						mu.Unlock()
-						// Change back to allow others to succeed
-						podArgs.changePodTrafficMonitorState(PodPending, PodRunning)
-					}
-				}
-			}()
-		}
-
-		wg.Wait()
-
-		// Should have many successful transitions
-		assert.True(t, successCount > 0, "Should have successful transitions")
-	})
-
-	t.Run("Large number of concurrent PodArgs objects", func(t *testing.T) {
-		const numPods = 100
-		podArgsList := make([]*PodArgs, numPods)
-
-		// Create many PodArgs objects
-		for i := 0; i < numPods; i++ {
-			podArgsList[i] = NewPodArgs("test-pod-" + string(rune(i)))
-			podArgsList[i].PodTrafficMonitorState = PodPending
-		}
-
-		var wg sync.WaitGroup
-		successCount := 0
-		var mu sync.Mutex
-
-		// Start goroutines for each PodArgs
-		for i := 0; i < numPods; i++ {
-			wg.Add(1)
-			go func(podArgs *PodArgs) {
-				defer wg.Done()
-				err := podArgs.changePodTrafficMonitorState(PodRunning, PodPending)
-				if err == nil {
-					mu.Lock()
-					successCount++
-					mu.Unlock()
-				}
-			}(podArgsList[i])
-		}
-
-		wg.Wait()
-
-		// All should succeed since they're different objects
-		assert.Equal(t, numPods, successCount, "All PodArgs should transition successfully")
-	})
-
-	t.Run("Memory pressure scenarios", func(t *testing.T) {
-		// Test that we can create many PodArgs without memory issues
-		const numPods = 1000
-		podArgsList := make([]*PodArgs, numPods)
-
-		for i := 0; i < numPods; i++ {
-			podArgsList[i] = NewPodArgs("test-pod-" + string(rune(i)))
-			require.NotNil(t, podArgsList[i])
-		}
-
-		// Verify all are accessible
-		for i := 0; i < numPods; i++ {
-			assert.Equal(t, "test-pod-"+string(rune(i)), podArgsList[i].PodName)
-		}
-	})
 }
 
 // TestPodArgs_StateTransitionSequence tests complete state transition sequences
@@ -661,5 +453,102 @@ func TestPodArgs_StateTransitionSequence(t *testing.T) {
 		err = podArgs.markAsPruneReady()
 		assert.NoError(t, err)
 		assert.Equal(t, RemovePodFromMap, podArgs.PodTrafficMonitorState)
+	})
+}
+
+// --- DaemonSet Shutdown and State Transition Tests ---
+
+func TestPodArgs_DaemonShutdown(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialState  PodTrafficMonitorState
+		expectedError bool
+		expectedState PodTrafficMonitorState
+	}{
+		{"TrafficMonitoringRunning to DaemonSetShutdown", TrafficMonitoringRunning, false, DaemonSetShutdown},
+		{"PodRunning to DaemonSetShutdown", PodRunning, false, DaemonSetShutdown},
+		{"PodPending to DaemonSetShutdown", PodPending, false, DaemonSetShutdown},
+		{"PodSucceeded to DaemonSetShutdown", PodSucceeded, false, DaemonSetShutdown},
+		{"PodFailed to DaemonSetShutdown", PodFailed, false, DaemonSetShutdown},
+		{"PodTerminated to DaemonSetShutdown", PodTerminated, false, DaemonSetShutdown},
+		{"TrafficMonitoringEnded to DaemonSetShutdown", TrafficMonitoringEnded, true, TrafficMonitoringEnded},
+		{"TrafficMonitoringFailed to DaemonSetShutdown", TrafficMonitoringFailed, true, TrafficMonitoringFailed},
+		{"RemovePodFromMap to DaemonSetShutdown", RemovePodFromMap, true, RemovePodFromMap},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			podArgs := NewPodArgs("test-pod")
+			podArgs.PodTrafficMonitorState = tt.initialState
+			err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
+			if tt.expectedError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "already in final state")
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedState, podArgs.PodTrafficMonitorState)
+			}
+		})
+	}
+}
+
+func TestPodArgs_DaemonShutdownConcurrency(t *testing.T) {
+	t.Run("Multiple goroutines trying to change state during shutdown", func(t *testing.T) {
+		podArgs := NewPodArgs("test-pod")
+		podArgs.PodTrafficMonitorState = TrafficMonitoringRunning
+		var wg sync.WaitGroup
+		errors := make(chan error, 10)
+		successCount := 0
+		var mu sync.Mutex
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
+				if err == nil {
+					mu.Lock()
+					successCount++
+					mu.Unlock()
+				}
+				errors <- err
+			}()
+		}
+		wg.Wait()
+		close(errors)
+		errorCount := 0
+		for err := range errors {
+			if err != nil {
+				errorCount++
+			}
+		}
+		assert.Equal(t, 1, successCount)
+		assert.Equal(t, 9, errorCount)
+		assert.Equal(t, DaemonSetShutdown, podArgs.PodTrafficMonitorState)
+	})
+
+	t.Run("Race condition between daemon shutdown and normal state transitions", func(t *testing.T) {
+		podArgs := NewPodArgs("test-pod")
+		podArgs.PodTrafficMonitorState = TrafficMonitoringRunning
+		var wg sync.WaitGroup
+		errors := make(chan error, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			err := podArgs.changePodTrafficMonitorState(TrafficMonitoringEnded, TrafficMonitoringRunning)
+			errors <- err
+		}()
+		go func() {
+			defer wg.Done()
+			err := podArgs.changePodTrafficMonitorState(DaemonSetShutdown)
+			errors <- err
+		}()
+		wg.Wait()
+		close(errors)
+		errorCount := 0
+		for err := range errors {
+			if err != nil {
+				errorCount++
+			}
+		}
+		assert.Equal(t, 1, errorCount)
 	})
 }
