@@ -34,12 +34,6 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	go func() (funcErr error) {
 		// defer function handle the error (if any) in the apidump process and change the pod state accordingly
 		defer func() {
-			// Decrement the wait group counter
-			d.ApidumpProcessesWG.Done()
-
-			// Close the stop channel once the apidump process is exited
-			close(podArgs.StopChan)
-
 			nextState := TrafficMonitoringEnded
 
 			if err := recover(); err != nil {
@@ -59,8 +53,13 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			if err != nil {
 				printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 					podArgs.PodName, podArgs.PodTrafficMonitorState, nextState, err)
-				return
 			}
+
+			// Decrement the wait group counter
+			d.ApidumpProcessesWG.Done()
+
+			// Close the stop channel once the apidump process is exited
+			close(podArgs.StopChan)
 		}()
 
 		networkNamespace, err := d.CRIClient.GetNetworkNamespace(podArgs.ContainerUUID)
