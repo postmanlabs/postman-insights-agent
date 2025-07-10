@@ -28,8 +28,10 @@ github.com/agext/levenshtein v1.2.1 h1:QmvMAjj2aEICytGiWzmxoE0x2KZvE0fvmqMOfy2tj
 github.com/agext/levenshtein v1.2.1/go.mod h1:JEDfjyjHDjOF/1e4FlBE/PkbqA9OfWu2ki2W0IB5558=
 github.com/akitasoftware/akita-ir v0.0.0-20241213050034-057d7b6097e8 h1:sf2aaOG8o+tAIMxuk7peMkKrHPp9l3/r+JmiQ3dwJ5U=
 github.com/akitasoftware/akita-ir v0.0.0-20241213050034-057d7b6097e8/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
-github.com/akitasoftware/akita-libs v0.0.0-20250505211512-67888a517c64 h1:DYjWUWnXOwvuMle72HdQokPDGtzs4cfHLsKHBfnGHiI=
-github.com/akitasoftware/akita-libs v0.0.0-20250505211512-67888a517c64/go.mod h1:Fg14kX6+N7we3KdP1c11W/SzbKsgapV1hP5d4Z/Hqwc=
+github.com/akitasoftware/akita-libs v0.0.0-20250710081526-2d71ee0905f1 h1:lVd+l1fj9h5Arw8UD+kiJKK0a26hDIVo/SBi/OSvXhA=
+github.com/akitasoftware/akita-libs v0.0.0-20250710081526-2d71ee0905f1/go.mod h1:wDsFV5xVq9CJnYnyiRJ5aXgm1OCihaFBrNbjwZ4iw1U=
+github.com/akitasoftware/akita-libs v0.0.0-20250710085825-09840fd547ed h1:bM83ECDyqGXE9XTEugjdEAkgQd7iZ+u7qJtIPNKzwJU=
+github.com/akitasoftware/akita-libs v0.0.0-20250710085825-09840fd547ed/go.mod h1:wDsFV5xVq9CJnYnyiRJ5aXgm1OCihaFBrNbjwZ4iw1U=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803 h1:ebIh/EFuaP8GczzMe8EwVID/blSv5Tej6S8NE4xyarQ=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803/go.mod h1:+IOXf7l/QCAQECJzjJwhTp1sBkRoJ6WciZwJezUwBa4=
 github.com/akitasoftware/gopacket v1.1.18-0.20240820200020-7289ae956f70 h1:VnU7QLDBwRujpQoHwShs5yu0Ahv1fSalNJa4UijwlmY=
@@ -85,6 +87,8 @@ github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24
 github.com/beorn7/perks v1.0.0/go.mod h1:KWe93zE9D1o94FZ5RNwFwVgaQK1VOXiVxmqh+CedLV8=
 github.com/bgentry/speakeasy v0.1.0/go.mod h1:+zsyZBPWlz7T6j88CTgSN5bM796AkVf0kBD4zp0CCIs=
 github.com/bketelsen/crypt v0.0.3-0.20200106085610-5cbc8cc4026c/go.mod h1:MKsuJmJgSg28kpZDP6UIiPt0e0Oz0kqKNGyRaWEPv84=
+github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 h1:DDGfHa7BWjL4YnC6+E63dPcxHo2sUxDIu8g3QgEJdRY=
+github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869/go.mod h1:Ekp36dRnpXw/yCqJaO+ZrUyxD+3VXMFFr56k5XYrpB4=
 github.com/bradfitz/gomemcache v0.0.0-20170208213004-1952afaa557d/go.mod h1:PmM6Mmwb0LSuEubjR8N7PtNe1KxZLtOUHtbeikc5h60=
 github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8 h1:SjZ2GvvOononHOpK84APFuMvxqsk3tEIaKH/z4Rpu3g=
 github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8/go.mod h1:uEyr4WpAH4hio6LFriaPkL938XnrvLpNPmQHBdrmbIE=
@@ -350,6 +354,10 @@ github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncj
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
 github.com/ryanuber/columnize v0.0.0-20160712163229-9b3edd62028f/go.mod h1:sm1tb6uqfes/u+d4ooFouqFdy9/2g9QGwK3SQygK0Ts=
 github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529/go.mod h1:DxrIzT+xaE7yg65j358z/aeFdxmN0P9QXhEzd20vsDc=
+github.com/segmentio/analytics-go/v3 v3.3.0 h1:8VOMaVGBW03pdBrj1CMFfY9o/rnjJC+1wyQHlVxjw5o=
+github.com/segmentio/analytics-go/v3 v3.3.0/go.mod h1:p8owAF8X+5o27jmvUognuXxdtqvSGtD0ZrfY2kcS9bE=
+github.com/segmentio/backo-go v1.0.0 h1:kbOAtGJY2DqOR0jfRkYEorx/b18RgtepGtY3+Cpe6qA=
+github.com/segmentio/backo-go v1.0.0/go.mod h1:kJ9mm9YmoWSkk+oQ+5Cj8DEoRCX2JT6As4kEtIIOp1M=
 github.com/sergi/go-diff v1.1.0 h1:we8PVUC3FE2uYfodKH/nBHMSetSfHDR6scGdBi+erh0=
 github.com/sergi/go-diff v1.1.0/go.mod h1:STckp+ISIX8hZLjrqAeVduY0gWCT9IjLuqbuNXdaHfM=
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=

@@ -22,7 +22,7 @@ import (
 
 var (
 	// Shared client object
-	analyticsClient analytics.Client = nullClient{}
+	analyticsClient analytics.Client = analytics.NullClient{}
 
 	// Is analytics enabled?
 	analyticsEnabled bool
@@ -49,20 +49,6 @@ var (
 	isLoggingEnabled bool = true
 )
 
-type nullClient struct{}
-
-func (_ nullClient) TrackEvent(_ *analytics.Event) error {
-	return nil
-}
-
-func (_ nullClient) Track(distinctID string, name string, properties map[string]any) error {
-	return nil
-}
-
-func (_ nullClient) Close() error {
-	return nil
-}
-
 // Initialize the telemetry client.
 // This should be called once at startup either from the root command
 // or from a subcommand that overrides the default PersistentPreRun.
@@ -77,7 +63,7 @@ func doInit() {
 	if disableTelemetry != "" {
 		if val, err := strconv.ParseBool(disableTelemetry); err == nil && val {
 			printer.Infof("Telemetry disabled via opt-out.\n")
-			analyticsClient = nullClient{}
+			analyticsClient = analytics.NullClient{}
 			return
 		}
 	}
@@ -95,7 +81,7 @@ func doInit() {
 			printer.Infof("Telemetry unavailable; no Amplitude key configured.\n")
 			printer.Infof("This is caused by building from source rather than using an official build.\n")
 		}
-		analyticsClient = nullClient{}
+		analyticsClient = analytics.NullClient{}
 		return
 	}
 
@@ -124,7 +110,7 @@ func doInit() {
 			printer.Infof("Postman support will not be able to see any errors you encounter.\n")
 			printer.Infof("Please send this log message to %s.\n", consts.SupportEmail)
 		}
-		analyticsClient = nullClient{}
+		analyticsClient = analytics.NullClient{}
 		return
 	}
 
@@ -137,7 +123,7 @@ func doInit() {
 			printer.Infof("Postman support will not be able to see any errors you encounter.\n")
 			printer.Infof("Please send this log message to %s.\n", consts.SupportEmail)
 		}
-		analyticsClient = nullClient{}
+		analyticsClient = analytics.NullClient{}
 		return
 	}
 
@@ -364,8 +350,5 @@ func tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
 		eventProperties.Upsert("service_id", serviceID, func(v, newV any) any { return v })
 	}
 
-	err := analyticsClient.Track(userID, eventName, eventProperties)
-	if err != nil {
-		printer.Warningf("Error sending analytics event %q: %v\n", eventName, err)
-	}
+	analyticsClient.Track(userID, eventName, eventProperties)
 }
