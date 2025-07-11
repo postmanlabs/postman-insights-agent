@@ -128,13 +128,14 @@ func (buf *reportBuffer) Flush() error {
 	// Cache current active upload report and reset it to next report.
 	// If witness rate is very high, reading from the channel could still block.
 	report := buf.activeUploadReport
+	learnSessions := buf.collector.getLearnSession()
 	buf.activeUploadReport = <-buf.uploadReports
 	go func() {
 		// Upload to the back end.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		err := buf.collector.learnClient.AsyncReportsUpload(ctx, buf.collector.getLearnSession(), report)
+		err := buf.collector.learnClient.AsyncReportsUpload(ctx, learnSessions, report)
 		if err != nil {
 			switch e := err.(type) {
 			case rest.HTTPError:
@@ -147,7 +148,7 @@ func (buf *reportBuffer) Flush() error {
 
 			printer.Warningf("Failed to upload to Postman: %v\n", err)
 		}
-		printer.Debugf("Uploaded %d witnesses, %d TCP connection reports, and %d TLS handshake reports\n", len(buf.activeUploadReport.Witnesses), len(buf.activeUploadReport.TCPConnections), len(buf.activeUploadReport.TLSHandshakes))
+		printer.Debugf("Uploaded %d witnesses, %d TCP connection reports, and %d TLS handshake reports\n", len(report.Witnesses), len(report.TCPConnections), len(report.TLSHandshakes))
 
 		// Ensure the buffer is empty when we return.
 		report.Clear()
