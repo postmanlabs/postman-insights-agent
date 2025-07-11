@@ -21,6 +21,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/stretchr/testify/assert"
@@ -39,7 +40,7 @@ type witnessRecorder struct {
 
 func newWitnessRecorder() *witnessRecorder {
 	return &witnessRecorder{
-		witnesses: make(chan *pb.Witness),
+		witnesses: make(chan *pb.Witness, 100), // making the channel size large to prevent dead-locking the main test co-routine
 	}
 }
 
@@ -143,6 +144,7 @@ func TestRedact(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -490,6 +492,7 @@ func TestTiming(t *testing.T) {
 				NewPacketCounter(),
 				false,
 				nil,
+				apispec.DefaultMaxWintessUploadBuffers,
 			)
 			for _, pnt := range test.PNTs {
 				assert.NoError(t, col.Process(pnt))
@@ -528,6 +531,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 
 	var wg sync.WaitGroup
@@ -578,7 +582,7 @@ func TestMultipleInterfaces(t *testing.T) {
 func TestFlushExit(t *testing.T) {
 	b := &BackendCollector{}
 	b.uploadReportBatch = batcher.NewInMemory[rawReport](
-		newReportBuffer(b, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false),
+		newReportBuffer(b, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, apispec.DefaultMaxWintessUploadBuffers),
 		uploadBatchFlushDuration,
 	)
 	b.flushDone = make(chan struct{})
@@ -676,6 +680,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		NewPacketCounter(),
 		true,
 		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -1492,6 +1497,7 @@ func TestRedactionConfigs(t *testing.T) {
 			NewPacketCounter(),
 			true,
 			nil,
+			apispec.DefaultMaxWintessUploadBuffers,
 		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))

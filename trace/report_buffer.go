@@ -45,10 +45,12 @@ func newReportBuffer(
 	maxSize_bytes int,
 	maxWitnessSize_bytes optionals.Optional[int],
 	witnessesHavePayloads bool,
+	reportBuffers int,
 ) *reportBuffer {
-	uploadReports := make(chan *kgxapi.UploadReportsRequest, 2)
-	uploadReports <- &kgxapi.UploadReportsRequest{}
-	uploadReports <- &kgxapi.UploadReportsRequest{}
+	uploadReports := make(chan *kgxapi.UploadReportsRequest, reportBuffers)
+	for range reportBuffers {
+		uploadReports <- &kgxapi.UploadReportsRequest{}
+	}
 	activeUploadReport := <-uploadReports
 
 	return &reportBuffer{
@@ -129,7 +131,6 @@ func (buf *reportBuffer) Flush() error {
 	// If witness rate is very high, reading from the channel could still block.
 	report := buf.activeUploadReport
 	learnSessions := buf.collector.getLearnSession()
-	buf.activeUploadReport = <-buf.uploadReports
 	go func() {
 		// Upload to the back end.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -154,6 +155,7 @@ func (buf *reportBuffer) Flush() error {
 		report.Clear()
 		buf.uploadReports <- report
 	}()
+	buf.activeUploadReport = <-buf.uploadReports
 
 	return nil
 }

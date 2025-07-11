@@ -174,6 +174,7 @@ func NewBackendCollector(
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
 	plugins []plugin.AkitaPlugin,
+	uploadReportBuffers int,
 ) Collector {
 	col := &BackendCollector{
 		serviceID:           svc,
@@ -186,7 +187,7 @@ func NewBackendCollector(
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
-		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads),
+		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads, uploadReportBuffers),
 		uploadBatchFlushDuration,
 	)
 
