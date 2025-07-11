@@ -34,10 +34,10 @@ const (
 	pairCacheExpiration = time.Minute
 
 	// How often we clean out stale partial witnesses from pairCache.
-	pairCacheCleanupInterval = 30 * time.Second
+	pairCacheCleanupInterval = 5 * time.Second
 
 	// Max size per upload batch.
-	uploadBatchMaxSize_bytes = 60_000_000 // 60 MB
+	uploadBatchMaxSize_bytes = 30_000_000 // 30 MB
 
 	// How often to flush the upload batch.
 	uploadBatchFlushDuration = 5 * time.Second
