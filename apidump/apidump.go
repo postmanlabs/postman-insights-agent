@@ -155,6 +155,9 @@ type Args struct {
 	DropNginxTraffic bool
 
 	DaemonsetArgs optionals.Optional[DaemonsetArgs]
+
+	// The number of upload buffers. Anything larger than 1 results in async uploads.
+	MaxWitnessUploadBuffers int
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -750,6 +753,7 @@ func (a *apidump) Run() error {
 						summary,
 						args.ReproMode,
 						args.Plugins,
+						args.MaxWitnessUploadBuffers,
 					)
 
 					collector = backendCollector

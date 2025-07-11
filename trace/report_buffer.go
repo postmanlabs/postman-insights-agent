@@ -23,8 +23,9 @@ type rawReport struct {
 }
 
 type reportBuffer struct {
-	collector *BackendCollector
-	kgxapi.UploadReportsRequest
+	collector          *BackendCollector
+	uploadReports      chan *kgxapi.UploadReportsRequest
+	activeUploadReport *kgxapi.UploadReportsRequest
 
 	packetCounts         PacketCountConsumer
 	maxSize_bytes        int
@@ -44,9 +45,18 @@ func newReportBuffer(
 	maxSize_bytes int,
 	maxWitnessSize_bytes optionals.Optional[int],
 	witnessesHavePayloads bool,
+	reportBuffers int,
 ) *reportBuffer {
+	uploadReports := make(chan *kgxapi.UploadReportsRequest, reportBuffers)
+	for range reportBuffers {
+		uploadReports <- &kgxapi.UploadReportsRequest{}
+	}
+	activeUploadReport := <-uploadReports
+
 	return &reportBuffer{
 		collector:             collector,
+		uploadReports:         uploadReports,
+		activeUploadReport:    activeUploadReport,
 		packetCounts:          packetCounts,
 		maxSize_bytes:         maxSize_bytes,
 		maxWitnessSize_bytes:  maxWitnessSize_bytes,
@@ -60,11 +70,11 @@ func (buf *reportBuffer) Add(raw rawReport) (bool, error) {
 	}
 
 	if raw.TCPReport != nil {
-		buf.UploadReportsRequest.AddTCPConnectionReport(raw.TCPReport)
+		buf.activeUploadReport.AddTCPConnectionReport(raw.TCPReport)
 	}
 
 	if raw.TLSHandshakeReport != nil {
-		buf.UploadReportsRequest.AddTLSHandshakeReport(raw.TLSHandshakeReport)
+		buf.activeUploadReport.AddTLSHandshakeReport(raw.TLSHandshakeReport)
 	}
 
 	return buf.isFull(), nil
@@ -109,40 +119,48 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 		return
 	}
 
-	buf.UploadReportsRequest.AddWitnessReport(witnessReport)
+	buf.activeUploadReport.AddWitnessReport(witnessReport)
 }
 
 func (buf *reportBuffer) Flush() error {
-	if buf.UploadReportsRequest.IsEmpty() {
+	if buf.activeUploadReport.IsEmpty() {
 		return nil
 	}
 
-	// Ensure the buffer is empty when we return.
-	defer buf.UploadReportsRequest.Clear()
+	// Cache current active upload report and reset it to next report.
+	// If witness rate is very high, reading from the channel could still block.
+	report := buf.activeUploadReport
+	learnSessions := buf.collector.getLearnSession()
+	go func() {
+		// Upload to the back end.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-	// Upload to the back end.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err := buf.collector.learnClient.AsyncReportsUpload(ctx, buf.collector.getLearnSession(), &buf.UploadReportsRequest)
-	if err != nil {
-		switch e := err.(type) {
-		case rest.HTTPError:
-			if e.StatusCode == http.StatusTooManyRequests {
-				// XXX Not all commands that call into this code have a --rate-limit
-				// option.
-				err = errors.Wrap(err, "your witness uploads are being throttled. Postman Insights will generate partial results. Try reducing the --rate-limit value to avoid this.")
+		err := buf.collector.learnClient.AsyncReportsUpload(ctx, learnSessions, report)
+		if err != nil {
+			switch e := err.(type) {
+			case rest.HTTPError:
+				if e.StatusCode == http.StatusTooManyRequests {
+					// XXX Not all commands that call into this code have a --rate-limit
+					// option.
+					err = errors.Wrap(err, "your witness uploads are being throttled. Postman Insights will generate partial results. Try reducing the --rate-limit value to avoid this.")
+				}
 			}
-		}
 
-		printer.Warningf("Failed to upload to Postman: %v\n", err)
-	}
-	printer.Debugf("Uploaded %d witnesses, %d TCP connection reports, and %d TLS handshake reports\n", len(buf.Witnesses), len(buf.TCPConnections), len(buf.TLSHandshakes))
+			printer.Warningf("Failed to upload to Postman: %v\n", err)
+		}
+		printer.Debugf("Uploaded %d witnesses, %d TCP connection reports, and %d TLS handshake reports\n", len(report.Witnesses), len(report.TCPConnections), len(report.TLSHandshakes))
+
+		// Ensure the buffer is empty when we return.
+		report.Clear()
+		buf.uploadReports <- report
+	}()
+	buf.activeUploadReport = <-buf.uploadReports
 
 	return nil
 }
 
 // Determines whether the buffer is at or beyond capacity.
 func (buf *reportBuffer) isFull() bool {
-	return buf.UploadReportsRequest.SizeInBytes() >= buf.maxSize_bytes
+	return buf.activeUploadReport.SizeInBytes() >= buf.maxSize_bytes
 }

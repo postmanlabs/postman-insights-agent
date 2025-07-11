@@ -11,6 +11,7 @@ import (
 	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/env"
@@ -192,6 +193,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		b.summary,
 		false,
 		args.Plugins,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 
 	// TODO: rate-limit

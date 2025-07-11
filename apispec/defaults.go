@@ -38,4 +38,7 @@ const (
 
 	// Process all possible witness data
 	DefaultSampleRate = 1.0
+
+	// The maximum number of witness upload buffers
+	DefaultMaxWintessUploadBuffers = 2
 )
