@@ -34,10 +34,10 @@ const (
 	pairCacheExpiration = time.Minute
 
 	// How often we clean out stale partial witnesses from pairCache.
-	pairCacheCleanupInterval = 30 * time.Second
+	pairCacheCleanupInterval = 5 * time.Second
 
 	// Max size per upload batch.
-	uploadBatchMaxSize_bytes = 60_000_000 // 60 MB
+	uploadBatchMaxSize_bytes = 30_000_000 // 30 MB
 
 	// How often to flush the upload batch.
 	uploadBatchFlushDuration = 5 * time.Second
@@ -174,6 +174,7 @@ func NewBackendCollector(
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
 	plugins []plugin.AkitaPlugin,
+	uploadReportBuffers int,
 ) Collector {
 	col := &BackendCollector{
 		serviceID:           svc,
@@ -186,7 +187,7 @@ func NewBackendCollector(
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
-		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads),
+		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads, uploadReportBuffers),
 		uploadBatchFlushDuration,
 	)
 
