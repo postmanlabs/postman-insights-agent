@@ -173,6 +173,9 @@ sensitive_value_regexes:
 - (?i)\b^lsv2_pt_[0-9a-f]{32}_[0-9a-f]{10}\b
 - (?i)\b(gsk_[a-zA-Z0-9]{52})\b
 - (?i)\b^lsv2_sk_[0-9a-f]{32}_[0-9a-f]{10}\b
+- (?i)\bmdb_sa_sk_[a-zA-Z0-9]{40}\b
+- (?i)\b(ops_eyJ[a-zA-Z0-9+/]{250,}={0,3})\b
+- (?i)\b(xai-[a-zA-Z0-9+/]{80,})\b
 ignored_keys:
 - clientId
 - value
