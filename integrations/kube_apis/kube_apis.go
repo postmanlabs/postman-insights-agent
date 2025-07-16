@@ -104,7 +104,7 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 		})
 		if err != nil {
 			if kubeErrs.IsTimeout(err) {
-				printer.Debugf("request to get agent pod details timeout, retrying...")
+				printer.Warningf("request to get agent pod details timeout, retrying...")
 				return false, nil
 			}
 			return false, err
@@ -147,7 +147,7 @@ func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
 		})
 		if err != nil {
 			if kubeErrs.IsTimeout(err) {
-				printer.Debugf("request to get pods in agent node timeout, retrying...")
+				printer.Warningf("request to get pods in agent node timeout, retrying...")
 			}
 			return false, err
 		}
