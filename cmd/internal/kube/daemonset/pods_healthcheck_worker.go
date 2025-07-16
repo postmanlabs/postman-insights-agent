@@ -115,6 +115,8 @@ func (d *Daemonset) pruneStoppedProcesses() {
 				printer.Errorf("Failed to mark pod %s as prune ready, error: %v\n", podArgs.PodName, err)
 			}
 		case RemovePodFromMap:
+			// Close the stop channel before removing the pod from the map
+			close(podArgs.StopChan)
 			d.PodArgsByNameMap.Delete(podUID)
 		}
 		return true
