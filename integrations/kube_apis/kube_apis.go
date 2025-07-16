@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
+	kubeErrs "k8s.io/apimachinery/pkg/api/errors"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -25,6 +28,15 @@ const (
 	// Env variable key for Kubernetes node name
 	POSTMAN_INSIGHTS_K8S_NODE = "POSTMAN_INSIGHTS_K8S_NODE"
 )
+
+// An exponential retry backoff policy that results in approximately 24 retires over a 24 hour period.
+var retry = wait.Backoff{
+	Duration: 10 * time.Millisecond,
+	Factor:   2.0,
+	Jitter:   0.1,
+	Steps:    24,
+	Cap:      24 * time.Hour,
+}
 
 // KubeClient struct holds the Kubernetes clientset and event watcher
 type KubeClient struct {
@@ -84,9 +96,21 @@ func (kc *KubeClient) Close() {
 // initPodsEventsWatcher creates a new go-channel to listen for pod events in the cluster
 func (kc *KubeClient) initPodsEventsWatcher() error {
 	// Fetch own pod details and get the ResourceVersion
-	fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
-	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-		FieldSelector: fieldSelector,
+	podsResourceVersion := ""
+	err := wait.ExponentialBackoff(retry, func() (bool, error) {
+		fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
+		pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+			FieldSelector: fieldSelector,
+		})
+		if err != nil {
+			if kubeErrs.IsTimeout(err) {
+				printer.Warningf("request to get agent pod details timeout, retrying...")
+				return false, nil
+			}
+			return false, err
+		}
+		podsResourceVersion = pods.ResourceVersion
+		return true, nil
 	})
 	if err != nil {
 		return errors.Wrap(err, "error getting own pod details")
@@ -94,8 +118,8 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 
 	// Create a watcher for pod events
 	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
-	fieldSelector = fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-	retryWatcher, err := watchTool.NewRetryWatcher(pods.ResourceVersion, &cache.ListWatch{
+	fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
+	retryWatcher, err := watchTool.NewRetryWatcher(podsResourceVersion, &cache.ListWatch{
 		ListFunc: func(options metaV1.ListOptions) (runtime.Object, error) {
 			options.FieldSelector = fieldSelector
 			return kc.Clientset.CoreV1().Pods("").List(context.Background(), options)
@@ -115,15 +139,26 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 
 // GetPodsInNode returns the names of all pods running in a given node
 func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
-	fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-	pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-		FieldSelector: fieldSelector,
+	var pods []coreV1.Pod
+	err := wait.ExponentialBackoff(retry, func() (bool, error) {
+		fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
+		podList, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
+			FieldSelector: fieldSelector,
+		})
+		if err != nil {
+			if kubeErrs.IsTimeout(err) {
+				printer.Warningf("request to get pods in agent node timeout, retrying...")
+			}
+			return false, err
+		}
+		pods = podList.Items
+		return true, nil
 	})
 	if err != nil {
 		return []coreV1.Pod{}, errors.Wrap(err, "error getting pods")
 	}
 
-	return pods.Items, nil
+	return pods, nil
 }
 
 // GetPods returns a list of pods running on the agent node with the given names
