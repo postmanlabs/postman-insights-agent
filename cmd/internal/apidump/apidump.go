@@ -39,6 +39,7 @@ var (
 	collectTCPAndTLSReports bool
 	parseTLSHandshakes      bool
 	maxWitnessSize_bytes    int
+	maxWitnessUploadBuffers int
 	dockerExtensionMode     bool
 	healthCheckPort         int
 
@@ -234,6 +235,7 @@ func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
 		CollectTCPAndTLSReports: collectTCPAndTLSReports,
 		ParseTLSHandshakes:      parseTLSHandshakes,
 		MaxWitnessSize_bytes:    maxWitnessSize_bytes,
+		MaxWitnessUploadBuffers: maxWitnessUploadBuffers,
 		DockerExtensionMode:     dockerExtensionMode,
 		HealthCheckPort:         healthCheckPort,
 		DropNginxTraffic:        viper.GetBool("drop-nginx-traffic"),
@@ -365,6 +367,14 @@ func init() {
 		"Don't send witnesses larger than this.",
 	)
 	Cmd.Flags().MarkHidden("max-witness-size-bytes")
+
+	Cmd.Flags().IntVar(
+		&maxWitnessUploadBuffers,
+		"max-witness-upload-buffers",
+		apispec.DefaultMaxWintessUploadBuffers,
+		"Controls the numbers of witness upload buffers.",
+	)
+	Cmd.Flags().MarkHidden("max-witness-upload-buffers")
 
 	Cmd.Flags().BoolVar(
 		&dockerExtensionMode,

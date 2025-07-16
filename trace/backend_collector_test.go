@@ -21,6 +21,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/stretchr/testify/assert"
@@ -34,7 +35,13 @@ var (
 var redactionString = data_masks.RedactionString
 
 type witnessRecorder struct {
-	witnesses []*pb.Witness
+	witnesses chan *pb.Witness
+}
+
+func newWitnessRecorder() *witnessRecorder {
+	return &witnessRecorder{
+		witnesses: make(chan *pb.Witness, 100), // making the channel size large to prevent dead-locking the main test co-routine
+	}
 }
 
 // Record a call to LearnClient.AsyncReportsUpload
@@ -50,7 +57,29 @@ func (wr *witnessRecorder) recordAsyncReportsUpload(args ...interface{}) {
 		if err := proto.Unmarshal(bs, w); err != nil {
 			panic(err)
 		}
-		wr.witnesses = append(wr.witnesses, w)
+		wr.witnesses <- w
+	}
+}
+
+func (wr *witnessRecorder) assertExpectedWitnesses(t *testing.T, expectedWitnesses []*pb.Witness) {
+	for i := range expectedWitnesses {
+		expected := proto.MarshalTextString(expectedWitnesses[i])
+		actual := proto.MarshalTextString(<-wr.witnesses)
+		assert.Equal(t, expected, actual)
+	}
+}
+
+func (wr *witnessRecorder) assertExpectedWitnessLatency(t *testing.T, expectedWitnesses int, expectedLatencies []float32) {
+	witnesses := make([]*pb.Witness, 0)
+	for range expectedWitnesses {
+		witnesses = append(witnesses, <-wr.witnesses)
+	}
+	assert.Equal(t, expectedWitnesses, len(witnesses))
+	for i, expectedLatency := range expectedLatencies {
+		witness := witnesses[i]
+		meta := spec_util.HTTPMetaFromMethod(witness.Method)
+		assert.NotNil(t, meta)
+		assert.InDelta(t, expectedLatency, meta.ProcessingLatency, 0.001)
 	}
 }
 
@@ -60,7 +89,7 @@ func TestRedact(t *testing.T) {
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
-	var rec witnessRecorder
+	rec := newWitnessRecorder()
 	mockClient.
 		EXPECT().
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -115,6 +144,7 @@ func TestRedact(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -155,11 +185,7 @@ func TestRedact(t *testing.T) {
 		},
 	}
 
-	for i := range expectedWitnesses {
-		expected := proto.MarshalTextString(expectedWitnesses[i])
-		actual := proto.MarshalTextString(rec.witnesses[i])
-		assert.Equal(t, expected, actual)
-	}
+	rec.assertExpectedWitnesses(t, expectedWitnesses)
 }
 
 func dataFromPrimitive(p *pb.Primitive) *pb.Data {
@@ -440,7 +466,7 @@ func TestTiming(t *testing.T) {
 			mockClient := mockrest.NewMockLearnClient(ctrl)
 			defer ctrl.Finish()
 
-			var rec witnessRecorder
+			rec := newWitnessRecorder()
 			mockClient.
 				EXPECT().
 				AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -466,19 +492,14 @@ func TestTiming(t *testing.T) {
 				NewPacketCounter(),
 				false,
 				nil,
+				apispec.DefaultMaxWintessUploadBuffers,
 			)
 			for _, pnt := range test.PNTs {
 				assert.NoError(t, col.Process(pnt))
 			}
 			assert.NoError(t, col.Close())
 
-			assert.Equal(t, test.ExpectedWitnesses, len(rec.witnesses))
-			for i, expectedLatency := range test.ExpectedLatencies {
-				witness := rec.witnesses[i]
-				meta := spec_util.HTTPMetaFromMethod(witness.Method)
-				assert.NotNil(t, meta)
-				assert.InDelta(t, expectedLatency, meta.ProcessingLatency, 0.001)
-			}
+			rec.assertExpectedWitnessLatency(t, test.ExpectedWitnesses, test.ExpectedLatencies)
 		})
 	}
 }
@@ -510,6 +531,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 
 	var wg sync.WaitGroup
@@ -560,7 +582,7 @@ func TestMultipleInterfaces(t *testing.T) {
 func TestFlushExit(t *testing.T) {
 	b := &BackendCollector{}
 	b.uploadReportBatch = batcher.NewInMemory[rawReport](
-		newReportBuffer(b, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false),
+		newReportBuffer(b, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, apispec.DefaultMaxWintessUploadBuffers),
 		uploadBatchFlushDuration,
 	)
 	b.flushDone = make(chan struct{})
@@ -574,7 +596,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
-	var rec witnessRecorder
+	rec := newWitnessRecorder()
 	mockClient.
 		EXPECT().
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -658,6 +680,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		NewPacketCounter(),
 		true,
 		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -732,11 +755,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		},
 	}
 
-	for i := range expectedWitnesses {
-		expected := proto.MarshalTextString(expectedWitnesses[i])
-		actual := proto.MarshalTextString(rec.witnesses[i])
-		assert.Equal(t, expected, actual)
-	}
+	rec.assertExpectedWitnesses(t, expectedWitnesses)
 }
 
 func TestRedactionConfigs(t *testing.T) {
@@ -1444,7 +1463,7 @@ func TestRedactionConfigs(t *testing.T) {
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
 
-	var rec witnessRecorder
+	rec := newWitnessRecorder()
 	mockClient.
 		EXPECT().
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -1478,13 +1497,12 @@ func TestRedactionConfigs(t *testing.T) {
 			NewPacketCounter(),
 			true,
 			nil,
+			apispec.DefaultMaxWintessUploadBuffers,
 		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))
 		assert.NoError(t, col.Close())
 
-		expected := proto.MarshalTextString(testCase.expectedWitnesses)
-		actual := proto.MarshalTextString(rec.witnesses[i])
-		assert.Equal(t, expected, actual)
+		rec.assertExpectedWitnesses(t, []*pb.Witness{testCase.expectedWitnesses})
 	}
 }
