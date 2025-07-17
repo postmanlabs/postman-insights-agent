@@ -1,6 +1,8 @@
 package pcap
 
 import (
+	"time"
+
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	akihttp2 "github.com/akitasoftware/akita-libs/akinet/http2"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
@@ -50,6 +53,9 @@ func Collect(
 		return errors.Wrap(err, "couldn't start parsing from interface")
 	}
 
+	startTime := time.Now()
+	bufferTimeSum := 0 * time.Second
+	intervalLength := 1 * time.Minute
 	for t := range parsedChan {
 		t.Interface = intf
 		err := proc.Process(t)
@@ -57,6 +63,15 @@ func Collect(
 		if err != nil {
 			return err
 		}
+
+		now := time.Now()
+		if now.Sub(startTime) >= intervalLength {
+			bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
+			printer.Debugf("Aproximate parsed-network-traffic buffer length: %v", bufferLength)
+			bufferTimeSum = 0 * time.Second
+			startTime = now
+		}
+		bufferTimeSum += now.Sub(t.ObservationTime)
 	}
 
 	return nil

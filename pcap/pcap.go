@@ -75,7 +75,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 					now := time.Now()
 					if now.Sub(startTime) >= intervalLength {
 						bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-						printer.Debugf("Aproximate pcap buffer length: %v", bufferLength)
+						printer.Debugf("Aproximate captured-packets buffer length: %v", bufferLength)
 						bufferTimeSum = 0 * time.Second
 						startTime = now
 					}

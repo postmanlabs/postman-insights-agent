@@ -425,6 +425,8 @@ func (c *BackendCollector) periodicFlush() {
 }
 
 func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
+	now := time.Now()
+	bufferTimeSum := 0 * time.Second
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
@@ -435,7 +437,13 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
+
+			if !e.witnessFlushed {
+				bufferTimeSum += now.Sub(e.observationTime)
+			}
 		}
 		return true
 	})
+	bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(pairCacheCleanupInterval.Nanoseconds())
+	printer.Debugf("Approximate unpaired-witness-cache buffer length: %v", bufferLength)
 }
