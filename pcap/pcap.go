@@ -64,14 +64,6 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 				return
 			case pkt, ok := <-pktChan:
 				if ok {
-					wrappedChan <- pkt
-
-					if firstPacket {
-						firstPacket = false
-						ttfp := time.Since(startTime)
-						printer.Debugf("Time to first packet on %s: %s\n", interfaceName, ttfp)
-					}
-
 					now := time.Now()
 					if now.Sub(startTime) >= intervalLength {
 						bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
@@ -80,6 +72,15 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 						startTime = now
 					}
 					bufferTimeSum += now.Sub(pkt.Metadata().Timestamp)
+
+					wrappedChan <- pkt
+
+					if firstPacket {
+						firstPacket = false
+						ttfp := time.Since(startTime)
+						printer.Debugf("Time to first packet on %s: %s\n", interfaceName, ttfp)
+					}
+
 				} else {
 					return
 				}

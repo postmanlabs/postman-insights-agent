@@ -161,8 +161,6 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 
 					return
 				}
-				p.observer(packet)
-				p.packetToParsedNetworkTraffic(out, assembler, packet)
 
 				now := time.Now()
 				if now.Sub(startTime) >= intervalLength {
@@ -172,6 +170,9 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 					startTime = now
 				}
 				bufferTimeSum += now.Sub(packet.Metadata().Timestamp)
+
+				p.observer(packet)
+				p.packetToParsedNetworkTraffic(out, assembler, packet)
 			case <-ticker.C:
 				// The assembler stops reassembly for streams older than streamFlushTimeout.
 				// This means the corresponding tcpFlow readers will return EOF.
