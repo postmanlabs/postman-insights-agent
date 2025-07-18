@@ -64,8 +64,8 @@ func Collect(
 			bufferTimeSum = 0 * time.Second
 			startTime = now
 		}
-
 		bufferTimeSum += now.Sub(t.ObservationTime)
+
 		t.Interface = intf
 		err := proc.Process(t)
 		t.Content.ReleaseBuffers()
