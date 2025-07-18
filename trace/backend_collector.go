@@ -425,6 +425,8 @@ func (c *BackendCollector) periodicFlush() {
 }
 
 func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
+	totalWitnesses := 0
+	flushedWitnesses := 0
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
@@ -435,7 +437,11 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
+
+			flushedWitnesses += 1
 		}
+		totalWitnesses += 1
 		return true
 	})
+	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v", flushedWitnesses, totalWitnesses)
 }

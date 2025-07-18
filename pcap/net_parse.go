@@ -140,6 +140,9 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 		// Signal caller that we're done on exit
 		defer close(out)
 
+		startTime := time.Now()
+		bufferTimeSum := 0 * time.Second
+		intervalLength := 1 * time.Minute
 		for {
 			select {
 			// packets channel is going to read until EOF or when signalClose is
@@ -158,6 +161,16 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 
 					return
 				}
+
+				now := time.Now()
+				if now.Sub(startTime) >= intervalLength {
+					bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
+					printer.Debugf("Approximate unprocessed-packets buffer length: %v", bufferLength)
+					bufferTimeSum = 0 * time.Second
+					startTime = now
+				}
+				bufferTimeSum += now.Sub(packet.Metadata().Timestamp)
+
 				p.observer(packet)
 				p.packetToParsedNetworkTraffic(out, assembler, packet)
 			case <-ticker.C:

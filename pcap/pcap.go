@@ -55,20 +55,32 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 		}()
 
 		startTime := time.Now()
-		count := 0
+		firstPacket := true
+		bufferTimeSum := 0 * time.Second
+		intervalLength := 1 * time.Minute
 		for {
 			select {
 			case <-done:
 				return
 			case pkt, ok := <-pktChan:
 				if ok {
+					now := time.Now()
+					if now.Sub(startTime) >= intervalLength {
+						bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
+						printer.Debugf("Aproximate captured-packets buffer length: %v", bufferLength)
+						bufferTimeSum = 0 * time.Second
+						startTime = now
+					}
+					bufferTimeSum += now.Sub(pkt.Metadata().Timestamp)
+
 					wrappedChan <- pkt
 
-					if count == 0 {
+					if firstPacket {
+						firstPacket = false
 						ttfp := time.Since(startTime)
 						printer.Debugf("Time to first packet on %s: %s\n", interfaceName, ttfp)
 					}
-					count += 1
+
 				} else {
 					return
 				}
