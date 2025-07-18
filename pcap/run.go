@@ -57,13 +57,6 @@ func Collect(
 	bufferTimeSum := 0 * time.Second
 	intervalLength := 1 * time.Minute
 	for t := range parsedChan {
-		t.Interface = intf
-		err := proc.Process(t)
-		t.Content.ReleaseBuffers()
-		if err != nil {
-			return err
-		}
-
 		now := time.Now()
 		if now.Sub(startTime) >= intervalLength {
 			bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
@@ -71,7 +64,14 @@ func Collect(
 			bufferTimeSum = 0 * time.Second
 			startTime = now
 		}
+
 		bufferTimeSum += now.Sub(t.ObservationTime)
+		t.Interface = intf
+		err := proc.Process(t)
+		t.Content.ReleaseBuffers()
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
