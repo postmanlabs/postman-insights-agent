@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/gopacket"
@@ -95,7 +97,7 @@ func makeUDPPackets(split int, ms ...*testMessage) []gopacket.Packet {
 }
 
 func setupParseFromInterface(pcap pcapWrapper, signalClose <-chan struct{}, facts ...akinet.TCPParserFactory) (<-chan akinet.ParsedNetworkTraffic, error) {
-	p := NewNetworkTrafficParser(1.0)
+	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0)
 	p.pcap = pcap
 	p.clock = &fakeClock{testTime}
 	rawOut, err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose, facts...)

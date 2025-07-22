@@ -186,6 +186,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 	b.summary = trace.NewPacketCounter()
 	b.collector = trace.NewBackendCollector(
 		b.backendSvc,
+		traceTags,
 		backendLrn,
 		b.learnClient,
 		redactor,

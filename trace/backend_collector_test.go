@@ -17,6 +17,7 @@ import (
 	"github.com/akitasoftware/akita-libs/batcher"
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
@@ -137,6 +138,7 @@ func TestRedact(t *testing.T) {
 
 	col := NewBackendCollector(
 		fakeSvc,
+		map[tags.Key]string{},
 		fakeLrn,
 		mockClient,
 		redactor,
@@ -485,6 +487,7 @@ func TestTiming(t *testing.T) {
 
 			col := NewBackendCollector(
 				fakeSvc,
+				map[tags.Key]string{},
 				fakeLrn,
 				mockClient,
 				redactor,
@@ -524,6 +527,7 @@ func TestMultipleInterfaces(t *testing.T) {
 
 	bc := NewBackendCollector(
 		fakeSvc,
+		map[tags.Key]string{},
 		fakeLrn,
 		mockClient,
 		redactor,
@@ -673,6 +677,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 
 	col := NewBackendCollector(
 		fakeSvc,
+		map[tags.Key]string{},
 		fakeLrn,
 		mockClient,
 		redactor,
@@ -1490,6 +1495,7 @@ func TestRedactionConfigs(t *testing.T) {
 
 		col := NewBackendCollector(
 			fakeSvc,
+			map[tags.Key]string{},
 			fakeLrn,
 			mockClient,
 			redactor,

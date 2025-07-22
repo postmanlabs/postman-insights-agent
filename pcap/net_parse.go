@@ -6,7 +6,9 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -79,15 +81,19 @@ func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP,
 type NetworkTrafficObserver func(gopacket.Packet)
 
 type NetworkTrafficParser struct {
+	serviceID   akid.ServiceID
+	traceTags   map[tags.Key]string
 	pcap        pcapWrapper
 	clock       clockWrapper
 	observer    NetworkTrafficObserver // This function is called for every packet.
 	bufferShare float32
 }
 
-func NewNetworkTrafficParser(bufferShare float32) *NetworkTrafficParser {
+func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32) *NetworkTrafficParser {
 	return &NetworkTrafficParser{
-		pcap:        &pcapImpl{},
+		serviceID:   serviceID,
+		traceTags:   traceTags,
+		pcap:        &pcapImpl{serviceID, traceTags},
 		clock:       &realClock{},
 		observer:    func(gopacket.Packet) {},
 		bufferShare: bufferShare,
@@ -165,7 +171,11 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				now := time.Now()
 				if now.Sub(startTime) >= intervalLength {
 					bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-					printer.Debugf("Approximate unprocessed-packets buffer length: %v", bufferLength)
+					podName, ok := p.traceTags[tags.XAkitaKubernetesPod]
+					if !ok {
+						podName = "unknown"
+					}
+					printer.Debugf("Approximate unprocessed-packets buffer length: %v for svc: %v and pod: %v", bufferLength, p.serviceID, podName)
 					bufferTimeSum = 0 * time.Second
 					startTime = now
 				}
