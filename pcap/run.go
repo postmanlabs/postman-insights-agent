@@ -3,6 +3,7 @@ package pcap
 import (
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	akihttp2 "github.com/akitasoftware/akita-libs/akinet/http2"
@@ -18,6 +19,7 @@ import (
 )
 
 func Collect(
+	serviceID akid.ServiceID,
 	stop <-chan struct{},
 	intf string,
 	bpfFilter string,
@@ -42,7 +44,7 @@ func Collect(
 		)
 	}
 
-	parser := NewNetworkTrafficParser(bufferShare)
+	parser := NewNetworkTrafficParser(serviceID, bufferShare)
 
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
@@ -60,7 +62,7 @@ func Collect(
 		now := time.Now()
 		if now.Sub(startTime) >= intervalLength {
 			bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-			printer.Debugf("Aproximate parsed-network-traffic buffer length: %v", bufferLength)
+			printer.Debugf("For %v aproximate parsed-network-traffic buffer length: %v for %v", serviceID, bufferLength)
 			bufferTimeSum = 0 * time.Second
 			startTime = now
 		}

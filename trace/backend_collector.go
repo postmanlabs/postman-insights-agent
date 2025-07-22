@@ -443,5 +443,5 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		totalWitnesses += 1
 		return true
 	})
-	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v", flushedWitnesses, totalWitnesses)
+	printer.Debugf("For %v flushed-witnesses in cache: %v, total-witnesses in cache: %v for %v", c.serviceID, flushedWitnesses, totalWitnesses)
 }

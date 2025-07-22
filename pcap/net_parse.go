@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
@@ -79,15 +80,16 @@ func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP,
 type NetworkTrafficObserver func(gopacket.Packet)
 
 type NetworkTrafficParser struct {
+	serviceID   akid.ServiceID
 	pcap        pcapWrapper
 	clock       clockWrapper
 	observer    NetworkTrafficObserver // This function is called for every packet.
 	bufferShare float32
 }
 
-func NewNetworkTrafficParser(bufferShare float32) *NetworkTrafficParser {
+func NewNetworkTrafficParser(serviceID akid.ServiceID, bufferShare float32) *NetworkTrafficParser {
 	return &NetworkTrafficParser{
-		pcap:        &pcapImpl{},
+		pcap:        &pcapImpl{serviceID},
 		clock:       &realClock{},
 		observer:    func(gopacket.Packet) {},
 		bufferShare: bufferShare,
@@ -165,7 +167,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				now := time.Now()
 				if now.Sub(startTime) >= intervalLength {
 					bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-					printer.Debugf("Approximate unprocessed-packets buffer length: %v", bufferLength)
+					printer.Debugf("For %v approximate unprocessed-packets buffer length: %v for: %v", p.serviceID, bufferLength)
 					bufferTimeSum = 0 * time.Second
 					startTime = now
 				}
