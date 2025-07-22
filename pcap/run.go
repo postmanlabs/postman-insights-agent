@@ -3,12 +3,14 @@ package pcap
 import (
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	akihttp2 "github.com/akitasoftware/akita-libs/akinet/http2"
 	"github.com/akitasoftware/akita-libs/akinet/tls"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 	. "github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -18,6 +20,8 @@ import (
 )
 
 func Collect(
+	serviceID akid.ServiceID,
+	traceTags map[tags.Key]string,
 	stop <-chan struct{},
 	intf string,
 	bpfFilter string,
@@ -42,7 +46,7 @@ func Collect(
 		)
 	}
 
-	parser := NewNetworkTrafficParser(bufferShare)
+	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare)
 
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
@@ -60,7 +64,11 @@ func Collect(
 		now := time.Now()
 		if now.Sub(startTime) >= intervalLength {
 			bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-			printer.Debugf("Aproximate parsed-network-traffic buffer length: %v", bufferLength)
+			podName, ok := traceTags[tags.XAkitaKubernetesPod]
+			if !ok {
+				podName = "unknown"
+			}
+			printer.Debugf("Aproximate parsed-network-traffic buffer length: %v, for svc: %v and pod: %v", bufferLength, serviceID, podName)
 			bufferTimeSum = 0 * time.Second
 			startTime = now
 		}

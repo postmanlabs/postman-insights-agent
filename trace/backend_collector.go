@@ -17,6 +17,7 @@ import (
 	"github.com/akitasoftware/akita-libs/http_rest_methods"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
@@ -138,6 +139,7 @@ type LearnSessionCollector interface {
 // Sends witnesses up to akita cloud.
 type BackendCollector struct {
 	serviceID      akid.ServiceID
+	traceTags      map[tags.Key]string
 	learnSessionID akid.LearnSessionID
 	learnClient    rest.LearnClient
 
@@ -167,6 +169,7 @@ var _ LearnSessionCollector = (*BackendCollector)(nil)
 
 func NewBackendCollector(
 	svc akid.ServiceID,
+	traceTags map[tags.Key]string,
 	lrn akid.LearnSessionID,
 	lc rest.LearnClient,
 	redactor *data_masks.Redactor,
@@ -178,6 +181,7 @@ func NewBackendCollector(
 ) Collector {
 	col := &BackendCollector{
 		serviceID:           svc,
+		traceTags:           traceTags,
 		learnSessionID:      lrn,
 		learnClient:         lc,
 		flushDone:           make(chan struct{}),
@@ -443,5 +447,9 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		totalWitnesses += 1
 		return true
 	})
-	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v", flushedWitnesses, totalWitnesses)
+	podName, ok := c.traceTags[tags.XAkitaKubernetesPod]
+	if !ok {
+		podName = "unknown"
+	}
+	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v for svc: %v and pod: %v", flushedWitnesses, totalWitnesses, c.serviceID, podName)
 }
