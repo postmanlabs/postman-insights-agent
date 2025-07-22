@@ -7,10 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 	"github.com/akitasoftware/akita-libs/memview"
+	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -37,13 +39,13 @@ func simpleHTTPReq1() akinet.ParsedNetworkTraffic {
 			URL:        &url.URL{Path: "/"},
 			Host:       "localhost:8080",
 			Header: map[string][]string{
-				"Accept":                    []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
-				"Accept-Encoding":           []string{"gzip, deflate"},
-				"Accept-Language":           []string{"en-US,en;q=0.5"},
-				"Connection":                []string{"keep-alive"},
-				"Dnt":                       []string{"1"},
-				"Upgrade-Insecure-Requests": []string{"1"},
-				"User-Agent":                []string{"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:75.0) Gecko/20100101 Firefox/75.0"},
+				"Accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
+				"Accept-Encoding":           {"gzip, deflate"},
+				"Accept-Language":           {"en-US,en;q=0.5"},
+				"Connection":                {"keep-alive"},
+				"Dnt":                       {"1"},
+				"Upgrade-Insecure-Requests": {"1"},
+				"User-Agent":                {"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:75.0) Gecko/20100101 Firefox/75.0"},
 			},
 		},
 	}
@@ -61,14 +63,14 @@ func simpleHTTPResp1() akinet.ParsedNetworkTraffic {
 			ProtoMajor: 1,
 			ProtoMinor: 1,
 			Header: map[string][]string{
-				"Accept-Ranges":  []string{"bytes"},
-				"Connection":     []string{"keep-alive"},
-				"Content-Length": []string{"612"},
-				"Content-Type":   []string{"text/html"},
-				"Date":           []string{"Fri, 17 Apr 2020 03:45:06 GMT"},
-				"Etag":           []string{`"5e5e6a8f-264"`},
-				"Last-Modified":  []string{"Tue, 03 Mar 2020 14:32:47 GMT"},
-				"Server":         []string{"nginx/1.17.9"},
+				"Accept-Ranges":  {"bytes"},
+				"Connection":     {"keep-alive"},
+				"Content-Length": {"612"},
+				"Content-Type":   {"text/html"},
+				"Date":           {"Fri, 17 Apr 2020 03:45:06 GMT"},
+				"Etag":           {`"5e5e6a8f-264"`},
+				"Last-Modified":  {"Tue, 03 Mar 2020 14:32:47 GMT"},
+				"Server":         {"nginx/1.17.9"},
 			},
 			Body: readFileOrDie("testdata/simple_http_response_body_1"),
 		},
@@ -89,12 +91,12 @@ func simpleHTTPReq2() akinet.ParsedNetworkTraffic {
 			URL:        &url.URL{Path: "/favicon.ico"},
 			Host:       "localhost:8080",
 			Header: map[string][]string{
-				"Accept":          []string{"image/webp,*/*"},
-				"Accept-Encoding": []string{"gzip, deflate"},
-				"Accept-Language": []string{"en-US,en;q=0.5"},
-				"Connection":      []string{"keep-alive"},
-				"Dnt":             []string{"1"},
-				"User-Agent":      []string{"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:75.0) Gecko/20100101 Firefox/75.0"},
+				"Accept":          {"image/webp,*/*"},
+				"Accept-Encoding": {"gzip, deflate"},
+				"Accept-Language": {"en-US,en;q=0.5"},
+				"Connection":      {"keep-alive"},
+				"Dnt":             {"1"},
+				"User-Agent":      {"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:75.0) Gecko/20100101 Firefox/75.0"},
 			},
 		},
 	}
@@ -112,11 +114,11 @@ func simpleHTTPResp2() akinet.ParsedNetworkTraffic {
 			ProtoMajor: 1,
 			ProtoMinor: 1,
 			Header: map[string][]string{
-				"Connection":     []string{"keep-alive"},
-				"Content-Length": []string{"153"},
-				"Content-Type":   []string{"text/html"},
-				"Date":           []string{"Fri, 17 Apr 2020 03:45:06 GMT"},
-				"Server":         []string{"nginx/1.17.9"},
+				"Connection":     {"keep-alive"},
+				"Content-Length": {"153"},
+				"Content-Type":   {"text/html"},
+				"Date":           {"Fri, 17 Apr 2020 03:45:06 GMT"},
+				"Server":         {"nginx/1.17.9"},
 			},
 			Body: readFileOrDie("testdata/simple_http_response_body_2"),
 		},
@@ -176,7 +178,7 @@ func (filePcapWrapper) getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
 func readFromPcapFile(file string, pool buffer_pool.BufferPool) ([]akinet.ParsedNetworkTraffic, error) {
-	p := NewNetworkTrafficParser(1.0)
+	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0)
 	p.pcap = filePcapWrapper(file)
 
 	done := make(chan struct{})
@@ -240,7 +242,6 @@ func TestPcapHTTP(t *testing.T) {
 		if err != nil {
 			t.Errorf("[%s] got unexpected error: %v", c.name, err)
 		} else {
-
 			// TODO: sort slice in cmp
 			if diff := cmp.Diff(c.expected, collected, cmpopts.EquateEmpty(), cmpopts.IgnoreUnexported(akinet.HTTPRequest{}, akinet.HTTPResponse{})); diff != "" {
 				t.Errorf("[%s] found diff: %s", c.name, diff)

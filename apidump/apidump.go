@@ -746,6 +746,7 @@ func (a *apidump) Run() error {
 				if args.Out.AkitaURI != nil {
 					backendCollector = trace.NewBackendCollector(
 						a.backendSvc,
+						traceTags,
 						backendLrn,
 						a.learnClient,
 						redactor,
@@ -836,7 +837,7 @@ func (a *apidump) Run() error {
 			go func(interfaceName, filter string) {
 				defer doneWG.Done()
 				// Collect trace. This blocks until stop is closed or an error occurs.
-				if err := pcap.Collect(args.ServiceID, stop, interfaceName, filter, targetNetworkNamespace, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
+				if err := pcap.Collect(args.ServiceID, traceTags, stop, interfaceName, filter, targetNetworkNamespace, bufferShare, args.ParseTLSHandshakes, collector, summary, pool); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
 						err:           errors.Wrapf(err, "failed to collect trace on interface %s", interfaceName),
