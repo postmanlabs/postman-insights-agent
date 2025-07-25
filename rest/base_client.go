@@ -15,71 +15,73 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Use a proxy, "" is none. (This is because the flags package doesn't support Optional)
-// May be a URL, a domain name, or an IP address.  HTTP is assumed as the protocol if
-// none is provided.
-var ProxyAddress string
+type (
+	// Error handling (to call into the telemetry library without
+	// creating a circular dependency.)
+	APIErrorHandler = func(method string, path string, e error)
 
-// Accept a server name other than the expected one in the TLS handshake
-var ExpectedServerName string
-
-// Error handling (to call into the telemetry library without
-// creating a circular dependency.)
-type APIErrorHandler = func(method string, path string, e error)
-
-var (
-	apiErrorHandler      APIErrorHandler = nil
-	apiErrorHandlerMutex sync.RWMutex
+	// Authentication handler
+	AuthHandler = func(*http.Request) error
 )
 
-func reportError(method string, path string, e error) {
-	apiErrorHandlerMutex.RLock()
-	defer apiErrorHandlerMutex.RUnlock()
-	if apiErrorHandler != nil {
-		apiErrorHandler(method, path, e)
-	}
-}
+var (
+	// Use a proxy, "" is none. (This is because the flags package doesn't support Optional)
+	// May be a URL, a domain name, or an IP address.  HTTP is assumed as the protocol if
+	// none is provided.
+	ProxyAddress string
+	// Accept a server name other than the expected one in the TLS handshake
+	ExpectedServerName string
 
-func SetAPIErrorHandler(f APIErrorHandler) {
-	apiErrorHandlerMutex.Lock()
-	defer apiErrorHandlerMutex.Unlock()
-	apiErrorHandler = f
+	BaseAPIErrorHandler APIErrorHandler
+)
+
+func reportError(client *BaseClient, method string, path string, e error) {
+	client.errorReporterMutex.RLock()
+	defer client.errorReporterMutex.RUnlock()
+	client.apiErrorHandler(method, path, e)
 }
 
 type BaseClient struct {
-	host        string
-	scheme      string // http or https
-	clientID    akid.ClientID
-	authHandler func(*http.Request) error
+	host               string
+	scheme             string // http or https
+	clientID           akid.ClientID
+	authHandler        func(*http.Request) error
+	apiErrorHandler    APIErrorHandler
+	errorReporterMutex sync.RWMutex
 }
 
-func NewBaseClient(rawHost string, cli akid.ClientID, authHandler func(*http.Request) error) BaseClient {
+func NewBaseClient(rawHost string, cli akid.ClientID, authHandler AuthHandler, apiErrorHandler APIErrorHandler) *BaseClient {
 	if authHandler == nil {
 		authHandler = baseAuthHandler
 	}
 
+	if apiErrorHandler == nil {
+		apiErrorHandler = BaseAPIErrorHandler
+	}
+
 	c := BaseClient{
-		scheme:      "https",
-		host:        rawHost,
-		clientID:    cli,
-		authHandler: authHandler,
+		scheme:          "https",
+		host:            rawHost,
+		clientID:        cli,
+		authHandler:     authHandler,
+		apiErrorHandler: apiErrorHandler,
 	}
 	if viper.GetBool("test_only_disable_https") {
 		fmt.Fprintf(os.Stderr, "WARNING: using test backend without SSL\n")
 		c.scheme = "http"
 	}
-	return c
+	return &c
 }
 
 // Sends GET request and parses the response as JSON.
-func (c BaseClient) Get(ctx context.Context, path string, resp interface{}) error {
+func (c *BaseClient) Get(ctx context.Context, path string, resp interface{}) error {
 	return c.GetWithQuery(ctx, path, nil, resp)
 }
 
-func (c BaseClient) GetWithQuery(ctx context.Context, path string, query url.Values, resp interface{}) (e error) {
+func (c *BaseClient) GetWithQuery(ctx context.Context, path string, query url.Values, resp interface{}) (e error) {
 	defer func() {
 		if e != nil {
-			reportError(http.MethodGet, path, e)
+			reportError(c, http.MethodGet, path, e)
 		}
 	}()
 	u := &url.URL{
@@ -105,10 +107,10 @@ func (c BaseClient) GetWithQuery(ctx context.Context, path string, query url.Val
 
 // Sends POST request after marshaling body into JSON and parses the response as
 // JSON.
-func (c BaseClient) Post(ctx context.Context, path string, body interface{}, resp interface{}) (e error) {
+func (c *BaseClient) Post(ctx context.Context, path string, body interface{}, resp interface{}) (e error) {
 	defer func() {
 		if e != nil {
-			reportError(http.MethodPost, path, e)
+			reportError(c, http.MethodPost, path, e)
 		}
 	}()
 

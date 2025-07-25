@@ -64,6 +64,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		rest.Domain,
 		telemetry.GetClientID(),
 		rest.DaemonsetAuthHandler(postmanInsightsVerificationToken),
+		nil,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
