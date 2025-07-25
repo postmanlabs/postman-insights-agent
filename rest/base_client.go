@@ -38,7 +38,9 @@ var (
 func reportError(client *BaseClient, method string, path string, e error) {
 	client.errorReporterMutex.RLock()
 	defer client.errorReporterMutex.RUnlock()
-	client.apiErrorHandler(method, path, e)
+	if client.apiErrorHandler != nil {
+		client.apiErrorHandler(method, path, e)
+	}
 }
 
 type BaseClient struct {

@@ -35,7 +35,7 @@ var (
 	defaultAmplitudeKey = ""
 
 	// Default tracking user for root instance
-	defaultTrackingUser TrackingUser
+	defaultTrackingUser *TrackingUser
 
 	serviceIDRegex = regexp.MustCompile(`^svc_[A-Za-z0-9]{22}$`)
 
@@ -87,7 +87,7 @@ type Tracker interface {
 // trackerImpl implements the Tracker interface
 type trackerImpl struct {
 	analyticsClient analytics.Client
-	trackingUser    TrackingUser
+	trackingUser    *TrackingUser
 	rateLimitMap    *sync.Map // Per-instance rate limiting
 }
 
@@ -100,6 +100,16 @@ func Init(loggingEnabled bool) {
 }
 
 func doInit() {
+	// Create root tracker instance
+	rootTracker = &trackerImpl{
+		analyticsClient: sharedAnalyticsClient,
+		trackingUser:    defaultTrackingUser,
+		rateLimitMap:    &globalRateLimitMap,
+	}
+
+	// Initialize the base API error handler
+	rest.BaseAPIErrorHandler = rootTracker.APIError
+
 	// Opt-out mechanism
 	disableTelemetry := os.Getenv("AKITA_DISABLE_TELEMETRY") + os.Getenv("POSTMAN_INSIGHTS_AGENT_DISABLE_TELEMETRY")
 	if disableTelemetry != "" {
@@ -168,16 +178,6 @@ func doInit() {
 		sharedAnalyticsClient = analytics.NullClient{}
 		return
 	}
-
-	// Create root tracker instance
-	rootTracker = &trackerImpl{
-		analyticsClient: sharedAnalyticsClient,
-		trackingUser:    defaultTrackingUser,
-		rateLimitMap:    &globalRateLimitMap,
-	}
-
-	// Initialize the base API error handler
-	rest.BaseAPIErrorHandler = rootTracker.APIError
 }
 
 // Get the tracking user associated with the API key
@@ -194,7 +194,7 @@ func GetTrackingUserAssociatedWithAPIKey(frontClient rest.FrontClient) (Tracking
 	}, nil
 }
 
-func getUserIdentity() (TrackingUser, error) {
+func getUserIdentity() (*TrackingUser, error) {
 	// If we can get user details use userID and teamID
 	// Otherwise use the configured API Key.
 	// Failing that, try to use the user name and host name.
@@ -202,7 +202,7 @@ func getUserIdentity() (TrackingUser, error) {
 
 	id := os.Getenv("POSTMAN_ANALYTICS_DISTINCT_ID")
 	if id != "" {
-		return TrackingUser{
+		return &TrackingUser{
 			UserID: id,
 			TeamID: "",
 		}, nil
@@ -217,7 +217,7 @@ func getUserIdentity() (TrackingUser, error) {
 		frontClient := rest.NewFrontClient(rest.Domain, GetClientID(), nil, nil)
 		trackingUser, err := GetTrackingUserAssociatedWithAPIKey(frontClient)
 		if err == nil {
-			return trackingUser, nil
+			return &trackingUser, nil
 		}
 
 		printer.Infof("Telemetry using temporary ID; GetUser API call failed: %v\n", err)
@@ -229,7 +229,7 @@ func getUserIdentity() (TrackingUser, error) {
 	// if the getUser() call failed.
 	keyID := cfg.DistinctIDFromCredentials()
 	if keyID != "" {
-		return TrackingUser{
+		return &TrackingUser{
 			UserID: keyID,
 			TeamID: "",
 		}, nil
@@ -237,13 +237,16 @@ func getUserIdentity() (TrackingUser, error) {
 
 	localUser, err := user.Current()
 	if err != nil {
-		return TrackingUser{}, err
+		return &TrackingUser{}, err
 	}
 	localHost, err := os.Hostname()
 	if err != nil {
-		return TrackingUser{}, err
+		return &TrackingUser{
+			UserID: localUser.Username,
+			TeamID: "",
+		}, err
 	}
-	return TrackingUser{
+	return &TrackingUser{
 		UserID: localUser.Username + "@" + localHost,
 		TeamID: "",
 	}, nil
@@ -252,14 +255,6 @@ func getUserIdentity() (TrackingUser, error) {
 // Default returns the root tracker instance for backward compatibility
 func Default() Tracker {
 	initClientOnce.Do(doInit)
-	if rootTracker == nil {
-		// Create a null tracker if init failed
-		return &trackerImpl{
-			analyticsClient: analytics.NullClient{},
-			trackingUser:    TrackingUser{},
-			rateLimitMap:    &sync.Map{},
-		}
-	}
 	return rootTracker
 }
 
@@ -269,7 +264,7 @@ func NewScoped(user TrackingUser) Tracker {
 
 	return &trackerImpl{
 		analyticsClient: sharedAnalyticsClient, // Share the client
-		trackingUser:    user,
+		trackingUser:    &user,
 		rateLimitMap:    &sync.Map{}, // Each scoped instance gets its own rate limit map
 	}
 }
