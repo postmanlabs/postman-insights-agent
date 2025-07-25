@@ -35,7 +35,7 @@ var (
 	defaultAmplitudeKey = ""
 
 	// Default tracking user for root instance
-	defaultTrackingUser *TrackingUser
+	defaultTrackingUser *TrackingUser = &TrackingUser{}
 
 	serviceIDRegex = regexp.MustCompile(`^svc_[A-Za-z0-9]{22}$`)
 
