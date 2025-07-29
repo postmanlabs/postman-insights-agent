@@ -281,6 +281,14 @@ func (t *trackerImpl) Error(inContext string, e error) {
 	)
 }
 
+// Report an error in a particular operation (inContext), including
+// the text of the error.  Send only one trace event per minute for
+// this particular context; count the remainder.
+//
+// Rate-limited errors are not flushed when telemetry is shut down.
+//
+// TODO: consider using the error too, but that could increase
+// the cardinality of the map by a lot.
 func (t *trackerImpl) RateLimitError(inContext string, e error) {
 	newRecord := eventRecord{
 		Count:    0,
