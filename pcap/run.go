@@ -16,6 +16,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
@@ -31,6 +32,7 @@ func Collect(
 	proc trace.Collector,
 	packetCount trace.PacketCountConsumer,
 	pool buffer_pool.BufferPool,
+	telemetry telemetry.Tracker,
 ) error {
 	defer proc.Close()
 
@@ -46,7 +48,7 @@ func Collect(
 		)
 	}
 
-	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare)
+	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry)
 
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))

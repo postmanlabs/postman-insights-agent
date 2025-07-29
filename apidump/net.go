@@ -17,7 +17,6 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/pcap"
 	"github.com/postmanlabs/postman-insights-agent/printer"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 // An interface that's compatible with net.Interface so we can use mock
@@ -197,7 +196,7 @@ func checkPcapPermissions(interfaces map[string]interfaceInfo, targetNetworkName
 			defer wg.Done()
 			h, err := pcap.GetPcapHandle(iface, 1600, true, pcap.BlockForever, targetNetworkNamespaceOpt)
 			if err != nil {
-				telemetry.Error("pcap permissions", err)
+				apidumpTelemetry.Error("pcap permissions", err)
 				errChan <- &pcapPermErr{iface: iface, err: err}
 				return
 			}

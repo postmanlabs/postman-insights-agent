@@ -10,7 +10,7 @@ import (
 
 func Run(args Args) error {
 	// Resolve service ID.
-	frontClient := rest.NewFrontClient(args.Domain, args.ClientID, nil)
+	frontClient := rest.NewFrontClient(args.Domain, args.ClientID, nil, nil)
 	serviceName := args.ModelURI.ServiceName
 	serviceID, err := util.GetServiceIDByName(frontClient, serviceName)
 	if err != nil {
@@ -18,7 +18,7 @@ func Run(args Args) error {
 	}
 
 	// Resolve API model ID.
-	learnClient := rest.NewLearnClient(args.Domain, args.ClientID, serviceID, nil)
+	learnClient := rest.NewLearnClient(args.Domain, args.ClientID, serviceID, nil, nil)
 	modelID, err := util.ResolveSpecURI(learnClient, args.ModelURI)
 	if err != nil {
 		return err

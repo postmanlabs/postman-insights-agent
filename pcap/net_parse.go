@@ -87,9 +87,10 @@ type NetworkTrafficParser struct {
 	clock       clockWrapper
 	observer    NetworkTrafficObserver // This function is called for every packet.
 	bufferShare float32
+	telemetry   telemetry.Tracker
 }
 
-func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32) *NetworkTrafficParser {
+func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32, telemetry telemetry.Tracker) *NetworkTrafficParser {
 	return &NetworkTrafficParser{
 		serviceID:   serviceID,
 		traceTags:   traceTags,
@@ -97,6 +98,7 @@ func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]st
 		clock:       &realClock{},
 		observer:    func(gopacket.Packet) {},
 		bufferShare: bufferShare,
+		telemetry:   telemetry,
 	}
 }
 
@@ -227,9 +229,9 @@ func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.Pa
 		// TODO: detect repeated crashes?
 		if err := recover(); err != nil {
 			if e, ok := err.(error); ok {
-				telemetry.RateLimitError("packet handling", e)
+				p.telemetry.RateLimitError("packet handling", e)
 			} else {
-				telemetry.RateLimitError("packet handling", fmt.Errorf("%v", err))
+				p.telemetry.RateLimitError("packet handling", fmt.Errorf("%v", err))
 			}
 			printer.Stderr.Errorf("Panic during packet handling: %v\n%v\n", err, string(debug.Stack()))
 		}

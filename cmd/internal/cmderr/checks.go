@@ -42,7 +42,7 @@ func CheckAPIKeyAndInsightsProjectID(projectID string) error {
 		return errors.New("project ID is missing, it must be specified")
 	}
 
-	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID(), nil)
+	frontClient := rest.NewFrontClient(rest.Domain, telemetry.GetClientID(), nil, nil)
 	var serviceID akid.ServiceID
 	err = akid.ParseIDAs(projectID, &serviceID)
 	if err != nil {

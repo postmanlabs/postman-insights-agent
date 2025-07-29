@@ -163,6 +163,8 @@ type BackendCollector struct {
 	plugins []plugin.AkitaPlugin
 
 	redactor *data_masks.Redactor
+
+	telemetry telemetry.Tracker
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -178,6 +180,7 @@ func NewBackendCollector(
 	sendWitnessPayloads bool,
 	plugins []plugin.AkitaPlugin,
 	uploadReportBuffers int,
+	telemetry telemetry.Tracker,
 ) Collector {
 	col := &BackendCollector{
 		serviceID:           svc,
@@ -188,6 +191,7 @@ func NewBackendCollector(
 		plugins:             plugins,
 		sendWitnessPayloads: sendWitnessPayloads,
 		redactor:            redactor,
+		telemetry:           telemetry,
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory[rawReport](
@@ -220,7 +224,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	}
 
 	if parseHTTPErr != nil {
-		telemetry.RateLimitError("parse HTTP", parseHTTPErr)
+		c.telemetry.RateLimitError("parse HTTP", parseHTTPErr)
 		printer.Debugf("Failed to parse HTTP, skipping: %v\n", parseHTTPErr)
 		return nil
 	}

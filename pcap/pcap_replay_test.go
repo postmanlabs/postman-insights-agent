@@ -21,6 +21,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 // Constants wrapped as functions because we can't read the testdata file at
@@ -178,7 +179,7 @@ func (filePcapWrapper) getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
 func readFromPcapFile(file string, pool buffer_pool.BufferPool) ([]akinet.ParsedNetworkTraffic, error) {
-	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0)
+	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0, telemetry.Default())
 	p.pcap = filePcapWrapper(file)
 
 	done := make(chan struct{})

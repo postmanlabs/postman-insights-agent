@@ -20,9 +20,13 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/version"
 )
 
+const (
+	rateLimitDuration = 60 * time.Second
+)
+
 var (
-	// Shared client object
-	analyticsClient analytics.Client = analytics.NullClient{}
+	// Global shared analytics client
+	sharedAnalyticsClient analytics.Client = analytics.NullClient{}
 
 	// Is analytics enabled?
 	analyticsEnabled bool
@@ -30,12 +34,9 @@ var (
 	// Client key; set at link-time with -X flag
 	defaultAmplitudeKey = ""
 
-	// Store the user ID and team ID; run through the process
-	// of getting it only once.
-	userID string
-	teamID string
+	// Default tracking user for root instance
+	defaultTrackingUser *TrackingUser = &TrackingUser{}
 
-	serviceID      akid.ServiceID
 	serviceIDRegex = regexp.MustCompile(`^svc_[A-Za-z0-9]{22}$`)
 
 	// Timeout talking to API.
@@ -47,7 +48,48 @@ var (
 
 	// Whether to log client init logs to the console
 	isLoggingEnabled bool = true
+
+	// Root tracker instance
+	rootTracker *trackerImpl
+
+	// Global rate limit map for backward compatibility
+	globalRateLimitMap sync.Map
 )
+
+type TrackingUser struct {
+	UserID string
+	TeamID string
+}
+
+type eventRecord struct {
+	// Number of events since the last one was sent
+	Count int
+
+	// Next time to send an event
+	NextSend time.Time
+}
+
+// Tracker interface defines the telemetry contract
+type Tracker interface {
+	// Existing methods (backward compatibility)
+	Error(inContext string, e error)
+	RateLimitError(inContext string, e error)
+	APIError(method string, path string, e error)
+	Failure(message string)
+	Success(message string)
+	WorkflowStep(workflow string, message string)
+	CommandLine(command string, commandLine []string)
+
+	// Lifecycle
+	Shutdown() error
+}
+
+// trackerImpl implements the Tracker interface
+type trackerImpl struct {
+	analyticsClient analytics.Client
+	trackingUser    *TrackingUser
+	rateLimitMap    *sync.Map // Per-instance rate limiting
+}
 
 // Initialize the telemetry client.
 // This should be called once at startup either from the root command
@@ -58,12 +100,22 @@ func Init(loggingEnabled bool) {
 }
 
 func doInit() {
+	// Create root tracker instance
+	rootTracker = &trackerImpl{
+		analyticsClient: sharedAnalyticsClient,
+		trackingUser:    defaultTrackingUser,
+		rateLimitMap:    &globalRateLimitMap,
+	}
+
+	// Initialize the base API error handler
+	rest.BaseAPIErrorHandler = rootTracker.APIError
+
 	// Opt-out mechanism
 	disableTelemetry := os.Getenv("AKITA_DISABLE_TELEMETRY") + os.Getenv("POSTMAN_INSIGHTS_AGENT_DISABLE_TELEMETRY")
 	if disableTelemetry != "" {
 		if val, err := strconv.ParseBool(disableTelemetry); err == nil && val {
 			printer.Infof("Telemetry disabled via opt-out.\n")
-			analyticsClient = analytics.NullClient{}
+			sharedAnalyticsClient = analytics.NullClient{}
 			return
 		}
 	}
@@ -81,12 +133,12 @@ func doInit() {
 			printer.Infof("Telemetry unavailable; no Amplitude key configured.\n")
 			printer.Infof("This is caused by building from source rather than using an official build.\n")
 		}
-		analyticsClient = analytics.NullClient{}
+		sharedAnalyticsClient = analytics.NullClient{}
 		return
 	}
 
 	var err error
-	analyticsClient, err = analytics.NewClient(
+	sharedAnalyticsClient, err = analytics.NewClient(
 		analytics.Config{
 			// Enable analytics for Amplitude only
 			IsAmplitudeEnabled: true,
@@ -110,29 +162,39 @@ func doInit() {
 			printer.Infof("Postman support will not be able to see any errors you encounter.\n")
 			printer.Infof("Please send this log message to %s.\n", consts.SupportEmail)
 		}
-		analyticsClient = analytics.NullClient{}
+		sharedAnalyticsClient = analytics.NullClient{}
 		return
 	}
 
 	analyticsEnabled = true
 
-	userID, teamID, err = getUserIdentity() // Initialize user ID and team ID
+	defaultTrackingUser, err = getUserIdentity() // Initialize user ID and team ID
 	if err != nil {
 		if isLoggingEnabled {
 			printer.Infof("Telemetry unavailable; error getting userID for given API key: %v\n", err)
 			printer.Infof("Postman support will not be able to see any errors you encounter.\n")
 			printer.Infof("Please send this log message to %s.\n", consts.SupportEmail)
 		}
-		analyticsClient = analytics.NullClient{}
+		sharedAnalyticsClient = analytics.NullClient{}
 		return
 	}
-
-	// Set up automatic reporting of all API errors
-	// (rest can't call telemetry directly because we call rest above!)
-	rest.SetAPIErrorHandler(APIError)
 }
 
-func getUserIdentity() (string, string, error) {
+// Get the tracking user associated with the API key
+func GetTrackingUserAssociatedWithAPIKey(frontClient rest.FrontClient) (TrackingUser, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), userAPITimeout)
+	defer cancel()
+	userResponse, err := frontClient.GetUser(ctx)
+	if err != nil {
+		return TrackingUser{}, err
+	}
+	return TrackingUser{
+		UserID: fmt.Sprint(userResponse.ID),
+		TeamID: fmt.Sprint(userResponse.TeamID),
+	}, nil
+}
+
+func getUserIdentity() (*TrackingUser, error) {
 	// If we can get user details use userID and teamID
 	// Otherwise use the configured API Key.
 	// Failing that, try to use the user name and host name.
@@ -140,7 +202,10 @@ func getUserIdentity() (string, string, error) {
 
 	id := os.Getenv("POSTMAN_ANALYTICS_DISTINCT_ID")
 	if id != "" {
-		return id, "", nil
+		return &TrackingUser{
+			UserID: id,
+			TeamID: "",
+		}, nil
 	}
 
 	// If there's no credentials configured, skip the API call and
@@ -149,12 +214,10 @@ func getUserIdentity() (string, string, error) {
 	if cfg.CredentialsPresent() && analyticsEnabled {
 		// Call the REST API to get the postman user associated with the configured
 		// API key.
-		ctx, cancel := context.WithTimeout(context.Background(), userAPITimeout)
-		defer cancel()
-		frontClient := rest.NewFrontClient(rest.Domain, GetClientID(), nil)
-		userResponse, err := frontClient.GetUser(ctx)
+		frontClient := rest.NewFrontClient(rest.Domain, GetClientID(), nil, nil)
+		trackingUser, err := GetTrackingUserAssociatedWithAPIKey(frontClient)
 		if err == nil {
-			return fmt.Sprint(userResponse.ID), fmt.Sprint(userResponse.TeamID), nil
+			return &trackingUser, nil
 		}
 
 		printer.Infof("Telemetry using temporary ID; GetUser API call failed: %v\n", err)
@@ -166,24 +229,50 @@ func getUserIdentity() (string, string, error) {
 	// if the getUser() call failed.
 	keyID := cfg.DistinctIDFromCredentials()
 	if keyID != "" {
-		return keyID, "", nil
+		return &TrackingUser{
+			UserID: keyID,
+			TeamID: "",
+		}, nil
 	}
 
 	localUser, err := user.Current()
 	if err != nil {
-		return "", "", err
+		return &TrackingUser{}, err
 	}
 	localHost, err := os.Hostname()
 	if err != nil {
-		return localUser.Username, "", nil
+		return &TrackingUser{
+			UserID: localUser.Username,
+			TeamID: "",
+		}, err
 	}
-	return localUser.Username + "@" + localHost, "", nil
+	return &TrackingUser{
+		UserID: localUser.Username + "@" + localHost,
+		TeamID: "",
+	}, nil
+}
+
+// Default returns the root tracker instance for backward compatibility
+func Default() Tracker {
+	initClientOnce.Do(doInit)
+	return rootTracker
+}
+
+// NewScoped creates a new scoped tracker with different user context
+func NewScoped(user TrackingUser) Tracker {
+	initClientOnce.Do(doInit)
+
+	return &trackerImpl{
+		analyticsClient: sharedAnalyticsClient, // Share the client
+		trackingUser:    &user,
+		rateLimitMap:    &sync.Map{}, // Each scoped instance gets its own rate limit map
+	}
 }
 
 // Report an error in a particular operation (inContext), including
 // the text of the error.
-func Error(inContext string, e error) {
-	tryTrackingEvent(
+func (t *trackerImpl) Error(inContext string, e error) {
+	t.tryTrackingEvent(
 		"Operation - Errored",
 		map[string]any{
 			"operation": inContext,
@@ -191,18 +280,6 @@ func Error(inContext string, e error) {
 		},
 	)
 }
-
-type eventRecord struct {
-	// Number of events since the last one was sent
-	Count int
-
-	// Next time to send an event
-	NextSend time.Time
-}
-
-var rateLimitMap sync.Map
-
-const rateLimitDuration = 60 * time.Second
 
 // Report an error in a particular operation (inContext), including
 // the text of the error.  Send only one trace event per minute for
@@ -212,12 +289,12 @@ const rateLimitDuration = 60 * time.Second
 //
 // TODO: consider using the error too, but that could increase
 // the cardinality of the map by a lot.
-func RateLimitError(inContext string, e error) {
+func (t *trackerImpl) RateLimitError(inContext string, e error) {
 	newRecord := eventRecord{
 		Count:    0,
 		NextSend: time.Now().Add(rateLimitDuration),
 	}
-	existing, present := rateLimitMap.LoadOrStore(inContext, newRecord)
+	existing, present := t.rateLimitMap.LoadOrStore(inContext, newRecord)
 
 	count := 1
 	if present {
@@ -227,17 +304,17 @@ func RateLimitError(inContext string, e error) {
 			// This is a data race but not worth worrying about
 			// (by using a mutex); sometimes the count will be low.
 			record.Count += 1
-			rateLimitMap.Store(inContext, record)
+			t.rateLimitMap.Store(inContext, record)
 			return
 		}
 
 		// Time to send a new record, reset the count back to 0 and send
 		// the count of the backlog, plus the current event.
 		count = record.Count + 1
-		rateLimitMap.Store(inContext, newRecord)
+		t.rateLimitMap.Store(inContext, newRecord)
 	}
 
-	tryTrackingEvent(
+	t.tryTrackingEvent(
 		"Operation - Rate Limited",
 		map[string]any{
 			"operation": inContext,
@@ -248,8 +325,8 @@ func RateLimitError(inContext string, e error) {
 }
 
 // Report an error in a particular API, including the text of the error.
-func APIError(method string, path string, e error) {
-	tryTrackingEvent(
+func (t *trackerImpl) APIError(method string, path string, e error) {
+	t.tryTrackingEvent(
 		"API Call - Errored",
 		map[string]any{
 			"method": method,
@@ -260,8 +337,8 @@ func APIError(method string, path string, e error) {
 }
 
 // Report a failure without a specific error object
-func Failure(message string) {
-	tryTrackingEvent(
+func (t *trackerImpl) Failure(message string) {
+	t.tryTrackingEvent(
 		"Operation - Errored",
 		map[string]any{
 			"error": message,
@@ -270,8 +347,8 @@ func Failure(message string) {
 }
 
 // Report success of an operation
-func Success(message string) {
-	tryTrackingEvent(
+func (t *trackerImpl) Success(message string) {
+	t.tryTrackingEvent(
 		"Operation - Succeeded",
 		map[string]any{
 			"operation": message,
@@ -280,8 +357,8 @@ func Success(message string) {
 }
 
 // Report a step in a multi-part workflow.
-func WorkflowStep(workflow string, message string) {
-	tryTrackingEvent(
+func (t *trackerImpl) WorkflowStep(workflow string, message string) {
+	t.tryTrackingEvent(
 		"Workflow Step - Executed",
 		map[string]any{
 			"step":     message,
@@ -292,8 +369,9 @@ func WorkflowStep(workflow string, message string) {
 
 // Report command line flags (before any error checking.)
 // This event will be sent before any other events and only once per agent invocation.
-func CommandLine(command string, commandLine []string) {
-	// Look for a service ID in the command line, and assign it to package level variable.
+func (t *trackerImpl) CommandLine(command string, commandLine []string) {
+	// Look for a service ID in the command line
+	var serviceID akid.ServiceID
 	for _, arg := range commandLine {
 		if serviceIDRegex.MatchString(arg) {
 			_ = akid.ParseIDAs(arg, &serviceID)
@@ -301,54 +379,62 @@ func CommandLine(command string, commandLine []string) {
 		}
 	}
 
-	tryTrackingEvent(
+	t.tryTrackingEvent(
 		"Command - Executed",
 		map[string]any{
 			"command":      command,
 			"command_line": commandLine,
+			"service_id":   serviceID,
 		},
 	)
 }
 
-// Report the platform and version of an attempted integration
-func InstallIntegrationVersion(integration, arch, platform, version string) {
-	tryTrackingEvent(
-		"Integration - Installed",
-		map[string]any{
-			"integration":  integration,
-			"architecture": arch,
-			"version":      version,
-			"platform":     platform,
-		})
+func (t *trackerImpl) Shutdown() error {
+	// Only shutdown the shared client from the root tracker
+	if t == rootTracker {
+		return t.analyticsClient.Close()
+	}
+	return nil
+}
+
+// Instance-specific tracking event method
+func (t *trackerImpl) tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
+	eventProperties.Upsert("user_id", t.trackingUser.UserID, func(v, newV any) any { return v })
+
+	if t.trackingUser.TeamID != "" {
+		eventProperties.Upsert("team_id", t.trackingUser.TeamID, func(v, newV any) any { return v })
+	}
+
+	t.analyticsClient.Track(t.trackingUser.UserID, eventName, eventProperties)
+}
+
+// Backward compatibility functions - these delegate to the root tracker
+func Error(inContext string, e error) {
+	Default().Error(inContext, e)
+}
+
+func RateLimitError(inContext string, e error) {
+	Default().RateLimitError(inContext, e)
+}
+
+func Success(message string) {
+	Default().Success(message)
+}
+
+func WorkflowStep(workflow string, message string) {
+	Default().WorkflowStep(workflow, message)
+}
+
+func CommandLine(command string, commandLine []string) {
+	Default().CommandLine(command, commandLine)
 }
 
 // Flush the telemetry to its endpoint
-// (even buffer size of 1 is not enough if the CLi exits right away.)
+// (even buffer size of 1 is not enough if the CLI exits right away.)
 func Shutdown() {
-	err := analyticsClient.Close()
-	if err != nil {
+	if err := Default().Shutdown(); err != nil {
 		printer.Stderr.Errorf("Error flushing telemetry: %v\n", err)
 		printer.Infof("Postman support may not be able to see the last error message you received.\n")
 		printer.Infof("Please send the CLI output to %s.\n", consts.SupportEmail)
 	}
-}
-
-// Attempts to track an event using the provided event name and properties. It adds the user ID,
-// team ID and service ID to the event properties, and then sends the event to the analytics client.
-// If there is an error sending the event, a warning message is printed.
-func tryTrackingEvent(eventName string, eventProperties maps.Map[string, any]) {
-	// precondition: analyticsClient is initialized
-	initClientOnce.Do(doInit)
-
-	eventProperties.Upsert("user_id", userID, func(v, newV any) any { return v })
-
-	if teamID != "" {
-		eventProperties.Upsert("team_id", teamID, func(v, newV any) any { return v })
-	}
-
-	if serviceID != (akid.ServiceID{}) {
-		eventProperties.Upsert("service_id", serviceID, func(v, newV any) any { return v })
-	}
-
-	analyticsClient.Track(userID, eventName, eventProperties)
 }
