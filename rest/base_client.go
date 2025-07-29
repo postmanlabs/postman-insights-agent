@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/pkg/errors"
@@ -35,21 +34,12 @@ var (
 	BaseAPIErrorHandler APIErrorHandler
 )
 
-func reportError(client *BaseClient, method string, path string, e error) {
-	client.errorReporterMutex.RLock()
-	defer client.errorReporterMutex.RUnlock()
-	if client.apiErrorHandler != nil {
-		client.apiErrorHandler(method, path, e)
-	}
-}
-
 type BaseClient struct {
-	host               string
-	scheme             string // http or https
-	clientID           akid.ClientID
-	authHandler        func(*http.Request) error
-	apiErrorHandler    APIErrorHandler
-	errorReporterMutex sync.RWMutex
+	host            string
+	scheme          string // http or https
+	clientID        akid.ClientID
+	authHandler     func(*http.Request) error
+	apiErrorHandler APIErrorHandler
 }
 
 func NewBaseClient(rawHost string, cli akid.ClientID, authHandler AuthHandler, apiErrorHandler APIErrorHandler) *BaseClient {
@@ -75,6 +65,13 @@ func NewBaseClient(rawHost string, cli akid.ClientID, authHandler AuthHandler, a
 	return &c
 }
 
+// Report an error to the APIErrorHandler.
+func (c *BaseClient) reportError(method string, path string, e error) {
+	if c.apiErrorHandler != nil {
+		c.apiErrorHandler(method, path, e)
+	}
+}
+
 // Sends GET request and parses the response as JSON.
 func (c *BaseClient) Get(ctx context.Context, path string, resp interface{}) error {
 	return c.GetWithQuery(ctx, path, nil, resp)
@@ -83,7 +80,7 @@ func (c *BaseClient) Get(ctx context.Context, path string, resp interface{}) err
 func (c *BaseClient) GetWithQuery(ctx context.Context, path string, query url.Values, resp interface{}) (e error) {
 	defer func() {
 		if e != nil {
-			reportError(c, http.MethodGet, path, e)
+			c.reportError(http.MethodGet, path, e)
 		}
 	}()
 	u := &url.URL{
@@ -112,7 +109,7 @@ func (c *BaseClient) GetWithQuery(ctx context.Context, path string, query url.Va
 func (c *BaseClient) Post(ctx context.Context, path string, body interface{}, resp interface{}) (e error) {
 	defer func() {
 		if e != nil {
-			reportError(c, http.MethodPost, path, e)
+			c.reportError(http.MethodPost, path, e)
 		}
 	}()
 
