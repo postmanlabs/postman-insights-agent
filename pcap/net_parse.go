@@ -177,7 +177,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 					if !ok {
 						podName = "unknown"
 					}
-					printer.Debugf("Approximate unprocessed-packets buffer length: %v for svc: %v and pod: %v", bufferLength, p.serviceID, podName)
+					printer.Debugf("Approximate unprocessed-packets buffer length: %v for svc: %v and pod: %v\n", bufferLength, p.serviceID, podName)
 					bufferTimeSum = 0 * time.Second
 					startTime = now
 				}

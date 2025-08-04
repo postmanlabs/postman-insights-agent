@@ -113,7 +113,7 @@ func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func apidumpRunInternal(cmd *cobra.Command, _ []string) error {
+func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 	applyRandomizedStart()
 
 	traceTags, err := util.ParseTagsAndWarn(tagsFlag)
