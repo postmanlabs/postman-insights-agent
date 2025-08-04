@@ -34,9 +34,6 @@ var (
 	// Client key; set at link-time with -X flag
 	defaultAmplitudeKey = ""
 
-	// Default tracking user for root instance
-	defaultTrackingUser *TrackingUser = &TrackingUser{}
-
 	serviceIDRegex = regexp.MustCompile(`^svc_[A-Za-z0-9]{22}$`)
 
 	// Timeout talking to API.
@@ -103,7 +100,7 @@ func doInit() {
 	// Create root tracker instance
 	rootTracker = &trackerImpl{
 		analyticsClient: sharedAnalyticsClient,
-		trackingUser:    defaultTrackingUser,
+		trackingUser:    &TrackingUser{},
 		rateLimitMap:    &globalRateLimitMap,
 	}
 
@@ -168,7 +165,7 @@ func doInit() {
 
 	analyticsEnabled = true
 
-	defaultTrackingUser, err = getUserIdentity() // Initialize user ID and team ID
+	defaultTrackingUser, err := getUserIdentity() // Initialize user ID and team ID
 	if err != nil {
 		if isLoggingEnabled {
 			printer.Infof("Telemetry unavailable; error getting userID for given API key: %v\n", err)
