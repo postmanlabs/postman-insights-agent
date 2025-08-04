@@ -86,6 +86,10 @@ func (p *PodArgs) changePodTrafficMonitorState(
 	p.StateChangeMutex.Lock()
 	defer p.StateChangeMutex.Unlock()
 
+	if isTrafficMonitoringInFinalState(p) {
+		return errors.New(fmt.Sprintf("API dump process for pod %s already in final state, state: %s\n", p.PodName, p.PodTrafficMonitorState))
+	}
+
 	// Check if the current state is allowed for the transition
 	// If the allowedCurrentStates is empty, then any state is allowed
 	if len(allowedCurrentStates) != 0 && !slices.Contains(allowedCurrentStates, p.PodTrafficMonitorState) {
@@ -100,12 +104,30 @@ func (p *PodArgs) changePodTrafficMonitorState(
 	return nil
 }
 
-// isEndState checks if the pod traffic monitor state is in the final state.
-func (p *PodArgs) isEndState() bool {
+// isTrafficMonitoringInFinalState checks if the pod traffic monitor state is in the final state.
+func isTrafficMonitoringInFinalState(p *PodArgs) bool {
 	switch p.PodTrafficMonitorState {
 	case TrafficMonitoringEnded, TrafficMonitoringFailed, RemovePodFromMap:
 		return true
 	default:
 		return false
 	}
+}
+
+// markAsPruneReady marks the pod as ready to be pruned from the map.
+// It ensures that the current state is one of the allowed states before making the change.
+func (p *PodArgs) markAsPruneReady() error {
+	p.StateChangeMutex.Lock()
+	defer p.StateChangeMutex.Unlock()
+
+	switch p.PodTrafficMonitorState {
+	case TrafficMonitoringEnded, TrafficMonitoringFailed:
+		p.PodTrafficMonitorState = RemovePodFromMap
+	case RemovePodFromMap:
+		return errors.New(fmt.Sprintf("API dump process for pod %s already in final state, state: %s\n", p.PodName, p.PodTrafficMonitorState))
+	default:
+		return errors.New(fmt.Sprintf("Invalid state for pod %s: %s\n", p.PodName, p.PodTrafficMonitorState))
+	}
+
+	return nil
 }
