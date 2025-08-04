@@ -86,9 +86,6 @@ func InstallModule(args *InstallArgs) error {
 		return err
 	}
 
-	// Report the version being attempted
-	telemetry.InstallIntegrationVersion("NGINX", arch, platform, version)
-
 	// The downside of using Github is we don't get any hierarchy, so it
 	// all has to be crammed into the name.
 	expectedFilename := fmt.Sprintf("ngx_http_akita_module_%s_%s_%s.so",

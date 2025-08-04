@@ -22,7 +22,6 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/consts"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
-	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
 var (
@@ -95,7 +94,6 @@ func GetServiceIDByName(c rest.FrontClient, name string) (akid.ServiceID, error)
 		printer.Stderr.Debugf("Project name %q is %q\n", name, akid.String(result))
 		return result, nil
 	}
-	telemetry.Failure("Unknown project ID")
 	return akid.ServiceID{}, errors.Errorf("cannot determine project ID for %s", name)
 }
 
@@ -322,7 +320,7 @@ func GetTraceURIByTags(
 		return akiuri.URI{}, fmt.Errorf("%q currently supports only a single tag", flagName)
 	}
 
-	learnClient := rest.NewLearnClient(domain, clientID, serviceID, nil)
+	learnClient := rest.NewLearnClient(domain, clientID, serviceID, nil, nil)
 	learnSession, err := GetLearnSessionByTags(learnClient, serviceID, tags)
 	if err != nil {
 		return akiuri.URI{}, errors.Wrapf(err, "failed to list traces for %q", serviceName)

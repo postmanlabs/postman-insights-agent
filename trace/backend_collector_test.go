@@ -25,6 +25,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -147,6 +148,7 @@ func TestRedact(t *testing.T) {
 		false,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
+		telemetry.Default(),
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -496,6 +498,7 @@ func TestTiming(t *testing.T) {
 				false,
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
+				telemetry.Default(),
 			)
 			for _, pnt := range test.PNTs {
 				assert.NoError(t, col.Process(pnt))
@@ -536,6 +539,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		false,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
+		telemetry.Default(),
 	)
 
 	var wg sync.WaitGroup
@@ -686,6 +690,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		true,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
+		telemetry.Default(),
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -1504,6 +1509,7 @@ func TestRedactionConfigs(t *testing.T) {
 			true,
 			nil,
 			apispec.DefaultMaxWintessUploadBuffers,
+			telemetry.Default(),
 		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))

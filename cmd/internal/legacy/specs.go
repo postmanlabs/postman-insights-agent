@@ -122,7 +122,7 @@ func runGetSpec(specIdentifier string) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to parse project ID")
 	}
-	learnClient := rest.NewLearnClient(rest.Domain, clientID, serviceID, nil)
+	learnClient := rest.NewLearnClient(rest.Domain, clientID, serviceID, nil, nil)
 
 	// Check to see if the user specified an AkID or a version name.
 	var specID akid.APISpecID
