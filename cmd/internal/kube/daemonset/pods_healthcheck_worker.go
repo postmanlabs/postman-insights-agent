@@ -23,6 +23,42 @@ func (d *Daemonset) checkPodsHealth() {
 		return true
 	})
 
+	// Get all pods in the node where the agent is running
+	pods, err := d.KubeClient.GetPodsInAgentNode()
+	if err != nil {
+		printer.Errorf("failed to get pods in node: %v\n", err)
+	}
+	// Filter out pods that do not have the agent sidecar container
+	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
+	if err != nil {
+		printer.Errorf("failed to filter pods by container image: %v\n", err)
+	}
+	// Detect unmonitored pods
+	for _, pod := range podsWithoutAgentSidecar {
+		args := NewPodArgs(pod.Name)
+		err := d.inspectPodForEnvVars(pod, args)
+		if err != nil {
+			switch e := err.(type) {
+			case *allRequiredEnvVarsAbsentError:
+				printer.Debugf(e.Error())
+			case *requiredEnvVarMissingError:
+				printer.Errorf(e.Error())
+			default:
+				printer.Errorf("Failed to inspect pod for env vars, pod name: %s, error: %v\n", pod.Name, err)
+			}
+			continue
+		}
+
+		if _, ok := d.PodArgsByNameMap.Load(pod.UID); !ok {
+			err = d.addPodArgsToMap(pod.UID, args, PodRunning)
+			if err != nil {
+				printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
+				continue
+			}
+			podUIDs = append(podUIDs, pod.UID)
+		}
+	}
+
 	if len(podUIDs) == 0 {
 		printer.Debugf("No pods to check health\n")
 		return
