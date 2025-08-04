@@ -70,7 +70,7 @@ func Collect(
 			if !ok {
 				podName = "unknown"
 			}
-			printer.Debugf("Aproximate parsed-network-traffic buffer length: %v, for svc: %v and pod: %v", bufferLength, serviceID, podName)
+			printer.Debugf("Approximate parsed-network-traffic buffer length: %v, for svc: %v and pod: %v\n", bufferLength, serviceID, podName)
 			bufferTimeSum = 0 * time.Second
 			startTime = now
 		}
