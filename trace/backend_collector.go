@@ -455,5 +455,5 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	if !ok {
 		podName = "unknown"
 	}
-	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v for svc: %v and pod: %v", flushedWitnesses, totalWitnesses, c.serviceID, podName)
+	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v for svc: %v and pod: %v\n", flushedWitnesses, totalWitnesses, c.serviceID, podName)
 }

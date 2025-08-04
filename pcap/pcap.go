@@ -76,7 +76,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 						if !ok {
 							podName = "unknown"
 						}
-						printer.Debugf("Aproximate captured-packets buffer length: %v, for svc %v and pod: %v", bufferLength, p.ServiceID, podName)
+						printer.Debugf("Aproximate captured-packets buffer length: %v, for svc %v and pod: %v\n", bufferLength, p.ServiceID, podName)
 						bufferTimeSum = 0 * time.Second
 						startTime = now
 					}

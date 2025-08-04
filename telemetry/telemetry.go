@@ -100,16 +100,6 @@ func Init(loggingEnabled bool) {
 }
 
 func doInit() {
-	// Create root tracker instance
-	rootTracker = &trackerImpl{
-		analyticsClient: sharedAnalyticsClient,
-		trackingUser:    defaultTrackingUser,
-		rateLimitMap:    &globalRateLimitMap,
-	}
-
-	// Initialize the base API error handler
-	rest.BaseAPIErrorHandler = rootTracker.APIError
-
 	// Opt-out mechanism
 	disableTelemetry := os.Getenv("AKITA_DISABLE_TELEMETRY") + os.Getenv("POSTMAN_INSIGHTS_AGENT_DISABLE_TELEMETRY")
 	if disableTelemetry != "" {
@@ -178,6 +168,16 @@ func doInit() {
 		sharedAnalyticsClient = analytics.NullClient{}
 		return
 	}
+
+	// Create root tracker instance
+	rootTracker = &trackerImpl{
+		analyticsClient: sharedAnalyticsClient,
+		trackingUser:    defaultTrackingUser,
+		rateLimitMap:    &globalRateLimitMap,
+	}
+
+	// Initialize the base API error handler
+	rest.BaseAPIErrorHandler = rootTracker.APIError
 }
 
 // Get the tracking user associated with the API key

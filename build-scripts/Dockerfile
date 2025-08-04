@@ -15,6 +15,10 @@ COPY build-scripts/replace-go.sh .
 RUN chmod u+rwx replace-go.sh
 RUN ./replace-go.sh
 
+RUN sed -i -e 's/deb.debian.org/archive.debian.org/g' \
+  -e 's/security.debian.org/archive.debian.org\/debian-security/g' \
+  -e '/buster-updates/d' /etc/apt/sources.list
+
 # Install all dependencies and tools.
 RUN apt-get update && apt-get install -y libpcap-dev
 
