@@ -176,6 +176,11 @@ sensitive_value_regexes:
 - (?i)\bmdb_sa_sk_[a-zA-Z0-9]{40}\b
 - (?i)\b(ops_eyJ[a-zA-Z0-9+/]{250,}={0,3})\b
 - (?i)\b(xai-[a-zA-Z0-9+/]{80,})\b
+- (?i)\bnyk_v[0-9]+_[A-Za-z0-9]{64}\b
+- (?i)\bdckr_pat_[a-z0-9]{14,22}\b
+- (?i)\bllx\-[A-Za-z0-9]{40,60}\b
+- (?i)\bpat[pA-Za-z0-9]{14}\.[A-Za-z0-9]{64}\b
+- (?i)api-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 ignored_keys:
 - clientId
 - value
