@@ -1,13 +1,15 @@
 module github.com/postmanlabs/postman-insights-agent
 
-go 1.23.0
+go 1.23.3
+
+toolchain go1.24.6
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
 	github.com/OneOfOne/xxhash v1.2.8
 	github.com/Pallinder/go-randomdata v1.2.0
-	github.com/akitasoftware/akita-ir v0.0.0-20241213050034-057d7b6097e8
-	github.com/akitasoftware/akita-libs v0.0.0-20250715091530-f143d96897ad
+	github.com/akitasoftware/akita-ir v0.0.0-20250819204808-cf56d019e1b4
+	github.com/akitasoftware/akita-libs v0.0.0-20250819213613-5adf3287b6a3
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1
@@ -28,6 +30,7 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.7
 	github.com/hashicorp/go-version v1.2.1
 	github.com/hashicorp/hcl/v2 v2.21.0
+	github.com/jclem/sseparser v0.6.0
 	github.com/jpillora/backoff v1.0.0
 	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/mitchellh/go-homedir v1.1.0
@@ -64,7 +67,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.11.25 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.13.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.17.1 // indirect
-	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
@@ -97,6 +99,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pelletier/go-toml v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/prataprc/goparsec v0.0.0-20211219142520-daac0e635e7e // indirect
 	github.com/segmentio/analytics-go/v3 v3.3.0 // indirect
 	github.com/segmentio/backo-go v1.0.0 // indirect
 	github.com/spf13/afero v1.2.2 // indirect
