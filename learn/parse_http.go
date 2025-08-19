@@ -387,6 +387,11 @@ func parseBody(contentType string, bodyStream io.Reader, statusCode int) (*pb.Da
 		handleAsString(spec_util.NO_INTERPRET_STRINGS)
 	case pb.HTTPBody_OTHER:
 		handleAsBlob()
+	case pb.HTTPBody_EVENT_STREAM:
+		bodyData, err = parseEventStream(bodyStream)
+		if err != nil {
+			return nil, errors.Wrapf(err, "could not parse event stream body")
+		}
 	default:
 		// If we get here, it means we added a new content type to the IR and
 		// added it to the content type interpretation above, but forgot to
@@ -474,6 +479,8 @@ func getContentTypeFromMediaType(mediaType string) pb.HTTPBody_ContentType {
 		parseBodyDataAs = pb.HTTPBody_TEXT_PLAIN
 	case "text/html":
 		parseBodyDataAs = pb.HTTPBody_TEXT_HTML
+	case "text/event-stream":
+		parseBodyDataAs = pb.HTTPBody_EVENT_STREAM
 	default:
 		// Handle custom JSON-encoded media types.
 		if strings.HasSuffix(mediaType, "+json") {
