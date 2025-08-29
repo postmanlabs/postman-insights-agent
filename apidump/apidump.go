@@ -154,6 +154,9 @@ type Args struct {
 	// Whether to enable repro mode and include request/response payloads when uploading witnesses.
 	ReproMode bool
 
+	// Always capture request and response payloads for the given paths.
+	AlwaysCapturePayloads []string
+
 	// Whether to drop traffic to/from nginx
 	DropNginxTraffic bool
 
@@ -769,6 +772,7 @@ func (a *apidump) Run() error {
 						optionals.Some(a.MaxWitnessSize_bytes),
 						summary,
 						args.ReproMode,
+						optionals.Some(args.AlwaysCapturePayloads),
 						args.Plugins,
 						args.MaxWitnessUploadBuffers,
 						apidumpTelemetry,
