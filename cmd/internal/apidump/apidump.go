@@ -242,6 +242,9 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 
 		// TODO: remove the SendWitnessPayloads flag once all existing users are migrated to new flag.
 		ReproMode: commonApidumpFlags.EnableReproMode || commonApidumpFlags.SendWitnessPayloads,
+
+		// TODO: Add this flag in kube run command to fetch from service env vars
+		AlwaysCapturePayloads: commonApidumpFlags.AlwaysCapturePayloads,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
