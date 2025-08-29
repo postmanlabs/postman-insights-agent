@@ -14,7 +14,6 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/batcher"
-	"github.com/akitasoftware/akita-libs/http_rest_methods"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/akitasoftware/akita-libs/spec_util/ir_hash"
 	"github.com/akitasoftware/akita-libs/tags"
@@ -160,6 +159,9 @@ type BackendCollector struct {
 	// obfuscated before being sent to the back end.
 	sendWitnessPayloads bool
 
+	// Always capture request and response payloads for the given paths.
+	alwaysCapturePayloadsPathsRegex []*regexp.Regexp
+
 	plugins []plugin.AkitaPlugin
 
 	redactor *data_masks.Redactor
@@ -178,23 +180,38 @@ func NewBackendCollector(
 	maxWitnessSize_bytes optionals.Optional[int],
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
+	alwaysCapturePayloads optionals.Optional[[]string],
 	plugins []plugin.AkitaPlugin,
 	uploadReportBuffers int,
 	telemetry telemetry.Tracker,
 ) Collector {
-	col := &BackendCollector{
-		serviceID:           svc,
-		traceTags:           traceTags,
-		learnSessionID:      lrn,
-		learnClient:         lc,
-		flushDone:           make(chan struct{}),
-		plugins:             plugins,
-		sendWitnessPayloads: sendWitnessPayloads,
-		redactor:            redactor,
-		telemetry:           telemetry,
+	// Compile the regexps for the always capture payloads.
+	alwaysCapturePayloadsPathsRegex := []*regexp.Regexp{}
+	if paths, exists := alwaysCapturePayloads.Get(); exists {
+		for _, path := range paths {
+			reg, err := regexp.Compile(path)
+			if err != nil {
+				printer.Errorf("Invalid regex %s: %v", path, err)
+				continue
+			}
+			alwaysCapturePayloadsPathsRegex = append(alwaysCapturePayloadsPathsRegex, reg)
+		}
 	}
 
-	col.uploadReportBatch = batcher.NewInMemory[rawReport](
+	col := &BackendCollector{
+		serviceID:                       svc,
+		traceTags:                       traceTags,
+		learnSessionID:                  lrn,
+		learnClient:                     lc,
+		flushDone:                       make(chan struct{}),
+		plugins:                         plugins,
+		sendWitnessPayloads:             sendWitnessPayloads,
+		alwaysCapturePayloadsPathsRegex: alwaysCapturePayloadsPathsRegex,
+		redactor:                        redactor,
+		telemetry:                       telemetry,
+	}
+
+	col.uploadReportBatch = batcher.NewInMemory(
 		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads, uploadReportBuffers),
 		uploadBatchFlushDuration,
 	)
@@ -328,41 +345,6 @@ func init() {
 	}
 }
 
-// Returns true if the witness should be excluded from Repro Mode.
-//
-// XXX This is a stop-gap hack to exclude certain endpoints for Cloud API from
-// Repro Mode.
-func excludeWitnessFromReproMode(w *pb.Witness) bool {
-	httpMeta := w.GetMethod().GetMeta().GetHttp()
-	if httpMeta == nil {
-		return false
-	}
-
-	if cloudAPIHostnames.Contains(strings.ToLower(httpMeta.Host)) {
-		switch httpMeta.Method {
-		case http_rest_methods.GET.String():
-			// Exclude GET /environments/{environment}.
-			if cloudAPIEnvironmentsPathRE.MatchString(httpMeta.PathTemplate) {
-				return true
-			}
-
-		case http_rest_methods.POST.String():
-			// Exclude POST /environments.
-			if httpMeta.PathTemplate == "/environments" {
-				return true
-			}
-
-		case http_rest_methods.PUT.String():
-			// Exclude PUT /environments/{environment}.
-			// Exclude GET /environments/{environment}.
-			if cloudAPIEnvironmentsPathRE.MatchString(httpMeta.PathTemplate) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	if w.witnessFlushed {
 		printer.Debugf("Witness %v already flushed.\n", w.id)
@@ -384,8 +366,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	}
 
 	if !c.sendWitnessPayloads ||
-		!hasOnlyErrorResponses(w.witness.GetMethod()) ||
-		excludeWitnessFromReproMode(w.witness) {
+		!shouldCapturePayload(w.witness, c.alwaysCapturePayloadsPathsRegex) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
 		c.redactor.ZeroAllPrimitives(w.witness.GetMethod())

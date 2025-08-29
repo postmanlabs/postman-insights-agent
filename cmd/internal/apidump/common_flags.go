@@ -7,16 +7,17 @@ import (
 )
 
 type CommonApidumpFlags struct {
-	Filter              string
-	HostAllowlist       []string
-	HostExclusions      []string
-	Interfaces          []string
-	PathAllowlist       []string
-	PathExclusions      []string
-	RandomizedStart     int
-	RateLimit           float64
-	SendWitnessPayloads bool
-	EnableReproMode     bool
+	Filter                string
+	HostAllowlist         []string
+	HostExclusions        []string
+	Interfaces            []string
+	PathAllowlist         []string
+	PathExclusions        []string
+	RandomizedStart       int
+	RateLimit             float64
+	SendWitnessPayloads   bool
+	EnableReproMode       bool
+	AlwaysCapturePayloads []string
 }
 
 func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
@@ -94,6 +95,14 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 		"Enable repro mode to send request and response payloads to Postman.",
 	)
 
+	cmd.PersistentFlags().StringSliceVar(
+		&flags.AlwaysCapturePayloads,
+		"always-capture-payloads",
+		nil,
+		"Always capture request and response payloads for the given paths.",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("always-capture-payloads")
+
 	return flags
 }
 
@@ -137,6 +146,9 @@ func ConvertCommonApiDumpFlagsToArgs(flags *CommonApidumpFlags) []string {
 	}
 	for _, path := range flags.PathExclusions {
 		commonApidumpArgs = append(commonApidumpArgs, "--path-exclusions", path)
+	}
+	for _, path := range flags.AlwaysCapturePayloads {
+		commonApidumpArgs = append(commonApidumpArgs, "--always-capture-payloads", path)
 	}
 
 	return commonApidumpArgs

@@ -146,6 +146,7 @@ func TestRedact(t *testing.T) {
 		optionals.None[int](),
 		NewPacketCounter(),
 		false,
+		optionals.None[[]string](),
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -496,6 +497,7 @@ func TestTiming(t *testing.T) {
 				optionals.None[int](),
 				NewPacketCounter(),
 				false,
+				optionals.None[[]string](),
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
@@ -537,6 +539,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		optionals.None[int](),
 		NewPacketCounter(),
 		false,
+		optionals.None[[]string](),
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -589,7 +592,7 @@ func TestMultipleInterfaces(t *testing.T) {
 // Demonstrate that periodic flush exits
 func TestFlushExit(t *testing.T) {
 	b := &BackendCollector{}
-	b.uploadReportBatch = batcher.NewInMemory[rawReport](
+	b.uploadReportBatch = batcher.NewInMemory(
 		newReportBuffer(b, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, apispec.DefaultMaxWintessUploadBuffers),
 		uploadBatchFlushDuration,
 	)
@@ -688,6 +691,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		optionals.None[int](),
 		NewPacketCounter(),
 		true,
+		optionals.None[[]string](),
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -758,6 +762,176 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 							PathTemplate: "/v1/doggos",
 							Host:         "example.com",
 							Obfuscation:  pb.HTTPMethodMeta_NONE,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	rec.assertExpectedWitnesses(t, expectedWitnesses)
+}
+
+func TestAlwaysCapturePayloads(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	defer ctrl.Finish()
+
+	rec := newWitnessRecorder()
+	mockClient.
+		EXPECT().
+		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+		Do(rec.recordAsyncReportsUpload).
+		AnyTimes().
+		Return(nil)
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
+	streamID := uuid.New()
+	reqWithCapturePayloadPath := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{
+			StreamID: streamID,
+			Seq:      1203,
+			Method:   "POST",
+			URL: &url.URL{
+				Path: "/v1/doggos",
+			},
+			Host: "example.com",
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"name": "prince", "number": 6119717375543385000}`)),
+		},
+	}
+
+	respWithCapturePayloadPath := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPResponse{
+			StreamID:   streamID,
+			Seq:        1203,
+			StatusCode: 200,
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"homes": ["burbank, ca", "jeuno, ak", "versailles"]}`)),
+		},
+	}
+
+	streamID2 := uuid.New()
+	reqWithoutCapturePayloadPath := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{
+			StreamID: streamID2,
+			Seq:      1203,
+			Method:   "POST",
+			URL: &url.URL{
+				Path: "/v1/do-not-capture",
+			},
+			Host: "example.com",
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"name": "prince", "number": 6119717375543385000}`)),
+		},
+	}
+
+	respWithoutCapturePayloadPath := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPResponse{
+			StreamID:   streamID2,
+			Seq:        1203,
+			StatusCode: 200,
+			Header: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: memview.New([]byte(`{"homes": ["burbank, ca", "jeuno, ak", "versailles"]}`)),
+		},
+	}
+
+	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+	assert.NoError(t, err)
+
+	col := NewBackendCollector(
+		fakeSvc,
+		map[tags.Key]string{},
+		fakeLrn,
+		mockClient,
+		redactor,
+		optionals.None[int](),
+		NewPacketCounter(),
+		true,
+		optionals.Some([]string{"/v1/doggos"}),
+		nil,
+		apispec.DefaultMaxWintessUploadBuffers,
+		telemetry.Default(),
+	)
+	assert.NoError(t, col.Process(reqWithCapturePayloadPath))
+	assert.NoError(t, col.Process(respWithCapturePayloadPath))
+	assert.NoError(t, col.Process(reqWithoutCapturePayloadPath))
+	assert.NoError(t, col.Process(respWithoutCapturePayloadPath))
+	assert.NoError(t, col.Close())
+
+	expectedWitnesses := []*pb.Witness{
+		{
+			Method: &pb.Method{
+				Id: &pb.MethodID{
+					ApiType: pb.ApiType_HTTP_REST,
+				},
+				Args: map[string]*pb.Data{
+					"nxnOc5Qy3D4=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"name":   dataFromPrimitive(spec_util.NewPrimitiveString("prince")),
+						"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(6119717375543385000)),
+					}),
+				},
+				Responses: map[string]*pb.Data{
+					"AyBUQkT0SHU=": newTestBodySpecFromStruct(200, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"homes": dataFromList(
+							dataFromPrimitive(spec_util.NewPrimitiveString("burbank, ca")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("jeuno, ak")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("versailles")),
+						),
+					}),
+				},
+				Meta: &pb.MethodMeta{
+					Meta: &pb.MethodMeta_Http{
+						Http: &pb.HTTPMethodMeta{
+							Method:       "POST",
+							PathTemplate: "/v1/doggos",
+							Host:         "example.com",
+							Obfuscation:  pb.HTTPMethodMeta_NONE,
+						},
+					},
+				},
+			},
+		},
+		{
+			Method: &pb.Method{
+				Id: &pb.MethodID{
+					ApiType: pb.ApiType_HTTP_REST,
+				},
+				Args: map[string]*pb.Data{
+					"nxnOc5Qy3D4=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"name":   dataFromPrimitive(spec_util.NewPrimitiveString("")),
+						"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(0)),
+					}),
+				},
+				Responses: map[string]*pb.Data{
+					"AyBUQkT0SHU=": newTestBodySpecFromStruct(200, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+						"homes": dataFromList(
+							dataFromPrimitive(spec_util.NewPrimitiveString("")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("")),
+							dataFromPrimitive(spec_util.NewPrimitiveString("")),
+						),
+					}),
+				},
+				Meta: &pb.MethodMeta{
+					Meta: &pb.MethodMeta_Http{
+						Http: &pb.HTTPMethodMeta{
+							Method:       "POST",
+							PathTemplate: "/v1/do-not-capture",
+							Host:         "example.com",
+							Obfuscation:  pb.HTTPMethodMeta_ZERO_VALUE,
 						},
 					},
 				},
@@ -1507,6 +1681,7 @@ func TestRedactionConfigs(t *testing.T) {
 			optionals.None[int](),
 			NewPacketCounter(),
 			true,
+			optionals.None[[]string](),
 			nil,
 			apispec.DefaultMaxWintessUploadBuffers,
 			telemetry.Default(),

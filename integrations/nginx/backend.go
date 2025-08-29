@@ -193,6 +193,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		optionals.Some(args.MaxWitnessSize_bytes),
 		b.summary,
 		false,
+		optionals.None[[]string](),
 		args.Plugins,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
