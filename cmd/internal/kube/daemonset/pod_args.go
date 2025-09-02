@@ -40,11 +40,12 @@ type PodCreds struct {
 
 type PodArgs struct {
 	// apidump related fields
-	InsightsProjectID akid.ServiceID
-	TraceTags         tags.SingletonTags
-	ReproMode         bool
-	DropNginxTraffic  bool
-	AgentRateLimit    float64
+	InsightsProjectID     akid.ServiceID
+	TraceTags             tags.SingletonTags
+	ReproMode             bool
+	DropNginxTraffic      bool
+	AgentRateLimit        float64
+	AlwaysCapturePayloads []string
 
 	// Pod related fields
 	PodName       string

@@ -1,6 +1,7 @@
 package daemonset
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -49,6 +50,7 @@ type containerConfig struct {
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
+	alwaysCapturePayloads   string
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -205,6 +207,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if agentRateLimit, exists := envVars[POSTMAN_INSIGHTS_AGENT_RATE_LIMIT]; exists {
 			containerEnvVars.agentRateLimit = agentRateLimit
 		}
+		if alwaysCapturePayloads, exists := envVars[POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS]; exists {
+			containerEnvVars.alwaysCapturePayloads = alwaysCapturePayloads
+		}
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
@@ -286,6 +291,8 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		podArgs.AgentRateLimit = apispec.DefaultRateLimit
 	}
 
+	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainContainerConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
 	return nil
 }
 
@@ -300,6 +307,23 @@ func parseBoolConfig(configValue, configName, podName string, defaultValue bool)
 	if err != nil {
 		printer.Errorf("Invalid value for %s in pod %s: %s. Error: %v. Defaulting to %v.\n", configName, podName, configValue, err, defaultValue)
 		return defaultValue
+	}
+
+	printer.Infof("%s is set to %v for pod: %s\n", configName, parsedValue, podName)
+	return parsedValue
+}
+
+// parseSliceConfig parses a slice configuration value, logs errors if parsing fails,
+// and returns the parsed value. Here the configValue should be a JSON string.
+func parseSliceConfig(configValue, configName, podName string) []string {
+	if configValue == "" {
+		return []string{}
+	}
+
+	var parsedValue []string
+	if err := json.Unmarshal([]byte(configValue), &parsedValue); err != nil {
+		printer.Errorf("Invalid value for %s in pod %s: %s. Error: %v. Skipping.\n", configName, podName, configValue, err)
+		return []string{}
 	}
 
 	printer.Infof("%s is set to %v for pod: %s\n", configName, parsedValue, podName)

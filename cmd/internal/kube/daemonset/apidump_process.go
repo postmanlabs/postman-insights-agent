@@ -83,6 +83,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			ReproMode:               podArgs.ReproMode,
 			DropNginxTraffic:        podArgs.DropNginxTraffic,
 			MaxWitnessUploadBuffers: apispec.DefaultMaxWintessUploadBuffers,
+			AlwaysCapturePayloads:   podArgs.AlwaysCapturePayloads,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
