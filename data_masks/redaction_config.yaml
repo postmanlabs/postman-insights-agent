@@ -26,6 +26,8 @@ sensitive_keys:
 - x-auth-token
 - x-csrf-token
 - x-support-secret
+- x-portkey-api-key
+- x-portkey-virtual-key
 sensitive_value_regexes:
 - \bPMAK-[a-f0-9]{24}\b
 - (?i)https:\/\/creator\.zoho\.com\/api\/[A-Za-z0-9\/\-_\.]+\?authtoken=[A-Za-z0-9]+
