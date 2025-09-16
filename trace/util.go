@@ -112,18 +112,14 @@ func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex [
 	}
 
 	// Step 2: Check if the method path matches the always capture payloads regex.
+	// Hack: We are using `alwaysCapturePayloads` arg to always capture payloads for LLM calls.
+	// But, since we are not allowed to do that on Portkey production, we add the postman internal team check.
 	if hasMatchingPath(witness, alwaysCapturePayloadsPathsRegex) {
-		return true
+		return isPostmanInternalTeam(witness)
 	}
 
 	// Step 3: Check if the method has only error responses.
 	if hasOnlyErrorResponses(witness.GetMethod()) {
-		return true
-	}
-
-	// Step 4: Check if the witness is from Postman internal team
-	// This allows capturing LLM requests only for Postman internal team
-	if isPostmanInternalTeam(witness) {
 		return true
 	}
 
