@@ -1,12 +1,20 @@
 package trace
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/http_rest_methods"
+	"github.com/akitasoftware/akita-libs/spec_util"
 )
+
+var internalPostmanTeamIDMap = map[string]string{
+	"beta":       "1",
+	"stage":      "2482",
+	"production": "6029",
+}
 
 // Returns true if the witness should be excluded from Repro Mode.
 //
@@ -53,6 +61,30 @@ func hasMatchingPath(witness *pb.Witness, alwaysCapturePayloadsPathsRegex []*reg
 	return false
 }
 
+// PortkeyMetadata represents the structure of x-portkey-metadata header
+type PortkeyMetadata struct {
+	Organization string `json:"_organization"`
+	Environment  string `json:"_environment"`
+}
+
+// Returns true if the witness is from Postman internal team
+func isPostmanInternalTeam(witness *pb.Witness) bool {
+	// Look for x-portkey-metadata header in the request args
+	for _, data := range witness.GetMethod().GetArgs() {
+		if header := spec_util.HTTPHeaderFromData(data); header != nil && strings.ToLower(header.GetKey()) == "x-portkey-metadata" {
+			if primitive := data.GetPrimitive(); primitive != nil && primitive.GetStringValue() != nil {
+				var metadata PortkeyMetadata
+				if err := json.Unmarshal([]byte(primitive.GetStringValue().Value), &metadata); err == nil {
+					if teamID, ok := internalPostmanTeamIDMap[metadata.Environment]; ok {
+						return metadata.Organization == teamID
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Determines whether a given method has only error (4xx or 5xx) response codes.
 // Returns true if the method has at least one response and all response codes are 4xx or 5xx.
 // Here method will only have single response object because in agent each witness stores single request-response pair.
@@ -86,6 +118,12 @@ func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex [
 
 	// Step 3: Check if the method has only error responses.
 	if hasOnlyErrorResponses(witness.GetMethod()) {
+		return true
+	}
+
+	// Step 4: Check if the witness is from Postman internal team
+	// This allows capturing LLM requests only for Postman internal team
+	if isPostmanInternalTeam(witness) {
 		return true
 	}
 
