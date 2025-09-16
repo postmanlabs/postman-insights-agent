@@ -173,7 +173,7 @@ func TestShouldCapturePayloadWithPostmanTeam(t *testing.T) {
 		},
 	}
 
-	result := shouldCapturePayload(witness, []*regexp.Regexp{})
+	result := shouldCapturePayload(witness, []*regexp.Regexp{regexp.MustCompile("/v1/chat/completions")})
 	if !result {
 		t.Errorf("shouldCapturePayload() = false, expected true for Postman internal team")
 	}
