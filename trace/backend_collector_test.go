@@ -802,7 +802,8 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 			},
 			Host: "example.com",
 			Header: map[string][]string{
-				"Content-Type": {"application/json"},
+				"Content-Type":       {"application/json"},
+				"x-portkey-metadata": {`{"custom_postot_conversation_id":"12345678-1234-b1234-1234-123456789012","custom_postot_interaction_id":"12345678-1234-b1234-1234-123456789012","_prompt":"agent_system","_agent":"Root","_workflow":"agent_mode_chat","_domain":"agent_mode","_environment":"beta","_user":"916b323","_nrTraceId":"0d495a1379560f5d14f7f9c43d57bb07","_organization":"1"}`},
 			},
 			Body: memview.New([]byte(`{"name": "prince", "number": 6119717375543385000}`)),
 		},
@@ -879,6 +880,7 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 					ApiType: pb.ApiType_HTTP_REST,
 				},
 				Args: map[string]*pb.Data{
+					"27YhIi6o-7o=": newTestHeaderSpec(dataFromPrimitive(spec_util.NewPrimitiveString(`{"custom_postot_conversation_id":"12345678-1234-b1234-1234-123456789012","custom_postot_interaction_id":"12345678-1234-b1234-1234-123456789012","_prompt":"agent_system","_agent":"Root","_workflow":"agent_mode_chat","_domain":"agent_mode","_environment":"beta","_user":"916b323","_nrTraceId":"0d495a1379560f5d14f7f9c43d57bb07","_organization":"1"}`)), "x-portkey-metadata", 0),
 					"nxnOc5Qy3D4=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
 						"name":   dataFromPrimitive(spec_util.NewPrimitiveString("prince")),
 						"number": dataFromPrimitive(spec_util.NewPrimitiveInt64(6119717375543385000)),
