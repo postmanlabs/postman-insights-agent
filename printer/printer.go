@@ -19,6 +19,10 @@ var (
 	Color  = aurora.NewAurora(true)
 )
 
+func formatTimestamp() string {
+	return time.Now().Format("2006-01-02 15:04:05.000")
+}
+
 func Infoln(args ...interface{}) {
 	Stderr.Infoln(args...)
 }
@@ -86,10 +90,8 @@ func NewP(out io.Writer) P {
 
 func (p impl) ln(t string, args ...interface{}) {
 	newArgs := make([]interface{}, 0, len(args)+1)
-	newArgs = append(newArgs, t)
-	for _, arg := range args {
-		newArgs = append(newArgs, arg)
-	}
+	newArgs = append(newArgs, fmt.Sprintf("%s %s", formatTimestamp(), t))
+	newArgs = append(newArgs, args...)
 	fmt.Fprintln(p.out, newArgs...)
 }
 
@@ -112,23 +114,23 @@ func (p impl) Debugln(args ...interface{}) {
 }
 
 func (p impl) Infof(fmtString string, args ...interface{}) {
-	fmt.Fprintf(p.out, Color.Blue("[INFO] ").String())
+	fmt.Fprintf(p.out, "%s %s", formatTimestamp(), Color.Blue("[INFO] ").String())
 	fmt.Fprintf(p.out, fmtString, args...)
 }
 
 func (p impl) Warningf(fmtString string, args ...interface{}) {
-	fmt.Fprintf(p.out, Color.Yellow("[WARNING] ").String())
+	fmt.Fprintf(p.out, "%s %s", formatTimestamp(), Color.Yellow("[WARNING] ").String())
 	fmt.Fprintf(p.out, fmtString, args...)
 }
 
 func (p impl) Errorf(fmtString string, args ...interface{}) {
-	fmt.Fprintf(p.out, Color.Red("[ERROR] ").String())
+	fmt.Fprintf(p.out, "%s %s", formatTimestamp(), Color.Red("[ERROR] ").String())
 	fmt.Fprintf(p.out, fmtString, args...)
 }
 
 func (p impl) Debugf(fmtString string, args ...interface{}) {
 	if viper.GetBool("debug") {
-		fmt.Fprintf(p.out, Color.Magenta("[DEBUG] ").String())
+		fmt.Fprintf(p.out, "%s %s", formatTimestamp(), Color.Magenta("[DEBUG] ").String())
 		fmt.Fprintf(p.out, fmtString, args...)
 	}
 }
