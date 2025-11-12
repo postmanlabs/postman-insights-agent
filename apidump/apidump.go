@@ -24,6 +24,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ci"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/location"
 	"github.com/postmanlabs/postman-insights-agent/pcap"
@@ -135,6 +136,9 @@ type Args struct {
 
 	// Periodically poll /proc fs for agent resource usage every N seconds.
 	ProcFSPollingInterval int
+
+	// Enable eBPF-based HTTPS traffic capture
+	EnableHTTPSCapture bool
 
 	// Whether to report TCP connections and TLS handshakes.
 	CollectTCPAndTLSReports bool
@@ -892,6 +896,86 @@ func (a *apidump) Run() error {
 			iNames = append(iNames, n)
 		}
 		printer.Stderr.Infof("Running learn mode on interfaces %s\n", strings.Join(iNames, ", "))
+	}
+
+	// Start HTTPS capture if enabled
+	if args.EnableHTTPSCapture {
+		// Build a collector chain for HTTPS capture similar to pcap capture
+		// We'll reuse the same collector building logic but create a separate instance
+		var httpsCollector trace.Collector
+		
+		// Build collector from inside out (same as pcap)
+		if args.Out.AkitaURI != nil {
+			backendCollector := trace.NewBackendCollector(
+				a.backendSvc,
+				traceTags,
+				backendLrn,
+				a.learnClient,
+				redactor,
+				optionals.Some(a.MaxWitnessSize_bytes),
+				filterSummary,
+				args.ReproMode,
+				optionals.Some(args.AlwaysCapturePayloads),
+				args.Plugins,
+				args.MaxWitnessUploadBuffers,
+				apidumpTelemetry,
+			)
+			httpsCollector = backendCollector
+		} else {
+			// Fallback: create a dummy collector if no backend
+			httpsCollector = trace.NewDummyCollector()
+		}
+
+		// Apply same filters and collectors as pcap
+		httpsCollector = &trace.PacketCountCollector{
+			PacketCounts:     filterSummary,
+			Collector:        httpsCollector,
+			SuccessTelemetry: a.successTelemetry,
+		}
+		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector)
+		if rateLimit != nil {
+			httpsCollector = rateLimit.NewCollector(httpsCollector, filterSummary)
+		}
+
+		// Path and host filters
+		if len(hostExclusions) > 0 {
+			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector)
+		}
+		if len(pathExclusions) > 0 {
+			httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector)
+		}
+		if len(hostAllowlist) > 0 {
+			httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector)
+		}
+		if len(pathAllowlist) > 0 {
+			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector)
+		}
+
+		// Eliminate Akita CLI traffic
+		dropDogfoodTraffic := !viper.GetBool("dogfood")
+		if dropDogfoodTraffic || a.DropNginxTraffic {
+			httpsCollector = &trace.UserTrafficCollector{
+				Collector:          httpsCollector,
+				DropDogfoodTraffic: dropDogfoodTraffic,
+				DropNginxTraffic:   a.DropNginxTraffic,
+			}
+		}
+
+		go func() {
+			defer doneWG.Done()
+			if err := ebpf.CollectHTTPS(
+				args.ServiceID,
+				traceTags,
+				stop,
+				httpsCollector,
+				apidumpTelemetry,
+			); err != nil {
+				errChan <- interfaceError{
+					interfaceName: "https-ebpf",
+					err:           errors.Wrap(err, "failed to collect HTTPS traffic via eBPF"),
+				}
+			}
+		}()
 	}
 
 	unfiltered := true

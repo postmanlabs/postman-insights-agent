@@ -1,0 +1,9 @@
+# Compiled eBPF object files
+*.o
+
+# Generated Go bindings (if using bpf2go)
+*_bpfel.go
+*_bpfel_*.go
+*_bpfeb.go
+*_bpfeb_*.go
+

@@ -204,15 +204,12 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				now := p.clock.Now()
 				streamFlushThreshold := now.Add(-streamFlushTimeout)
 				streamCloseThreshold := now.Add(-streamCloseTimeout)
-				flushed, closed := assembler.FlushWithOptions(
+				assembler.FlushWithOptions(
 					reassembly.FlushOptions{
 						T:  streamFlushThreshold,
 						TC: streamCloseThreshold,
 					})
 
-				if flushed != 0 || closed != 0 {
-					printer.Debugf("%d flushed, %d closed\n", flushed, closed)
-				}
 			}
 		}
 	}()

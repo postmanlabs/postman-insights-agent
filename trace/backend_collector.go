@@ -225,6 +225,8 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	var isRequest bool
 	var partial *learn.PartialWitness
 	var parseHTTPErr error
+
+	// Debug: Log all traffic types to see what's being captured
 	switch content := t.Content.(type) {
 	case akinet.HTTPRequest:
 		isRequest = true
@@ -234,15 +236,19 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	case akinet.TCPConnectionMetadata:
 		return c.processTCPConnection(t, content)
 	case akinet.TLSHandshakeMetadata:
+		printer.Debugf("TLSHandshakeMetadata: SNI=%s, SrcIP=%s:%d, DstIP=%s:%d\n",
+			*content.SNIHostname, t.SrcIP, t.SrcPort, t.DstIP, t.DstPort)
 		return c.processTLSHandshake(content)
 	default:
 		// Non-HTTP traffic not handled
+		// printer.Debugf("Unhandled traffic type: %T, SrcIP=%s:%d, DstIP=%s:%d\n",
+		// content, t.SrcIP, t.SrcPort, t.DstIP, t.DstPort)
 		return nil
 	}
 
 	if parseHTTPErr != nil {
 		c.telemetry.RateLimitError("parse HTTP", parseHTTPErr)
-		printer.Debugf("Failed to parse HTTP, skipping: %v\n", parseHTTPErr)
+		// printer.Debugf("Failed to parse HTTP, skipping: %v\n", parseHTTPErr)
 		return nil
 	}
 
@@ -268,8 +274,6 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			}
 
 			c.queueUpload(pair)
-			printer.Debugf("Completed witness %v at %v -- %v\n",
-				partial.PairKey, t.ObservationTime, t.FinalPacketTime)
 		}()
 	} else {
 		// Store the partial witness for now, waiting for its pair or a
@@ -287,8 +291,6 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			isRequest:       isRequest,
 		}
 		c.pairCache.Store(partial.PairKey, w)
-		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",
-			partial.PairKey, isRequest, t.ObservationTime, t.FinalPacketTime)
 
 	}
 	return nil
@@ -432,9 +434,4 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		totalWitnesses += 1
 		return true
 	})
-	podName, ok := c.traceTags[tags.XAkitaKubernetesPod]
-	if !ok {
-		podName = "unknown"
-	}
-	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v for svc: %v and pod: %v\n", flushedWitnesses, totalWitnesses, c.serviceID, podName)
 }

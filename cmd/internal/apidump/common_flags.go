@@ -18,6 +18,7 @@ type CommonApidumpFlags struct {
 	SendWitnessPayloads   bool
 	EnableReproMode       bool
 	AlwaysCapturePayloads []string
+	EnableHTTPSCapture    bool // Enable eBPF-based HTTPS traffic capture
 }
 
 func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
@@ -102,6 +103,14 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 		"Always capture request and response payloads for the given paths.",
 	)
 	_ = cmd.PersistentFlags().MarkHidden("always-capture-payloads")
+
+	cmd.PersistentFlags().BoolVar(
+		&flags.EnableHTTPSCapture,
+		"enable-https-capture",
+		false,
+		"Enable eBPF-based HTTPS traffic capture by hooking into TLS library functions. Requires root privileges and Linux kernel 4.18+.",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("enable-https-capture")
 
 	return flags
 }

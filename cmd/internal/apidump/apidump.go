@@ -245,6 +245,7 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 
 		// TODO: Add this flag in kube run command to fetch from service env vars
 		AlwaysCapturePayloads: commonApidumpFlags.AlwaysCapturePayloads,
+		EnableHTTPSCapture:     commonApidumpFlags.EnableHTTPSCapture,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}

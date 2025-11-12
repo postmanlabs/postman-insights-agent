@@ -149,7 +149,7 @@ func (buf *reportBuffer) Flush() error {
 
 			printer.Warningf("Failed to upload to Postman: %v\n", err)
 		}
-		printer.Debugf("Uploaded %d witnesses, %d TCP connection reports, and %d TLS handshake reports\n", len(report.Witnesses), len(report.TCPConnections), len(report.TLSHandshakes))
+		// printer.Debugf("Uploaded %d witnesses, %d TCP connection reports, and %d TLS handshake reports\n", len(report.Witnesses), len(report.TCPConnections), len(report.TLSHandshakes))
 
 		// Ensure the buffer is empty when we return.
 		report.Clear()
