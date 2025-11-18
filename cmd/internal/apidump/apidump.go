@@ -38,6 +38,8 @@ var (
 	procFSPollingInterval   int
 	collectTCPAndTLSReports bool
 	parseTLSHandshakes      bool
+	enableHTTPSProbe        bool
+	opensslLibs             []string
 	maxWitnessSize_bytes    int
 	maxWitnessUploadBuffers int
 	dockerExtensionMode     bool
@@ -233,6 +235,8 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		TelemetryInterval:       telemetryInterval,
 		ProcFSPollingInterval:   procFSPollingInterval,
 		CollectTCPAndTLSReports: collectTCPAndTLSReports,
+		EnableEBPFTLS:           enableHTTPSProbe,
+		OpenSSLLibraryPaths:     opensslLibs,
 		ParseTLSHandshakes:      parseTLSHandshakes,
 		MaxWitnessSize_bytes:    maxWitnessSize_bytes,
 		MaxWitnessUploadBuffers: maxWitnessUploadBuffers,
@@ -362,6 +366,19 @@ func init() {
 		"Parse TLS handshake packets.",
 	)
 	Cmd.Flags().MarkHidden("parse-tls-handshakes")
+
+	Cmd.Flags().BoolVar(
+		&enableHTTPSProbe,
+		"enable-https-ebpf",
+		false,
+		"Capture HTTPS payloads via OpenSSL uprobes (requires --openssl-lib).",
+	)
+	Cmd.Flags().StringSliceVar(
+		&opensslLibs,
+		"openssl-lib",
+		nil,
+		"Absolute path to a libssl shared object to monitor (repeatable).",
+	)
 
 	Cmd.Flags().IntVar(
 		&maxWitnessSize_bytes,

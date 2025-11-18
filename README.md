@@ -43,3 +43,22 @@ binary:
 
 1. Install [gomock](https://github.com/golang/mock): `go get github.com/golang/mock/mockgen`
 2. `make test`
+
+### Experimental HTTPS capture
+
+HTTPS payload capture via eBPF uprobes is now available behind an experimental
+flag. The agent can attach uprobes to OpenSSL's `libssl` and stream decrypted
+payloads directly into the existing collection pipeline. To enable it, supply
+the `--enable-https-ebpf` flag along with one or more `--openssl-lib` paths
+pointing to the `libssl.so` files used by your workloads:
+
+```
+postman-insights-agent apidump \
+  --project <project-id> \
+  --enable-https-ebpf \
+  --openssl-lib /usr/lib/x86_64-linux-gnu/libssl.so.3
+```
+
+The feature requires the agent container to have permission to load eBPF
+programs (typically `CAP_BPF` and `CAP_PERFMON`) and to read `/proc` entries for
+the monitored processes.

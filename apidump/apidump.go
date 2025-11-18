@@ -25,6 +25,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/env"
+	"github.com/postmanlabs/postman-insights-agent/https"
 	"github.com/postmanlabs/postman-insights-agent/location"
 	"github.com/postmanlabs/postman-insights-agent/pcap"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
@@ -138,6 +139,11 @@ type Args struct {
 
 	// Whether to report TCP connections and TLS handshakes.
 	CollectTCPAndTLSReports bool
+
+	// Enable HTTPS capture via eBPF uprobes.
+	EnableEBPFTLS bool
+	// Paths to libssl shared objects to attach uprobes to.
+	OpenSSLLibraryPaths []string
 
 	// Parse TLS handshake messages (even if not reported)
 	// Invariant: this is true if CollectTCPAndTLSReports is true
@@ -727,6 +733,134 @@ func (a *apidump) Run() error {
 		return errors.Wrapf(err, "unable to instantiate redactor for %s", a.backendSvc)
 	}
 
+	buildCollector := func(filterState filterState, summary *trace.PacketCounter, prefilter *trace.PacketCounter, dropDogfood bool) (trace.Collector, trace.LearnSessionCollector, error) {
+		var collector trace.Collector
+		var learnCollector trace.LearnSessionCollector
+
+		if filterState == notMatchedFilter {
+			collector = trace.NewDummyCollector()
+		} else {
+			if args.Out.AkitaURI == nil {
+				return nil, nil, errors.Errorf("invalid output location")
+			}
+			backendCollector := trace.NewBackendCollector(
+				a.backendSvc,
+				traceTags,
+				backendLrn,
+				a.learnClient,
+				redactor,
+				optionals.Some(a.MaxWitnessSize_bytes),
+				summary,
+				args.ReproMode,
+				optionals.Some(args.AlwaysCapturePayloads),
+				args.Plugins,
+				args.MaxWitnessUploadBuffers,
+				apidumpTelemetry,
+			)
+			collector = backendCollector
+
+			if lsc, ok := backendCollector.(trace.LearnSessionCollector); ok && lsc != nil {
+				learnCollector = lsc
+			}
+		}
+
+		if summary != nil {
+			collector = &trace.PacketCountCollector{
+				PacketCounts:     summary,
+				Collector:        collector,
+				SuccessTelemetry: a.successTelemetry,
+			}
+		}
+
+		collector = trace.NewSamplingCollector(args.SampleRate, collector)
+		if rateLimit != nil && summary != nil {
+			collector = rateLimit.NewCollector(collector, summary)
+		}
+
+		if len(hostExclusions) > 0 {
+			collector = trace.NewHTTPHostFilterCollector(hostExclusions, collector)
+		}
+		if len(pathExclusions) > 0 {
+			collector = trace.NewHTTPPathFilterCollector(pathExclusions, collector)
+		}
+		if len(hostAllowlist) > 0 {
+			collector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, collector)
+		}
+		if len(pathAllowlist) > 0 {
+			collector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, collector)
+		}
+
+		if dropDogfood || a.DropNginxTraffic {
+			collector = &trace.UserTrafficCollector{
+				Collector:          collector,
+				DropDogfoodTraffic: dropDogfood,
+				DropNginxTraffic:   a.DropNginxTraffic,
+			}
+		}
+
+		if filterState == matchedFilter && numUserFilters > 0 && prefilter != nil {
+			collector = &trace.PacketCountCollector{
+				PacketCounts: prefilter,
+				Collector:    collector,
+			}
+		}
+
+		if args.CollectTCPAndTLSReports {
+			collector = tls_conn_tracker.NewCollector(collector)
+			collector = tcp_conn_tracker.NewCollector(collector)
+		}
+
+		return collector, learnCollector, nil
+	}
+
+	var httpsCollector *https.Collector
+	var cancelHTTPS context.CancelFunc
+	defer func() {
+		if cancelHTTPS != nil {
+			cancelHTTPS()
+		}
+		if httpsCollector != nil {
+			httpsCollector.Close()
+		}
+	}()
+
+	if args.EnableEBPFTLS {
+		if len(args.OpenSSLLibraryPaths) == 0 {
+			printer.Stderr.Warningf("HTTPS eBPF capture requested but no --openssl-lib paths were provided.\n")
+		} else {
+			dropDogfoodTraffic := !viper.GetBool("dogfood")
+			httpsPipeline, lsc, err := buildCollector(matchedFilter, filterSummary, nil, dropDogfoodTraffic)
+			if err != nil {
+				return err
+			}
+			if lsc != nil {
+				toRotate = append(toRotate, lsc)
+			}
+
+			ctx, cancelCtx := context.WithCancel(context.Background())
+			go func() {
+				select {
+				case <-stop:
+					cancelCtx()
+				case <-ctx.Done():
+				}
+			}()
+
+			httpsCollector, err = https.StartCollector(https.Config{
+				Context:   ctx,
+				Libraries: args.OpenSSLLibraryPaths,
+				Collector: httpsPipeline,
+			})
+			if err != nil {
+				cancelCtx()
+				printer.Stderr.Errorf("Failed to start HTTPS collector: %v\n", err)
+			} else {
+				cancelHTTPS = cancelCtx
+				printer.Stderr.Infof("Started HTTPS capture via OpenSSL uprobes.\n")
+			}
+		}
+	}
+
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
 	for _, filterState := range []filterState{matchedFilter, notMatchedFilter} {
@@ -741,113 +875,18 @@ func (a *apidump) Run() error {
 		}
 
 		for interfaceName, filter := range filters {
-			var collector trace.Collector
-
-			// Build collectors from the inside out (last applied to first applied).
-			//  8. Back-end collector (sink).
-			//  7. Statistics.
-			//  6. Subsampling.
-			//  5. Path and host filters.
-			//  4. Eliminate Akita CLI traffic.
-			//  3. Count packets before user filters for diagnostics.
-			//  2. Process TLS traffic into TLS-connection metadata.
-			//  1. Aggregate TCP-packet metadata into TCP-connection metadata.
-
-			// Back-end collector (sink).
-			if filterState == notMatchedFilter {
-				// During debugging, we capture the negation of the user's filters. This
-				// allows us to report statistics for packets not matching the user's
-				// filters. We need to avoid sending this traffic to the back end,
-				// however.
-				collector = trace.NewDummyCollector()
-			} else {
-				var backendCollector trace.Collector
-				if args.Out.AkitaURI != nil {
-					backendCollector = trace.NewBackendCollector(
-						a.backendSvc,
-						traceTags,
-						backendLrn,
-						a.learnClient,
-						redactor,
-						optionals.Some(a.MaxWitnessSize_bytes),
-						summary,
-						args.ReproMode,
-						optionals.Some(args.AlwaysCapturePayloads),
-						args.Plugins,
-						args.MaxWitnessUploadBuffers,
-						apidumpTelemetry,
-					)
-
-					collector = backendCollector
-				} else {
-					return errors.Errorf("invalid output location")
-				}
-
-				// If the backend collector supports rotation of learn session ID, then set that up.
-				if lsc, ok := backendCollector.(trace.LearnSessionCollector); ok && lsc != nil {
-					toRotate = append(toRotate, lsc)
-				}
-			}
-
-			// Statistics.
-			//
-			// Count packets that have *passed* filtering (so that we know whether the
-			// trace is empty or not.)  In the future we could add columns for both
-			// pre- and post-filtering.
-			collector = &trace.PacketCountCollector{
-				PacketCounts:     summary,
-				Collector:        collector,
-				SuccessTelemetry: a.successTelemetry,
-			}
-
-			// Subsampling.
-			collector = trace.NewSamplingCollector(args.SampleRate, collector)
-			if rateLimit != nil {
-				collector = rateLimit.NewCollector(collector, summary)
-			}
-
-			// Path and host filters.
-			if len(hostExclusions) > 0 {
-				collector = trace.NewHTTPHostFilterCollector(hostExclusions, collector)
-			}
-			if len(pathExclusions) > 0 {
-				collector = trace.NewHTTPPathFilterCollector(pathExclusions, collector)
-			}
-			if len(hostAllowlist) > 0 {
-				collector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, collector)
-			}
-			if len(pathAllowlist) > 0 {
-				collector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, collector)
-			}
-
-			// Eliminate Akita CLI traffic, unless --dogfood has been specified
 			dropDogfoodTraffic := !viper.GetBool("dogfood")
-
-			// Construct userTrafficCollector
-			if dropDogfoodTraffic || a.DropNginxTraffic {
-				collector = &trace.UserTrafficCollector{
-					Collector:          collector,
-					DropDogfoodTraffic: dropDogfoodTraffic,
-					DropNginxTraffic:   a.DropNginxTraffic,
-				}
-			}
-
-			// Count packets before user filters for diagnostics
+			var preSummary *trace.PacketCounter
 			if filterState == matchedFilter && numUserFilters > 0 {
-				collector = &trace.PacketCountCollector{
-					PacketCounts: prefilterSummary,
-					Collector:    collector,
-				}
+				preSummary = prefilterSummary
 			}
 
-			// If this is false, we will still parse TLS client and server hello messages
-			// but not process them futher.
-			if args.CollectTCPAndTLSReports {
-				// Process TLS traffic into TLS-connection metadata.
-				collector = tls_conn_tracker.NewCollector(collector)
-
-				// Process TCP-packet metadata into TCP-connection metadata.
-				collector = tcp_conn_tracker.NewCollector(collector)
+			collector, lsc, err := buildCollector(filterState, summary, preSummary, dropDogfoodTraffic)
+			if err != nil {
+				return err
+			}
+			if lsc != nil {
+				toRotate = append(toRotate, lsc)
 			}
 
 			// Compute the share of the page cache that each collection process may use.

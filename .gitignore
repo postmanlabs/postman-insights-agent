@@ -6,6 +6,7 @@
 *.dylib
 postman-insights-agent
 bin/
+.gocache/
 
 # Test binary, built with `go test -c`
 *.test
