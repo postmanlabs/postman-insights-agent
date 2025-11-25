@@ -34,8 +34,11 @@ const (
 )
 
 type PodCreds struct {
-	InsightsAPIKey      string
-	InsightsEnvironment string
+	InsightsAPIKey             string
+	InsightsEnvironment        string
+	InsightsServiceName        string
+	InsightsServiceEnvironment string
+	InsightsWorkspaceID        string
 }
 
 type PodArgs struct {

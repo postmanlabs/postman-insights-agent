@@ -63,7 +63,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		if err != nil {
 			funcErr = errors.Errorf("Failed to get network namespace for pod/containerUUID: %s/%s, err: %v",
 				podArgs.PodName, podArgs.ContainerUUID, err)
-			return
+			return funcErr
 		}
 		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
 		networkNamespace = "/host" + networkNamespace
@@ -90,13 +90,16 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				APIKey:                    podArgs.PodCreds.InsightsAPIKey,
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
+				ServiceName:               podArgs.PodCreds.InsightsServiceName,
+				ServiceEnvironment:        podArgs.PodCreds.InsightsEnvironment,
+				WorkspaceID:               podArgs.PodCreds.InsightsWorkspaceID,
 			}),
 		}
 
 		if err := apidump.Run(apidumpArgs); err != nil {
 			funcErr = errors.Wrapf(err, "failed to run apidump process for pod %s", podArgs.PodName)
 		}
-		return
+		return funcErr
 	}()
 
 	return nil
