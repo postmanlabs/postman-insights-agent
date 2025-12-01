@@ -254,9 +254,10 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
 	podArgs.ContainerUUID = mainContainerUUID
+	printer.Infof("DEBUG: Attempting to parse project ID for pod %s: '%s'\n", pod.Name, mainContainerConfig.requiredContainerConfig.projectID)
 	err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
 	if err != nil {
-		return errors.Wrap(err, "failed to parse project ID")
+		return errors.Wrapf(err, "failed to parse project ID: '%s'", mainContainerConfig.requiredContainerConfig.projectID)
 	}
 	podArgs.PodCreds = PodCreds{
 		InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,

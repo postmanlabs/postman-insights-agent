@@ -1,0 +1,160 @@
+# Create namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: postman-insights-namespace
+---
+# Create service account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postman-insights-service-account
+  namespace: postman-insights-namespace
+automountServiceAccountToken: false
+---
+# Create role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: postman-insights-read-only-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+---
+# Give viewer access to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: postman-insights-view-all-resources-binding
+subjects:
+  - kind: ServiceAccount
+    name: postman-insights-service-account
+    namespace: postman-insights-namespace
+roleRef:
+  kind: ClusterRole
+  name: postman-insights-read-only-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Create daemonset for running agent
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: postman-insights-agent
+  namespace: postman-insights-namespace
+spec:
+  selector:
+    matchLabels:
+      name: postman-insights-agent
+  template:
+    metadata:
+      labels:
+        name: postman-insights-agent
+    spec:
+      serviceAccountName: postman-insights-service-account
+      automountServiceAccountToken: true
+      containers:
+        - command:
+            - postman-insights-agent
+          args:
+            - kube
+            - run
+            - --repro-mode
+          env:
+            - name: POSTMAN_INSIGHTS_K8S_NODE
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
+              value: /var/run/containerd/containerd.sock
+          image: postman-insights-agent:https-test
+          imagePullPolicy: Never
+          name: postman-insights-agent
+          resources:
+            requests:
+              cpu: 200m
+              memory: 500Mi
+            limits:
+              cpu: 200m
+              memory: 500Mi
+          securityContext:
+            capabilities:
+              add:
+                - NET_RAW
+                - SYS_ADMIN
+                - SYS_PTRACE
+              drop:
+                - ALL
+          volumeMounts:
+            - mountPath: /host/proc
+              name: host-procfs
+              readOnly: true
+            - mountPath: /host/var/run/netns
+              mountPropagation: HostToContainer
+              name: host-netns
+              readOnly: true
+            - mountPath: /var/run/containerd/containerd.sock
+              name: containerdsocket
+              readOnly: true
+            - mountPath: /tmp/shared
+              name: shared-tls-capture
+        # eCapture sidecar container for HTTPS traffic capture
+        - name: ecapture-sidecar
+          image: postman-insights-agent-ecapture:debug-v2
+          imagePullPolicy: Never
+          env:
+            - name: ECAPTURE_OUTPUT_FILE
+              value: /tmp/shared/tls.txt
+            - name: ECAPTURE_LOG_LEVEL
+              value: "info"
+            - name: ECAPTURE_LIBRARIES
+              value: "openssl,boringssl,go"
+            - name: ECAPTURE_PORTS
+              value: ""
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 500m
+              memory: 500Mi
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /tmp/shared
+              name: shared-tls-capture
+            - mountPath: /sys/kernel/debug
+              name: sys-kernel-debug
+              readOnly: true
+            - mountPath: /sys/fs/bpf
+              name: sys-fs-bpf
+      restartPolicy: Always
+      volumes:
+        - name: host-procfs
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-netns
+          hostPath:
+            path: /var/run/netns
+            type: Directory
+        - name: containerdsocket
+          hostPath:
+            path: /var/run/containerd/containerd.sock
+            type: Socket
+        # Shared volume for IPC between agent and ecapture sidecar
+        - name: shared-tls-capture
+          emptyDir: {}
+        # Required for eBPF programs
+        - name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+            type: Directory
+        - name: sys-fs-bpf
+          hostPath:
+            path: /sys/fs/bpf
+            type: Directory
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 30%
