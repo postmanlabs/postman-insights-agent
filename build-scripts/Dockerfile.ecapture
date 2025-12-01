@@ -1,0 +1,25 @@
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ARG ECAPTURE_VERSION=v0.8.0
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        ECAPTURE_ARCH="amd64"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        ECAPTURE_ARCH="arm64"; \
+    else \
+        echo "Unsupported architecture: $TARGETARCH"; exit 1; \
+    fi && \
+    curl -L -f -o /tmp/ecapture.tar.gz \
+        "https://github.com/gojue/ecapture/releases/download/${ECAPTURE_VERSION}/ecapture-v0.8.0-linux-${ECAPTURE_ARCH}.tar.gz" && \
+    tar -xzf /tmp/ecapture.tar.gz -C /tmp && \
+    find /tmp -name "ecapture" -type f -executable -exec mv {} /usr/local/bin/ecapture \; && \
+    chmod +x /usr/local/bin/ecapture && \
+    rm -rf /tmp/ecapture.tar.gz /tmp/LICENSE /tmp/README.md /tmp/ecapture*
+RUN mkdir -p /tmp/shared
+COPY build-scripts/ecapture-entrypoint.sh /usr/local/bin/ecapture-entrypoint.sh
+RUN chmod +x /usr/local/bin/ecapture-entrypoint.sh
+WORKDIR /tmp/shared
+ENTRYPOINT ["/usr/local/bin/ecapture-entrypoint.sh"]
