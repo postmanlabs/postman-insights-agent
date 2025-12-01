@@ -91,7 +91,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
 				ServiceName:               podArgs.PodCreds.InsightsServiceName,
-				ServiceEnvironment:        podArgs.PodCreds.InsightsEnvironment,
+				ServiceEnvironment:        podArgs.PodCreds.InsightsServiceEnvironment,
 				WorkspaceID:               podArgs.PodCreds.InsightsWorkspaceID,
 			}),
 		}
