@@ -81,6 +81,9 @@ type DaemonsetArgs struct {
 	TargetNetworkNamespaceOpt string
 	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
+	WorkspaceID               string
+	ServiceEnvironment        string
+	ServiceName               string
 	Environment               string
 	TraceTags                 tags.SingletonTags
 }
@@ -195,6 +198,11 @@ func newSession(args *Args) *apidump {
 
 // Is the target the Akita backend as expected, or a local HAR file?
 func (a *apidump) TargetIsRemote() bool {
+	if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
+		if daemonsetArgs.WorkspaceID != "" {
+			return true
+		}
+	}
 	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{}
 }
 
@@ -234,13 +242,29 @@ func (a *apidump) LookupService() error {
 		a.backendSvc = backendSvc
 		a.backendSvcName = "Postman_Collection_" + a.PostmanCollectionID
 	} else {
-		serviceName, err := util.GetServiceNameByServiceID(frontClient, a.ServiceID)
-		if err != nil {
-			return err
-		}
+		daemonsetArgs, exists := a.DaemonsetArgs.Get()
+		if exists && daemonsetArgs.WorkspaceID != "" {
+			service, err := frontClient.CreateInsightsService(
+				context.Background(),
+				daemonsetArgs.WorkspaceID,
+				daemonsetArgs.ServiceName,
+				daemonsetArgs.ServiceEnvironment,
+			)
+			if err != nil {
+				return err
+			}
 
-		a.backendSvc = a.ServiceID
-		a.backendSvcName = serviceName
+			a.backendSvc = service.ID
+			a.backendSvcName = service.Name
+		} else {
+			serviceName, err := util.GetServiceNameByServiceID(frontClient, a.ServiceID)
+			if err != nil {
+				return err
+			}
+
+			a.backendSvc = a.ServiceID
+			a.backendSvcName = serviceName
+		}
 	}
 
 	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler, apidumpTelemetry.APIError)
@@ -859,7 +883,7 @@ func (a *apidump) Run() error {
 				defer doneWG.Done()
 				// Collect trace. This blocks until stop is closed or an error occurs.
 				if err := pcap.Collect(
-					args.ServiceID,
+					a.backendSvc,
 					traceTags,
 					stop,
 					interfaceName,
