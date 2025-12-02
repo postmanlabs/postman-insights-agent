@@ -47,6 +47,8 @@ type requiredContainerConfig struct {
 
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
+	serviceName             string
+	serviceEnvironment      string
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
@@ -198,6 +200,12 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
 			containerEnvVars.requiredContainerConfig.apiKey = apiKey
 		}
+		if serviceName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
+			containerEnvVars.serviceName = serviceName
+		}
+		if serviceEnvironment, exists := envVars[POSTMAN_INSIGHTS_SERVICE_ENVIRONMENT]; exists {
+			containerEnvVars.serviceEnvironment = serviceEnvironment
+		}
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
 		}
@@ -230,37 +238,49 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		}
 	}
 
-	// If all required environment variables are absent, return an error
-	if maxSetAttrs == 0 {
-		return &allRequiredEnvVarsAbsentError{
-			baseEnvVarsError: baseEnvVarsError{
-				missingAttrs: mainContainerMissingAttrs,
-				podName:      pod.Name,
-			},
-		}
-	}
-
-	// If one or more required environment variables are missing, return an error
-	if len(mainContainerMissingAttrs) > 0 {
-		return &requiredEnvVarMissingError{
-			baseEnvVarsError: baseEnvVarsError{
-				missingAttrs: mainContainerMissingAttrs,
-				podName:      pod.Name,
-			},
-		}
-	}
-
 	// Set the trace tags for apidump process from the pod info
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
 	podArgs.ContainerUUID = mainContainerUUID
-	err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
-	if err != nil {
-		return errors.Wrap(err, "failed to parse project ID")
-	}
-	podArgs.PodCreds = PodCreds{
-		InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
-		InsightsEnvironment: d.InsightsEnvironment,
+
+	// Only validate required pod container variables if agent does not have them
+	if d.WorkspaceID == "" && d.APIKey == "" && mainContainerConfig.serviceName == "" && mainContainerConfig.serviceEnvironment == "" {
+		// If all required environment variables are absent, return an error
+		if maxSetAttrs == 0 {
+			return &allRequiredEnvVarsAbsentError{
+				baseEnvVarsError: baseEnvVarsError{
+					missingAttrs: mainContainerMissingAttrs,
+					podName:      pod.Name,
+				},
+			}
+		}
+
+		// If one or more required environment variables are missing, return an error
+		if len(mainContainerMissingAttrs) > 0 {
+			return &requiredEnvVarMissingError{
+				baseEnvVarsError: baseEnvVarsError{
+					missingAttrs: mainContainerMissingAttrs,
+					podName:      pod.Name,
+				},
+			}
+		}
+
+		err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
+		if err != nil {
+			return errors.Wrap(err, "failed to parse project ID")
+		}
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+		}
+	} else {
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:             d.APIKey,
+			InsightsEnvironment:        d.InsightsEnvironment,
+			InsightsWorkspaceID:        d.WorkspaceID,
+			InsightsServiceName:        mainContainerConfig.serviceName,
+			InsightsServiceEnvironment: mainContainerConfig.serviceEnvironment,
+		}
 	}
 
 	// Check if Nginx traffic should be dropped, with a default fallback to the DaemonSet config

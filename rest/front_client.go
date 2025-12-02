@@ -39,6 +39,22 @@ func (c *frontClientImpl) GetService(ctx context.Context, serviceID akid.Service
 	return resp, nil
 }
 
+func (c *frontClientImpl) CreateInsightsService(ctx context.Context, workspaceID string, serviceName string, serviceEnvironment string) (CreateInsightsServiceResponse, error) {
+	var resp CreateInsightsServiceResponse
+	p := path.Join("v2/agent/workspaces", workspaceID, "services")
+
+	req := map[string]interface{}{}
+	if serviceName != "" {
+		req["service_name"] = serviceName
+	}
+	if serviceEnvironment != "" {
+		req["service_environment"] = serviceEnvironment
+	}
+
+	err := c.Post(ctx, p, req, &resp)
+	return resp, err
+}
+
 func (c *frontClientImpl) GetUser(ctx context.Context) (PostmanUser, error) {
 	resp := PostmanUser{}
 	err := c.Get(ctx, "/v2/agent/user", &resp)

@@ -35,6 +35,11 @@ type InsightsService struct {
 	Name string         `json:"service_name"`
 }
 
+type CreateInsightsServiceResponse struct {
+	ID   akid.ServiceID `json:"id"`
+	Name string         `json:"name"`
+}
+
 type PostmanUser struct {
 	ID     int    `json:"id"`
 	Email  string `json:"email"`

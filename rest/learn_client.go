@@ -223,8 +223,7 @@ func (c *learnClientImpl) PostInitialClientTelemetry(ctx context.Context, servic
 
 // Deprecated: Used in setversion command which is deprecated.
 func (c *learnClientImpl) SetSpecVersion(ctx context.Context, specID akid.APISpecID, versionName string) error {
-	resp := struct {
-	}{}
+	resp := struct{}{}
 	path := fmt.Sprintf("/v1/services/%s/spec-versions/%s",
 		akid.String(c.serviceID), versionName)
 	req := kgxapi.SetSpecVersionRequest{
