@@ -54,6 +54,7 @@ type PodArgs struct {
 	PodName       string
 	ContainerUUID string
 	PodCreds      PodCreds
+	SSLLibInfo    *SSLLibraryInfo // SSL library information for HTTPS capture
 
 	// for state management
 	PodTrafficMonitorState PodTrafficMonitorState

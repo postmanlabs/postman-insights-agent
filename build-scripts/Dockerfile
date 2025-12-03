@@ -35,8 +35,26 @@ COPY ../ ./
 RUN go build -tags osusergo,netgo -ldflags "-linkmode external -extldflags '-static'" -o /out/postman-insights-agent .
 
 #
-# Step 2: Copy the binary to an empty Alpine image to export to local machine.
+# Step 1.5: Download eCapture binary for HTTPS traffic capture
 #
-FROM scratch AS bin
+FROM alpine:latest AS ecapture-download
+RUN apk add --no-cache wget tar
+# Download eCapture release (adjust version and architecture as needed)
+RUN wget -O /tmp/ecapture.tar.gz https://github.com/gojue/ecapture/releases/download/v0.8.6/ecapture-v0.8.6-linux-arm64.tar.gz && \
+    tar -xzf /tmp/ecapture.tar.gz -C /tmp && \
+    mv /tmp/ecapture-v0.8.6-linux-arm64/ecapture /tmp/ecapture && \
+    chmod +x /tmp/ecapture
+
+#
+# Step 2: Copy both binaries to Alpine image (needed for eCapture runtime dependencies)
+#
+FROM alpine:latest AS bin
+
+# Install runtime dependencies for eCapture
+RUN apk add --no-cache ca-certificates
 
 COPY --from=build /out/postman-insights-agent /postman-insights-agent
+COPY --from=ecapture-download /tmp/ecapture /ecapture
+
+# Ensure eCapture is executable
+RUN chmod +x /ecapture
