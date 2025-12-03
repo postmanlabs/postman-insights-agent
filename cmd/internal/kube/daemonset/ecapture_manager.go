@@ -17,6 +17,7 @@ type EcaptureProcess struct {
 	ContainerID string
 	PodName     string
 	OutputFile  string
+	OutFileHandle *os.File
 	Cmd         *exec.Cmd
 	Ctx         context.Context
 	Cancel      context.CancelFunc
@@ -69,18 +70,26 @@ func (m *EcaptureManager) StartCapture(containerID, podName string, sslInfo *SSL
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Build eCapture command
-	// eCapture command format: ecapture tls --libssl=<path> -w <output>
+	// eCapture command format: ecapture tls --libssl=<path>
+	// Note: -w is for pcap format, we want text output to stdout which we'll redirect to file
 	cmd := exec.CommandContext(ctx, "/ecapture", "tls",
 		"--libssl="+libPath,
-		"-w", outputFile,
 	)
 
-	// Set up logging
-	cmd.Stdout = os.Stdout
+	// Open output file for writing
+	outFile, err := os.Create(outputFile)
+	if err != nil {
+		cancel()
+		return "", fmt.Errorf("failed to create output file %s: %w", outputFile, err)
+	}
+
+	// Redirect stdout to file for capture, stderr to agent logs for debugging
+	cmd.Stdout = outFile
 	cmd.Stderr = os.Stderr
 
 	printer.Infof("Starting eCapture for pod %s (container: %s, lib: %s)\n",
 		podName, containerID, libPath)
+	printer.Debugf("eCapture output will be written to: %s\n", outputFile)
 
 	// Start the process
 	if err := cmd.Start(); err != nil {
@@ -90,12 +99,13 @@ func (m *EcaptureManager) StartCapture(containerID, podName string, sslInfo *SSL
 
 	// Store process info
 	proc := &EcaptureProcess{
-		ContainerID: containerID,
-		PodName:     podName,
-		OutputFile:  outputFile,
-		Cmd:         cmd,
-		Ctx:         ctx,
-		Cancel:      cancel,
+		ContainerID:   containerID,
+		PodName:       podName,
+		OutputFile:    outputFile,
+		OutFileHandle: outFile,
+		Cmd:           cmd,
+		Ctx:           ctx,
+		Cancel:        cancel,
 	}
 	m.processes[containerID] = proc
 
@@ -103,6 +113,7 @@ func (m *EcaptureManager) StartCapture(containerID, podName string, sslInfo *SSL
 	go m.monitorProcess(proc)
 
 	printer.Infof("eCapture started for pod %s, output: %s\n", podName, outputFile)
+	printer.Debugf("eCapture process PID for pod %s: %d\n", podName, cmd.Process.Pid)
 	return outputFile, nil
 }
 
@@ -140,6 +151,15 @@ func (m *EcaptureManager) StopCapture(containerID string) error {
 	case err := <-done:
 		if err != nil && err.Error() != "signal: killed" && err.Error() != "context canceled" {
 			printer.Debugf("eCapture process for pod %s exited with error: %v\n", proc.PodName, err)
+		}
+	}
+
+	// Close output file and log final size
+	if proc.OutFileHandle != nil {
+		fileInfo, _ := proc.OutFileHandle.Stat()
+		proc.OutFileHandle.Close()
+		if fileInfo != nil {
+			printer.Infof("eCapture output file for pod %s closed, size: %d bytes\n", proc.PodName, fileInfo.Size())
 		}
 	}
 
