@@ -56,6 +56,9 @@ type PodArgs struct {
 	PodCreds      PodCreds
 	SSLLibInfo    *SSLLibraryInfo // SSL library information for HTTPS capture
 
+	// HTTPS capture file path (pcapng format from eCapture)
+	HTTPSCaptureFile string
+
 	// for state management
 	PodTrafficMonitorState PodTrafficMonitorState
 	StateChangeMutex       sync.Mutex `json:"-"`

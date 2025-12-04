@@ -84,6 +84,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			DropNginxTraffic:        podArgs.DropNginxTraffic,
 			MaxWitnessUploadBuffers: apispec.DefaultMaxWintessUploadBuffers,
 			AlwaysCapturePayloads:   podArgs.AlwaysCapturePayloads,
+			HTTPSCaptureFile:        optionals.Of(podArgs.HTTPSCaptureFile), // Path to eCapture pcapng file
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,

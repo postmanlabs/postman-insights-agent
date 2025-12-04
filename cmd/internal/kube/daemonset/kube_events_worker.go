@@ -168,10 +168,14 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 
 		// Start eCapture for HTTPS traffic if SSL libraries were found
 		if podArgs.SSLLibInfo != nil {
-			_, err := d.EcaptureManager.StartCapture(podArgs.ContainerUUID, podArgs.PodName, podArgs.SSLLibInfo)
+			httpsFile, err := d.EcaptureManager.StartCapture(podArgs.ContainerUUID, podArgs.PodName, podArgs.SSLLibInfo)
 			if err != nil {
 				printer.Warningf("Failed to start eCapture for pod %s: %v\n", podArgs.PodName, err)
 				printer.Warningf("HTTPS traffic will not be captured for this pod\n")
+			} else {
+				// Store the HTTPS capture file path for apidump to read
+				podArgs.HTTPSCaptureFile = httpsFile
+				printer.Debugf("HTTPS capture file for pod %s: %s\n", podArgs.PodName, httpsFile)
 			}
 		}
 
