@@ -167,6 +167,10 @@ type Args struct {
 
 	// The number of upload buffers. Anything larger than 1 results in async uploads.
 	MaxWitnessUploadBuffers int
+
+	// Path to pcapng file containing HTTPS traffic captured by eCapture.
+	// If set, apidump will read and parse HTTPS packets from this file in addition to live network capture.
+	HTTPSCaptureFile optionals.Optional[string]
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -902,6 +906,103 @@ func (a *apidump) Run() error {
 					}
 				}
 			}(interfaceName, filter)
+		}
+	}
+
+	// Add HTTPS file collector if eCapture pcapng file is available
+	if httpsFile, exists := args.HTTPSCaptureFile.Get(); exists && httpsFile != "" {
+		printer.Infof("Starting HTTPS file capture from: %s\n", httpsFile)
+
+		// Create HTTPS collector with same configuration as interface collectors
+		var httpsCollector trace.Collector
+
+		// Use backend collector (same as interfaces)
+		if args.Out.AkitaURI != nil {
+			httpsCollector = trace.NewBackendCollector(
+				a.backendSvc,
+				traceTags,
+				backendLrn,
+				a.learnClient,
+				redactor,
+				optionals.Some(a.MaxWitnessSize_bytes),
+				filterSummary, // Share packet count with interface traffic
+				args.ReproMode,
+				optionals.Some(args.AlwaysCapturePayloads),
+				args.Plugins,
+				args.MaxWitnessUploadBuffers,
+				apidumpTelemetry,
+			)
+
+			// Add same filtering pipeline as interface collectors
+			httpsCollector = &trace.PacketCountCollector{
+				PacketCounts:     filterSummary,
+				Collector:        httpsCollector,
+				SuccessTelemetry: a.successTelemetry,
+			}
+
+			// Subsampling
+			httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector)
+			if rateLimit != nil {
+				httpsCollector = rateLimit.NewCollector(httpsCollector, filterSummary)
+			}
+
+			// Path and host filters (same as interfaces)
+			if len(hostExclusions) > 0 {
+				httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector)
+			}
+			if len(pathExclusions) > 0 {
+				httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector)
+			}
+			if len(hostAllowlist) > 0 {
+				httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector)
+			}
+			if len(pathAllowlist) > 0 {
+				httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector)
+			}
+
+			// Eliminate Akita CLI traffic, unless --dogfood has been specified
+			dropDogfoodTraffic := !viper.GetBool("dogfood")
+			if dropDogfoodTraffic || a.DropNginxTraffic {
+				httpsCollector = &trace.UserTrafficCollector{
+					Collector:          httpsCollector,
+					DropDogfoodTraffic: dropDogfoodTraffic,
+					DropNginxTraffic:   a.DropNginxTraffic,
+				}
+			}
+
+			// Support trace rotation
+			if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
+				toRotate = append(toRotate, lsc)
+			}
+		} else {
+			printer.Errorf("HTTPS capture file specified but no valid output location configured\n")
+		}
+
+		// Spawn goroutine to read HTTPS packets from file
+		if httpsCollector != nil {
+			doneWG.Add(1)
+			numCollectors++
+			go func() {
+				defer doneWG.Done()
+
+				// Read HTTPS packets from pcapng file and process through collector pipeline
+				if err := pcap.CollectFromFile(
+					a.backendSvc,
+					traceTags,
+					stop,
+					httpsFile,
+					1.0, // Full buffer share for file reading
+					httpsCollector,
+					filterSummary,
+					pool,
+					apidumpTelemetry,
+				); err != nil {
+					errChan <- interfaceError{
+						interfaceName: "https-capture",
+						err:           errors.Wrapf(err, "failed to collect HTTPS traffic from file %s", httpsFile),
+					}
+				}
+			}()
 		}
 	}
 

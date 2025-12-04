@@ -87,6 +87,75 @@ func Collect(
 	return nil
 }
 
+// CollectFromFile reads packets from a pcapng file and processes them through the collector pipeline.
+// This is used for reading HTTPS traffic captured by eCapture.
+//
+// Unlike Collect(), this function:
+// - Reads from a file instead of live network interface
+// - Uses fileCaptureReader for continuous file polling
+// - Does not parse TLS handshakes (traffic is already decrypted)
+func CollectFromFile(
+	serviceID akid.ServiceID,
+	traceTags map[tags.Key]string,
+	stop <-chan struct{},
+	filePath string,
+	bufferShare float32,
+	proc trace.Collector,
+	packetCount trace.PacketCountConsumer,
+	pool buffer_pool.BufferPool,
+	telemetry telemetry.Tracker,
+) error {
+	defer proc.Close()
+
+	// HTTP parser factories (no TLS parsing - already decrypted)
+	facts := []akinet.TCPParserFactory{
+		akihttp.NewHTTPRequestParserFactory(pool),
+		akihttp.NewHTTPResponseParserFactory(pool),
+		akihttp2.NewHTTP2PrefaceParserFactory(),
+	}
+
+	// Create parser with file reader
+	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry)
+	parser.SetPcapWrapper(NewFileCaptureReader(filePath))
+
+	if packetCount != nil {
+		parser.InstallObserver(CountTcpPackets("https-capture", packetCount))
+	}
+
+	// Parse from file (interfaceName is used for logging only)
+	parsedChan, err := parser.ParseFromInterface("https-capture", "", optionals.None[string](), stop, facts...)
+	if err != nil {
+		return errors.Wrapf(err, "couldn't start parsing from file %s", filePath)
+	}
+
+	startTime := time.Now()
+	bufferTimeSum := 0 * time.Second
+	intervalLength := 1 * time.Minute
+	for t := range parsedChan {
+		now := time.Now()
+		if now.Sub(startTime) >= intervalLength {
+			bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
+			podName, ok := traceTags[tags.XAkitaKubernetesPod]
+			if !ok {
+				podName = "unknown"
+			}
+			printer.Debugf("Approximate parsed-HTTPS-traffic buffer length: %v, for svc: %v and pod: %v\n", bufferLength, serviceID, podName)
+			bufferTimeSum = 0 * time.Second
+			startTime = now
+		}
+		bufferTimeSum += now.Sub(t.ObservationTime)
+
+		t.Interface = "https-capture"
+		err := proc.Process(t)
+		t.Content.ReleaseBuffers()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Observe every captured TCP segment here
 func CountTcpPackets(ifc string, packetCount trace.PacketCountConsumer) NetworkTrafficObserver {
 	observer := func(p gopacket.Packet) {
