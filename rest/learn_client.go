@@ -12,6 +12,7 @@ import (
 	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/path_trie"
 	"github.com/akitasoftware/akita-libs/tags"
+	"github.com/postmanlabs/postman-insights-agent/deployment"
 )
 
 type learnClientImpl struct {
@@ -80,6 +81,42 @@ func (c *learnClientImpl) CreateLearnSession(ctx context.Context, baseSpecRef *k
 		return akid.LearnSessionID{}, err
 	}
 	return resp.ID, nil
+}
+
+// CreateLearnSessionWithPodDescriptor creates a new learn session with comprehensive
+// pod descriptor information. This is used by daemonset deployments to send detailed
+// pod telemetry to the backend for lifecycle tracking and observability.
+func (c *learnClientImpl) CreateLearnSessionWithPodDescriptor(
+	ctx context.Context,
+	baseSpecRef *kgxapi.APISpecReference,
+	name string,
+	tags map[tags.Key]string,
+	podDescriptor *deployment.PodDescriptor,
+) (akid.LearnSessionID, error) {
+	// Build the request with pod descriptor
+	req := CreateLearnSessionWithPodDescriptorRequest{
+		BaseAPISpecRef: baseSpecRef,
+		Tags:           tags,
+		Name:           name,
+		PodDescriptor:  podDescriptor,
+	}
+
+	var resp kgxapi.LearnSession
+	p := path.Join("/v2/agent/services", akid.String(c.serviceID), "learn")
+	err := c.Post(ctx, p, req, &resp)
+	if err != nil {
+		return akid.LearnSessionID{}, err
+	}
+	return resp.ID, nil
+}
+
+// CreateLearnSessionWithPodDescriptorRequest extends the standard CreateLearnSessionRequest
+// with pod descriptor information for daemonset deployments.
+type CreateLearnSessionWithPodDescriptorRequest struct {
+	BaseAPISpecRef *kgxapi.APISpecReference  `json:"base_api_spec,omitempty"`
+	Tags           map[tags.Key]string       `json:"tags,omitempty"`
+	Name           string                    `json:"name"`
+	PodDescriptor  *deployment.PodDescriptor `json:"pod_descriptor,omitempty"`
 }
 
 func (c *learnClientImpl) GetDynamicAgentConfigForService(
