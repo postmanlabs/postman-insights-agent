@@ -183,6 +183,7 @@ sensitive_value_regexes:
 - (?i)\bllx\-[A-Za-z0-9]{40,60}\b
 - (?i)\bpat[pA-Za-z0-9]{14}\.[A-Za-z0-9]{64}\b
 - (?i)api-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+- \b(xprv|yprv|zprv|dprv|Ltpv)[1-9A-HJ-NP-Za-km-z]{107}\b
 ignored_keys:
 - clientId
 - value
