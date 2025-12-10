@@ -112,6 +112,14 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 		return
 	}
 
+	// Stop eCapture process if it was running
+	if podArgs.SSLLibInfo != nil {
+		err = d.EcaptureManager.StopCapture(podArgs.ContainerUUID)
+		if err != nil {
+			printer.Debugf("Failed to stop eCapture for pod %s: %v\n", podArgs.PodName, err)
+		}
+	}
+
 	err = d.SignalApiDumpProcessToStop(pod.UID, errors.Errorf("got pod delete event, pod: %s", podArgs.PodName))
 	if err != nil {
 		printer.Errorf("Failed to stop api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
@@ -156,6 +164,17 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 			printer.Errorf("Failed to change pod state, pod name: %s, from: %s to: %s, error: %v\n",
 				podArgs.PodName, podArgs.PodTrafficMonitorState, PodRunning, err)
 			return
+		}
+
+		// Start eCapture for HTTPS traffic if SSL libraries were found
+		if podArgs.SSLLibInfo != nil {
+			httpsFile, err := d.EcaptureManager.StartCapture(podArgs.ContainerUUID, podArgs.PodName, podArgs.SSLLibInfo)
+			if err != nil {
+				printer.Warningf("Failed to start eCapture for pod %s: %v\n", podArgs.PodName, err)
+				printer.Warningf("HTTPS traffic will not be captured for this pod\n")
+			} else {
+				printer.Infof("DEBUG: HTTPS capture file stored for pod %s: %s\n", podArgs.PodName, httpsFile)
+			}
 		}
 
 		// Start monitoring the pod
@@ -242,6 +261,17 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 
 	podArgs.ContainerUUID = mainContainerUUID
+
+	// Scan container for SSL libraries to enable HTTPS capture
+	sslLibInfo, err := ScanContainerSSLLibraries(mainContainerUUID)
+	if err != nil {
+		printer.Debugf("SSL library scan failed for pod %s (container %s): %v\n", pod.Name, mainContainerUUID, err)
+		printer.Debugf("HTTPS traffic capture will not be available for this pod\n")
+	} else {
+		podArgs.SSLLibInfo = sslLibInfo
+		printer.Infof("SSL libraries discovered for pod %s: type=%s, paths=%v\n",
+			pod.Name, sslLibInfo.LibraryType, sslLibInfo.LibraryPaths)
+	}
 
 	// Only validate required pod container variables if agent does not have them
 	if d.WorkspaceID == "" && d.APIKey == "" && mainContainerConfig.serviceName == "" && mainContainerConfig.serviceEnvironment == "" {

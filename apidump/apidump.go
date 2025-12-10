@@ -167,6 +167,11 @@ type Args struct {
 
 	// The number of upload buffers. Anything larger than 1 results in async uploads.
 	MaxWitnessUploadBuffers int
+
+	// Frame channel for HTTPS traffic from eCapture text mode.
+	// If set, apidump will read parsed HTTP frames from this channel.
+	// This replaces the file-based approach (HTTPSCaptureFile) with in-memory streaming.
+	HTTPSFrameChannel optionals.Optional[<-chan pcap.RawFrame]
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -902,6 +907,102 @@ func (a *apidump) Run() error {
 					}
 				}
 			}(interfaceName, filter)
+		}
+	}
+
+	// Add HTTPS text frame collector if eCapture text mode channel is available.
+	// This replaces the file-based approach with in-memory streaming.
+	httpsFrameChan, httpsFrameExists := args.HTTPSFrameChannel.Get()
+	if httpsFrameExists && httpsFrameChan != nil {
+		printer.Infof("Starting HTTPS text frame capture from eCapture\n")
+
+		// Create HTTPS collector with same configuration as interface collectors
+		var httpsTextCollector trace.Collector
+
+		// Use backend collector (same as interfaces)
+		if args.Out.AkitaURI != nil {
+			httpsTextCollector = trace.NewBackendCollector(
+				a.backendSvc,
+				traceTags,
+				backendLrn,
+				a.learnClient,
+				redactor,
+				optionals.Some(a.MaxWitnessSize_bytes),
+				filterSummary, // Share packet count with interface traffic
+				args.ReproMode,
+				optionals.Some(args.AlwaysCapturePayloads),
+				args.Plugins,
+				args.MaxWitnessUploadBuffers,
+				apidumpTelemetry,
+			)
+
+			// Add same filtering pipeline as interface collectors
+			httpsTextCollector = &trace.PacketCountCollector{
+				PacketCounts:     filterSummary,
+				Collector:        httpsTextCollector,
+				SuccessTelemetry: a.successTelemetry,
+			}
+
+			// Subsampling
+			httpsTextCollector = trace.NewSamplingCollector(args.SampleRate, httpsTextCollector)
+			if rateLimit != nil {
+				httpsTextCollector = rateLimit.NewCollector(httpsTextCollector, filterSummary)
+			}
+
+			// Path and host filters (same as interfaces)
+			if len(hostExclusions) > 0 {
+				httpsTextCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsTextCollector)
+			}
+			if len(pathExclusions) > 0 {
+				httpsTextCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsTextCollector)
+			}
+			if len(hostAllowlist) > 0 {
+				httpsTextCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsTextCollector)
+			}
+			if len(pathAllowlist) > 0 {
+				httpsTextCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsTextCollector)
+			}
+
+			// Eliminate Akita CLI traffic, unless --dogfood has been specified
+			dropDogfoodTraffic := !viper.GetBool("dogfood")
+			if dropDogfoodTraffic || a.DropNginxTraffic {
+				httpsTextCollector = &trace.UserTrafficCollector{
+					Collector:          httpsTextCollector,
+					DropDogfoodTraffic: dropDogfoodTraffic,
+					DropNginxTraffic:   a.DropNginxTraffic,
+				}
+			}
+
+			// Support trace rotation
+			if lsc, ok := httpsTextCollector.(trace.LearnSessionCollector); ok && lsc != nil {
+				toRotate = append(toRotate, lsc)
+			}
+		} else {
+			printer.Errorf("HTTPS frame channel specified but no valid output location configured\n")
+		}
+
+		// Spawn goroutine to read HTTPS text frames from channel
+		if httpsTextCollector != nil {
+			doneWG.Add(1)
+			numCollectors++
+			go func() {
+				defer doneWG.Done()
+
+				// Read HTTPS text frames from channel and process through collector pipeline
+				if err := pcap.CollectFromTextFrames(
+					a.backendSvc,
+					traceTags,
+					stop,
+					httpsFrameChan,
+					httpsTextCollector,
+					apidumpTelemetry,
+				); err != nil {
+					errChan <- interfaceError{
+						interfaceName: "https-text-capture",
+						err:           errors.Wrap(err, "failed to collect HTTPS traffic from text frames"),
+					}
+				}
+			}()
 		}
 	}
 

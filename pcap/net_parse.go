@@ -102,6 +102,13 @@ func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]st
 	}
 }
 
+// SetPcapWrapper replaces the default pcapWrapper with a custom implementation.
+// This allows using alternative packet sources (e.g., file readers instead of live capture).
+// Should be called before ParseFromInterface.
+func (p *NetworkTrafficParser) SetPcapWrapper(wrapper pcapWrapper) {
+	p.pcap = wrapper
+}
+
 // Replace the current per-packet callback. Should be called before starting
 // ParseFromInterface.
 func (p *NetworkTrafficParser) InstallObserver(observer NetworkTrafficObserver) {
