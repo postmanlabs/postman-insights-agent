@@ -8,6 +8,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"k8s.io/apimachinery/pkg/types"
@@ -68,6 +69,11 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
 		networkNamespace = "/host" + networkNamespace
 
+		var podDescriptor *deployment.PodDescriptor
+		if podArgs.CollectPodInfoEnabled {
+			podDescriptor = d.extractPodDescriptor(podUID, podArgs.ContainerUUID)
+		}
+
 		apidumpArgs := apidump.Args{
 			ClientID:                akid.GenerateClientID(),
 			Domain:                  rest.Domain,
@@ -93,6 +99,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				ServiceName:               podArgs.PodCreds.InsightsServiceName,
 				ServiceEnvironment:        podArgs.PodCreds.InsightsServiceEnvironment,
 				WorkspaceID:               podArgs.PodCreds.InsightsWorkspaceID,
+				PodDescriptor:             podDescriptor,
 			}),
 		}
 
@@ -103,6 +110,32 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	}()
 
 	return nil
+}
+
+// extractPodDescriptor retrieves pod information from Kubernetes API and container
+// environment variables from CRI API, then creates a PodDescriptor for telemetry.
+// Returns nil if pod information cannot be retrieved (errors are logged but not fatal).
+func (d *Daemonset) extractPodDescriptor(podUID types.UID, containerUUID string) *deployment.PodDescriptor {
+	// Get pod object from Kubernetes API
+	pods, err := d.KubeClient.GetPodsByUIDs([]types.UID{podUID})
+	if err != nil || len(pods) == 0 {
+		printer.Debugf("Failed to get pod for descriptor extraction, podUID: %s, err: %v\n", podUID, err)
+		return nil
+	}
+	pod := pods[0]
+
+	// Get container environment variables from CRI API
+	var envVars map[string]string
+	if containerUUID != "" {
+		envVars, err = d.CRIClient.GetEnvVars(containerUUID)
+		if err != nil {
+			// Log but continue - env vars are optional for pod descriptor
+			printer.Debugf("Failed to get container env vars for pod %s, err: %v\n", pod.Name, err)
+		}
+	}
+
+	// Extract and return pod descriptor
+	return deployment.ExtractPodDescriptor(pod, envVars)
 }
 
 // SignalApiDumpProcessToStop signals the API dump process to stop for a given pod

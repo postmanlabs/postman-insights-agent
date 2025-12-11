@@ -86,6 +86,11 @@ type DaemonsetArgs struct {
 	ServiceName               string
 	Environment               string
 	TraceTags                 tags.SingletonTags
+
+	// PodDescriptor contains comprehensive pod information for telemetry.
+	// This is extracted from the Kubernetes API and CRI API when starting
+	// the apidump process for a pod in daemonset mode.
+	PodDescriptor *deployment.PodDescriptor
 }
 
 type Args struct {
@@ -481,6 +486,12 @@ func (a *apidump) RotateLearnSession(done <-chan struct{}, collectors []trace.Le
 	t := time.NewTicker(args.LearnSessionLifetime)
 	defer t.Stop()
 
+	// Get pod descriptor from daemonset args if available (for session rotation)
+	var podDescriptor *deployment.PodDescriptor
+	if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
+		podDescriptor = daemonsetArgs.PodDescriptor
+	}
+
 	for {
 		select {
 		case <-done:
@@ -488,7 +499,7 @@ func (a *apidump) RotateLearnSession(done <-chan struct{}, collectors []trace.Le
 
 		case <-t.C:
 			traceName := util.RandomLearnSessionName()
-			backendLrn, err := util.NewLearnSession(a.learnClient, traceName, traceTags, nil)
+			backendLrn, err := util.NewLearnSessionWithPodDescriptor(a.learnClient, traceName, traceTags, nil, podDescriptor)
 			if err != nil {
 				apidumpTelemetry.Error("new learn session", err)
 				printer.Errorf("Failed to create trace %s: %v\n", traceName, err)
@@ -684,7 +695,15 @@ func (a *apidump) Run() error {
 	var backendLrn akid.LearnSessionID
 	if a.TargetIsRemote() {
 		uri := a.Out.AkitaURI
-		backendLrn, err = util.NewLearnSession(a.learnClient, uri.ObjectName, traceTags, nil)
+
+		// Get pod descriptor from daemonset args if available
+		var podDescriptor *deployment.PodDescriptor
+		if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
+			podDescriptor = daemonsetArgs.PodDescriptor
+		}
+
+		// Create learn session with pod descriptor for daemonset deployments
+		backendLrn, err = util.NewLearnSessionWithPodDescriptor(a.learnClient, uri.ObjectName, traceTags, nil, podDescriptor)
 		if err == nil {
 			printer.Infof("Created new trace on Postman Cloud: %s\n", uri)
 		} else {

@@ -15,6 +15,7 @@ import (
 	"github.com/akitasoftware/akita-libs/path_trie"
 	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/akita-libs/time_span"
+	"github.com/postmanlabs/postman-insights-agent/deployment"
 )
 
 type GetSpecOptions struct {
@@ -41,6 +42,18 @@ type LearnClient interface {
 	ListLearnSessionsWithStats(context.Context, akid.ServiceID, int) ([]*kgxapi.ListedLearnSession, error)
 	GetLearnSession(context.Context, akid.ServiceID, akid.LearnSessionID) (*kgxapi.LearnSession, error)
 	CreateLearnSession(context.Context, *kgxapi.APISpecReference, string, map[tags.Key]string) (akid.LearnSessionID, error)
+
+	// CreateLearnSessionWithPodDescriptor creates a new learn session with comprehensive
+	// pod descriptor information for daemonset deployments. The pod descriptor contains
+	// detailed pod metadata, container info, resource specifications, and filtered
+	// environment variables for telemetry purposes.
+	CreateLearnSessionWithPodDescriptor(
+		ctx context.Context,
+		baseSpecRef *kgxapi.APISpecReference,
+		name string,
+		tags map[tags.Key]string,
+		podDescriptor *deployment.PodDescriptor,
+	) (akid.LearnSessionID, error)
 
 	// Fetches the agent's dynamic configuration for the given service, as
 	// specified by the user in the UI.

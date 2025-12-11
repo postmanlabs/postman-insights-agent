@@ -53,6 +53,7 @@ type containerConfig struct {
 	dropNginxTraffic        string
 	agentRateLimit          string
 	alwaysCapturePayloads   string
+	collectPodInfo          string
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -218,6 +219,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if alwaysCapturePayloads, exists := envVars[POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS]; exists {
 			containerEnvVars.alwaysCapturePayloads = alwaysCapturePayloads
 		}
+		if collectPodInfo, exists := envVars[POSTMAN_INSIGHTS_COLLECT_POD_INFO]; exists {
+			containerEnvVars.collectPodInfo = collectPodInfo
+		}
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
@@ -312,6 +316,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainContainerConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
+	// Check if pod info collection is enabled (opt-in for capturing pod metadata, env vars, etc.)
+	podArgs.CollectPodInfoEnabled = parseBoolConfig(mainContainerConfig.collectPodInfo, "collectPodInfo", pod.Name, false)
 
 	return nil
 }
