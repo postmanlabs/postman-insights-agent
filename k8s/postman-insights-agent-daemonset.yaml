@@ -79,7 +79,19 @@ spec:
               cpu: 200m
               memory: 500Mi
           securityContext:
-            privileged: true
+            capabilities:
+              add:
+                # Agent pcap/tracing capabilities
+                - SYS_ADMIN  # Fallback for kernels < 5.8
+                - SYS_PTRACE # Container tracing
+                - NET_RAW    # Packet capture
+                # Embedded eCapture (eBPF) dependencies
+                - SYS_RESOURCE # eBPF memory/resource operations
+                - NET_ADMIN    # eBPF network program attachment
+                - BPF          # Load eBPF programs and create maps
+                - PERFMON      # Performance monitoring/tracing hooks
+              drop:
+                - ALL
           volumeMounts:
             - mountPath: /host/proc
               name: host-procfs
