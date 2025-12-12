@@ -1,9 +1,10 @@
 package daemonset
 
 import (
+	"bufio"
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"sync"
 	"time"
@@ -16,11 +17,14 @@ import (
 type EcaptureProcess struct {
 	ContainerID string
 	PodName     string
-	TextReader  *pcap.EcaptureTextReader // Reader for text mode output
-	Cmd         *exec.Cmd
-	Ctx         context.Context
-	Cancel      context.CancelFunc
-	mu          sync.Mutex
+	SSLPath     string
+	// RestartAttempts tracks how many times we've retried after an unexpected exit.
+	RestartAttempts int
+	TextReader      *pcap.EcaptureTextReader // Reader for text mode output
+	Cmd             *exec.Cmd
+	Ctx             context.Context
+	Cancel          context.CancelFunc
+	mu              sync.Mutex
 }
 
 // EcaptureManager manages eCapture processes for multiple pods
@@ -77,8 +81,12 @@ func (m *EcaptureManager) StartCapture(containerID, podName string, sslInfo *SSL
 		return "", fmt.Errorf("failed to create stdout pipe for pod %s: %w", podName, err)
 	}
 
-	// Redirect stderr to agent logs for debugging
-	cmd.Stderr = os.Stderr
+	// Capture stderr to agent logs for debugging
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return "", fmt.Errorf("failed to create stderr pipe for pod %s: %w", podName, err)
+	}
 
 	// Start the process BEFORE creating reader (pipe must be ready)
 	if err := cmd.Start(); err != nil {
@@ -94,6 +102,7 @@ func (m *EcaptureManager) StartCapture(containerID, podName string, sslInfo *SSL
 	proc := &EcaptureProcess{
 		ContainerID: containerID,
 		PodName:     podName,
+		SSLPath:     libPath,
 		TextReader:  textReader,
 		Cmd:         cmd,
 		Ctx:         ctx,
@@ -103,6 +112,8 @@ func (m *EcaptureManager) StartCapture(containerID, podName string, sslInfo *SSL
 
 	// Monitor process in goroutine
 	go m.monitorProcess(proc)
+	// Stream stderr
+	go captureEcaptureStderr(proc.PodName, stderr)
 
 	printer.Infof("eCapture TEXT mode started for pod %s (PID: %d)\n", podName, cmd.Process.Pid)
 	printer.Debugf("eCapture will output decrypted HTTP/HTTPS traffic to in-memory channel\n")
@@ -191,7 +202,21 @@ func (m *EcaptureManager) monitorProcess(proc *EcaptureProcess) {
 			printer.Warningf("eCapture process for pod %s exited unexpectedly without error\n", proc.PodName)
 		}
 
-		// Remove from map
+		// Attempt a single restart
+		const maxRestartAttempts = 1
+		if proc.RestartAttempts < maxRestartAttempts {
+			proc.RestartAttempts++
+			printer.Warningf("Retrying eCapture for pod %s (attempt %d/%d)\n", proc.PodName, proc.RestartAttempts, maxRestartAttempts)
+			if err := m.restartCapture(proc); err != nil {
+				printer.Errorf("Failed to restart eCapture for pod %s: %v\n", proc.PodName, err)
+				m.mu.Lock()
+				delete(m.processes, proc.ContainerID)
+				m.mu.Unlock()
+			}
+			return
+		}
+
+		// Remove from map if we can't or won't restart
 		m.mu.Lock()
 		delete(m.processes, proc.ContainerID)
 		m.mu.Unlock()
@@ -212,5 +237,68 @@ func (m *EcaptureManager) Shutdown() {
 			printer.Errorf("Error stopping eCapture for container %s: %v\n", containerID, err)
 		}
 		m.mu.Lock()
+	}
+}
+
+// restartCapture attempts to restart eCapture for a pod after an unexpected exit.
+// Caller should ensure restart attempts are bounded.
+func (m *EcaptureManager) restartCapture(proc *EcaptureProcess) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Ensure the process is still registered
+	current, ok := m.processes[proc.ContainerID]
+	if !ok || current != proc {
+		return fmt.Errorf("cannot restart eCapture; process not registered for container %s", proc.ContainerID)
+	}
+
+	// Create fresh context
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cmd := exec.CommandContext(ctx, "/ecapture", "tls",
+		"--libssl="+proc.SSLPath,
+		"-m", "text",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to create stdout pipe on restart for pod %s: %w", proc.PodName, err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to create stderr pipe on restart for pod %s: %w", proc.PodName, err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return fmt.Errorf("failed to restart eCapture for pod %s: %w", proc.PodName, err)
+	}
+
+	textReader := pcap.NewEcaptureTextReader(stdout, proc.PodName)
+	textReader.Start()
+
+	// Update proc fields
+	proc.TextReader = textReader
+	proc.Cmd = cmd
+	proc.Ctx = ctx
+	proc.Cancel = cancel
+
+	go m.monitorProcess(proc)
+	go captureEcaptureStderr(proc.PodName, stderr)
+
+	printer.Infof("eCapture restarted for pod %s (PID: %d)\n", proc.PodName, cmd.Process.Pid)
+	return nil
+}
+
+// captureEcaptureStderr streams stderr lines from eCapture to agent logs.
+func captureEcaptureStderr(podName string, r io.ReadCloser) {
+	defer r.Close()
+	scanner := bufio.NewScanner(r)
+	// Limit log spam via scanner default token size; we rely on eCapture to output reasonable lines.
+	for scanner.Scan() {
+		printer.Errorf("eCapture stderr for pod %s: %s\n", podName, scanner.Text())
 	}
 }
