@@ -8,6 +8,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/pcap"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"k8s.io/apimachinery/pkg/types"
@@ -68,6 +69,20 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
 		networkNamespace = "/host" + networkNamespace
 
+		// Get HTTPS frame channel if eCapture is running for this pod
+		var httpsFrameChannel optionals.Optional[<-chan pcap.RawFrame]
+		if podArgs.ContainerUUID != "" {
+			frameChan, err := d.EcaptureManager.GetFrameChannel(podArgs.ContainerUUID)
+			if err != nil {
+				printer.Warningf("Failed to get HTTPS frame channel for pod %s: %v\n", podArgs.PodName, err)
+				printer.Warningf("HTTPS traffic will not be captured for this pod\n")
+			} else {
+				httpsFrameChannel = optionals.Some(frameChan)
+				printer.Infof("DEBUG: HTTPS frame channel obtained for pod %s (container: %s)\n",
+					podArgs.PodName, podArgs.ContainerUUID)
+			}
+		}
+
 		apidumpArgs := apidump.Args{
 			ClientID:                akid.GenerateClientID(),
 			Domain:                  rest.Domain,
@@ -84,6 +99,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			DropNginxTraffic:        podArgs.DropNginxTraffic,
 			MaxWitnessUploadBuffers: apispec.DefaultMaxWintessUploadBuffers,
 			AlwaysCapturePayloads:   podArgs.AlwaysCapturePayloads,
+			HTTPSFrameChannel:       httpsFrameChannel, // Frame channel from eCapture text mode
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
