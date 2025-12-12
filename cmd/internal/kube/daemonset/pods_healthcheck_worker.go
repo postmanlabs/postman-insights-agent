@@ -1,6 +1,7 @@
 package daemonset
 
 import (
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -38,6 +39,11 @@ func (d *Daemonset) checkPodsHealth() {
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
+			// Transient: containers not ready; skip this round.
+			if strings.Contains(err.Error(), "no running containers found in the pod") {
+				printer.Debugf("Containers not ready yet for pod %s (healthcheck), will retry\n", pod.Name)
+				continue
+			}
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())

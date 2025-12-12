@@ -13,6 +13,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
 	coreV1 "k8s.io/api/core/v1"
+	"strings"
 )
 
 type baseEnvVarsError struct {
@@ -145,6 +146,12 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		printer.Debugf("Pod is running, starting api dump process, pod name: %s\n", podArgs.PodName)
 		err := d.inspectPodForEnvVars(pod, podArgs)
 		if err != nil {
+			// Transient: containers not ready yet; keep PodPending so we retry on next event.
+			if strings.Contains(err.Error(), "no running containers found in the pod") {
+				printer.Debugf("Containers not ready yet for pod %s, will retry\n", pod.Name)
+				return
+			}
+
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())

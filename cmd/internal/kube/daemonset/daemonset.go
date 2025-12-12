@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -269,6 +270,11 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
+			// Transient: containers not ready yet; skip for now and retry on next pass.
+			if strings.Contains(err.Error(), "no running containers found in the pod") {
+				printer.Debugf("Containers not ready yet for pod %s, will retry later\n", pod.Name)
+				continue
+			}
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())
