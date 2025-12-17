@@ -22,8 +22,8 @@ spec:
             echo "Waiting 10 seconds..."
             sleep 10
           done
-      env:
-        - name: POSTMAN_INSIGHTS_API_KEY
-          value: "YOUR_API_KEY_HERE"
-        - name: POSTMAN_INSIGHTS_PROJECT_ID
-          value: "YOUR_PROJECT_ID_HERE"
+      # env:
+      #   - name: POSTMAN_INSIGHTS_API_KEY
+      #     value: "YOUR_API_KEY_HERE"
+      #   - name: POSTMAN_INSIGHTS_PROJECT_ID
+      #     value: "YOUR_PROJECT_ID_HERE"
