@@ -1,0 +1,143 @@
+# api_spec.Witness proto
+# Test case: Witness with W3C trace context headers (traceparent, tracestate)
+# These headers should be preserved during ZeroAllPrimitives
+
+method: {
+  meta: {
+    http: {
+      method: "GET"
+      path_template: "/api/users"
+      host: "api.example.com"
+    }
+  }
+  args: {
+    key: "trace-parent-key="
+    value: {
+      primitive: {
+        string_value: {
+          value: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "traceparent"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "trace-state-key="
+    value: {
+      primitive: {
+        string_value: {
+          value: "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "tracestate"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "normal-header-key="
+    value: {
+      primitive: {
+        string_value: {
+          value: "application/json"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Content-Type"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "auth-header-key="
+    value: {
+      primitive: {
+        string_value: {
+          value: "Bearer secret-token-12345"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Authorization"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "body-key="
+    value: {
+      struct: {
+        fields: {
+          key: "user_id"
+          value: {
+            primitive: {
+              int64_value: {
+                value: 12345
+              }
+            }
+          }
+        }
+        fields: {
+          key: "name"
+          value: {
+            primitive: {
+              string_value: {
+                value: "John Doe"
+              }
+            }
+          }
+        }
+      }
+      meta: {
+        http: {
+          body: {
+            content_type: JSON
+            other_type: "application/json"
+          }
+        }
+      }
+    }
+  }
+  responses: {
+    key: "response-key="
+    value: {
+      struct: {
+        fields: {
+          key: "status"
+          value: {
+            primitive: {
+              string_value: {
+                value: "success"
+              }
+            }
+          }
+        }
+      }
+      meta: {
+        http: {
+          body: {
+            content_type: JSON
+            other_type: "application/json"
+          }
+          response_code: 200
+        }
+      }
+    }
+  }
+}
+
