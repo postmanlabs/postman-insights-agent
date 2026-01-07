@@ -129,6 +129,14 @@ func TestZeroAllPrimitives(t *testing.T) {
 			inputFile:    "005-witness.pb.txt",
 			expectedFile: "005-expected-redacted-path.pb.txt",
 		},
+		"preserve W3C trace context headers": {
+			inputFile:    "006-witness-with-trace-context.pb.txt",
+			expectedFile: "006-expected-zero-preserve-trace-context.pb.txt",
+		},
+		"preserve W3C trace context headers (case-insensitive)": {
+			inputFile:    "007-witness-with-trace-context-mixed-case.pb.txt",
+			expectedFile: "007-expected-zero-preserve-trace-context-mixed-case.pb.txt",
+		},
 	}
 
 	for testName, testCase := range testCases {
