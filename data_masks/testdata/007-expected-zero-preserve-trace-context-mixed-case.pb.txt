@@ -1,0 +1,64 @@
+# api_spec.Witness proto
+# Expected output: trace context headers are preserved regardless of casing
+# Other headers are zeroed
+
+method: {
+  meta: {
+    http: {
+      method: "POST"
+      path_template: "/api/orders"
+      host: "api.example.com"
+      obfuscation: ZERO_VALUE
+    }
+  }
+  args: {
+    key: "trace-parent-key="
+    value: {
+      primitive: {
+        string_value: {
+          value: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "Traceparent"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "trace-state-key="
+    value: {
+      primitive: {
+        string_value: {
+          value: "vendor1=value1"
+        }
+      }
+      meta: {
+        http: {
+          header: {
+            key: "TraceState"
+          }
+        }
+      }
+    }
+  }
+  args: {
+    key: "other-header-key="
+    value: {
+      primitive: {
+        string_value: {}
+      }
+      meta: {
+        http: {
+          header: {
+            key: "X-Custom-Header"
+          }
+        }
+      }
+    }
+  }
+}
+

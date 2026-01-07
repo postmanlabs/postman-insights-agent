@@ -23,6 +23,14 @@ const RedactionString = "*REDACTED*"
 
 const dynamicConfigUpdateInterval = time.Minute
 
+// W3C Trace Context headers that should always be preserved (never obfuscated).
+// These headers are essential for distributed tracing and contain no sensitive data.
+// See: https://www.w3.org/TR/trace-context/
+var traceContextHeaders = sets.NewSet(
+	"traceparent",
+	"tracestate",
+)
+
 // Replaces sensitive data with a redaction string.
 type Redactor struct {
 	SensitiveDataKeys          sets.Set[string]
@@ -282,12 +290,30 @@ type zeroPrimitivesVisitor struct {
 
 var _ vis.DefaultSpecVisitor = (*zeroPrimitivesVisitor)(nil)
 
+// isTraceContextHeader checks if the given data represents a W3C trace context header.
+// Returns true if this is a traceparent or tracestate header that should be preserved.
+func isTraceContextHeader(d *pb.Data) bool {
+	header := spec_util.HTTPHeaderFromData(d)
+	if header == nil {
+		return false
+	}
+	return traceContextHeaders.Contains(strings.ToLower(header.GetKey()))
+}
+
 // EnterData processes the given data and replaces all the primitive values
 // with zero values, regardless of its metadata.
+// Exception: W3C trace context headers (traceparent, tracestate) are preserved
+// to enable distributed tracing correlation.
 func (*zeroPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext, d *pb.Data) Cont {
 	dp := d.GetPrimitive()
 	if dp == nil {
 		return Continue
+	}
+
+	// Preserve W3C trace context headers - these are essential for distributed
+	// tracing and contain no sensitive user data.
+	if isTraceContextHeader(d) {
+		return SkipChildren
 	}
 
 	pv, err := spec_util.PrimitiveValueFromProto(dp)
