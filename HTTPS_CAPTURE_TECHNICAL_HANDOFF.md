@@ -448,7 +448,7 @@ Before deploying to production, the following MUST be tested:
 - `729356a` - Fixed security context for eBPF
 - `469dc53` - Fixed container skip bug
 - `727aa9a` - Added eCapture retry and stderr logging
-- `bb4010f` - WIP (current HEAD)
+- `edc787e` - WIP + technical handoff document (current HEAD)
 
 ---
 
