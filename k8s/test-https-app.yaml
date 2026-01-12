@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-https-app
+  namespace: postman-insights-namespace
+spec:
+  containers:
+    - name: curl-loop
+      image: curlimages/curl:latest
+      command: ["/bin/sh"]
+      args:
+        - -c
+        - |
+          echo "Starting HTTPS request loop..."
+          while true; do
+            echo "Sending request to GitHub API..."
+            curl -s https://api.github.com/zen
+            echo ""
+            echo "Sending request to Google..."
+            curl -s https://www.google.com/ | head -c 100
+            echo ""
+            echo "Waiting 10 seconds..."
+            sleep 10
+          done
+      # env:
+      #   - name: POSTMAN_INSIGHTS_API_KEY
+      #     value: "YOUR_API_KEY_HERE"
+      #   - name: POSTMAN_INSIGHTS_PROJECT_ID
+      #     value: "YOUR_PROJECT_ID_HERE"

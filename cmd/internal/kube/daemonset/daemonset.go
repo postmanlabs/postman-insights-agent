@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -43,6 +44,9 @@ type Daemonset struct {
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
 	FrontClient rest.FrontClient
+
+	// eCapture manager for HTTPS traffic capture
+	EcaptureManager *EcaptureManager
 
 	// Note: Only filtered pods are stored in this map, i.e., they have required env vars
 	// and do not have the agent sidecar container
@@ -115,6 +119,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,
 		FrontClient:              frontClient,
+		EcaptureManager:          NewEcaptureManager(),
 		TelemetryInterval:        telemetryInterval,
 		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
 	}
@@ -178,6 +183,10 @@ func (d *Daemonset) Run() error {
 	// Stop all apidump processes
 	printer.Debugf("Stopping all apidump processes...\n")
 	d.StopAllApiDumpProcesses()
+
+	// Stop all eCapture processes
+	printer.Debugf("Stopping all eCapture processes...\n")
+	d.EcaptureManager.Shutdown()
 
 	// Stop K8s Watcher
 	printer.Debugf("Stopping k8s watcher...\n")
@@ -261,6 +270,11 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
+			// Transient: containers not ready yet; skip for now and retry on next pass.
+			if strings.Contains(err.Error(), "no running containers found in the pod") {
+				printer.Debugf("Containers not ready yet for pod %s, will retry later\n", pod.Name)
+				continue
+			}
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())
@@ -276,6 +290,17 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		if err != nil {
 			printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
 			continue
+		}
+
+		// Start eCapture for HTTPS traffic if SSL libraries were found
+		if args.SSLLibInfo != nil {
+			httpsFile, err := d.EcaptureManager.StartCapture(args.ContainerUUID, args.PodName, args.SSLLibInfo)
+			if err != nil {
+				printer.Warningf("Failed to start eCapture for pod %s: %v\n", args.PodName, err)
+				printer.Warningf("HTTPS traffic will not be captured for this pod\n")
+			} else {
+				printer.Infof("DEBUG: HTTPS capture started for pod %s: %s\n", args.PodName, httpsFile)
+			}
 		}
 
 		err = d.StartApiDumpProcess(pod.UID)

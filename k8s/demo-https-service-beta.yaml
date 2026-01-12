@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: https-demo
+  namespace: postman-insights-namespace
+  labels:
+    app: https-demo
+spec:
+  restartPolicy: Always
+  containers:
+    - name: traffic-generator
+      # Use curl-based generator (same approach as test-https-app)
+      image: curlimages/curl:latest
+      command: ["/bin/sh", "-c"]
+      # env:
+      #   - name: POSTMAN_INSIGHTS_API_KEY
+      #     value: "YOUR_API_KEY_HERE"
+      #   - name: POSTMAN_INSIGHTS_PROJECT_ID
+      #     value: "YOUR_PROJECT_ID_HERE"
+      args:
+        - |
+          set -e
+          echo "cURL version:"
+          curl --version
+          echo "=== Realistic HTTPS Traffic Generator (curl) ==="
+          while true; do
+            echo "[$(date '+%H:%M:%S')] === Batch 1: User Management ==="
+            curl -s https://jsonplaceholder.typicode.com/users -o /dev/null
+            curl -s https://jsonplaceholder.typicode.com/users/1 -o /dev/null
+            curl -s https://jsonplaceholder.typicode.com/users/2/posts -o /dev/null
+            curl -s https://jsonplaceholder.typicode.com/users/3/albums -o /dev/null
+            curl -s https://jsonplaceholder.typicode.com/users/4/todos -o /dev/null
+
+            echo "[$(date '+%H:%M:%S')] === Batch 2: Posts & Comments ==="
+            curl -s https://jsonplaceholder.typicode.com/posts -o /dev/null
+            curl -s https://jsonplaceholder.typicode.com/posts/1 -o /dev/null
+            curl -s https://jsonplaceholder.typicode.com/posts/1/comments -o /dev/null
+            curl -s "https://jsonplaceholder.typicode.com/comments?postId=1" -o /dev/null
+            curl -s -X POST https://jsonplaceholder.typicode.com/posts -H "Content-Type: application/json" -d '{"title":"test","body":"demo","userId":1}' -o /dev/null
+            curl -s -X PUT https://jsonplaceholder.typicode.com/posts/1 -H "Content-Type: application/json" -d '{"id":1,"title":"updated"}' -o /dev/null
+            curl -s -X DELETE https://jsonplaceholder.typicode.com/posts/1 -o /dev/null
+
+            echo "[$(date '+%H:%M:%S')] === Batch 3: HTTPBin (Testing Service) ==="
+            curl -s https://httpbin.org/uuid -o /dev/null
+            curl -s https://httpbin.org/ip -o /dev/null
+            curl -s https://httpbin.org/user-agent -o /dev/null
+            curl -s https://httpbin.org/headers -o /dev/null
+            curl -s https://httpbin.org/delay/1 -o /dev/null
+            curl -s https://httpbin.org/status/200 -o /dev/null
+            curl -s https://httpbin.org/status/404 -o /dev/null
+            curl -s -X POST https://httpbin.org/post -H "Content-Type: application/json" -d '{"key":"value"}' -o /dev/null
+            curl -s -X PUT https://httpbin.org/put -H "Content-Type: application/json" -d '{"update":"data"}' -o /dev/null
+
+            echo "[$(date '+%H:%M:%S')] === Batch 4: GitHub API ==="
+            curl -s https://api.github.com/zen -o /dev/null
+            curl -s https://api.github.com/users/github -o /dev/null
+            curl -s https://api.github.com/users/github/repos -o /dev/null
+            curl -s https://api.github.com/repos/github/docs -o /dev/null
+
+            echo "[$(date '+%H:%M:%S')] === Batch 5: ReqRes API ==="
+            curl -s https://reqres.in/api/users -o /dev/null
+            curl -s https://reqres.in/api/users/1 -o /dev/null
+            curl -s "https://reqres.in/api/users?page=2" -o /dev/null
+            curl -s -X POST https://reqres.in/api/users -H "Content-Type: application/json" -d '{"name":"test","job":"developer"}' -o /dev/null
+            curl -s -X PUT https://reqres.in/api/users/2 -H "Content-Type: application/json" -d '{"name":"updated"}' -o /dev/null
+            curl -s -X DELETE https://reqres.in/api/users/2 -o /dev/null
+
+            echo "[$(date '+%H:%M:%S')] === Batch 6: Cat Facts (Fun API) ==="
+            curl -s https://catfact.ninja/fact -o /dev/null
+            curl -s https://catfact.ninja/facts -o /dev/null
+            curl -s https://catfact.ninja/breeds -o /dev/null
+
+            echo "[$(date '+%H:%M:%S')] Completed 35 HTTPS requests. Waiting 15 seconds..."
+            sleep 15
+          done
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "256Mi"
