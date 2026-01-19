@@ -41,14 +41,14 @@ func (e *requiredEnvVarMissingError) Error() string {
 }
 
 type requiredContainerConfig struct {
-	projectID string
-	apiKey    string
+	projectID   string
+	workspaceID string
+	apiKey      string
 }
 
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
 	serviceName             string
-	serviceEnvironment      string
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
@@ -197,14 +197,14 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if projectID, exists := envVars[POSTMAN_INSIGHTS_PROJECT_ID]; exists {
 			containerEnvVars.requiredContainerConfig.projectID = projectID
 		}
+		if workspaceID, exists := envVars[POSTMAN_INSIGHTS_WORKSPACE_ID]; exists {
+			containerEnvVars.requiredContainerConfig.workspaceID = workspaceID
+		}
 		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
 			containerEnvVars.requiredContainerConfig.apiKey = apiKey
 		}
 		if serviceName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
 			containerEnvVars.serviceName = serviceName
-		}
-		if serviceEnvironment, exists := envVars[POSTMAN_INSIGHTS_SERVICE_ENVIRONMENT]; exists {
-			containerEnvVars.serviceEnvironment = serviceEnvironment
 		}
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
@@ -243,44 +243,46 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	podArgs.ContainerUUID = mainContainerUUID
 
-	// Only validate required pod container variables if agent does not have them
-	if d.WorkspaceID == "" && d.APIKey == "" && mainContainerConfig.serviceName == "" && mainContainerConfig.serviceEnvironment == "" {
-		// If all required environment variables are absent, return an error
-		if maxSetAttrs == 0 {
-			return &allRequiredEnvVarsAbsentError{
-				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: mainContainerMissingAttrs,
-					podName:      pod.Name,
-				},
-			}
+	// Validate that either projectID or workspaceID is set in pod container env vars
+	if maxSetAttrs == 0 {
+		return &allRequiredEnvVarsAbsentError{
+			baseEnvVarsError: baseEnvVarsError{
+				missingAttrs: mainContainerMissingAttrs,
+				podName:      pod.Name,
+			},
 		}
+	}
 
-		// If one or more required environment variables are missing, return an error
-		if len(mainContainerMissingAttrs) > 0 {
-			return &requiredEnvVarMissingError{
-				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: mainContainerMissingAttrs,
-					podName:      pod.Name,
-				},
-			}
+	// If one or more required environment variables are missing, return an error
+	if len(mainContainerMissingAttrs) > 0 {
+		return &requiredEnvVarMissingError{
+			baseEnvVarsError: baseEnvVarsError{
+				missingAttrs: mainContainerMissingAttrs,
+				podName:      pod.Name,
+			},
 		}
+	}
 
+	// Parse projectID if set
+	if mainContainerConfig.requiredContainerConfig.projectID != "" {
 		err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
 		if err != nil {
 			return errors.Wrap(err, "failed to parse project ID")
 		}
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
-			InsightsEnvironment: d.InsightsEnvironment,
-		}
-	} else {
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:             d.APIKey,
-			InsightsEnvironment:        d.InsightsEnvironment,
-			InsightsWorkspaceID:        d.WorkspaceID,
-			InsightsServiceName:        mainContainerConfig.serviceName,
-			InsightsServiceEnvironment: mainContainerConfig.serviceEnvironment,
-		}
+	}
+
+	// Use pod-level apiKey if set, otherwise fall back to daemonset-level APIKey
+	apiKey := mainContainerConfig.requiredContainerConfig.apiKey
+	if apiKey == "" {
+		apiKey = d.APIKey
+	}
+
+	podArgs.PodCreds = PodCreds{
+		InsightsAPIKey:            apiKey,
+		InsightsEnvironment:       d.InsightsEnvironment,
+		InsightsWorkspaceID:       mainContainerConfig.requiredContainerConfig.workspaceID,
+		InsightsServiceName:       mainContainerConfig.serviceName,
+		InsightsSystemEnvironment: d.InsightsSystemEnvironment,
 	}
 
 	// Check if Nginx traffic should be dropped, with a default fallback to the DaemonSet config
@@ -351,20 +353,17 @@ func parseSliceConfig(configValue, configName, podName string) []string {
 }
 
 // Function to count non-zero attributes in a struct
+// Either projectID or workspaceID should be set
 func countSetAttributes(config requiredContainerConfig) (int, []string) {
 	count := 0
 	missingAttrs := []string{}
 
-	checkAttr := func(attr, name string) {
-		if attr != "" {
-			count++
-		} else {
-			missingAttrs = append(missingAttrs, name)
-		}
+	// Check if either projectID or workspaceID is set
+	if config.projectID != "" || config.workspaceID != "" {
+		count++
+	} else {
+		missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_PROJECT_ID+" or "+POSTMAN_INSIGHTS_WORKSPACE_ID)
 	}
-
-	checkAttr(config.apiKey, POSTMAN_INSIGHTS_API_KEY)
-	checkAttr(config.projectID, POSTMAN_INSIGHTS_PROJECT_ID)
 
 	return count, missingAttrs
 }

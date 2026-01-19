@@ -32,13 +32,13 @@ type DaemonsetArgs struct {
 }
 
 type Daemonset struct {
-	ClusterName              string
-	InsightsEnvironment      string
-	InsightsReproModeEnabled bool
-	InsightsRateLimit        float64
+	ClusterName               string
+	InsightsEnvironment       string
+	InsightsSystemEnvironment string
+	InsightsReproModeEnabled  bool
+	InsightsRateLimit         float64
 
-	APIKey      string
-	WorkspaceID string
+	APIKey string
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -106,17 +106,17 @@ func StartDaemonset(args DaemonsetArgs) error {
 	}
 
 	daemonsetRun := &Daemonset{
-		ClusterName:              clusterName,
-		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
-		InsightsReproModeEnabled: args.ReproMode,
-		InsightsRateLimit:        args.RateLimit,
-		APIKey:                   os.Getenv(POSTMAN_INSIGHTS_API_KEY),
-		WorkspaceID:              os.Getenv(POSTMAN_INSIGHTS_WORKSPACE_ID),
-		KubeClient:               kubeClient,
-		CRIClient:                criClient,
-		FrontClient:              frontClient,
-		TelemetryInterval:        telemetryInterval,
-		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
+		ClusterName:               clusterName,
+		InsightsEnvironment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+		InsightsSystemEnvironment: os.Getenv(POSTMAN_INSIGHTS_SYSTEM_ENVIRONMENT),
+		InsightsReproModeEnabled:  args.ReproMode,
+		InsightsRateLimit:         args.RateLimit,
+		APIKey:                    os.Getenv(POSTMAN_INSIGHTS_API_KEY),
+		KubeClient:                kubeClient,
+		CRIClient:                 criClient,
+		FrontClient:               frontClient,
+		TelemetryInterval:         telemetryInterval,
+		PodHealthCheckInterval:    DefaultPodHealthCheckInterval,
 	}
 	if err := daemonsetRun.Run(); err != nil {
 		return cmderr.AkitaErr{Err: err}

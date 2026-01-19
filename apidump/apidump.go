@@ -82,7 +82,7 @@ type DaemonsetArgs struct {
 	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
 	WorkspaceID               string
-	ServiceEnvironment        string
+	SystemEnvironment         string
 	ServiceName               string
 	Environment               string
 	TraceTags                 tags.SingletonTags
@@ -248,7 +248,7 @@ func (a *apidump) LookupService() error {
 				context.Background(),
 				daemonsetArgs.WorkspaceID,
 				daemonsetArgs.ServiceName,
-				daemonsetArgs.ServiceEnvironment,
+				daemonsetArgs.SystemEnvironment,
 			)
 			if err != nil {
 				return err
