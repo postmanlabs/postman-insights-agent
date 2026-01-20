@@ -114,3 +114,17 @@ func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clust
 	var resp struct{}
 	return c.Post(ctx, path, req, &resp)
 }
+
+// CreateApplication creates or retrieves an Application for the given workspace ID and system environment.
+// This is used to onboard at scale - the agent can dictate what project it wants to send traffic to.
+func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID string, systemEnv string) (CreateApplicationResponse, error) {
+	var resp CreateApplicationResponse
+	p := path.Join("v2/agent/api-catalog/workspaces", workspaceID, "applications")
+
+	req := CreateApplicationRequest{
+		SystemEnv: systemEnv,
+	}
+
+	err := c.Post(ctx, p, req, &resp)
+	return resp, err
+}

@@ -274,12 +274,23 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	} else {
+		// Prefer container-level service environment, fall back to daemonset-level
+		serviceEnv := mainContainerConfig.serviceEnvironment
+		if serviceEnv == "" {
+			serviceEnv = d.SystemEnv
+		}
+
+		// When workspace_id is set, system_env is required
+		if d.WorkspaceID != "" && serviceEnv == "" {
+			return errors.Errorf("system_env is required when workspace_id is set. Pod: %s", pod.Name)
+		}
+
 		podArgs.PodCreds = PodCreds{
 			InsightsAPIKey:             d.APIKey,
 			InsightsEnvironment:        d.InsightsEnvironment,
 			InsightsWorkspaceID:        d.WorkspaceID,
 			InsightsServiceName:        mainContainerConfig.serviceName,
-			InsightsServiceEnvironment: mainContainerConfig.serviceEnvironment,
+			InsightsServiceEnvironment: serviceEnv,
 		}
 	}
 

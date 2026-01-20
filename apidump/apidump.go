@@ -106,6 +106,11 @@ type Args struct {
 	// ServiceID parsed from projectID
 	ServiceID akid.ServiceID
 
+	// API Catalog integration: workspace ID and system environment
+	// When set, the agent will call CreateApplication to get/create the service
+	WorkspaceID string
+	SystemEnv   string
+
 	Interfaces     []string
 	Filter         string
 	Tags           map[tags.Key]string
@@ -203,7 +208,7 @@ func (a *apidump) TargetIsRemote() bool {
 			return true
 		}
 	}
-	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{}
+	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{} || a.WorkspaceID != ""
 }
 
 // Lookup the service, set up telemetry, and create a learn client targeting it.
@@ -241,21 +246,32 @@ func (a *apidump) LookupService() error {
 
 		a.backendSvc = backendSvc
 		a.backendSvcName = "Postman_Collection_" + a.PostmanCollectionID
+	} else if a.WorkspaceID != "" {
+		// Standalone mode with --workspace-id flag: use CreateApplication API
+		application, err := frontClient.CreateApplication(
+			context.Background(),
+			a.WorkspaceID,
+			a.SystemEnv,
+		)
+		if err != nil {
+			return err
+		}
+
+		a.backendSvc = application.ServiceID
 	} else {
 		daemonsetArgs, exists := a.DaemonsetArgs.Get()
 		if exists && daemonsetArgs.WorkspaceID != "" {
-			service, err := frontClient.CreateInsightsService(
+			// Daemonset mode with workspace ID: use CreateApplication API
+			application, err := frontClient.CreateApplication(
 				context.Background(),
 				daemonsetArgs.WorkspaceID,
-				daemonsetArgs.ServiceName,
 				daemonsetArgs.ServiceEnvironment,
 			)
 			if err != nil {
 				return err
 			}
 
-			a.backendSvc = service.ID
-			a.backendSvcName = service.Name
+			a.backendSvc = application.ServiceID
 		} else {
 			serviceName, err := util.GetServiceNameByServiceID(frontClient, a.ServiceID)
 			if err != nil {

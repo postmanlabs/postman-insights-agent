@@ -39,6 +39,7 @@ type Daemonset struct {
 
 	APIKey      string
 	WorkspaceID string
+	SystemEnv   string // System environment for API Catalog integration (e.g., 'beta', 'stage', 'production')
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -112,6 +113,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		InsightsRateLimit:        args.RateLimit,
 		APIKey:                   os.Getenv(POSTMAN_INSIGHTS_API_KEY),
 		WorkspaceID:              os.Getenv(POSTMAN_INSIGHTS_WORKSPACE_ID),
+		SystemEnv:                os.Getenv(POSTMAN_INSIGHTS_SYSTEM_ENV),
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,
 		FrontClient:              frontClient,
