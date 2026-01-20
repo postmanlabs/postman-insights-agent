@@ -20,6 +20,7 @@ import (
 	cache "github.com/patrickmn/go-cache"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/consts"
+	"github.com/postmanlabs/postman-insights-agent/deployment"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 )
@@ -52,6 +53,34 @@ func NewLearnSession(
 	lrn, err := learnClient.CreateLearnSession(ctx, baseSpecRef, sessionName, tags)
 	if err != nil {
 		return akid.LearnSessionID{}, errors.Wrap(err, "failed to create a new backend trace")
+	}
+
+	return lrn, nil
+}
+
+// NewLearnSessionWithPodDescriptor creates a new learn session with comprehensive
+// pod descriptor information for daemonset deployments. The pod descriptor is sent
+// to the backend for telemetry, lifecycle tracking, and observability purposes.
+//
+// If podDescriptor is nil, this function falls back to the standard NewLearnSession.
+func NewLearnSessionWithPodDescriptor(
+	learnClient rest.LearnClient,
+	sessionName string,
+	tags map[tags.Key]string,
+	baseSpecRef *kgxapi.APISpecReference,
+	podDescriptor *deployment.PodDescriptor,
+) (akid.LearnSessionID, error) {
+	// Fall back to standard learn session if no pod descriptor
+	if podDescriptor == nil {
+		return NewLearnSession(learnClient, sessionName, tags, baseSpecRef)
+	}
+
+	// Create a new learn session with pod descriptor.
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	lrn, err := learnClient.CreateLearnSessionWithPodDescriptor(ctx, baseSpecRef, sessionName, tags, podDescriptor)
+	if err != nil {
+		return akid.LearnSessionID{}, errors.Wrap(err, "failed to create a new backend trace with pod descriptor")
 	}
 
 	return lrn, nil

@@ -55,6 +55,10 @@ type PodArgs struct {
 	ContainerUUID string
 	PodCreds      PodCreds
 
+	// Pod info collection opt-in flag (POSTMAN_INSIGHTS_COLLECT_POD_INFO)
+	// When true, captures additional pod metadata (containers, resources, labels, env vars)
+	CollectPodInfoEnabled bool
+
 	// for state management
 	PodTrafficMonitorState PodTrafficMonitorState
 	StateChangeMutex       sync.Mutex `json:"-"`
