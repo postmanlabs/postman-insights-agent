@@ -47,8 +47,6 @@ type requiredContainerConfig struct {
 
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
-	serviceName             string
-	serviceEnvironment      string
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
@@ -200,12 +198,6 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
 			containerEnvVars.requiredContainerConfig.apiKey = apiKey
 		}
-		if serviceName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
-			containerEnvVars.serviceName = serviceName
-		}
-		if serviceEnvironment, exists := envVars[POSTMAN_INSIGHTS_SERVICE_ENVIRONMENT]; exists {
-			containerEnvVars.serviceEnvironment = serviceEnvironment
-		}
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
 		}
@@ -244,7 +236,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	podArgs.ContainerUUID = mainContainerUUID
 
 	// Only validate required pod container variables if agent does not have them
-	if d.WorkspaceID == "" && d.APIKey == "" && mainContainerConfig.serviceName == "" && mainContainerConfig.serviceEnvironment == "" {
+	if d.WorkspaceID == "" && d.APIKey == "" {
 		// If all required environment variables are absent, return an error
 		if maxSetAttrs == 0 {
 			return &allRequiredEnvVarsAbsentError{
@@ -274,23 +266,16 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	} else {
-		// Prefer container-level service environment, fall back to daemonset-level
-		serviceEnv := mainContainerConfig.serviceEnvironment
-		if serviceEnv == "" {
-			serviceEnv = d.SystemEnv
-		}
-
 		// When workspace_id is set, system_env is required
-		if d.WorkspaceID != "" && serviceEnv == "" {
+		if d.WorkspaceID != "" && d.SystemEnv == "" {
 			return errors.Errorf("system_env is required when workspace_id is set. Pod: %s", pod.Name)
 		}
 
 		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:             d.APIKey,
-			InsightsEnvironment:        d.InsightsEnvironment,
-			InsightsWorkspaceID:        d.WorkspaceID,
-			InsightsServiceName:        mainContainerConfig.serviceName,
-			InsightsServiceEnvironment: serviceEnv,
+			InsightsAPIKey:      d.APIKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+			InsightsWorkspaceID: d.WorkspaceID,
+			InsightsSystemEnv:   d.SystemEnv,
 		}
 	}
 

@@ -34,11 +34,10 @@ const (
 )
 
 type PodCreds struct {
-	InsightsAPIKey             string
-	InsightsEnvironment        string
-	InsightsServiceName        string
-	InsightsServiceEnvironment string
-	InsightsWorkspaceID        string
+	InsightsAPIKey      string
+	InsightsEnvironment string
+	InsightsWorkspaceID string
+	InsightsSystemEnv   string // System environment UUID for API Catalog integration
 }
 
 type PodArgs struct {

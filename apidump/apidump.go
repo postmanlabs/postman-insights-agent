@@ -82,8 +82,7 @@ type DaemonsetArgs struct {
 	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
 	WorkspaceID               string
-	ServiceEnvironment        string
-	ServiceName               string
+	SystemEnv                 string // System environment UUID for API Catalog integration
 	Environment               string
 	TraceTags                 tags.SingletonTags
 }
@@ -106,10 +105,10 @@ type Args struct {
 	// ServiceID parsed from projectID
 	ServiceID akid.ServiceID
 
-	// API Catalog integration: workspace ID and system environment
+	// API Catalog integration: workspace ID and system environment UUID
 	// When set, the agent will call CreateApplication to get/create the service
 	WorkspaceID string
-	SystemEnv   string
+	SystemEnv   string // System environment UUID (must be a valid UUID)
 
 	Interfaces     []string
 	Filter         string
@@ -265,7 +264,7 @@ func (a *apidump) LookupService() error {
 			application, err := frontClient.CreateApplication(
 				context.Background(),
 				daemonsetArgs.WorkspaceID,
-				daemonsetArgs.ServiceEnvironment,
+				daemonsetArgs.SystemEnv,
 			)
 			if err != nil {
 				return err

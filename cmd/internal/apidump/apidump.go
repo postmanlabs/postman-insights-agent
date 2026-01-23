@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
@@ -162,6 +163,13 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 	// When workspace-id is specified, system-env is required
 	if hasWorkspace && systemEnvFlag == "" {
 		return errors.New("--system-env is required when --workspace-id is specified.")
+	}
+
+	// Validate system-env is a valid UUID if provided
+	if systemEnvFlag != "" {
+		if _, err := uuid.Parse(systemEnvFlag); err != nil {
+			return errors.Wrap(err, "--system-env must be a valid UUID")
+		}
 	}
 
 	// If --project was given, convert projectID to serviceID.
