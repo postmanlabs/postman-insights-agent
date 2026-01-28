@@ -257,6 +257,7 @@ func (a *apidump) LookupService() error {
 		}
 
 		a.backendSvc = application.ServiceID
+		a.backendSvcName = application.ServiceName
 	} else {
 		daemonsetArgs, exists := a.DaemonsetArgs.Get()
 		if exists && daemonsetArgs.WorkspaceID != "" {
@@ -271,6 +272,7 @@ func (a *apidump) LookupService() error {
 			}
 
 			a.backendSvc = application.ServiceID
+			a.backendSvcName = application.ServiceName
 		} else {
 			serviceName, err := util.GetServiceNameByServiceID(frontClient, a.ServiceID)
 			if err != nil {
@@ -675,7 +677,7 @@ func (a *apidump) Run() error {
 				return errors.Errorf("Cannot automatically rotate sessions when a session name is provided.")
 			}
 		}
-	} else if (args.PostmanCollectionID != "" || args.ServiceID != akid.ServiceID{}) {
+	} else if (args.PostmanCollectionID != "" || args.ServiceID != akid.ServiceID{} || args.WorkspaceID != "") {
 		args.Out.AkitaURI = &akiuri.URI{
 			ObjectType:  akiuri.TRACE.Ptr(),
 			ServiceName: a.backendSvcName,

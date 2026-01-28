@@ -50,4 +50,5 @@ type CreateApplicationRequest struct {
 type CreateApplicationResponse struct {
 	ApplicationID string         `json:"application_id"`
 	ServiceID     akid.ServiceID `json:"service_id"`
+	ServiceName   string         `json:"service_name"`
 }
