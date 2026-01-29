@@ -110,6 +110,13 @@ func StartDaemonset(args DaemonsetArgs) error {
 	systemEnv := os.Getenv(POSTMAN_INSIGHTS_SYSTEM_ENV)
 	workspaceID := os.Getenv(POSTMAN_INSIGHTS_WORKSPACE_ID)
 
+	// Validate workspace-id is a valid UUID if provided
+	if workspaceID != "" {
+		if _, err := uuid.Parse(workspaceID); err != nil {
+			return errors.Wrap(err, "POSTMAN_INSIGHTS_WORKSPACE_ID must be a valid UUID")
+		}
+	}
+
 	// Validate system-env is a valid UUID if provided
 	if systemEnv != "" {
 		if _, err := uuid.Parse(systemEnv); err != nil {

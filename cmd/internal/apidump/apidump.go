@@ -165,6 +165,13 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		return errors.New("--system-env is required when --workspace-id is specified.")
 	}
 
+	// Validate workspace-id is a valid UUID if provided
+	if hasWorkspace {
+		if _, err := uuid.Parse(workspaceIDFlag); err != nil {
+			return errors.Wrap(err, "--workspace-id must be a valid UUID")
+		}
+	}
+
 	// Validate system-env is a valid UUID if provided
 	if systemEnvFlag != "" {
 		if _, err := uuid.Parse(systemEnvFlag); err != nil {
