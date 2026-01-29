@@ -7,6 +7,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
@@ -47,6 +48,8 @@ type requiredContainerConfig struct {
 
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
+	workspaceID             string
+	systemEnv               string
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
@@ -198,6 +201,12 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
 			containerEnvVars.requiredContainerConfig.apiKey = apiKey
 		}
+		if workspaceID, exists := envVars[POSTMAN_INSIGHTS_WORKSPACE_ID]; exists {
+			containerEnvVars.workspaceID = workspaceID
+		}
+		if systemEnv, exists := envVars[POSTMAN_INSIGHTS_SYSTEM_ENV]; exists {
+			containerEnvVars.systemEnv = systemEnv
+		}
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
 		}
@@ -235,8 +244,53 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	podArgs.ContainerUUID = mainContainerUUID
 
-	// Only validate required pod container variables if agent does not have them
-	if d.WorkspaceID == "" && d.APIKey == "" {
+	// Check if pod has workspaceID and systemEnv (pod-level configuration)
+	podWorkspaceID := mainContainerConfig.workspaceID
+	podSystemEnv := mainContainerConfig.systemEnv
+
+	// Validate pod-level workspaceID and systemEnv
+	if podWorkspaceID != "" {
+		// Validate workspaceID is a valid UUID
+		if _, err := uuid.Parse(podWorkspaceID); err != nil {
+			return errors.Wrapf(err, "POSTMAN_INSIGHTS_WORKSPACE_ID must be a valid UUID. Pod: %s", pod.Name)
+		}
+		// When workspace_id is set at pod level, system_env is required
+		if podSystemEnv == "" {
+			return errors.Errorf("POSTMAN_INSIGHTS_SYSTEM_ENV is required when POSTMAN_INSIGHTS_WORKSPACE_ID is set. Pod: %s", pod.Name)
+		}
+		// Validate systemEnv is a valid UUID
+		if _, err := uuid.Parse(podSystemEnv); err != nil {
+			return errors.Wrapf(err, "POSTMAN_INSIGHTS_SYSTEM_ENV must be a valid UUID. Pod: %s", pod.Name)
+		}
+	}
+
+	// If pod has workspaceID, use pod-level configuration (workspaceID + systemEnv)
+	// Otherwise, check if daemonset has API key
+	if podWorkspaceID != "" {
+		// Use pod-level workspaceID and systemEnv
+		// API key can come from pod or daemonset level
+		apiKey := mainContainerConfig.requiredContainerConfig.apiKey
+		if apiKey == "" {
+			apiKey = d.APIKey
+		}
+		if apiKey == "" {
+			return errors.Errorf("POSTMAN_INSIGHTS_API_KEY is required when using workspace_id. Pod: %s", pod.Name)
+		}
+
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      apiKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+			InsightsWorkspaceID: podWorkspaceID,
+			InsightsSystemEnv:   podSystemEnv,
+		}
+	} else if d.APIKey != "" {
+		// Daemonset-level API key (no workspaceID at daemonset level)
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      d.APIKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+		}
+	} else {
+		// Traditional mode: require projectID and API key from pod
 		// If all required environment variables are absent, return an error
 		if maxSetAttrs == 0 {
 			return &allRequiredEnvVarsAbsentError{
@@ -264,18 +318,6 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		podArgs.PodCreds = PodCreds{
 			InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
 			InsightsEnvironment: d.InsightsEnvironment,
-		}
-	} else {
-		// When workspace_id is set, system_env is required
-		if d.WorkspaceID != "" && d.SystemEnv == "" {
-			return errors.Errorf("system_env is required when workspace_id is set. Pod: %s", pod.Name)
-		}
-
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      d.APIKey,
-			InsightsEnvironment: d.InsightsEnvironment,
-			InsightsWorkspaceID: d.WorkspaceID,
-			InsightsSystemEnv:   d.SystemEnv,
 		}
 	}
 

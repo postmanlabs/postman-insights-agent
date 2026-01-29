@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
@@ -38,11 +37,8 @@ type Daemonset struct {
 	InsightsReproModeEnabled bool
 	InsightsRateLimit        float64
 
-	APIKey      string
-	WorkspaceID string
-	SystemEnv   string // System environment UUID for API Catalog integration
-
-	KubeClient  kube_apis.KubeClient
+	APIKey     string
+	KubeClient kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
 	FrontClient rest.FrontClient
 
@@ -107,36 +103,12 @@ func StartDaemonset(args DaemonsetArgs) error {
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
-	systemEnv := os.Getenv(POSTMAN_INSIGHTS_SYSTEM_ENV)
-	workspaceID := os.Getenv(POSTMAN_INSIGHTS_WORKSPACE_ID)
-
-	// Validate workspace-id is a valid UUID if provided
-	if workspaceID != "" {
-		if _, err := uuid.Parse(workspaceID); err != nil {
-			return errors.Wrap(err, "POSTMAN_INSIGHTS_WORKSPACE_ID must be a valid UUID")
-		}
-	}
-
-	// Validate system-env is a valid UUID if provided
-	if systemEnv != "" {
-		if _, err := uuid.Parse(systemEnv); err != nil {
-			return errors.Wrap(err, "POSTMAN_INSIGHTS_SYSTEM_ENV must be a valid UUID")
-		}
-	}
-
-	// Validate that system-env is provided when workspace-id is set
-	if workspaceID != "" && systemEnv == "" {
-		return errors.New("POSTMAN_INSIGHTS_SYSTEM_ENV is required when POSTMAN_INSIGHTS_WORKSPACE_ID is set")
-	}
-
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
 		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
 		InsightsReproModeEnabled: args.ReproMode,
 		InsightsRateLimit:        args.RateLimit,
 		APIKey:                   os.Getenv(POSTMAN_INSIGHTS_API_KEY),
-		WorkspaceID:              workspaceID,
-		SystemEnv:                systemEnv,
 		KubeClient:               kubeClient,
 		CRIClient:                criClient,
 		FrontClient:              frontClient,
