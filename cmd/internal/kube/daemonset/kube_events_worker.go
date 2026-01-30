@@ -7,6 +7,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
@@ -41,18 +42,38 @@ func (e *requiredEnvVarMissingError) Error() string {
 }
 
 type requiredContainerConfig struct {
-	projectID string
-	apiKey    string
+	projectID   string
+	apiKey      string
+	workspaceID string
+	systemEnv   string
 }
 
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
-	serviceName             string
-	serviceEnvironment      string
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
 	alwaysCapturePayloads   string
+}
+
+// containerValidationResult holds the result of validating a container's required config.
+// Used to pick the "best" container in a pod (most valid attrs) and to report errors.
+type containerValidationResult struct {
+	ValidAttrCount   int      // number of valid required attributes (for selection)
+	MissingAttrs     []string // env var names that are required but missing
+	ValidationErrors []string // e.g. "X must be a valid UUID"
+}
+
+func (r containerValidationResult) hasValidationErrors() bool {
+	return len(r.ValidationErrors) > 0
+}
+
+func (r containerValidationResult) hasMissingAttrs() bool {
+	return len(r.MissingAttrs) > 0
+}
+
+func (r containerValidationResult) hasNoAttrsSet() bool {
+	return r.ValidAttrCount == 0
 }
 
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
@@ -200,11 +221,11 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if apiKey, exists := envVars[POSTMAN_INSIGHTS_API_KEY]; exists {
 			containerEnvVars.requiredContainerConfig.apiKey = apiKey
 		}
-		if serviceName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
-			containerEnvVars.serviceName = serviceName
+		if workspaceID, exists := envVars[POSTMAN_INSIGHTS_WORKSPACE_ID]; exists {
+			containerEnvVars.requiredContainerConfig.workspaceID = workspaceID
 		}
-		if serviceEnvironment, exists := envVars[POSTMAN_INSIGHTS_SERVICE_ENVIRONMENT]; exists {
-			containerEnvVars.serviceEnvironment = serviceEnvironment
+		if systemEnv, exists := envVars[POSTMAN_INSIGHTS_SYSTEM_ENV]; exists {
+			containerEnvVars.requiredContainerConfig.systemEnv = systemEnv
 		}
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
@@ -221,65 +242,49 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
-	mainContainerUUID := ""
-	mainContainerConfig := containerConfig{
-		requiredContainerConfig: requiredContainerConfig{},
-	}
-	mainContainerMissingAttrs := []string{}
-	maxSetAttrs := -1
+	mainUUID, mainContainerConfig, validation := selectMainContainer(containerConfigMap)
 
-	for uuid, config := range containerConfigMap {
-		attrCount, missingAttrs := countSetAttributes(config.requiredContainerConfig)
-		if attrCount > maxSetAttrs {
-			maxSetAttrs = attrCount
-			mainContainerMissingAttrs = missingAttrs
-			mainContainerUUID = uuid
-			mainContainerConfig = config
-		}
-	}
-
-	// Set the trace tags for apidump process from the pod info
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
+	podArgs.ContainerUUID = mainUUID
 
-	podArgs.ContainerUUID = mainContainerUUID
-
-	// Only validate required pod container variables if agent does not have them
-	if d.WorkspaceID == "" && d.APIKey == "" && mainContainerConfig.serviceName == "" && mainContainerConfig.serviceEnvironment == "" {
-		// If all required environment variables are absent, return an error
-		if maxSetAttrs == 0 {
+	if validation.hasValidationErrors() {
+		return errors.Errorf("Invalid configuration for pod %s: %v", pod.Name, validation.ValidationErrors)
+	}
+	if validation.hasMissingAttrs() {
+		if validation.hasNoAttrsSet() {
 			return &allRequiredEnvVarsAbsentError{
 				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: mainContainerMissingAttrs,
+					missingAttrs: validation.MissingAttrs,
 					podName:      pod.Name,
 				},
 			}
 		}
-
-		// If one or more required environment variables are missing, return an error
-		if len(mainContainerMissingAttrs) > 0 {
-			return &requiredEnvVarMissingError{
-				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: mainContainerMissingAttrs,
-					podName:      pod.Name,
-				},
-			}
+		return &requiredEnvVarMissingError{
+			baseEnvVarsError: baseEnvVarsError{
+				missingAttrs: validation.MissingAttrs,
+				podName:      pod.Name,
+			},
 		}
+	}
 
-		err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
-		if err != nil {
-			return errors.Wrap(err, "failed to parse project ID")
-		}
+	req := mainContainerConfig.requiredContainerConfig
+
+	if req.workspaceID != "" {
+		// Workspace mode
+		podArgs.WorkspaceID = req.workspaceID
+		podArgs.SystemEnv = req.systemEnv
 		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
+			InsightsAPIKey:      req.apiKey,
 			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	} else {
+		// Traditional mode
+		if err = akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
+			return errors.Wrap(err, "failed to parse project ID")
+		}
 		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:             d.APIKey,
-			InsightsEnvironment:        d.InsightsEnvironment,
-			InsightsWorkspaceID:        d.WorkspaceID,
-			InsightsServiceName:        mainContainerConfig.serviceName,
-			InsightsServiceEnvironment: mainContainerConfig.serviceEnvironment,
+			InsightsAPIKey:      req.apiKey,
+			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	}
 
@@ -350,21 +355,64 @@ func parseSliceConfig(configValue, configName, podName string) []string {
 	return parsedValue
 }
 
-// Function to count non-zero attributes in a struct
-func countSetAttributes(config requiredContainerConfig) (int, []string) {
-	count := 0
-	missingAttrs := []string{}
+// selectMainContainer picks the container in the pod with the most valid required
+// attributes (for deciding which container's config to use). Returns its UUID, config,
+// and validation result.
+func selectMainContainer(containerConfigMap map[string]containerConfig) (uuid string, config containerConfig, result containerValidationResult) {
+	result.ValidAttrCount = -1
+	for u, cfg := range containerConfigMap {
+		v := validateContainerConfig(cfg.requiredContainerConfig)
+		if v.ValidAttrCount > result.ValidAttrCount {
+			uuid = u
+			config = cfg
+			result = v
+		}
+	}
+	return uuid, config, result
+}
 
-	checkAttr := func(attr, name string) {
-		if attr != "" {
-			count++
+// validateContainerConfig validates a container's required config.
+// - ValidAttrCount: used to pick the "best" container (higher = more complete config).
+// - MissingAttrs: required env var names that are not set.
+// - ValidationErrors: format errors (e.g. invalid UUID).
+// Rules: apiKey is always required. Either (projectID for traditional mode) or
+// (workspaceID + systemEnv as valid UUIDs for workspace mode) must be present.
+func validateContainerConfig(cfg requiredContainerConfig) containerValidationResult {
+	var r containerValidationResult
+
+	// API key is required in both modes
+	if cfg.apiKey != "" {
+		r.ValidAttrCount++
+	} else {
+		r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_API_KEY)
+	}
+
+	isWorkspaceMode := cfg.workspaceID != "" || cfg.systemEnv != ""
+
+	if isWorkspaceMode {
+		// Workspace mode: workspaceID and systemEnv required, both must be valid UUIDs
+		if cfg.workspaceID == "" {
+			r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_WORKSPACE_ID)
+		} else if _, err := uuid.Parse(cfg.workspaceID); err != nil {
+			r.ValidationErrors = append(r.ValidationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_WORKSPACE_ID))
 		} else {
-			missingAttrs = append(missingAttrs, name)
+			r.ValidAttrCount++
+		}
+		if cfg.systemEnv == "" {
+			r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_SYSTEM_ENV)
+		} else if _, err := uuid.Parse(cfg.systemEnv); err != nil {
+			r.ValidationErrors = append(r.ValidationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_SYSTEM_ENV))
+		} else {
+			r.ValidAttrCount++
+		}
+	} else {
+		// Traditional mode: projectID required
+		if cfg.projectID != "" {
+			r.ValidAttrCount++
+		} else {
+			r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_PROJECT_ID)
 		}
 	}
 
-	checkAttr(config.apiKey, POSTMAN_INSIGHTS_API_KEY)
-	checkAttr(config.projectID, POSTMAN_INSIGHTS_PROJECT_ID)
-
-	return count, missingAttrs
+	return r
 }

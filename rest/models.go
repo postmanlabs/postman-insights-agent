@@ -35,13 +35,20 @@ type InsightsService struct {
 	Name string         `json:"service_name"`
 }
 
-type CreateInsightsServiceResponse struct {
-	ID   akid.ServiceID `json:"id"`
-	Name string         `json:"name"`
-}
-
 type PostmanUser struct {
 	ID     int    `json:"id"`
 	Email  string `json:"email"`
 	TeamID int    `json:"team_id"`
+}
+
+// CreateApplicationRequest represents the request body for creating an application
+type CreateApplicationRequest struct {
+	SystemEnv string `json:"system_env"`
+}
+
+// CreateApplicationResponse represents the response for application creation
+type CreateApplicationResponse struct {
+	ApplicationID string         `json:"application_id"`
+	ServiceID     akid.ServiceID `json:"service_id"`
+	ServiceName   string         `json:"service_name"`
 }
