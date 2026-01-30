@@ -184,6 +184,19 @@ sensitive_value_regexes:
 - (?i)\bpat[pA-Za-z0-9]{14}\.[A-Za-z0-9]{64}\b
 - (?i)api-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 - \b(xprv|yprv|zprv|dprv|Ltpv)[1-9A-HJ-NP-Za-km-z]{107}\b
+- \bHRKU-[0-9a-zA-Z_\-]{60}\b
+- \b00[a-zA-Z0-9]{13}![a-zA-Z0-9_.]{96}\b
+- \bsk-[A-Za-z]{3,5}[A-Za-z0-9-_]{0,150}T3BlbkFJ[A-Za-z0-9-_]{0,150}\b
+- \bthog-secret-[0-9a-f]{32}\b
+- \bsntryu_[a-f0-9]{64}\b
+- \b(3MVG9[0-9a-zA-Z._+/=]{80,251})
+- \b[0-9A-Za-z/+_-]{22}==:[0-9A-Za-z/+_-]{32}\b
+- \b(v1\.0-[A-Za-z0-9-]{171})\b
+- (?i)\b(5AEP861[a-zA-Z0-9._=]{80,})\b
+- \b([a-zA-Z0-9]{76}AZDO[a-zA-Z0-9]{4})\b
+- \bsntrys_eyJ[a-zA-Z0-9=_+\/]{8,1000}\b
+- \b(1000\.[a-zA-Z0-9]{32}\.[a-zA-Z0-9]{32})\b
+- "yes"
 ignored_keys:
 - clientId
 - value
@@ -223,3 +236,4 @@ ignored_regexes:
 - (?i)^.{8,1000}$
 rewritten_regexes:
 - (?i)\beyJhbGciOi[a-z0-9_\-\.]{2,1001}\b
+- (?i)"key"\s*:\s*"[^"]*(?<![a-z0-9])(?:password|secret|token|credential|auth|private|jwt|sensitive|confidential|key)(?![a-z0-9])[^"]*"\s*,\s*"value"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
