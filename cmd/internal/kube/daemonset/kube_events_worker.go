@@ -56,6 +56,26 @@ type containerConfig struct {
 	alwaysCapturePayloads   string
 }
 
+// containerValidationResult holds the result of validating a container's required config.
+// Used to pick the "best" container in a pod (most valid attrs) and to report errors.
+type containerValidationResult struct {
+	ValidAttrCount   int      // number of valid required attributes (for selection)
+	MissingAttrs     []string // env var names that are required but missing
+	ValidationErrors []string // e.g. "X must be a valid UUID"
+}
+
+func (r containerValidationResult) hasValidationErrors() bool {
+	return len(r.ValidationErrors) > 0
+}
+
+func (r containerValidationResult) hasMissingAttrs() bool {
+	return len(r.MissingAttrs) > 0
+}
+
+func (r containerValidationResult) hasNoAttrsSet() bool {
+	return r.ValidAttrCount == 0
+}
+
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
 // It performs the following steps:
 // 1. Check if the pod does not have the agent sidecar container.
@@ -222,56 +242,31 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
-	mainContainerUUID := ""
-	mainContainerConfig := containerConfig{
-		requiredContainerConfig: requiredContainerConfig{},
-	}
-	mainContainerMissingAttrs := []string{}
-	mainContainerValidationErrors := []string{}
-	maxValidAttrs := -1
+	mainUUID, mainContainerConfig, validation := selectMainContainer(containerConfigMap)
 
-	for containerUUID, config := range containerConfigMap {
-		validAttrCount, missingAttrs, validationErrors := validateContainerConfig(config.requiredContainerConfig)
-		if validAttrCount > maxValidAttrs {
-			maxValidAttrs = validAttrCount
-			mainContainerMissingAttrs = missingAttrs
-			mainContainerValidationErrors = validationErrors
-			mainContainerUUID = containerUUID
-			mainContainerConfig = config
-		}
-	}
-
-	// Set the trace tags for apidump process from the pod info
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
+	podArgs.ContainerUUID = mainUUID
 
-	podArgs.ContainerUUID = mainContainerUUID
-
-	// Check for validation errors (e.g., invalid UUID format)
-	if len(mainContainerValidationErrors) > 0 {
-		return errors.Errorf("Invalid configuration for pod %s: %v", pod.Name, mainContainerValidationErrors)
+	if validation.hasValidationErrors() {
+		return errors.Errorf("Invalid configuration for pod %s: %v", pod.Name, validation.ValidationErrors)
 	}
-
-	// Check for missing required attributes
-	if len(mainContainerMissingAttrs) > 0 {
-		if maxValidAttrs == 0 {
-			// No env vars set at all - this might be an unrelated pod
+	if validation.hasMissingAttrs() {
+		if validation.hasNoAttrsSet() {
 			return &allRequiredEnvVarsAbsentError{
 				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: mainContainerMissingAttrs,
+					missingAttrs: validation.MissingAttrs,
 					podName:      pod.Name,
 				},
 			}
 		}
-		// Some env vars set but missing required ones
 		return &requiredEnvVarMissingError{
 			baseEnvVarsError: baseEnvVarsError{
-				missingAttrs: mainContainerMissingAttrs,
+				missingAttrs: validation.MissingAttrs,
 				podName:      pod.Name,
 			},
 		}
 	}
 
-	// All required attributes are present and valid, proceed with assignment
 	req := mainContainerConfig.requiredContainerConfig
 
 	if req.workspaceID != "" {
@@ -360,54 +355,64 @@ func parseSliceConfig(configValue, configName, podName string) []string {
 	return parsedValue
 }
 
-// validateContainerConfig validates the container configuration and returns:
-// - validAttrCount: number of valid required attributes (for container selection)
-// - missingAttrs: list of missing required attributes
-// - validationErrors: list of validation errors (e.g., invalid UUID format)
-// Required config: apiKey is mandatory, and either projectID (traditional mode) OR (workspaceID AND systemEnv as valid UUIDs) (workspace mode) should be present.
-func validateContainerConfig(cfg requiredContainerConfig) (validAttrCount int, missingAttrs []string, validationErrors []string) {
-	validAttrCount = 0
-	missingAttrs = []string{}
-	validationErrors = []string{}
+// selectMainContainer picks the container in the pod with the most valid required
+// attributes (for deciding which container's config to use). Returns its UUID, config,
+// and validation result.
+func selectMainContainer(containerConfigMap map[string]containerConfig) (uuid string, config containerConfig, result containerValidationResult) {
+	result.ValidAttrCount = -1
+	for u, cfg := range containerConfigMap {
+		v := validateContainerConfig(cfg.requiredContainerConfig)
+		if v.ValidAttrCount > result.ValidAttrCount {
+			uuid = u
+			config = cfg
+			result = v
+		}
+	}
+	return uuid, config, result
+}
 
-	// API Key is always mandatory
+// validateContainerConfig validates a container's required config.
+// - ValidAttrCount: used to pick the "best" container (higher = more complete config).
+// - MissingAttrs: required env var names that are not set.
+// - ValidationErrors: format errors (e.g. invalid UUID).
+// Rules: apiKey is always required. Either (projectID for traditional mode) or
+// (workspaceID + systemEnv as valid UUIDs for workspace mode) must be present.
+func validateContainerConfig(cfg requiredContainerConfig) containerValidationResult {
+	var r containerValidationResult
+
+	// API key is required in both modes
 	if cfg.apiKey != "" {
-		validAttrCount++
+		r.ValidAttrCount++
 	} else {
-		missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_API_KEY)
+		r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_API_KEY)
 	}
 
-	// Determine mode: workspace mode if workspaceID or systemEnv is set
 	isWorkspaceMode := cfg.workspaceID != "" || cfg.systemEnv != ""
 
 	if isWorkspaceMode {
-		// Workspace mode - both workspaceID and systemEnv are required and must be valid UUIDs
-		if cfg.workspaceID != "" {
-			if _, err := uuid.Parse(cfg.workspaceID); err != nil {
-				validationErrors = append(validationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_WORKSPACE_ID))
-			} else {
-				validAttrCount++
-			}
+		// Workspace mode: workspaceID and systemEnv required, both must be valid UUIDs
+		if cfg.workspaceID == "" {
+			r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_WORKSPACE_ID)
+		} else if _, err := uuid.Parse(cfg.workspaceID); err != nil {
+			r.ValidationErrors = append(r.ValidationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_WORKSPACE_ID))
 		} else {
-			missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_WORKSPACE_ID)
+			r.ValidAttrCount++
 		}
-		if cfg.systemEnv != "" {
-			if _, err := uuid.Parse(cfg.systemEnv); err != nil {
-				validationErrors = append(validationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_SYSTEM_ENV))
-			} else {
-				validAttrCount++
-			}
+		if cfg.systemEnv == "" {
+			r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_SYSTEM_ENV)
+		} else if _, err := uuid.Parse(cfg.systemEnv); err != nil {
+			r.ValidationErrors = append(r.ValidationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_SYSTEM_ENV))
 		} else {
-			missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_SYSTEM_ENV)
+			r.ValidAttrCount++
 		}
 	} else {
-		// Traditional mode - projectID is required
+		// Traditional mode: projectID required
 		if cfg.projectID != "" {
-			validAttrCount++
+			r.ValidAttrCount++
 		} else {
-			missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_PROJECT_ID)
+			r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_PROJECT_ID)
 		}
 	}
 
-	return validAttrCount, missingAttrs, validationErrors
+	return r
 }
