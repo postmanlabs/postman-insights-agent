@@ -77,7 +77,6 @@ var (
 )
 
 // Args for running apidump as daemonset in Kubernetes
-// WorkspaceID and SystemEnv are per-service and live on Args, not here.
 type DaemonsetArgs struct {
 	TargetNetworkNamespaceOpt string
 	StopChan                  <-chan error `json:"-"`
