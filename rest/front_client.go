@@ -39,22 +39,6 @@ func (c *frontClientImpl) GetService(ctx context.Context, serviceID akid.Service
 	return resp, nil
 }
 
-func (c *frontClientImpl) CreateInsightsService(ctx context.Context, workspaceID string, serviceName string, serviceEnvironment string) (CreateInsightsServiceResponse, error) {
-	var resp CreateInsightsServiceResponse
-	p := path.Join("v2/agent/workspaces", workspaceID, "services")
-
-	req := map[string]interface{}{}
-	if serviceName != "" {
-		req["service_name"] = serviceName
-	}
-	if serviceEnvironment != "" {
-		req["service_environment"] = serviceEnvironment
-	}
-
-	err := c.Post(ctx, p, req, &resp)
-	return resp, err
-}
-
 func (c *frontClientImpl) GetUser(ctx context.Context) (PostmanUser, error) {
 	resp := PostmanUser{}
 	err := c.Get(ctx, "/v2/agent/user", &resp)
@@ -113,4 +97,18 @@ func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clust
 	path := "/v2/agent/daemonset/telemetry"
 	var resp struct{}
 	return c.Post(ctx, path, req, &resp)
+}
+
+// CreateApplication creates or retrieves an Application for the given workspace ID and system environment.
+// This is used to onboard at scale - the agent can dictate what project it wants to send traffic to.
+func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID string, systemEnv string) (CreateApplicationResponse, error) {
+	var resp CreateApplicationResponse
+	p := path.Join("v2/agent/api-catalog/workspaces", workspaceID, "applications")
+
+	req := CreateApplicationRequest{
+		SystemEnv: systemEnv,
+	}
+
+	err := c.Post(ctx, p, req, &resp)
+	return resp, err
 }

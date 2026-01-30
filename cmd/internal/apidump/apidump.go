@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
@@ -42,6 +43,10 @@ var (
 	maxWitnessUploadBuffers int
 	dockerExtensionMode     bool
 	healthCheckPort         int
+
+	// API Catalog flags for onboarding at scale
+	workspaceIDFlag string
+	systemEnvFlag   string
 
 	commonApidumpFlags *CommonApidumpFlags
 )
@@ -131,9 +136,47 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		projectID = envProjectID
 	}
 
-	// Check that exactly one of --project or --collection is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
-	if projectID == "" && postmanCollectionID == "" {
-		return errors.New("Exactly one of --project or --collection must be specified, or POSTMAN_INSIGHTS_PROJECT_ID must be set.")
+	// override the workspace id if the environment variable is set
+	if envWorkspaceID := os.Getenv("POSTMAN_INSIGHTS_WORKSPACE_ID"); envWorkspaceID != "" {
+		workspaceIDFlag = envWorkspaceID
+	}
+
+	// override the system env if the environment variable is set
+	if envSystemEnv := os.Getenv("POSTMAN_INSIGHTS_SYSTEM_ENV"); envSystemEnv != "" {
+		systemEnvFlag = envSystemEnv
+	}
+
+	// Check that exactly one of --project, --collection, or --workspace-id is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
+	hasProject := projectID != ""
+	hasCollection := postmanCollectionID != ""
+	hasWorkspace := workspaceIDFlag != ""
+
+	if !hasProject && !hasCollection && !hasWorkspace {
+		return errors.New("Exactly one of --project, --collection, or --workspace-id must be specified, or POSTMAN_INSIGHTS_PROJECT_ID must be set.")
+	}
+
+	// Ensure mutually exclusive options
+	if (hasProject && hasCollection) || (hasProject && hasWorkspace) || (hasCollection && hasWorkspace) {
+		return errors.New("Only one of --project, --collection, or --workspace-id can be specified.")
+	}
+
+	// When workspace-id is specified, system-env is required
+	if hasWorkspace && systemEnvFlag == "" {
+		return errors.New("--system-env is required when --workspace-id is specified.")
+	}
+
+	// Validate workspace-id is a valid UUID if provided
+	if hasWorkspace {
+		if _, err := uuid.Parse(workspaceIDFlag); err != nil {
+			return errors.Wrap(err, "--workspace-id must be a valid UUID")
+		}
+	}
+
+	// Validate system-env is a valid UUID if provided
+	if systemEnvFlag != "" {
+		if _, err := uuid.Parse(systemEnvFlag); err != nil {
+			return errors.Wrap(err, "--system-env must be a valid UUID")
+		}
 	}
 
 	// If --project was given, convert projectID to serviceID.
@@ -217,6 +260,8 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		Out:                     outFlag,
 		PostmanCollectionID:     postmanCollectionID,
 		ServiceID:               serviceID,
+		WorkspaceID:             workspaceIDFlag,
+		SystemEnv:               systemEnvFlag,
 		Tags:                    traceTags,
 		SampleRate:              sampleRateFlag,
 		WitnessesPerMinute:      agentRateLimit,
@@ -394,6 +439,25 @@ func init() {
 		"Port to listen on for Docker extension health checks. This is an internal flag used by the Akita Docker extension.",
 	)
 	_ = Cmd.Flags().MarkHidden("health-check-port")
+
+	// API Catalog integration flags for onboarding at scale
+	Cmd.Flags().StringVar(
+		&workspaceIDFlag,
+		"workspace-id",
+		"",
+		"Your Postman workspace ID. Used to automatically create/link with an API Catalog application.",
+	)
+
+	Cmd.Flags().StringVar(
+		&systemEnvFlag,
+		"system-env",
+		"",
+		"The system environment (e.g., 'beta', 'stage', 'production'). Used with --workspace-id for API Catalog integration.",
+	)
+
+	// Make workspace-id mutually exclusive with project and collection
+	Cmd.MarkFlagsMutuallyExclusive("project", "workspace-id")
+	Cmd.MarkFlagsMutuallyExclusive("collection", "workspace-id")
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)
 }

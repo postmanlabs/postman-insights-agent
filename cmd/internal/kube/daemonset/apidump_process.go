@@ -84,15 +84,14 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			DropNginxTraffic:        podArgs.DropNginxTraffic,
 			MaxWitnessUploadBuffers: apispec.DefaultMaxWintessUploadBuffers,
 			AlwaysCapturePayloads:   podArgs.AlwaysCapturePayloads,
+			WorkspaceID:             podArgs.WorkspaceID,
+			SystemEnv:               podArgs.SystemEnv,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
 				APIKey:                    podArgs.PodCreds.InsightsAPIKey,
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
-				ServiceName:               podArgs.PodCreds.InsightsServiceName,
-				ServiceEnvironment:        podArgs.PodCreds.InsightsServiceEnvironment,
-				WorkspaceID:               podArgs.PodCreds.InsightsWorkspaceID,
 			}),
 		}
 

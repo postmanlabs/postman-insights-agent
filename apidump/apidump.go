@@ -81,9 +81,6 @@ type DaemonsetArgs struct {
 	TargetNetworkNamespaceOpt string
 	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
-	WorkspaceID               string
-	ServiceEnvironment        string
-	ServiceName               string
 	Environment               string
 	TraceTags                 tags.SingletonTags
 }
@@ -105,6 +102,11 @@ type Args struct {
 
 	// ServiceID parsed from projectID
 	ServiceID akid.ServiceID
+
+	// API Catalog integration: workspace ID and system environment UUID
+	// When set, the agent will call CreateApplication to get/create the service
+	WorkspaceID string
+	SystemEnv   string // System environment UUID (must be a valid UUID)
 
 	Interfaces     []string
 	Filter         string
@@ -198,12 +200,7 @@ func newSession(args *Args) *apidump {
 
 // Is the target the Akita backend as expected, or a local HAR file?
 func (a *apidump) TargetIsRemote() bool {
-	if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
-		if daemonsetArgs.WorkspaceID != "" {
-			return true
-		}
-	}
-	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{}
+	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{} || a.WorkspaceID != ""
 }
 
 // Lookup the service, set up telemetry, and create a learn client targeting it.
@@ -241,21 +238,34 @@ func (a *apidump) LookupService() error {
 
 		a.backendSvc = backendSvc
 		a.backendSvcName = "Postman_Collection_" + a.PostmanCollectionID
+	} else if a.WorkspaceID != "" {
+		// Standalone mode with --workspace-id flag: use CreateApplication API
+		application, err := frontClient.CreateApplication(
+			context.Background(),
+			a.WorkspaceID,
+			a.SystemEnv,
+		)
+		if err != nil {
+			return err
+		}
+
+		a.backendSvc = application.ServiceID
+		a.backendSvcName = application.ServiceName
 	} else {
-		daemonsetArgs, exists := a.DaemonsetArgs.Get()
-		if exists && daemonsetArgs.WorkspaceID != "" {
-			service, err := frontClient.CreateInsightsService(
+		_, inDaemonset := a.DaemonsetArgs.Get()
+		if inDaemonset && a.WorkspaceID != "" {
+			// Daemonset mode with workspace ID (set from pod in apidump_process): use CreateApplication API
+			application, err := frontClient.CreateApplication(
 				context.Background(),
-				daemonsetArgs.WorkspaceID,
-				daemonsetArgs.ServiceName,
-				daemonsetArgs.ServiceEnvironment,
+				a.WorkspaceID,
+				a.SystemEnv,
 			)
 			if err != nil {
 				return err
 			}
 
-			a.backendSvc = service.ID
-			a.backendSvcName = service.Name
+			a.backendSvc = application.ServiceID
+			a.backendSvcName = application.ServiceName
 		} else {
 			serviceName, err := util.GetServiceNameByServiceID(frontClient, a.ServiceID)
 			if err != nil {
@@ -660,7 +670,7 @@ func (a *apidump) Run() error {
 				return errors.Errorf("Cannot automatically rotate sessions when a session name is provided.")
 			}
 		}
-	} else if (args.PostmanCollectionID != "" || args.ServiceID != akid.ServiceID{}) {
+	} else if (args.PostmanCollectionID != "" || args.ServiceID != akid.ServiceID{} || args.WorkspaceID != "") {
 		args.Out.AkitaURI = &akiuri.URI{
 			ObjectType:  akiuri.TRACE.Ptr(),
 			ServiceName: a.backendSvcName,

@@ -87,4 +87,8 @@ type FrontClient interface {
 
 	// Post telemetry for the agent running as daemonset mode.
 	PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error
+
+	// CreateApplication creates or retrieves an Application for the given workspace ID and system environment.
+	// This is used for API Catalog integration - allows agents to onboard at scale.
+	CreateApplication(ctx context.Context, workspaceID string, systemEnv string) (CreateApplicationResponse, error)
 }
