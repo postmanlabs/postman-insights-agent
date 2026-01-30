@@ -244,42 +244,33 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	podArgs.ContainerUUID = mainContainerUUID
 
-	// Check if pod has workspaceID and systemEnv (pod-level configuration)
-	podWorkspaceID := mainContainerConfig.requiredContainerConfig.workspaceID
-	podSystemEnv := mainContainerConfig.requiredContainerConfig.systemEnv
+	req := mainContainerConfig.requiredContainerConfig
+	workspaceID := req.workspaceID
+	systemEnv := req.systemEnv
 
-	// Validate pod-level workspaceID and systemEnv
-	if podWorkspaceID != "" {
-		// Validate workspaceID is a valid UUID
-		if _, err := uuid.Parse(podWorkspaceID); err != nil {
+	if workspaceID != "" {
+		// Workspace-based onboarding: require workspaceID (UUID), systemEnv (UUID), and API key from pod
+		if _, err := uuid.Parse(workspaceID); err != nil {
 			return errors.Wrapf(err, "POSTMAN_INSIGHTS_WORKSPACE_ID must be a valid UUID. Pod: %s", pod.Name)
 		}
-		// When workspace_id is set at pod level, system_env is required
-		if podSystemEnv == "" {
+		if systemEnv == "" {
 			return errors.Errorf("POSTMAN_INSIGHTS_SYSTEM_ENV is required when POSTMAN_INSIGHTS_WORKSPACE_ID is set. Pod: %s", pod.Name)
 		}
-		// Validate systemEnv is a valid UUID
-		if _, err := uuid.Parse(podSystemEnv); err != nil {
+		if _, err := uuid.Parse(systemEnv); err != nil {
 			return errors.Wrapf(err, "POSTMAN_INSIGHTS_SYSTEM_ENV must be a valid UUID. Pod: %s", pod.Name)
 		}
-	}
-
-	// If pod has workspaceID, use pod-level configuration (workspaceID + systemEnv + API key)
-	if podWorkspaceID != "" {
-		apiKey := mainContainerConfig.requiredContainerConfig.apiKey
-		if apiKey == "" {
+		if req.apiKey == "" {
 			return errors.Errorf("POSTMAN_INSIGHTS_API_KEY is required when using workspace_id. Pod: %s", pod.Name)
 		}
 
-		podArgs.WorkspaceID = podWorkspaceID
-		podArgs.SystemEnv = podSystemEnv
+		podArgs.WorkspaceID = workspaceID
+		podArgs.SystemEnv = systemEnv
 		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      apiKey,
+			InsightsAPIKey:      req.apiKey,
 			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	} else {
-		// Traditional mode: require projectID and API key from pod (no daemonset-level fallback)
-		// If all required environment variables are absent, return an error
+		// Traditional mode: require projectID and API key from pod
 		if maxSetAttrs == 0 {
 			return &allRequiredEnvVarsAbsentError{
 				baseEnvVarsError: baseEnvVarsError{
@@ -288,9 +279,6 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 				},
 			}
 		}
-
-		// For traditional mode, require projectID and apiKey (ignore workspaceID/systemEnv in missing check)
-		req := mainContainerConfig.requiredContainerConfig
 		if req.projectID == "" || req.apiKey == "" {
 			missing := []string{}
 			if req.projectID == "" {
@@ -307,12 +295,11 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 			}
 		}
 
-		err = akid.ParseIDAs(mainContainerConfig.requiredContainerConfig.projectID, &podArgs.InsightsProjectID)
-		if err != nil {
+		if err = akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
 			return errors.Wrap(err, "failed to parse project ID")
 		}
 		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      mainContainerConfig.requiredContainerConfig.apiKey,
+			InsightsAPIKey:      req.apiKey,
 			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	}
