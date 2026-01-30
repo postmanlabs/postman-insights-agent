@@ -227,14 +227,16 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		requiredContainerConfig: requiredContainerConfig{},
 	}
 	mainContainerMissingAttrs := []string{}
-	maxSetAttrs := -1
+	mainContainerValidationErrors := []string{}
+	maxValidAttrs := -1
 
-	for uuid, config := range containerConfigMap {
-		attrCount, missingAttrs := countSetAttributes(config.requiredContainerConfig)
-		if attrCount > maxSetAttrs {
-			maxSetAttrs = attrCount
+	for containerUUID, config := range containerConfigMap {
+		validAttrCount, missingAttrs, validationErrors := validateContainerConfig(config.requiredContainerConfig)
+		if validAttrCount > maxValidAttrs {
+			maxValidAttrs = validAttrCount
 			mainContainerMissingAttrs = missingAttrs
-			mainContainerUUID = uuid
+			mainContainerValidationErrors = validationErrors
+			mainContainerUUID = containerUUID
 			mainContainerConfig = config
 		}
 	}
@@ -244,34 +246,15 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	podArgs.ContainerUUID = mainContainerUUID
 
-	req := mainContainerConfig.requiredContainerConfig
-	workspaceID := req.workspaceID
-	systemEnv := req.systemEnv
+	// Check for validation errors (e.g., invalid UUID format)
+	if len(mainContainerValidationErrors) > 0 {
+		return errors.Errorf("Invalid configuration for pod %s: %v", pod.Name, mainContainerValidationErrors)
+	}
 
-	if workspaceID != "" {
-		// Workspace-based onboarding: require workspaceID (UUID), systemEnv (UUID), and API key from pod
-		if _, err := uuid.Parse(workspaceID); err != nil {
-			return errors.Wrapf(err, "POSTMAN_INSIGHTS_WORKSPACE_ID must be a valid UUID. Pod: %s", pod.Name)
-		}
-		if systemEnv == "" {
-			return errors.Errorf("POSTMAN_INSIGHTS_SYSTEM_ENV is required when POSTMAN_INSIGHTS_WORKSPACE_ID is set. Pod: %s", pod.Name)
-		}
-		if _, err := uuid.Parse(systemEnv); err != nil {
-			return errors.Wrapf(err, "POSTMAN_INSIGHTS_SYSTEM_ENV must be a valid UUID. Pod: %s", pod.Name)
-		}
-		if req.apiKey == "" {
-			return errors.Errorf("POSTMAN_INSIGHTS_API_KEY is required when using workspace_id. Pod: %s", pod.Name)
-		}
-
-		podArgs.WorkspaceID = workspaceID
-		podArgs.SystemEnv = systemEnv
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      req.apiKey,
-			InsightsEnvironment: d.InsightsEnvironment,
-		}
-	} else {
-		// Traditional mode: require projectID and API key from pod
-		if maxSetAttrs == 0 {
+	// Check for missing required attributes
+	if len(mainContainerMissingAttrs) > 0 {
+		if maxValidAttrs == 0 {
+			// No env vars set at all - this might be an unrelated pod
 			return &allRequiredEnvVarsAbsentError{
 				baseEnvVarsError: baseEnvVarsError{
 					missingAttrs: mainContainerMissingAttrs,
@@ -279,22 +262,28 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 				},
 			}
 		}
-		if req.projectID == "" || req.apiKey == "" {
-			missing := []string{}
-			if req.projectID == "" {
-				missing = append(missing, POSTMAN_INSIGHTS_PROJECT_ID)
-			}
-			if req.apiKey == "" {
-				missing = append(missing, POSTMAN_INSIGHTS_API_KEY)
-			}
-			return &requiredEnvVarMissingError{
-				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: missing,
-					podName:      pod.Name,
-				},
-			}
+		// Some env vars set but missing required ones
+		return &requiredEnvVarMissingError{
+			baseEnvVarsError: baseEnvVarsError{
+				missingAttrs: mainContainerMissingAttrs,
+				podName:      pod.Name,
+			},
 		}
+	}
 
+	// All required attributes are present and valid, proceed with assignment
+	req := mainContainerConfig.requiredContainerConfig
+
+	if req.workspaceID != "" {
+		// Workspace mode
+		podArgs.WorkspaceID = req.workspaceID
+		podArgs.SystemEnv = req.systemEnv
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      req.apiKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+		}
+	} else {
+		// Traditional mode
 		if err = akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
 			return errors.Wrap(err, "failed to parse project ID")
 		}
@@ -371,24 +360,54 @@ func parseSliceConfig(configValue, configName, podName string) []string {
 	return parsedValue
 }
 
-// countSetAttributes returns the number of set required attributes and the list of missing ones.
-// Required config is either (projectID + apiKey) for traditional mode or (workspaceID + systemEnv + apiKey) for workspace mode.
-func countSetAttributes(config requiredContainerConfig) (int, []string) {
-	count := 0
-	missingAttrs := []string{}
+// validateContainerConfig validates the container configuration and returns:
+// - validAttrCount: number of valid required attributes (for container selection)
+// - missingAttrs: list of missing required attributes
+// - validationErrors: list of validation errors (e.g., invalid UUID format)
+// Required config: apiKey is mandatory, and either projectID (traditional mode) OR (workspaceID AND systemEnv as valid UUIDs) (workspace mode) should be present.
+func validateContainerConfig(cfg requiredContainerConfig) (validAttrCount int, missingAttrs []string, validationErrors []string) {
+	validAttrCount = 0
+	missingAttrs = []string{}
+	validationErrors = []string{}
 
-	checkAttr := func(attr, name string) {
-		if attr != "" {
-			count++
+	// API Key is always mandatory
+	if cfg.apiKey != "" {
+		validAttrCount++
+	} else {
+		missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_API_KEY)
+	}
+
+	// Determine mode: workspace mode if workspaceID or systemEnv is set
+	isWorkspaceMode := cfg.workspaceID != "" || cfg.systemEnv != ""
+
+	if isWorkspaceMode {
+		// Workspace mode - both workspaceID and systemEnv are required and must be valid UUIDs
+		if cfg.workspaceID != "" {
+			if _, err := uuid.Parse(cfg.workspaceID); err != nil {
+				validationErrors = append(validationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_WORKSPACE_ID))
+			} else {
+				validAttrCount++
+			}
 		} else {
-			missingAttrs = append(missingAttrs, name)
+			missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_WORKSPACE_ID)
+		}
+		if cfg.systemEnv != "" {
+			if _, err := uuid.Parse(cfg.systemEnv); err != nil {
+				validationErrors = append(validationErrors, fmt.Sprintf("%s must be a valid UUID", POSTMAN_INSIGHTS_SYSTEM_ENV))
+			} else {
+				validAttrCount++
+			}
+		} else {
+			missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_SYSTEM_ENV)
+		}
+	} else {
+		// Traditional mode - projectID is required
+		if cfg.projectID != "" {
+			validAttrCount++
+		} else {
+			missingAttrs = append(missingAttrs, POSTMAN_INSIGHTS_PROJECT_ID)
 		}
 	}
 
-	checkAttr(config.apiKey, POSTMAN_INSIGHTS_API_KEY)
-	checkAttr(config.projectID, POSTMAN_INSIGHTS_PROJECT_ID)
-	checkAttr(config.workspaceID, POSTMAN_INSIGHTS_WORKSPACE_ID)
-	checkAttr(config.systemEnv, POSTMAN_INSIGHTS_SYSTEM_ENV)
-
-	return count, missingAttrs
+	return validAttrCount, missingAttrs, validationErrors
 }
