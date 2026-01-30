@@ -77,12 +77,11 @@ var (
 )
 
 // Args for running apidump as daemonset in Kubernetes
+// WorkspaceID and SystemEnv are per-service and live on Args, not here.
 type DaemonsetArgs struct {
 	TargetNetworkNamespaceOpt string
 	StopChan                  <-chan error `json:"-"`
 	APIKey                    string
-	WorkspaceID               string
-	SystemEnv                 string // System environment UUID for API Catalog integration
 	Environment               string
 	TraceTags                 tags.SingletonTags
 }
@@ -202,11 +201,6 @@ func newSession(args *Args) *apidump {
 
 // Is the target the Akita backend as expected, or a local HAR file?
 func (a *apidump) TargetIsRemote() bool {
-	if daemonsetArgs, exists := a.DaemonsetArgs.Get(); exists {
-		if daemonsetArgs.WorkspaceID != "" {
-			return true
-		}
-	}
 	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{} || a.WorkspaceID != ""
 }
 
@@ -259,13 +253,13 @@ func (a *apidump) LookupService() error {
 		a.backendSvc = application.ServiceID
 		a.backendSvcName = application.ServiceName
 	} else {
-		daemonsetArgs, exists := a.DaemonsetArgs.Get()
-		if exists && daemonsetArgs.WorkspaceID != "" {
-			// Daemonset mode with workspace ID: use CreateApplication API
+		_, inDaemonset := a.DaemonsetArgs.Get()
+		if inDaemonset && a.WorkspaceID != "" {
+			// Daemonset mode with workspace ID (set from pod in apidump_process): use CreateApplication API
 			application, err := frontClient.CreateApplication(
 				context.Background(),
-				daemonsetArgs.WorkspaceID,
-				daemonsetArgs.SystemEnv,
+				a.WorkspaceID,
+				a.SystemEnv,
 			)
 			if err != nil {
 				return err

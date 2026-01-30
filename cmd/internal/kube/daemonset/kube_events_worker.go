@@ -42,14 +42,14 @@ func (e *requiredEnvVarMissingError) Error() string {
 }
 
 type requiredContainerConfig struct {
-	projectID string
-	apiKey    string
+	projectID   string
+	apiKey      string
+	workspaceID string
+	systemEnv   string
 }
 
 type containerConfig struct {
 	requiredContainerConfig requiredContainerConfig
-	workspaceID             string
-	systemEnv               string
 	disableReproMode        string
 	dropNginxTraffic        string
 	agentRateLimit          string
@@ -202,10 +202,10 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 			containerEnvVars.requiredContainerConfig.apiKey = apiKey
 		}
 		if workspaceID, exists := envVars[POSTMAN_INSIGHTS_WORKSPACE_ID]; exists {
-			containerEnvVars.workspaceID = workspaceID
+			containerEnvVars.requiredContainerConfig.workspaceID = workspaceID
 		}
 		if systemEnv, exists := envVars[POSTMAN_INSIGHTS_SYSTEM_ENV]; exists {
-			containerEnvVars.systemEnv = systemEnv
+			containerEnvVars.requiredContainerConfig.systemEnv = systemEnv
 		}
 		if disableReproMode, exists := envVars[POSTMAN_INSIGHTS_DISABLE_REPRO_MODE]; exists {
 			containerEnvVars.disableReproMode = disableReproMode
@@ -245,8 +245,8 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	podArgs.ContainerUUID = mainContainerUUID
 
 	// Check if pod has workspaceID and systemEnv (pod-level configuration)
-	podWorkspaceID := mainContainerConfig.workspaceID
-	podSystemEnv := mainContainerConfig.systemEnv
+	podWorkspaceID := mainContainerConfig.requiredContainerConfig.workspaceID
+	podSystemEnv := mainContainerConfig.requiredContainerConfig.systemEnv
 
 	// Validate pod-level workspaceID and systemEnv
 	if podWorkspaceID != "" {
@@ -264,33 +264,21 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		}
 	}
 
-	// If pod has workspaceID, use pod-level configuration (workspaceID + systemEnv)
-	// Otherwise, check if daemonset has API key
+	// If pod has workspaceID, use pod-level configuration (workspaceID + systemEnv + API key)
 	if podWorkspaceID != "" {
-		// Use pod-level workspaceID and systemEnv
-		// API key can come from pod or daemonset level
 		apiKey := mainContainerConfig.requiredContainerConfig.apiKey
-		if apiKey == "" {
-			apiKey = d.APIKey
-		}
 		if apiKey == "" {
 			return errors.Errorf("POSTMAN_INSIGHTS_API_KEY is required when using workspace_id. Pod: %s", pod.Name)
 		}
 
+		podArgs.WorkspaceID = podWorkspaceID
+		podArgs.SystemEnv = podSystemEnv
 		podArgs.PodCreds = PodCreds{
 			InsightsAPIKey:      apiKey,
 			InsightsEnvironment: d.InsightsEnvironment,
-			InsightsWorkspaceID: podWorkspaceID,
-			InsightsSystemEnv:   podSystemEnv,
-		}
-	} else if d.APIKey != "" {
-		// Daemonset-level API key (no workspaceID at daemonset level)
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      d.APIKey,
-			InsightsEnvironment: d.InsightsEnvironment,
 		}
 	} else {
-		// Traditional mode: require projectID and API key from pod
+		// Traditional mode: require projectID and API key from pod (no daemonset-level fallback)
 		// If all required environment variables are absent, return an error
 		if maxSetAttrs == 0 {
 			return &allRequiredEnvVarsAbsentError{
@@ -301,11 +289,19 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 			}
 		}
 
-		// If one or more required environment variables are missing, return an error
-		if len(mainContainerMissingAttrs) > 0 {
+		// For traditional mode, require projectID and apiKey (ignore workspaceID/systemEnv in missing check)
+		req := mainContainerConfig.requiredContainerConfig
+		if req.projectID == "" || req.apiKey == "" {
+			missing := []string{}
+			if req.projectID == "" {
+				missing = append(missing, POSTMAN_INSIGHTS_PROJECT_ID)
+			}
+			if req.apiKey == "" {
+				missing = append(missing, POSTMAN_INSIGHTS_API_KEY)
+			}
 			return &requiredEnvVarMissingError{
 				baseEnvVarsError: baseEnvVarsError{
-					missingAttrs: mainContainerMissingAttrs,
+					missingAttrs: missing,
 					podName:      pod.Name,
 				},
 			}
@@ -388,7 +384,8 @@ func parseSliceConfig(configValue, configName, podName string) []string {
 	return parsedValue
 }
 
-// Function to count non-zero attributes in a struct
+// countSetAttributes returns the number of set required attributes and the list of missing ones.
+// Required config is either (projectID + apiKey) for traditional mode or (workspaceID + systemEnv + apiKey) for workspace mode.
 func countSetAttributes(config requiredContainerConfig) (int, []string) {
 	count := 0
 	missingAttrs := []string{}
@@ -403,6 +400,8 @@ func countSetAttributes(config requiredContainerConfig) (int, []string) {
 
 	checkAttr(config.apiKey, POSTMAN_INSIGHTS_API_KEY)
 	checkAttr(config.projectID, POSTMAN_INSIGHTS_PROJECT_ID)
+	checkAttr(config.workspaceID, POSTMAN_INSIGHTS_WORKSPACE_ID)
+	checkAttr(config.systemEnv, POSTMAN_INSIGHTS_SYSTEM_ENV)
 
 	return count, missingAttrs
 }

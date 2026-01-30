@@ -36,8 +36,6 @@ const (
 type PodCreds struct {
 	InsightsAPIKey      string
 	InsightsEnvironment string
-	InsightsWorkspaceID string
-	InsightsSystemEnv   string // System environment UUID for API Catalog integration
 }
 
 type PodArgs struct {
@@ -48,6 +46,10 @@ type PodArgs struct {
 	DropNginxTraffic      bool
 	AgentRateLimit        float64
 	AlwaysCapturePayloads []string
+
+	// API Catalog: workspace and system environment (not credentials)
+	WorkspaceID string // Workspace UUID for API Catalog integration
+	SystemEnv   string // System environment UUID for API Catalog integration
 
 	// Pod related fields
 	PodName       string
