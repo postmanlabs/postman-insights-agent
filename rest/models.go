@@ -53,7 +53,7 @@ type CreateApplicationResponse struct {
 	ServiceName   string         `json:"service_name"`
 }
 
-// DiscoverServiceRequest is sent by the agent to discover a service discovered
+// DiscoverServiceRequest is sent by the agent to discover a service
 // via K8s autodiscovery. Used by both sidecar and daemonset modes.
 type DiscoverServiceRequest struct {
 	ServiceName   string            `json:"service_name"`
@@ -67,8 +67,7 @@ type DiscoverServiceRequest struct {
 
 // DiscoverServiceResponse is returned after discovering a service.
 type DiscoverServiceResponse struct {
-	ServiceID     string `json:"service_id"`
-	ProjectID     string `json:"project_id"`
-	ProjectStatus string `json:"project_status"`
-	IsNew         bool   `json:"is_new"`
+	ServiceID string `json:"service_id"`
+	Status    string `json:"status"`
+	IsNew     bool   `json:"is_new"`
 }

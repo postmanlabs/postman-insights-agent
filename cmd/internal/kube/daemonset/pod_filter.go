@@ -140,12 +140,54 @@ func checkControllerType(pod corev1.Pod) (bool, string) {
 		switch owner.Kind {
 		case "ReplicaSet", "StatefulSet", "DaemonSet":
 			return true, ""
-		case "Job":
-			return false, "ephemeral workload (Job)"
+		case "Job", "CronJob":
+			return false, "ephemeral workload (Job/CronJob)"
 		}
 	}
 
 	return false, fmt.Sprintf("unsupported controller type: %s", pod.OwnerReferences[0].Kind)
+}
+
+// deriveWorkloadType derives the workload type from a pod's owner references.
+// For ReplicaSets (typically created by Deployments), it returns "Deployment".
+// For other controller types, it returns the Kind directly.
+func deriveWorkloadType(pod corev1.Pod) string {
+	if len(pod.OwnerReferences) == 0 {
+		return ""
+	}
+	kind := pod.OwnerReferences[0].Kind
+	if kind == "ReplicaSet" {
+		return "Deployment"
+	}
+	return kind
+}
+
+// deriveWorkloadName derives the workload name from a pod's owner references
+// and labels, without the namespace prefix.
+func deriveWorkloadName(pod corev1.Pod) string {
+	if len(pod.OwnerReferences) > 0 {
+		ownerName := pod.OwnerReferences[0].Name
+		if pod.OwnerReferences[0].Kind == "ReplicaSet" {
+			if idx := strings.LastIndex(ownerName, "-"); idx > 0 {
+				return ownerName[:idx]
+			}
+			return ownerName
+		}
+		return ownerName
+	}
+
+	if name, ok := pod.Labels["app.kubernetes.io/name"]; ok {
+		return name
+	}
+	if name, ok := pod.Labels["app"]; ok {
+		return name
+	}
+
+	name := pod.Name
+	if idx := strings.LastIndex(name, "-"); idx > 0 {
+		return name[:idx]
+	}
+	return name
 }
 
 // deriveServiceName derives a service name from K8s pod metadata.

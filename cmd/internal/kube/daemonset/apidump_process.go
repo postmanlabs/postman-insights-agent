@@ -99,6 +99,9 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			DiscoveryMode:           podArgs.DiscoveryMode,
 			ServiceName:             podArgs.DiscoveryServiceName,
 			ClusterName:             podArgs.ClusterName,
+			WorkloadName:            podArgs.WorkloadName,
+			WorkloadType:            podArgs.WorkloadType,
+			Labels:                  podArgs.Labels,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,

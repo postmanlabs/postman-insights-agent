@@ -282,7 +282,10 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 		podArgs.DiscoveryMode = true
 		podArgs.DiscoveryServiceName = serviceName
-		podArgs.ClusterName = d.ClusterName
+		podArgs.ClusterName = d.ClusterName // Will be empty if not set in the environment variables
+		podArgs.WorkloadName = deriveWorkloadName(pod)
+		podArgs.WorkloadType = deriveWorkloadType(pod)
+		podArgs.Labels = pod.Labels
 		podArgs.PodCreds = PodCreds{
 			InsightsAPIKey:      d.InsightsAPIKey,
 			InsightsEnvironment: d.InsightsEnvironment,

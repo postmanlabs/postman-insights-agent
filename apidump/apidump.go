@@ -178,6 +178,7 @@ type Args struct {
 	Namespace     string
 	WorkloadName  string
 	WorkloadType  string
+	Labels        map[string]string
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -259,6 +260,7 @@ func (a *apidump) LookupService() error {
 				Namespace:     a.Namespace,
 				WorkloadName:  a.WorkloadName,
 				WorkloadType:  a.WorkloadType,
+				Labels:        a.Labels,
 				DiscoveryMode: discoveryMode,
 			},
 		)

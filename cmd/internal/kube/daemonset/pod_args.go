@@ -55,6 +55,9 @@ type PodArgs struct {
 	DiscoveryMode        bool
 	DiscoveryServiceName string // namespace/workload-name
 	ClusterName          string
+	WorkloadName         string
+	WorkloadType         string
+	Labels               map[string]string
 
 	// Pod related fields
 	PodName       string

@@ -160,7 +160,9 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		systemEnvFlag = envSystemEnv
 	}
 
-	// In discovery mode, project/collection/workspace are not required.
+	var serviceID akid.ServiceID
+
+	// In non-discovery mode check for required project/collection/workspace flags.
 	if !apidumpDiscoveryMode {
 		// Check that exactly one of --project, --collection, or --workspace-id is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
 		hasProject := projectID != ""
@@ -180,30 +182,27 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		if hasWorkspace && systemEnvFlag == "" {
 			return errors.New("--system-env is required when --workspace-id is specified.")
 		}
-	}
 
-	hasWorkspace := workspaceIDFlag != ""
-
-	// Validate workspace-id is a valid UUID if provided
-	if hasWorkspace {
-		if _, err := uuid.Parse(workspaceIDFlag); err != nil {
-			return errors.Wrap(err, "--workspace-id must be a valid UUID")
+		// Validate workspace-id is a valid UUID if provided
+		if hasWorkspace {
+			if _, err := uuid.Parse(workspaceIDFlag); err != nil {
+				return errors.Wrap(err, "--workspace-id must be a valid UUID")
+			}
 		}
-	}
 
-	// Validate system-env is a valid UUID if provided
-	if systemEnvFlag != "" {
-		if _, err := uuid.Parse(systemEnvFlag); err != nil {
-			return errors.Wrap(err, "--system-env must be a valid UUID")
+		// Validate system-env is a valid UUID if provided
+		if systemEnvFlag != "" {
+			if _, err := uuid.Parse(systemEnvFlag); err != nil {
+				return errors.Wrap(err, "--system-env must be a valid UUID")
+			}
 		}
-	}
 
-	// If --project was given, convert projectID to serviceID.
-	var serviceID akid.ServiceID
-	if projectID != "" {
-		err := akid.ParseIDAs(projectID, &serviceID)
-		if err != nil {
-			return errors.Wrap(err, "failed to parse project ID")
+		// If --project was given, convert projectID to serviceID.
+		if projectID != "" {
+			err := akid.ParseIDAs(projectID, &serviceID)
+			if err != nil {
+				return errors.Wrap(err, "failed to parse project ID")
+			}
 		}
 	}
 
