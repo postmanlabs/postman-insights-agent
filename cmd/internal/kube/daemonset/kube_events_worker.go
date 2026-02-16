@@ -54,6 +54,7 @@ type containerConfig struct {
 	dropNginxTraffic        string
 	agentRateLimit          string
 	alwaysCapturePayloads   string
+	serviceName             string // POSTMAN_INSIGHTS_SERVICE_NAME (per-pod override for discovery mode)
 }
 
 // containerValidationResult holds the result of validating a container's required config.
@@ -79,6 +80,7 @@ func (r containerValidationResult) hasNoAttrsSet() bool {
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
 // It performs the following steps:
 // 1. Check if the pod does not have the agent sidecar container.
+// 2. In discovery mode, apply pod filter; skip if the pod doesn't pass.
 // 3. Adds the pod arguments to a map and change state to PodPending.
 func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 	// Filter out pods that do not have the agent sidecar container
@@ -90,6 +92,16 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 	if len(podsWithoutAgentSidecar) == 0 {
 		printer.Infof("Pod already has agent sidecar container, skipping, podUID: %s\n", pod.UID)
 		return
+	}
+
+	// In discovery mode, apply pod filter before adding to the map.
+	if d.DiscoveryMode && d.PodFilter != nil {
+		result := d.PodFilter.Evaluate(pod)
+		if !result.ShouldCapture {
+			printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
+			return
+		}
+		printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
 	}
 
 	// Empty podArgs object for PodPending state
@@ -239,7 +251,50 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if alwaysCapturePayloads, exists := envVars[POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS]; exists {
 			containerEnvVars.alwaysCapturePayloads = alwaysCapturePayloads
 		}
+		if svcName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
+			containerEnvVars.serviceName = svcName
+		}
 		containerConfigMap[containerUUID] = containerEnvVars
+	}
+
+	// In discovery mode, we use the DaemonSet-level API key for all pods.
+	// Service name comes from the pod's POSTMAN_INSIGHTS_SERVICE_NAME env var
+	// if set, otherwise derived from K8s pod metadata.
+	if d.DiscoveryMode {
+		// Pick the first running container for network namespace capture.
+		mainUUID := ""
+		var mainConfig containerConfig
+		if len(containerUUIDs) > 0 {
+			mainUUID = containerUUIDs[0]
+			if cfg, ok := containerConfigMap[mainUUID]; ok {
+				mainConfig = cfg
+			}
+		}
+
+		deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
+		podArgs.ContainerUUID = mainUUID
+
+		// Use per-pod service name env var if set, otherwise derive from K8s metadata.
+		serviceName := mainConfig.serviceName
+		if serviceName == "" {
+			serviceName = deriveServiceName(pod)
+		}
+
+		podArgs.DiscoveryMode = true
+		podArgs.DiscoveryServiceName = serviceName
+		podArgs.ClusterName = d.ClusterName
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      d.InsightsAPIKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+		}
+
+		// Apply optional per-pod configs from container env if present.
+		podArgs.DropNginxTraffic = parseBoolConfig(mainConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, viper.GetBool("drop-nginx-traffic"))
+		podArgs.ReproMode = d.InsightsReproModeEnabled
+		podArgs.AgentRateLimit = d.InsightsRateLimit
+		podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
+		return nil
 	}
 
 	mainUUID, mainContainerConfig, validation := selectMainContainer(containerConfigMap)

@@ -1,1 +1,4 @@
-* @mgritter @cesher
+# CODEOWNERS file
+# This file defines who must review changes to specific files
+
+* @mudit-postman @shreys7

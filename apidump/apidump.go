@@ -169,6 +169,15 @@ type Args struct {
 
 	// The number of upload buffers. Anything larger than 1 results in async uploads.
 	MaxWitnessUploadBuffers int
+
+	// Discovery mode fields: when DiscoveryMode is true, the agent registers the
+	// service with the backend via RegisterDiscoveredService before starting capture.
+	DiscoveryMode bool
+	ServiceName   string // namespace/workload-name format
+	ClusterName   string
+	Namespace     string
+	WorkloadName  string
+	WorkloadType  string
 }
 
 // TODO: either remove write-to-local-HAR-file completely,
@@ -230,7 +239,42 @@ func (a *apidump) LookupService() error {
 	// Initialize new front client with telemetry APIError handler.
 	frontClient := rest.NewFrontClient(a.Domain, a.ClientID, authHandler, apidumpTelemetry.APIError)
 
-	if a.PostmanCollectionID != "" {
+	if a.DiscoveryMode {
+		// Discovery mode: register the discovered service with the backend.
+		serviceName := a.ServiceName
+		if serviceName == "" {
+			serviceName = a.Namespace + "/" + a.WorkloadName
+		}
+
+		discoveryMode := "daemonset"
+		if _, inDaemonset := a.DaemonsetArgs.Get(); !inDaemonset {
+			discoveryMode = "sidecar"
+		}
+
+		resp, err := frontClient.RegisterDiscoveredService(
+			context.Background(),
+			rest.DiscoverServiceRequest{
+				ServiceName:   serviceName,
+				ClusterName:   a.ClusterName,
+				Namespace:     a.Namespace,
+				WorkloadName:  a.WorkloadName,
+				WorkloadType:  a.WorkloadType,
+				DiscoveryMode: discoveryMode,
+			},
+		)
+		if err != nil {
+			return errors.Wrap(err, "failed to register discovered service")
+		}
+
+		var svcID akid.ServiceID
+		if err := akid.ParseIDAs(resp.ServiceID, &svcID); err != nil {
+			return errors.Wrapf(err, "failed to parse service ID %q from discover response", resp.ServiceID)
+		}
+
+		a.backendSvc = svcID
+		a.backendSvcName = serviceName
+		printer.Infof("Registered discovered service %q (ID: %s, new: %v)\n", serviceName, resp.ServiceID, resp.IsNew)
+	} else if a.PostmanCollectionID != "" {
 		backendSvc, err := util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, a.PostmanCollectionID)
 		if err != nil {
 			return err

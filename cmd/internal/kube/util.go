@@ -73,8 +73,16 @@ func createFile(path string) (*os.File, error) {
 	return outputFile, nil
 }
 
-func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apidumpArgs []string) v1.Container {
-	args := []string{"apidump", "--project", insightsProjectID}
+func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apidumpArgs []string, discoveryMode bool, serviceName string) v1.Container {
+	var args []string
+	if discoveryMode {
+		args = []string{"apidump", "--discovery-mode"}
+		if serviceName != "" {
+			args = append(args, "--service-name", serviceName)
+		}
+	} else {
+		args = []string{"apidump", "--project", insightsProjectID}
+	}
 
 	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
@@ -155,6 +163,20 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apid
 	}
 	// Add k8s metadata env vars to the sidecar
 	envs = append(envs, k8sEnvVars...)
+
+	// In discovery mode, inject additional env vars for service naming
+	if discoveryMode {
+		envs = append(envs, v1.EnvVar{
+			Name:  "POSTMAN_INSIGHTS_DISCOVERY_MODE",
+			Value: "true",
+		})
+		if serviceName != "" {
+			envs = append(envs, v1.EnvVar{
+				Name:  "POSTMAN_INSIGHTS_SERVICE_NAME",
+				Value: serviceName,
+			})
+		}
+	}
 
 	cpu := resource.MustParse("200m")
 	memory := resource.MustParse("500Mi")

@@ -29,6 +29,14 @@ const (
 type DaemonsetArgs struct {
 	ReproMode bool
 	RateLimit float64
+
+	// Discovery mode fields
+	DiscoveryMode     bool
+	IncludeNamespaces []string
+	ExcludeNamespaces []string
+	IncludeLabels     map[string]string
+	ExcludeLabels     map[string]string
+	RequireOptIn      bool
 }
 
 type Daemonset struct {
@@ -37,7 +45,7 @@ type Daemonset struct {
 	InsightsReproModeEnabled bool
 	InsightsRateLimit        float64
 
-	KubeClient kube_apis.KubeClient
+	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
 	FrontClient rest.FrontClient
 
@@ -50,6 +58,11 @@ type Daemonset struct {
 
 	PodHealthCheckInterval time.Duration
 	TelemetryInterval      time.Duration
+
+	// Discovery mode
+	DiscoveryMode  bool
+	InsightsAPIKey string // DaemonSet-level API key for discovery mode
+	PodFilter      *PodFilter
 }
 
 func StartDaemonset(args DaemonsetArgs) error {
@@ -112,6 +125,24 @@ func StartDaemonset(args DaemonsetArgs) error {
 		FrontClient:              frontClient,
 		TelemetryInterval:        telemetryInterval,
 		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
+		DiscoveryMode:            args.DiscoveryMode,
+	}
+
+	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
+	if args.DiscoveryMode {
+		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
+		if apiKey == "" {
+			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
+		}
+		daemonsetRun.InsightsAPIKey = apiKey
+		daemonsetRun.PodFilter = NewPodFilter(
+			args.IncludeNamespaces,
+			args.ExcludeNamespaces,
+			args.IncludeLabels,
+			args.ExcludeLabels,
+			args.RequireOptIn,
+		)
+		printer.Infof("Discovery mode enabled. Using DaemonSet-level API key.\n")
 	}
 	if err := daemonsetRun.Run(); err != nil {
 		return cmderr.AkitaErr{Err: err}

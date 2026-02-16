@@ -48,6 +48,10 @@ var (
 	workspaceIDFlag string
 	systemEnvFlag   string
 
+	// Discovery mode flags
+	apidumpDiscoveryMode bool
+	apidumpServiceName   string
+
 	commonApidumpFlags *CommonApidumpFlags
 )
 
@@ -131,6 +135,16 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		return errors.Wrap(err, "failed to load plugins")
 	}
 
+	// override discovery mode if the environment variable is set
+	if envDiscovery := os.Getenv("POSTMAN_INSIGHTS_DISCOVERY_MODE"); envDiscovery == "true" {
+		apidumpDiscoveryMode = true
+	}
+
+	// override service name if the environment variable is set
+	if envServiceName := os.Getenv("POSTMAN_INSIGHTS_SERVICE_NAME"); envServiceName != "" {
+		apidumpServiceName = envServiceName
+	}
+
 	// override the project id if the environment variable is set
 	if envProjectID := os.Getenv("POSTMAN_INSIGHTS_PROJECT_ID"); envProjectID != "" {
 		projectID = envProjectID
@@ -146,24 +160,29 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		systemEnvFlag = envSystemEnv
 	}
 
-	// Check that exactly one of --project, --collection, or --workspace-id is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
-	hasProject := projectID != ""
-	hasCollection := postmanCollectionID != ""
+	// In discovery mode, project/collection/workspace are not required.
+	if !apidumpDiscoveryMode {
+		// Check that exactly one of --project, --collection, or --workspace-id is specified, or POSTMAN_INSIGHTS_PROJECT_ID was set.
+		hasProject := projectID != ""
+		hasCollection := postmanCollectionID != ""
+		hasWorkspace := workspaceIDFlag != ""
+
+		if !hasProject && !hasCollection && !hasWorkspace {
+			return errors.New("Exactly one of --project, --collection, --workspace-id, or --discovery-mode must be specified.")
+		}
+
+		// Ensure mutually exclusive options
+		if (hasProject && hasCollection) || (hasProject && hasWorkspace) || (hasCollection && hasWorkspace) {
+			return errors.New("Only one of --project, --collection, or --workspace-id can be specified.")
+		}
+
+		// When workspace-id is specified, system-env is required
+		if hasWorkspace && systemEnvFlag == "" {
+			return errors.New("--system-env is required when --workspace-id is specified.")
+		}
+	}
+
 	hasWorkspace := workspaceIDFlag != ""
-
-	if !hasProject && !hasCollection && !hasWorkspace {
-		return errors.New("Exactly one of --project, --collection, or --workspace-id must be specified, or POSTMAN_INSIGHTS_PROJECT_ID must be set.")
-	}
-
-	// Ensure mutually exclusive options
-	if (hasProject && hasCollection) || (hasProject && hasWorkspace) || (hasCollection && hasWorkspace) {
-		return errors.New("Only one of --project, --collection, or --workspace-id can be specified.")
-	}
-
-	// When workspace-id is specified, system-env is required
-	if hasWorkspace && systemEnvFlag == "" {
-		return errors.New("--system-env is required when --workspace-id is specified.")
-	}
 
 	// Validate workspace-id is a valid UUID if provided
 	if hasWorkspace {
@@ -290,6 +309,9 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 
 		// TODO: Add this flag in kube run command to fetch from service env vars
 		AlwaysCapturePayloads: commonApidumpFlags.AlwaysCapturePayloads,
+
+		DiscoveryMode: apidumpDiscoveryMode,
+		ServiceName:   apidumpServiceName,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
@@ -458,6 +480,20 @@ func init() {
 	// Make workspace-id mutually exclusive with project and collection
 	Cmd.MarkFlagsMutuallyExclusive("project", "workspace-id")
 	Cmd.MarkFlagsMutuallyExclusive("collection", "workspace-id")
+
+	// Discovery mode flags
+	Cmd.Flags().BoolVar(
+		&apidumpDiscoveryMode,
+		"discovery-mode",
+		false,
+		"Enable auto-discovery without requiring a project ID. The agent registers the service with the backend automatically.",
+	)
+	Cmd.Flags().StringVar(
+		&apidumpServiceName,
+		"service-name",
+		"",
+		"Override the auto-derived service name (default: namespace/workload-name).",
+	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)
 }
