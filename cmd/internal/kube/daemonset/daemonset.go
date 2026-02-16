@@ -223,6 +223,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		}
 		daemonsetRun.InsightsAPIKey = apiKey
 		daemonsetRun.PodFilter = NewPodFilter(
+			daemonsetRun.KubeClient.AgentHost,
 			args.IncludeNamespaces,
 			args.ExcludeNamespaces,
 			args.IncludeLabels,
@@ -370,6 +371,16 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 
 	// Iterate over each pod without the agent sidecar
 	for _, pod := range podsWithoutAgentSidecar {
+		// In discovery mode, apply pod filter before processing.
+		if d.DiscoveryMode && d.PodFilter != nil {
+			result := d.PodFilter.Evaluate(pod)
+			if !result.ShouldCapture {
+				printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
+				continue
+			}
+			printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
+		}
+
 		// Empty pod_args object for PodPending state
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)

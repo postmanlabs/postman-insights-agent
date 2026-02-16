@@ -13,6 +13,7 @@ import (
 // 2. Label/Annotation filtering (opt-in/opt-out)
 // 3. Controller type filtering (skip Jobs, CronJobs, standalone pods)
 type PodFilter struct {
+	AgentPodName      string
 	IncludeNamespaces map[string]bool
 	ExcludeNamespaces map[string]bool
 	IncludeLabels     map[string]string
@@ -29,7 +30,9 @@ type FilterResult struct {
 
 // NewPodFilter creates a PodFilter from the given configuration. The default
 // excluded namespaces are always applied (merged with user-specified excludes).
+// agentPodName is the name of the agent's own pod so it can be excluded from capture.
 func NewPodFilter(
+	agentPodName string,
 	includeNamespaces []string,
 	excludeNamespaces []string,
 	includeLabels map[string]string,
@@ -50,6 +53,7 @@ func NewPodFilter(
 	}
 
 	return &PodFilter{
+		AgentPodName:      agentPodName,
 		IncludeNamespaces: includeNS,
 		ExcludeNamespaces: excludeNS,
 		IncludeLabels:     includeLabels,
@@ -60,6 +64,11 @@ func NewPodFilter(
 
 // Evaluate runs the pod through all filter layers and returns a FilterResult.
 func (f *PodFilter) Evaluate(pod corev1.Pod) FilterResult {
+	// Layer 0: Skip the agent's own pod
+	if f.AgentPodName != "" && pod.Name == f.AgentPodName {
+		return FilterResult{ShouldCapture: false, Reason: "agent's own pod"}
+	}
+
 	// Layer 1: Namespace filtering
 	if pass, reason := f.checkNamespace(pod.Namespace); !pass {
 		return FilterResult{ShouldCapture: false, Reason: reason}

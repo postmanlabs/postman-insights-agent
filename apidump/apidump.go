@@ -716,7 +716,7 @@ func (a *apidump) Run() error {
 				return errors.Errorf("Cannot automatically rotate sessions when a session name is provided.")
 			}
 		}
-	} else if (args.PostmanCollectionID != "" || args.ServiceID != akid.ServiceID{} || args.WorkspaceID != "") {
+	} else if (args.PostmanCollectionID != "" || args.ServiceID != akid.ServiceID{} || args.WorkspaceID != "" || a.DiscoveryMode) {
 		args.Out.AkitaURI = &akiuri.URI{
 			ObjectType:  akiuri.TRACE.Ptr(),
 			ServiceName: a.backendSvcName,

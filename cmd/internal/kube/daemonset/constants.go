@@ -50,4 +50,5 @@ var DefaultExcludedNamespaces = []string{
 	"logging",
 	"flux-system",
 	"argocd",
+	"postman-insights-namespace",
 }
