@@ -209,7 +209,7 @@ func newSession(args *Args) *apidump {
 
 // Is the target the Akita backend as expected, or a local HAR file?
 func (a *apidump) TargetIsRemote() bool {
-	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{} || a.WorkspaceID != ""
+	return a.Out.AkitaURI != nil || a.PostmanCollectionID != "" || a.ServiceID != akid.ServiceID{} || a.WorkspaceID != "" || a.DiscoveryMode
 }
 
 // Lookup the service, set up telemetry, and create a learn client targeting it.
