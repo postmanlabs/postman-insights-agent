@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,7 +66,93 @@ type Daemonset struct {
 	PodFilter      *PodFilter
 }
 
+// applyEnvVarDefaults reads discovery-mode environment variables and applies
+// them as defaults. CLI flags (non-zero values) take precedence over env vars.
+// The filtering env vars are only read when discovery mode is active (either
+// via CLI flag or the POSTMAN_INSIGHTS_DISCOVERY_MODE env var).
+func (a *DaemonsetArgs) applyEnvVarDefaults() {
+	// POSTMAN_INSIGHTS_DISCOVERY_MODE
+	if !a.DiscoveryMode {
+		if v := os.Getenv(POSTMAN_INSIGHTS_DISCOVERY_MODE); strings.EqualFold(v, "true") {
+			a.DiscoveryMode = true
+		}
+	}
+
+	// The remaining env vars are only relevant when discovery mode is enabled.
+	if !a.DiscoveryMode {
+		return
+	}
+
+	// POSTMAN_INSIGHTS_INCLUDE_NAMESPACES (comma-separated)
+	if len(a.IncludeNamespaces) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_INCLUDE_NAMESPACES); v != "" {
+			a.IncludeNamespaces = splitAndTrim(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES (comma-separated)
+	if len(a.ExcludeNamespaces) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES); v != "" {
+			a.ExcludeNamespaces = splitAndTrim(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_INCLUDE_LABELS (comma-separated key=value pairs)
+	if len(a.IncludeLabels) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_INCLUDE_LABELS); v != "" {
+			a.IncludeLabels = parseKeyValuePairs(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_EXCLUDE_LABELS (comma-separated key=value pairs)
+	if len(a.ExcludeLabels) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_EXCLUDE_LABELS); v != "" {
+			a.ExcludeLabels = parseKeyValuePairs(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_REQUIRE_OPT_IN
+	if !a.RequireOptIn {
+		if v := os.Getenv(POSTMAN_INSIGHTS_REQUIRE_OPT_IN); strings.EqualFold(v, "true") {
+			a.RequireOptIn = true
+		}
+	}
+}
+
+// splitAndTrim splits a comma-separated string and trims whitespace from each element.
+// Empty elements are discarded.
+func splitAndTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// parseKeyValuePairs parses a comma-separated list of key=value pairs into a map.
+// Entries without an '=' sign are skipped with a warning.
+func parseKeyValuePairs(s string) map[string]string {
+	pairs := splitAndTrim(s)
+	result := make(map[string]string, len(pairs))
+	for _, pair := range pairs {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			printer.Warningf("Ignoring malformed label entry %q (expected key=value)\n", pair)
+			continue
+		}
+		result[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return result
+}
+
 func StartDaemonset(args DaemonsetArgs) error {
+	// Apply environment variable defaults before processing.
+	args.applyEnvVarDefaults()
+
 	// Check if the agent is running in a linux environment
 	if runtime.GOOS != "linux" {
 		return errors.New("This command is only supported on linux images")
