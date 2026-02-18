@@ -35,6 +35,16 @@ func (d *Daemonset) checkPodsHealth() {
 	}
 	// Detect unmonitored pods
 	for _, pod := range podsWithoutAgentSidecar {
+		// In discovery mode, apply pod filter before processing.
+		if d.DiscoveryMode && d.PodFilter != nil {
+			result := d.PodFilter.Evaluate(pod)
+			if !result.ShouldCapture {
+				printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
+				continue
+			}
+			printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
+		}
+
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {

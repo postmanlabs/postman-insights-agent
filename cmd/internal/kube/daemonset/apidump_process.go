@@ -86,6 +86,13 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			AlwaysCapturePayloads:   podArgs.AlwaysCapturePayloads,
 			WorkspaceID:             podArgs.WorkspaceID,
 			SystemEnv:               podArgs.SystemEnv,
+			DiscoveryMode:           podArgs.DiscoveryMode,
+			ServiceName:             podArgs.DiscoveryServiceName,
+			ClusterName:             podArgs.ClusterName,
+			Namespace:               podArgs.Namespace,
+			WorkloadName:            podArgs.WorkloadName,
+			WorkloadType:            podArgs.WorkloadType,
+			Labels:                  podArgs.Labels,
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,

@@ -51,6 +51,15 @@ type PodArgs struct {
 	WorkspaceID string // Workspace UUID for API Catalog integration
 	SystemEnv   string // System environment UUID for API Catalog integration
 
+	// Discovery mode fields (set when running in discovery mode)
+	DiscoveryMode        bool
+	DiscoveryServiceName string
+	ClusterName          string
+	Namespace            string
+	WorkloadName         string
+	WorkloadType         string
+	Labels               map[string]string
+
 	// Pod related fields
 	PodName       string
 	ContainerUUID string

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,6 +30,13 @@ const (
 type DaemonsetArgs struct {
 	ReproMode bool
 	RateLimit float64
+
+	// Discovery mode fields
+	DiscoveryMode     bool
+	IncludeNamespaces []string
+	ExcludeNamespaces []string
+	IncludeLabels     map[string]string
+	ExcludeLabels     map[string]string
 }
 
 type Daemonset struct {
@@ -37,7 +45,7 @@ type Daemonset struct {
 	InsightsReproModeEnabled bool
 	InsightsRateLimit        float64
 
-	KubeClient kube_apis.KubeClient
+	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
 	FrontClient rest.FrontClient
 
@@ -50,9 +58,94 @@ type Daemonset struct {
 
 	PodHealthCheckInterval time.Duration
 	TelemetryInterval      time.Duration
+
+	// Discovery mode
+	DiscoveryMode  bool
+	InsightsAPIKey string // DaemonSet-level API key for discovery mode
+	PodFilter      *PodFilter
+}
+
+// applyEnvVarDefaults reads discovery-mode environment variables and applies
+// them as defaults. CLI flags (non-zero values) take precedence over env vars.
+// The filtering env vars are only read when discovery mode is active (either
+// via CLI flag or the POSTMAN_INSIGHTS_DISCOVERY_MODE env var).
+func (a *DaemonsetArgs) applyEnvVarDefaults() {
+	// POSTMAN_INSIGHTS_DISCOVERY_MODE
+	if !a.DiscoveryMode {
+		if v := os.Getenv(POSTMAN_INSIGHTS_DISCOVERY_MODE); strings.EqualFold(v, "true") {
+			a.DiscoveryMode = true
+		}
+	}
+
+	// The remaining env vars are only relevant when discovery mode is enabled.
+	if !a.DiscoveryMode {
+		return
+	}
+
+	// POSTMAN_INSIGHTS_INCLUDE_NAMESPACES (comma-separated)
+	if len(a.IncludeNamespaces) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_INCLUDE_NAMESPACES); v != "" {
+			a.IncludeNamespaces = splitAndTrim(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES (comma-separated)
+	if len(a.ExcludeNamespaces) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES); v != "" {
+			a.ExcludeNamespaces = splitAndTrim(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_INCLUDE_LABELS (comma-separated key=value pairs)
+	if len(a.IncludeLabels) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_INCLUDE_LABELS); v != "" {
+			a.IncludeLabels = parseKeyValuePairs(v)
+		}
+	}
+
+	// POSTMAN_INSIGHTS_EXCLUDE_LABELS (comma-separated key=value pairs)
+	if len(a.ExcludeLabels) == 0 {
+		if v := os.Getenv(POSTMAN_INSIGHTS_EXCLUDE_LABELS); v != "" {
+			a.ExcludeLabels = parseKeyValuePairs(v)
+		}
+	}
+
+}
+
+// splitAndTrim splits a comma-separated string and trims whitespace from each element.
+// Empty elements are discarded.
+func splitAndTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// parseKeyValuePairs parses a comma-separated list of key=value pairs into a map.
+// Entries without an '=' sign are skipped with a warning.
+func parseKeyValuePairs(s string) map[string]string {
+	pairs := splitAndTrim(s)
+	result := make(map[string]string, len(pairs))
+	for _, pair := range pairs {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			printer.Warningf("Ignoring malformed label entry %q (expected key=value)\n", pair)
+			continue
+		}
+		result[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return result
 }
 
 func StartDaemonset(args DaemonsetArgs) error {
+	// Apply environment variable defaults before processing.
+	args.applyEnvVarDefaults()
+
 	// Check if the agent is running in a linux environment
 	if runtime.GOOS != "linux" {
 		return errors.New("This command is only supported on linux images")
@@ -112,6 +205,24 @@ func StartDaemonset(args DaemonsetArgs) error {
 		FrontClient:              frontClient,
 		TelemetryInterval:        telemetryInterval,
 		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
+		DiscoveryMode:            args.DiscoveryMode,
+	}
+
+	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
+	if args.DiscoveryMode {
+		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
+		if apiKey == "" {
+			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
+		}
+		daemonsetRun.InsightsAPIKey = apiKey
+		daemonsetRun.PodFilter = NewPodFilter(
+			daemonsetRun.KubeClient.AgentHost,
+			args.IncludeNamespaces,
+			args.ExcludeNamespaces,
+			args.IncludeLabels,
+			args.ExcludeLabels,
+		)
+		printer.Infof("Discovery mode enabled. Using DaemonSet-level API key.\n")
 	}
 	if err := daemonsetRun.Run(); err != nil {
 		return cmderr.AkitaErr{Err: err}
@@ -252,6 +363,16 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 
 	// Iterate over each pod without the agent sidecar
 	for _, pod := range podsWithoutAgentSidecar {
+		// In discovery mode, apply pod filter before processing.
+		if d.DiscoveryMode && d.PodFilter != nil {
+			result := d.PodFilter.Evaluate(pod)
+			if !result.ShouldCapture {
+				printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
+				continue
+			}
+			printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
+		}
+
 		// Empty pod_args object for PodPending state
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
