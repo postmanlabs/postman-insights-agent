@@ -46,7 +46,7 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 
 	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printHelmApidumpFlags)
 	// Create the Postman Insights Agent sidecar container
-	container := createPostmanSidecar(insightsProjectID, false, apidumpArgs)
+	container := createPostmanSidecar(insightsProjectID, false, apidumpArgs, false, "")
 	// Store it in an array since the fragment will be added to a list of containers
 	containerArray := []v1.Container{container}
 

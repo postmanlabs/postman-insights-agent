@@ -12,13 +12,55 @@ const (
 	POSTMAN_INSIGHTS_AGENT_RATE_LIMIT        = "POSTMAN_INSIGHTS_AGENT_RATE_LIMIT"
 	POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS = "POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS"
 	POSTMAN_INSIGHTS_SYSTEM_ENV              = "POSTMAN_INSIGHTS_SYSTEM_ENV"
+	POSTMAN_INSIGHTS_SERVICE_NAME            = "POSTMAN_INSIGHTS_SERVICE_NAME"
 
 	// Daemonset environment variables
 	POSTMAN_INSIGHTS_ENV                = "POSTMAN_ENV" // This is same as root POSTMAN_ENV
 	POSTMAN_INSIGHTS_VERIFICATION_TOKEN = "POSTMAN_INSIGHTS_VERIFICATION_TOKEN"
 	POSTMAN_INSIGHTS_CLUSTER_NAME       = "POSTMAN_INSIGHTS_CLUSTER_NAME"
 
+	// Discovery mode environment variables
+	POSTMAN_INSIGHTS_DISCOVERY_MODE     = "POSTMAN_INSIGHTS_DISCOVERY_MODE"
+	POSTMAN_INSIGHTS_INCLUDE_NAMESPACES = "POSTMAN_INSIGHTS_INCLUDE_NAMESPACES"
+	POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES = "POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES"
+	POSTMAN_INSIGHTS_INCLUDE_LABELS     = "POSTMAN_INSIGHTS_INCLUDE_LABELS"
+	POSTMAN_INSIGHTS_EXCLUDE_LABELS     = "POSTMAN_INSIGHTS_EXCLUDE_LABELS"
+
+	// Annotations for pod opt-in/opt-out
+	AnnotationOptIn  = "postman.com/insights-enabled"
+	AnnotationOptOut = "postman.com/insights-disabled"
+
 	// Workers intervals
 	DefaultTelemetryInterval      = 5 * time.Minute
 	DefaultPodHealthCheckInterval = 5 * time.Minute
 )
+
+// DefaultExcludedNamespaces are system and infrastructure namespaces that are
+// excluded from discovery by default in daemonset mode.
+var DefaultExcludedNamespaces = []string{
+	"argocd",
+	"calico-system",
+	"cert-manager",
+	"cilium",
+	"crossplane-system",
+	"external-secrets",
+	"flux-system",
+	"gatekeeper-system",
+	"grafana",
+	"ingress-nginx",
+	"istio-system",
+	"jaeger",
+	"kube-node-lease",
+	"kube-public",
+	"kube-system",
+	"kyverno",
+	"linkerd",
+	"logging",
+	"metallb-system",
+	"monitoring",
+	"postman-insights-namespace",
+	"prometheus",
+	"tekton-pipelines",
+	"traefik",
+	"velero",
+}

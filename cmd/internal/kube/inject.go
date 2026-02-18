@@ -34,6 +34,10 @@ var (
 	// Postman related flags
 	insightsProjectID string
 
+	// Discovery mode flags for kube inject
+	injectDiscoveryMode bool
+	injectServiceName   string
+
 	apidumpFlags *apidump.CommonApidumpFlags
 )
 
@@ -42,16 +46,19 @@ var injectCmd = &cobra.Command{
 	Short: "Inject the Postman Insights Agent into a Kubernetes deployment",
 	Long:  "Inject the Postman Insights Agent into a Kubernetes deployment or set of deployments, and output the result to stdout or a file",
 	RunE: func(_ *cobra.Command, args []string) error {
-		if insightsProjectID == "" {
+		if !injectDiscoveryMode && insightsProjectID == "" {
 			return cmderr.AkitaErr{
-				Err: errors.New("--project must be specified."),
+				Err: errors.New("--project must be specified (or use --discovery-mode)."),
 			}
 		}
 
 		// Lookup service *first* (if we are remote) ensuring that insightsProjectID is correct and exists.
-		err := lookupService(insightsProjectID)
-		if err != nil {
-			return err
+		// Skip in discovery mode since there's no project ID yet.
+		if !injectDiscoveryMode {
+			err := lookupService(insightsProjectID)
+			if err != nil {
+				return err
+			}
 		}
 
 		secretOpts := resolveSecretGenerationOptions(secretInjectFlag)
@@ -123,7 +130,7 @@ var injectCmd = &cobra.Command{
 
 		apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
 		// Inject the sidecar into the input file
-		container = createPostmanSidecar(insightsProjectID, true, apidumpArgs)
+		container = createPostmanSidecar(insightsProjectID, true, apidumpArgs, injectDiscoveryMode, injectServiceName)
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)
 		if err != nil {
@@ -222,6 +229,20 @@ func init() {
 	)
 	// Default value is "true" when the flag is given without an argument.
 	injectCmd.Flags().Lookup("secret").NoOptDefVal = "true"
+
+	// Discovery mode flags
+	injectCmd.Flags().BoolVar(
+		&injectDiscoveryMode,
+		"discovery-mode",
+		false,
+		"Enable auto-discovery without requiring a project ID.",
+	)
+	injectCmd.Flags().StringVar(
+		&injectServiceName,
+		"service-name",
+		"",
+		"Override the auto-derived service name (default: namespace/workload-name).",
+	)
 
 	apidumpFlags = apidump.AddCommonApiDumpFlags(injectCmd)
 

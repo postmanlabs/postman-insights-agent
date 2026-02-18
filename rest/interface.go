@@ -91,4 +91,7 @@ type FrontClient interface {
 	// CreateApplication creates or retrieves an Application for the given workspace ID and system environment.
 	// This is used for API Catalog integration - allows agents to onboard at scale.
 	CreateApplication(ctx context.Context, workspaceID string, systemEnv string) (CreateApplicationResponse, error)
+
+	// RegisterDiscoveredService registers a service discovered via K8s autodiscovery.
+	RegisterDiscoveredService(ctx context.Context, req DiscoverServiceRequest) (DiscoverServiceResponse, error)
 }

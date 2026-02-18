@@ -52,3 +52,22 @@ type CreateApplicationResponse struct {
 	ServiceID     akid.ServiceID `json:"service_id"`
 	ServiceName   string         `json:"service_name"`
 }
+
+// DiscoverServiceRequest is sent by the agent to discover a service
+// via K8s autodiscovery. Used by both sidecar and daemonset modes.
+type DiscoverServiceRequest struct {
+	ServiceName   string            `json:"service_name"`
+	ClusterName   string            `json:"cluster_name"`
+	Namespace     string            `json:"namespace"`
+	WorkloadName  string            `json:"workload_name"`
+	WorkloadType  string            `json:"workload_type"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	DiscoveryMode string            `json:"discovery_mode"`
+}
+
+// DiscoverServiceResponse is returned after discovering a service.
+type DiscoverServiceResponse struct {
+	ServiceID string `json:"service_id"`
+	Status    string `json:"status"`
+	IsNew     bool   `json:"is_new"`
+}

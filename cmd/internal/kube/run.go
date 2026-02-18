@@ -7,14 +7,24 @@ import (
 )
 
 var (
-	reproMode bool
-	rateLimit float64
+	reproMode         bool
+	rateLimit         float64
+	discoveryMode     bool
+	includeNamespaces []string
+	excludeNamespaces []string
+	includeLabels     map[string]string
+	excludeLabels     map[string]string
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
-		ReproMode: reproMode,
-		RateLimit: rateLimit,
+		ReproMode:         reproMode,
+		RateLimit:         rateLimit,
+		DiscoveryMode:     discoveryMode,
+		IncludeNamespaces: includeNamespaces,
+		ExcludeNamespaces: excludeNamespaces,
+		IncludeLabels:     includeLabels,
+		ExcludeLabels:     excludeLabels,
 	})
 	if err == nil {
 		return nil
@@ -48,6 +58,37 @@ func init() {
 		"Enable Repro Mode to capture request and response payloads for debugging.",
 	)
 
+	// Discovery mode flags
+	runCmd.PersistentFlags().BoolVar(
+		&discoveryMode,
+		"discovery-mode",
+		false,
+		"Enable auto-discovery of K8s services without requiring a project ID.",
+	)
+	runCmd.PersistentFlags().StringSliceVar(
+		&includeNamespaces,
+		"include-namespaces",
+		nil,
+		"Comma-separated list of namespaces to include (empty = all except excluded).",
+	)
+	runCmd.PersistentFlags().StringSliceVar(
+		&excludeNamespaces,
+		"exclude-namespaces",
+		nil,
+		"Comma-separated list of namespaces to exclude (added to defaults).",
+	)
+	runCmd.PersistentFlags().StringToStringVar(
+		&includeLabels,
+		"include-labels",
+		nil,
+		"Labels that pods must have to be captured (key=value pairs).",
+	)
+	runCmd.PersistentFlags().StringToStringVar(
+		&excludeLabels,
+		"exclude-labels",
+		nil,
+		"Labels that exclude pods from capture (key=value pairs).",
+	)
 	Cmd.AddCommand(runCmd)
 
 	// Mark the inherited `project` flag as hidden
