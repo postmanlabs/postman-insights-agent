@@ -2,7 +2,6 @@ package daemonset
 
 import (
 	"runtime/debug"
-	"strings"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
@@ -13,15 +12,6 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"k8s.io/apimachinery/pkg/types"
 )
-
-// splitServiceName splits a "namespace/workload-name" string into its parts.
-func splitServiceName(serviceName string) [2]string {
-	parts := strings.SplitN(serviceName, "/", 2)
-	if len(parts) == 2 {
-		return [2]string{parts[0], parts[1]}
-	}
-	return [2]string{"", serviceName}
-}
 
 // StartApiDumpProcess initiates the API dump process for a given pod identified by its UID.
 // It retrieves the pod arguments, changes the pod's traffic monitoring state, and starts the API dump process in a separate goroutine.
@@ -99,6 +89,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			DiscoveryMode:           podArgs.DiscoveryMode,
 			ServiceName:             podArgs.DiscoveryServiceName,
 			ClusterName:             podArgs.ClusterName,
+			Namespace:               podArgs.Namespace,
 			WorkloadName:            podArgs.WorkloadName,
 			WorkloadType:            podArgs.WorkloadType,
 			Labels:                  podArgs.Labels,
@@ -109,13 +100,6 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
 			}),
-		}
-
-		// In discovery mode, extract namespace and workload name from the service name.
-		if podArgs.DiscoveryMode && podArgs.DiscoveryServiceName != "" {
-			parts := splitServiceName(podArgs.DiscoveryServiceName)
-			apidumpArgs.Namespace = parts[0]
-			apidumpArgs.WorkloadName = parts[1]
 		}
 
 		if err := apidump.Run(apidumpArgs); err != nil {

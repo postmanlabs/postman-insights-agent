@@ -25,7 +25,6 @@ const (
 	POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES = "POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES"
 	POSTMAN_INSIGHTS_INCLUDE_LABELS     = "POSTMAN_INSIGHTS_INCLUDE_LABELS"
 	POSTMAN_INSIGHTS_EXCLUDE_LABELS     = "POSTMAN_INSIGHTS_EXCLUDE_LABELS"
-	POSTMAN_INSIGHTS_REQUIRE_OPT_IN     = "POSTMAN_INSIGHTS_REQUIRE_OPT_IN"
 
 	// Annotations for pod opt-in/opt-out
 	AnnotationOptIn  = "postman.com/insights-enabled"
@@ -39,16 +38,29 @@ const (
 // DefaultExcludedNamespaces are system and infrastructure namespaces that are
 // excluded from discovery by default in daemonset mode.
 var DefaultExcludedNamespaces = []string{
-	"kube-system",
-	"kube-public",
-	"kube-node-lease",
-	"istio-system",
-	"linkerd",
-	"ingress-nginx",
-	"cert-manager",
-	"monitoring",
-	"logging",
-	"flux-system",
 	"argocd",
+	"calico-system",
+	"cert-manager",
+	"cilium",
+	"crossplane-system",
+	"external-secrets",
+	"flux-system",
+	"gatekeeper-system",
+	"grafana",
+	"ingress-nginx",
+	"istio-system",
+	"jaeger",
+	"kube-node-lease",
+	"kube-public",
+	"kube-system",
+	"kyverno",
+	"linkerd",
+	"logging",
+	"metallb-system",
+	"monitoring",
 	"postman-insights-namespace",
+	"prometheus",
+	"tekton-pipelines",
+	"traefik",
+	"velero",
 }

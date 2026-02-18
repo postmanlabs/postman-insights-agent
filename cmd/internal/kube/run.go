@@ -14,7 +14,6 @@ var (
 	excludeNamespaces []string
 	includeLabels     map[string]string
 	excludeLabels     map[string]string
-	requireOptIn      bool
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
@@ -26,7 +25,6 @@ func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 		ExcludeNamespaces: excludeNamespaces,
 		IncludeLabels:     includeLabels,
 		ExcludeLabels:     excludeLabels,
-		RequireOptIn:      requireOptIn,
 	})
 	if err == nil {
 		return nil
@@ -77,7 +75,7 @@ func init() {
 		&excludeNamespaces,
 		"exclude-namespaces",
 		nil,
-		"Comma-separated list of additional namespaces to exclude (added to defaults).",
+		"Comma-separated list of namespaces to exclude (added to defaults).",
 	)
 	runCmd.PersistentFlags().StringToStringVar(
 		&includeLabels,
@@ -91,13 +89,6 @@ func init() {
 		nil,
 		"Labels that exclude pods from capture (key=value pairs).",
 	)
-	runCmd.PersistentFlags().BoolVar(
-		&requireOptIn,
-		"require-opt-in",
-		false,
-		"Only capture pods with postman.com/insights-enabled=true annotation.",
-	)
-
 	Cmd.AddCommand(runCmd)
 
 	// Mark the inherited `project` flag as hidden

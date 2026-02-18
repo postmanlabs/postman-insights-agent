@@ -37,7 +37,6 @@ type DaemonsetArgs struct {
 	ExcludeNamespaces []string
 	IncludeLabels     map[string]string
 	ExcludeLabels     map[string]string
-	RequireOptIn      bool
 }
 
 type Daemonset struct {
@@ -111,12 +110,6 @@ func (a *DaemonsetArgs) applyEnvVarDefaults() {
 		}
 	}
 
-	// POSTMAN_INSIGHTS_REQUIRE_OPT_IN
-	if !a.RequireOptIn {
-		if v := os.Getenv(POSTMAN_INSIGHTS_REQUIRE_OPT_IN); strings.EqualFold(v, "true") {
-			a.RequireOptIn = true
-		}
-	}
 }
 
 // splitAndTrim splits a comma-separated string and trims whitespace from each element.
@@ -228,7 +221,6 @@ func StartDaemonset(args DaemonsetArgs) error {
 			args.ExcludeNamespaces,
 			args.IncludeLabels,
 			args.ExcludeLabels,
-			args.RequireOptIn,
 		)
 		printer.Infof("Discovery mode enabled. Using DaemonSet-level API key.\n")
 	}

@@ -53,8 +53,9 @@ type PodArgs struct {
 
 	// Discovery mode fields (set when running in discovery mode)
 	DiscoveryMode        bool
-	DiscoveryServiceName string // namespace/workload-name
+	DiscoveryServiceName string
 	ClusterName          string
+	Namespace            string
 	WorkloadName         string
 	WorkloadType         string
 	Labels               map[string]string

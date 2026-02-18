@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // PodFilter applies multi-layer filtering to determine which pods should be
@@ -18,7 +19,6 @@ type PodFilter struct {
 	ExcludeNamespaces map[string]bool
 	IncludeLabels     map[string]string
 	ExcludeLabels     map[string]string
-	RequireOptIn      bool
 }
 
 // FilterResult is the outcome of evaluating a pod against the filter.
@@ -37,7 +37,6 @@ func NewPodFilter(
 	excludeNamespaces []string,
 	includeLabels map[string]string,
 	excludeLabels map[string]string,
-	requireOptIn bool,
 ) *PodFilter {
 	includeNS := make(map[string]bool, len(includeNamespaces))
 	for _, ns := range includeNamespaces {
@@ -58,7 +57,6 @@ func NewPodFilter(
 		ExcludeNamespaces: excludeNS,
 		IncludeLabels:     includeLabels,
 		ExcludeLabels:     excludeLabels,
-		RequireOptIn:      requireOptIn,
 	}
 }
 
@@ -104,18 +102,11 @@ func (f *PodFilter) checkNamespace(ns string) (bool, string) {
 
 func (f *PodFilter) checkLabelsAndAnnotations(pod corev1.Pod) (bool, string) {
 	// Opt-out annotation takes precedence
-	if pod.Annotations[AnnotationOptOut] == "true" {
+	if strings.EqualFold(pod.Annotations[AnnotationOptOut], "true") {
 		return false, "explicit opt-out annotation"
 	}
-	if pod.Annotations[AnnotationOptIn] == "false" {
+	if strings.EqualFold(pod.Annotations[AnnotationOptIn], "false") {
 		return false, "insights-enabled set to false"
-	}
-
-	// If opt-in is required, check for the annotation
-	if f.RequireOptIn {
-		if pod.Annotations[AnnotationOptIn] != "true" {
-			return false, "opt-in required but annotation not present"
-		}
 	}
 
 	// Check exclude labels: if the pod matches any exclude label, skip it
@@ -138,51 +129,67 @@ func (f *PodFilter) checkLabelsAndAnnotations(pod corev1.Pod) (bool, string) {
 	return true, ""
 }
 
+// controllingOwner returns the owner reference with Controller==true.
+// If none is marked as the controller, it falls back to the first reference.
+// Returns nil when the pod has no owner references.
+func controllingOwner(pod corev1.Pod) *metav1.OwnerReference {
+	if len(pod.OwnerReferences) == 0 {
+		return nil
+	}
+	for i := range pod.OwnerReferences {
+		if pod.OwnerReferences[i].Controller != nil && *pod.OwnerReferences[i].Controller {
+			return &pod.OwnerReferences[i]
+		}
+	}
+	return &pod.OwnerReferences[0]
+}
+
 // checkControllerType filters by the pod's owner reference. Only long-running
 // workloads (Deployment, StatefulSet, DaemonSet via ReplicaSet) are captured.
 func checkControllerType(pod corev1.Pod) (bool, string) {
-	if len(pod.OwnerReferences) == 0 {
+	owner := controllingOwner(pod)
+	if owner == nil {
 		return false, "standalone pod (no controller)"
 	}
 
-	for _, owner := range pod.OwnerReferences {
-		switch owner.Kind {
-		case "ReplicaSet", "StatefulSet", "DaemonSet":
-			return true, ""
-		case "Job", "CronJob":
-			return false, "ephemeral workload (Job/CronJob)"
-		}
+	switch owner.Kind {
+	case "ReplicaSet", "StatefulSet", "DaemonSet":
+		return true, ""
+	case "Job", "CronJob":
+		return false, "ephemeral workload (Job/CronJob)"
+	default:
+		return false, fmt.Sprintf("unsupported controller type: %s", owner.Kind)
 	}
-
-	return false, fmt.Sprintf("unsupported controller type: %s", pod.OwnerReferences[0].Kind)
 }
 
-// deriveWorkloadType derives the workload type from a pod's owner references.
-// For ReplicaSets (typically created by Deployments), it returns "Deployment".
-// For other controller types, it returns the Kind directly.
+// deriveWorkloadType derives the workload type from the pod's controlling
+// owner reference. For ReplicaSets (typically created by Deployments), it
+// returns "Deployment". For other controller types, it returns the Kind directly.
 func deriveWorkloadType(pod corev1.Pod) string {
-	if len(pod.OwnerReferences) == 0 {
+	owner := controllingOwner(pod)
+	if owner == nil {
 		return ""
 	}
-	kind := pod.OwnerReferences[0].Kind
-	if kind == "ReplicaSet" {
+	if owner.Kind == "ReplicaSet" {
 		return "Deployment"
 	}
-	return kind
+	return owner.Kind
 }
 
-// deriveWorkloadName derives the workload name from a pod's owner references
-// and labels, without the namespace prefix.
+// deriveWorkloadName derives the workload name from the pod's controlling
+// owner reference and labels, without the namespace prefix.
 func deriveWorkloadName(pod corev1.Pod) string {
-	if len(pod.OwnerReferences) > 0 {
-		ownerName := pod.OwnerReferences[0].Name
-		if pod.OwnerReferences[0].Kind == "ReplicaSet" {
-			if idx := strings.LastIndex(ownerName, "-"); idx > 0 {
-				return ownerName[:idx]
+	owner := controllingOwner(pod)
+	if owner != nil {
+		workloadName := owner.Name
+		if owner.Kind == "ReplicaSet" {
+			if idx := strings.LastIndex(workloadName, "-"); idx > 0 {
+				workloadName = workloadName[:idx]
 			}
-			return ownerName
 		}
-		return ownerName
+		if workloadName != "" {
+			return workloadName
+		}
 	}
 
 	if name, ok := pod.Labels["app.kubernetes.io/name"]; ok {
@@ -201,43 +208,6 @@ func deriveWorkloadName(pod corev1.Pod) string {
 
 // deriveServiceName derives a service name from K8s pod metadata.
 // Format: {namespace}/{workload-name}
-// Fallback chain: owner reference name > app label > pod name prefix
 func deriveServiceName(pod corev1.Pod) string {
-	workloadName := ""
-
-	// Try owner reference name (e.g., ReplicaSet name, which is typically deployment-name-hash)
-	if len(pod.OwnerReferences) > 0 {
-		ownerName := pod.OwnerReferences[0].Name
-		// For ReplicaSets created by Deployments, strip the trailing hash
-		if pod.OwnerReferences[0].Kind == "ReplicaSet" {
-			if idx := strings.LastIndex(ownerName, "-"); idx > 0 {
-				workloadName = ownerName[:idx]
-			} else {
-				workloadName = ownerName
-			}
-		} else {
-			workloadName = ownerName
-		}
-	}
-
-	// Fallback to app label
-	if workloadName == "" {
-		if name, ok := pod.Labels["app.kubernetes.io/name"]; ok {
-			workloadName = name
-		} else if name, ok := pod.Labels["app"]; ok {
-			workloadName = name
-		}
-	}
-
-	// Final fallback: pod name prefix
-	if workloadName == "" {
-		name := pod.Name
-		if idx := strings.LastIndex(name, "-"); idx > 0 {
-			workloadName = name[:idx]
-		} else {
-			workloadName = name
-		}
-	}
-
-	return pod.Namespace + "/" + workloadName
+	return pod.Namespace + "/" + deriveWorkloadName(pod)
 }

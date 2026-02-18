@@ -25,7 +25,7 @@ func newTestPod(namespace, name string, labels, annotations map[string]string, o
 }
 
 func TestAgentSelfSkip(t *testing.T) {
-	f := NewPodFilter("insights-agent-abc", nil, nil, nil, nil, false)
+	f := NewPodFilter("insights-agent-abc", nil, nil, nil, nil)
 
 	agentPod := newTestPod("default", "insights-agent-abc", nil, nil, "DaemonSet", "insights-agent")
 	otherPod := newTestPod("default", "api-abc", nil, nil, "ReplicaSet", "api-abc123")
@@ -39,7 +39,7 @@ func TestAgentSelfSkip(t *testing.T) {
 }
 
 func TestNamespaceFilter_ExcludeDefault(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, nil, false)
+	f := NewPodFilter("", nil, nil, nil, nil)
 	pod := newTestPod("kube-system", "coredns-abc", nil, nil, "ReplicaSet", "coredns-abc123")
 	result := f.Evaluate(pod)
 	if result.ShouldCapture {
@@ -48,7 +48,7 @@ func TestNamespaceFilter_ExcludeDefault(t *testing.T) {
 }
 
 func TestNamespaceFilter_ExcludeCustom(t *testing.T) {
-	f := NewPodFilter("", nil, []string{"redis-ns"}, nil, nil, false)
+	f := NewPodFilter("", nil, []string{"redis-ns"}, nil, nil)
 	pod := newTestPod("redis-ns", "redis-0", nil, nil, "StatefulSet", "redis")
 	result := f.Evaluate(pod)
 	if result.ShouldCapture {
@@ -57,7 +57,7 @@ func TestNamespaceFilter_ExcludeCustom(t *testing.T) {
 }
 
 func TestNamespaceFilter_IncludeOnly(t *testing.T) {
-	f := NewPodFilter("", []string{"production"}, nil, nil, nil, false)
+	f := NewPodFilter("", []string{"production"}, nil, nil, nil)
 
 	prod := newTestPod("production", "api-abc", nil, nil, "ReplicaSet", "api-abc123")
 	staging := newTestPod("staging", "api-abc", nil, nil, "ReplicaSet", "api-abc123")
@@ -71,7 +71,7 @@ func TestNamespaceFilter_IncludeOnly(t *testing.T) {
 }
 
 func TestAnnotationFilter_OptOut(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, nil, false)
+	f := NewPodFilter("", nil, nil, nil, nil)
 	pod := newTestPod("default", "api-xyz", nil, map[string]string{
 		AnnotationOptOut: "true",
 	}, "ReplicaSet", "api-xyz123")
@@ -81,24 +81,8 @@ func TestAnnotationFilter_OptOut(t *testing.T) {
 	}
 }
 
-func TestAnnotationFilter_OptInRequired(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, nil, true)
-
-	withOptIn := newTestPod("default", "api-a", nil, map[string]string{
-		AnnotationOptIn: "true",
-	}, "ReplicaSet", "api-a123")
-	withoutOptIn := newTestPod("default", "api-b", nil, nil, "ReplicaSet", "api-b123")
-
-	if r := f.Evaluate(withOptIn); !r.ShouldCapture {
-		t.Errorf("expected opt-in pod to be captured")
-	}
-	if r := f.Evaluate(withoutOptIn); r.ShouldCapture {
-		t.Errorf("expected pod without opt-in to be excluded when require-opt-in=true")
-	}
-}
-
 func TestLabelFilter_Include(t *testing.T) {
-	f := NewPodFilter("", nil, nil, map[string]string{"app": "my-api"}, nil, false)
+	f := NewPodFilter("", nil, nil, map[string]string{"app": "my-api"}, nil)
 
 	match := newTestPod("default", "my-api-abc", map[string]string{"app": "my-api"}, nil, "ReplicaSet", "my-api-abc123")
 	noMatch := newTestPod("default", "redis-abc", map[string]string{"app": "redis"}, nil, "ReplicaSet", "redis-abc123")
@@ -112,7 +96,7 @@ func TestLabelFilter_Include(t *testing.T) {
 }
 
 func TestLabelFilter_Exclude(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, map[string]string{"app": "redis"}, false)
+	f := NewPodFilter("", nil, nil, nil, map[string]string{"app": "redis"})
 
 	redis := newTestPod("default", "redis-abc", map[string]string{"app": "redis"}, nil, "ReplicaSet", "redis-abc123")
 	api := newTestPod("default", "api-abc", map[string]string{"app": "my-api"}, nil, "ReplicaSet", "api-abc123")
@@ -126,7 +110,7 @@ func TestLabelFilter_Exclude(t *testing.T) {
 }
 
 func TestControllerTypeFilter_Job(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, nil, false)
+	f := NewPodFilter("", nil, nil, nil, nil)
 	pod := newTestPod("default", "data-job-abc", nil, nil, "Job", "data-job")
 	result := f.Evaluate(pod)
 	if result.ShouldCapture {
@@ -135,7 +119,7 @@ func TestControllerTypeFilter_Job(t *testing.T) {
 }
 
 func TestControllerTypeFilter_StandalonePod(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, nil, false)
+	f := NewPodFilter("", nil, nil, nil, nil)
 	pod := newTestPod("default", "debug-pod", nil, nil, "", "")
 	result := f.Evaluate(pod)
 	if result.ShouldCapture {
@@ -144,11 +128,33 @@ func TestControllerTypeFilter_StandalonePod(t *testing.T) {
 }
 
 func TestControllerTypeFilter_Deployment(t *testing.T) {
-	f := NewPodFilter("", nil, nil, nil, nil, false)
+	f := NewPodFilter("", nil, nil, nil, nil)
 	pod := newTestPod("default", "user-svc-abc-def", nil, nil, "ReplicaSet", "user-svc-abc")
 	result := f.Evaluate(pod)
 	if !result.ShouldCapture {
 		t.Errorf("expected Deployment (ReplicaSet) pod to be captured, reason: %s", result.Reason)
+	}
+}
+
+func TestControllingOwner_PicksController(t *testing.T) {
+	f := NewPodFilter("", nil, nil, nil, nil)
+	isController := true
+
+	// The controlling owner (ReplicaSet) appears second, but should still be chosen.
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "api-abc-def",
+			Namespace: "default",
+		},
+	}
+	pod.OwnerReferences = []metav1.OwnerReference{
+		{Kind: "Job", Name: "migrate-job"},
+		{Kind: "ReplicaSet", Name: "api-abc", Controller: &isController},
+	}
+
+	result := f.Evaluate(pod)
+	if !result.ShouldCapture {
+		t.Errorf("expected pod to be captured via controlling ReplicaSet, reason: %s", result.Reason)
 	}
 }
 
