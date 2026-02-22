@@ -954,7 +954,7 @@ func makeAgentContainerDefinition(
 		addToEnv("POSTMAN_ENV", pEnv)
 	}
 
-	addToEnv("POSTMAN_API_KEY", pKey)
+	addToEnv("POSTMAN_INSIGHTS_API_KEY", pKey)
 
 	// Setting these optional environment variables will cause the traces to be
 	// tagged.
@@ -962,13 +962,18 @@ func makeAgentContainerDefinition(
 	addOptToEnv("POSTMAN_ECS_SERVICE", ecsService)
 	addOptToEnv("POSTMAN_ECS_TASK", ecsTaskDefinitionFamily)
 
-	// Pass apidump flags as it is, the apidump command will parse them.
-	// We are already handling the default values in apidump command
-	entryPoint := []string{
-		"/postman-insights-agent",
-		"apidump",
-		"--project",
-		projectId,
+	var entryPoint []string
+	switch {
+	case discoveryMode:
+		entryPoint = []string{"/postman-insights-agent", "apidump", "--discovery-mode"}
+		if serviceName != "" {
+			entryPoint = append(entryPoint, "--service-name", serviceName)
+		}
+	case workspaceID != "":
+		entryPoint = []string{"/postman-insights-agent", "apidump",
+			"--workspace-id", workspaceID, "--system-env", systemEnv}
+	default:
+		entryPoint = []string{"/postman-insights-agent", "apidump", "--project", projectId}
 	}
 
 	// Get the common apidump args

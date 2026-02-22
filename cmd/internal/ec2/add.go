@@ -5,8 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"strings"
 	"runtime"
+	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/pkg/errors"
@@ -69,7 +69,7 @@ func reportStep(stepName string) {
 	telemetry.WorkflowStep("Starting systemd configuration", stepName)
 }
 
-func setupAgentForServer(projectID string) error {
+func setupAgentForServer() error {
 	// Check if the agent is running in a linux environment
 	if runtime.GOOS != "linux" {
 		return errors.New("This command is only supported on Linux.")
@@ -84,7 +84,7 @@ func setupAgentForServer(projectID string) error {
 		return err
 	}
 
-	err = configureSystemdFiles(projectID)
+	err = configureSystemdFiles()
 	if err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func getAgentInstallPath() (string, error) {
 	return "", errors.Errorf("Could not find postman-insights-agent binary in your OS.")
 }
 
-func configureSystemdFiles(projectID string) error {
+func configureSystemdFiles() error {
 	message := "Configuring systemd files"
 	printer.Infof(message + "\n")
 	reportStep(message)
@@ -223,9 +223,17 @@ func configureSystemdFiles(projectID string) error {
 		PostmanEnv    string
 		PostmanAPIKey string
 		ProjectID     string
+		DiscoveryMode bool
+		ServiceName   string
+		WorkspaceID   string
+		SystemEnv     string
 	}{
 		PostmanAPIKey: apiKey,
 		ProjectID:     projectID,
+		DiscoveryMode: discoveryMode,
+		ServiceName:   serviceName,
+		WorkspaceID:   workspaceID,
+		SystemEnv:     systemEnv,
 	}
 	if env != "" {
 		envFiledata.PostmanEnv = env
@@ -249,11 +257,26 @@ func configureSystemdFiles(projectID string) error {
 	// Join the extra apidump args to a single string
 	apidumpArgsStr := strings.Join(apidumpArgs, " ")
 
+	var modeArgs string
+	switch {
+	case discoveryMode:
+		modeArgs = `--discovery-mode`
+		if serviceName != "" {
+			modeArgs += ` --service-name "${SERVICE_NAME}"`
+		}
+	case workspaceID != "":
+		modeArgs = `--workspace-id "${WORKSPACE_ID}" --system-env "${SYSTEM_ENV}"`
+	default:
+		modeArgs = `--project "${PROJECT_ID}"`
+	}
+
 	serviceFileData := struct {
 		AgentInstallPath string
+		ModeArgs         string
 		ExtraApidumpArgs string
 	}{
 		AgentInstallPath: agentInstallPath,
+		ModeArgs:         modeArgs,
 		ExtraApidumpArgs: apidumpArgsStr,
 	}
 
