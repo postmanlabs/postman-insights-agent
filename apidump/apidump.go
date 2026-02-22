@@ -241,6 +241,21 @@ func (a *apidump) LookupService() error {
 	frontClient := rest.NewFrontClient(a.Domain, a.ClientID, authHandler, apidumpTelemetry.APIError)
 
 	if a.DiscoveryMode {
+		// Validate required fields before calling the backend, which returns
+		// a generic 400 if these are missing.
+		if a.Namespace == "" {
+			return errors.New(
+				"discovery mode requires a namespace: set the POSTMAN_K8S_NAMESPACE env var, " +
+					"or use kube inject (derives it from kubernetes manifest)",
+			)
+		}
+		if a.WorkloadName == "" {
+			return errors.New(
+				"discovery mode requires a workload name: set POSTMAN_INSIGHTS_WORKLOAD_NAME env var " +
+					"or use kube inject (derives it from kubernetes manifest)",
+			)
+		}
+
 		// Discovery mode: register the discovered service with the backend.
 		serviceName := a.ServiceName
 		if serviceName == "" {

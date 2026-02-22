@@ -2,11 +2,14 @@ package kube
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
@@ -20,6 +23,13 @@ import (
 var (
 	printHelmApidumpFlags *apidump.CommonApidumpFlags
 	printTFApidumpFlags   *apidump.CommonApidumpFlags
+
+	// Shared flags for helm-fragment and tf-fragment
+	fragmentDiscoveryMode bool
+	fragmentServiceName   string
+	fragmentClusterName   string
+	fragmentWorkspaceID   string
+	fragmentSystemEnv     string
 )
 
 var printHelmChartFragmentCmd = &cobra.Command{
@@ -38,16 +48,50 @@ var printTerraformFragmentCmd = &cobra.Command{
 	PersistentPreRun: kubeCommandPreRun,
 }
 
+func validateFragmentFlags() error {
+	if !fragmentDiscoveryMode && insightsProjectID == "" && fragmentWorkspaceID == "" {
+		return cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
+	}
+	if fragmentWorkspaceID != "" {
+		if fragmentSystemEnv == "" {
+			return cmderr.AkitaErr{Err: errors.New("--system-env is required when --workspace-id is specified")}
+		}
+		if _, err := uuid.Parse(fragmentWorkspaceID); err != nil {
+			return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
+		}
+		if _, err := uuid.Parse(fragmentSystemEnv); err != nil {
+			return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
+		}
+	}
+	if !fragmentDiscoveryMode && fragmentWorkspaceID == "" {
+		if err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildFragmentSidecarOpts(apidumpArgs []string) SidecarOpts {
+	return SidecarOpts{
+		ProjectID:         insightsProjectID,
+		WorkspaceID:       fragmentWorkspaceID,
+		SystemEnv:         fragmentSystemEnv,
+		DiscoveryMode:     fragmentDiscoveryMode,
+		ServiceName:       fragmentServiceName,
+		AddAPIKeyAsSecret: false,
+		ClusterName:       fragmentClusterName,
+		ApidumpArgs:       apidumpArgs,
+	}
+}
+
 func printHelmChartFragment(_ *cobra.Command, _ []string) error {
-	err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID)
-	if err != nil {
+	if err := validateFragmentFlags(); err != nil {
 		return err
 	}
 
 	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printHelmApidumpFlags)
-	// Create the Postman Insights Agent sidecar container
-	container := createPostmanSidecar(insightsProjectID, false, apidumpArgs, false, "")
-	// Store it in an array since the fragment will be added to a list of containers
+	opts := buildFragmentSidecarOpts(apidumpArgs)
+	container := createPostmanSidecar(opts)
 	containerArray := []v1.Container{container}
 
 	containerYamlBytes, err := yaml.Marshal(containerArray)
@@ -61,21 +105,20 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 }
 
 func printTerraformFragment(_ *cobra.Command, _ []string) error {
-	err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID)
-	if err != nil {
+	if err := validateFragmentFlags(); err != nil {
 		return err
 	}
 
-	// Create the Postman Insights Agent sidecar container
-	hclBlockConfig := createTerraformContainer(insightsProjectID)
+	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printTFApidumpFlags)
+	opts := buildFragmentSidecarOpts(apidumpArgs)
+	hclBlockConfig := createTerraformContainer(opts)
 	hclBlockConfigString := indentCodeFragment(hclBlockConfig.Bytes(), 4)
 
-	// Print the fragment
 	fmt.Printf("\n%s\n", hclBlockConfigString)
 	return nil
 }
 
-func createTerraformContainer(insightsProjectID string) *hclwrite.File {
+func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 	hclConfig := hclwrite.NewEmptyFile()
 	rootBody := hclConfig.Body()
 
@@ -98,33 +141,83 @@ func createTerraformContainer(insightsProjectID string) *hclwrite.File {
 		cty.StringVal("NET_RAW"),
 	}))
 
-	argList := []cty.Value{
-		cty.StringVal("apidump"),
-		cty.StringVal("--project"),
-		cty.StringVal(insightsProjectID),
+	// Build args based on onboarding mode
+	var argList []cty.Value
+	switch {
+	case opts.DiscoveryMode:
+		argList = []cty.Value{cty.StringVal("apidump"), cty.StringVal("--discovery-mode")}
+		if opts.ServiceName != "" {
+			argList = append(argList, cty.StringVal("--service-name"), cty.StringVal(opts.ServiceName))
+		}
+	case opts.WorkspaceID != "":
+		argList = []cty.Value{
+			cty.StringVal("apidump"),
+			cty.StringVal("--workspace-id"), cty.StringVal(opts.WorkspaceID),
+			cty.StringVal("--system-env"), cty.StringVal(opts.SystemEnv),
+		}
+	default:
+		argList = []cty.Value{
+			cty.StringVal("apidump"),
+			cty.StringVal("--project"), cty.StringVal(opts.ProjectID),
+		}
 	}
 	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
 		argList = append(argList, cty.StringVal("--domain"), cty.StringVal(rest.Domain))
 	}
-	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printTFApidumpFlags)
-	for _, arg := range apidumpArgs {
+	for _, arg := range opts.ApidumpArgs {
 		argList = append(argList, cty.StringVal(arg))
 	}
-	// Add the args to the container
-	args := cty.ListVal(argList)
-	containerBody.SetAttributeValue("args", args)
+	containerBody.SetAttributeValue("args", cty.ListVal(argList))
 
-	// Add the environment variables to the container
+	// API key env var
 	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()
-	APIKeyEnvBlockBody := containerBody.AppendNewBlock("env", []string{}).Body()
-	APIKeyEnvBlockBody.SetAttributeValue("name", cty.StringVal("POSTMAN_API_KEY"))
-	APIKeyEnvBlockBody.SetAttributeValue("value", cty.StringVal(pmKey))
+	apiKeyBody := containerBody.AppendNewBlock("env", []string{}).Body()
+	apiKeyBody.SetAttributeValue("name", cty.StringVal("POSTMAN_INSIGHTS_API_KEY"))
+	apiKeyBody.SetAttributeValue("value", cty.StringVal(pmKey))
 
 	if pmEnv != "" {
-		PostmanEnvBlockBody := containerBody.AppendNewBlock("env", []string{}).Body()
-		PostmanEnvBlockBody.SetAttributeValue("name", cty.StringVal("POSTMAN_ENV"))
-		PostmanEnvBlockBody.SetAttributeValue("value", cty.StringVal(pmEnv))
+		pmEnvBody := containerBody.AppendNewBlock("env", []string{}).Body()
+		pmEnvBody.SetAttributeValue("name", cty.StringVal("POSTMAN_ENV"))
+		pmEnvBody.SetAttributeValue("value", cty.StringVal(pmEnv))
+	}
+
+	// K8s downward API env vars (via value_from / field_ref in Terraform)
+	addTFDownwardAPIEnv := func(name, fieldPath string) {
+		envBody := containerBody.AppendNewBlock("env", []string{}).Body()
+		envBody.SetAttributeValue("name", cty.StringVal(name))
+		vfBody := envBody.AppendNewBlock("value_from", []string{}).Body()
+		frBody := vfBody.AppendNewBlock("field_ref", []string{}).Body()
+		frBody.SetAttributeValue("field_path", cty.StringVal(fieldPath))
+	}
+	addTFDownwardAPIEnv("POSTMAN_K8S_NODE", "spec.nodeName")
+	addTFDownwardAPIEnv("POSTMAN_K8S_NAMESPACE", "metadata.namespace")
+	addTFDownwardAPIEnv("POSTMAN_K8S_POD", "metadata.name")
+	addTFDownwardAPIEnv("POSTMAN_K8S_HOST_IP", "status.hostIP")
+	addTFDownwardAPIEnv("POSTMAN_K8S_POD_IP", "status.podIP")
+
+	// Discovery metadata env vars -- only relevant in discovery mode.
+	if opts.DiscoveryMode {
+		addTFStaticEnv := func(name, value string) {
+			envBody := containerBody.AppendNewBlock("env", []string{}).Body()
+			envBody.SetAttributeValue("name", cty.StringVal(name))
+			envBody.SetAttributeValue("value", cty.StringVal(value))
+		}
+		if opts.ClusterName != "" {
+			addTFStaticEnv("POSTMAN_INSIGHTS_CLUSTER_NAME", opts.ClusterName)
+		}
+		if opts.WorkloadName != "" {
+			addTFStaticEnv("POSTMAN_INSIGHTS_WORKLOAD_NAME", opts.WorkloadName)
+		}
+		if opts.WorkloadType != "" {
+			addTFStaticEnv("POSTMAN_INSIGHTS_WORKLOAD_TYPE", opts.WorkloadType)
+		}
+		if len(opts.Labels) > 0 {
+			labelsJSON, err := json.Marshal(opts.Labels)
+			if err == nil {
+				addTFStaticEnv("POSTMAN_INSIGHTS_LABELS", string(labelsJSON))
+			}
+		}
 	}
 
 	return hclConfig
@@ -136,17 +229,24 @@ func indentCodeFragment(codeFragmentInBytes []byte, indentLevel int) string {
 
 	// Indent level prefix
 	indentPrefix := strings.Repeat("  ", indentLevel)
+	return indentPrefix + strings.ReplaceAll(string(codeFragmentInBytes), "\n", "\n"+indentPrefix)
+}
 
-	indentedCodeFragment := indentPrefix + strings.ReplaceAll(
-		string(codeFragmentInBytes), "\n", "\n"+indentPrefix)
-
-	return indentedCodeFragment
+func addFragmentModeFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&fragmentDiscoveryMode, "discovery-mode", false, "Enable auto-discovery without requiring a project ID.")
+	cmd.Flags().StringVar(&fragmentServiceName, "service-name", "", "Override the auto-derived service name.")
+	cmd.Flags().StringVar(&fragmentClusterName, "cluster-name", "", "Kubernetes cluster name (discovery metadata).")
+	cmd.Flags().StringVar(&fragmentWorkspaceID, "workspace-id", "", "Your Postman workspace ID.")
+	cmd.Flags().StringVar(&fragmentSystemEnv, "system-env", "", "The system environment UUID. Required with --workspace-id.")
+	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode")
 }
 
 func init() {
 	printHelmApidumpFlags = apidump.AddCommonApiDumpFlags(printHelmChartFragmentCmd)
+	addFragmentModeFlags(printHelmChartFragmentCmd)
 	Cmd.AddCommand(printHelmChartFragmentCmd)
 
 	printTFApidumpFlags = apidump.AddCommonApiDumpFlags(printTerraformFragmentCmd)
+	addFragmentModeFlags(printTerraformFragmentCmd)
 	Cmd.AddCommand(printTerraformFragmentCmd)
 }

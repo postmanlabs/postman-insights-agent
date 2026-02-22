@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -73,29 +74,53 @@ func createFile(path string) (*os.File, error) {
 	return outputFile, nil
 }
 
-func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apidumpArgs []string, discoveryMode bool, serviceName string) v1.Container {
+// SidecarOpts configures the Postman Insights Agent sidecar container.
+type SidecarOpts struct {
+	// Onboarding mode (exactly one of ProjectID, WorkspaceID, or DiscoveryMode should be set)
+	ProjectID     string
+	WorkspaceID   string
+	SystemEnv     string
+	DiscoveryMode bool
+	ServiceName   string
+
+	// When true, POSTMAN_API_KEY is sourced from a K8s Secret instead of a literal value.
+	AddAPIKeyAsSecret bool
+
+	// Discovery metadata (set from manifest + flags)
+	ClusterName  string
+	WorkloadName string
+	WorkloadType string
+	Labels       map[string]string
+
+	// Extra apidump CLI args from common flags (e.g. --filter, --rate-limit)
+	ApidumpArgs []string
+}
+
+func createPostmanSidecar(opts SidecarOpts) v1.Container {
 	var args []string
-	if discoveryMode {
+	switch {
+	case opts.DiscoveryMode:
 		args = []string{"apidump", "--discovery-mode"}
-		if serviceName != "" {
-			args = append(args, "--service-name", serviceName)
+		if opts.ServiceName != "" {
+			args = append(args, "--service-name", opts.ServiceName)
 		}
-	} else {
-		args = []string{"apidump", "--project", insightsProjectID}
+	case opts.WorkspaceID != "":
+		args = []string{"apidump", "--workspace-id", opts.WorkspaceID, "--system-env", opts.SystemEnv}
+	default:
+		args = []string{"apidump", "--project", opts.ProjectID}
 	}
 
-	// If a non default --domain flag was used, specify it for the container as well.
 	if rest.Domain != rest.DefaultDomain() {
 		args = append(args, "--domain", rest.Domain)
 	}
-	args = append(args, apidumpArgs...)
+	args = append(args, opts.ApidumpArgs...)
 
 	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()
 	envs := []v1.EnvVar{}
 
-	if addAPIKeyAsSecret {
+	if opts.AddAPIKeyAsSecret {
 		envs = append(envs, v1.EnvVar{
-			Name: "POSTMAN_API_KEY",
+			Name: "POSTMAN_INSIGHTS_API_KEY",
 			ValueFrom: &v1.EnvVarSource{
 				SecretKeyRef: &v1.SecretKeySelector{
 					LocalObjectReference: v1.LocalObjectReference{
@@ -107,7 +132,7 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apid
 		})
 	} else {
 		envs = append(envs, v1.EnvVar{
-			Name:  "POSTMAN_API_KEY",
+			Name:  "POSTMAN_INSIGHTS_API_KEY",
 			Value: pmKey,
 		})
 	}
@@ -120,68 +145,75 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apid
 	}
 
 	k8sEnvVars := []v1.EnvVar{
-		v1.EnvVar{
+		{
 			Name: "POSTMAN_K8S_NODE",
 			ValueFrom: &v1.EnvVarSource{
-				FieldRef: &v1.ObjectFieldSelector{
-					FieldPath: "spec.nodeName",
-				},
+				FieldRef: &v1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
 			},
 		},
-		v1.EnvVar{
+		{
 			Name: "POSTMAN_K8S_NAMESPACE",
 			ValueFrom: &v1.EnvVarSource{
-				FieldRef: &v1.ObjectFieldSelector{
-					FieldPath: "metadata.namespace",
-				},
+				FieldRef: &v1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 			},
 		},
-		v1.EnvVar{
+		{
 			Name: "POSTMAN_K8S_POD",
 			ValueFrom: &v1.EnvVarSource{
-				FieldRef: &v1.ObjectFieldSelector{
-					FieldPath: "metadata.name",
-				},
+				FieldRef: &v1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			},
 		},
-		v1.EnvVar{
+		{
 			Name: "POSTMAN_K8S_HOST_IP",
 			ValueFrom: &v1.EnvVarSource{
-				FieldRef: &v1.ObjectFieldSelector{
-					FieldPath: "status.hostIP",
-				},
+				FieldRef: &v1.ObjectFieldSelector{FieldPath: "status.hostIP"},
 			},
 		},
-		v1.EnvVar{
+		{
 			Name: "POSTMAN_K8S_POD_IP",
 			ValueFrom: &v1.EnvVarSource{
-				FieldRef: &v1.ObjectFieldSelector{
-					FieldPath: "status.podIP",
-				},
+				FieldRef: &v1.ObjectFieldSelector{FieldPath: "status.podIP"},
 			},
 		},
 	}
-	// Add k8s metadata env vars to the sidecar
 	envs = append(envs, k8sEnvVars...)
 
-	// In discovery mode, inject additional env vars for service naming
-	if discoveryMode {
-		envs = append(envs, v1.EnvVar{
-			Name:  "POSTMAN_INSIGHTS_DISCOVERY_MODE",
-			Value: "true",
-		})
-		if serviceName != "" {
+	// Discovery metadata env vars -- only relevant in discovery mode where
+	// they are used to register the discovered service with the backend.
+	if opts.DiscoveryMode {
+		if opts.ClusterName != "" {
 			envs = append(envs, v1.EnvVar{
-				Name:  "POSTMAN_INSIGHTS_SERVICE_NAME",
-				Value: serviceName,
+				Name:  "POSTMAN_INSIGHTS_CLUSTER_NAME",
+				Value: opts.ClusterName,
 			})
+		}
+		if opts.WorkloadName != "" {
+			envs = append(envs, v1.EnvVar{
+				Name:  "POSTMAN_INSIGHTS_WORKLOAD_NAME",
+				Value: opts.WorkloadName,
+			})
+		}
+		if opts.WorkloadType != "" {
+			envs = append(envs, v1.EnvVar{
+				Name:  "POSTMAN_INSIGHTS_WORKLOAD_TYPE",
+				Value: opts.WorkloadType,
+			})
+		}
+		if len(opts.Labels) > 0 {
+			labelsJSON, err := json.Marshal(opts.Labels)
+			if err == nil {
+				envs = append(envs, v1.EnvVar{
+					Name:  "POSTMAN_INSIGHTS_LABELS",
+					Value: string(labelsJSON),
+				})
+			}
 		}
 	}
 
 	cpu := resource.MustParse("200m")
 	memory := resource.MustParse("500Mi")
 
-	sidecar := v1.Container{
+	return v1.Container{
 		Name:  "postman-insights-agent",
 		Image: akitaImage,
 		Env:   envs,
@@ -200,8 +232,6 @@ func createPostmanSidecar(insightsProjectID string, addAPIKeyAsSecret bool, apid
 			Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_RAW"}},
 		},
 	}
-
-	return sidecar
 }
 
 // This function overrides the default preRun function in the root command.

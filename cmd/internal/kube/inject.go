@@ -6,6 +6,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
@@ -15,7 +16,6 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/cobra"
-	v1 "k8s.io/api/core/v1"
 )
 
 var (
@@ -37,6 +37,11 @@ var (
 	// Discovery mode flags for kube inject
 	injectDiscoveryMode bool
 	injectServiceName   string
+	injectClusterName   string
+
+	// Workspace onboarding flags
+	injectWorkspaceID string
+	injectSystemEnv   string
 
 	apidumpFlags *apidump.CommonApidumpFlags
 )
@@ -46,17 +51,27 @@ var injectCmd = &cobra.Command{
 	Short: "Inject the Postman Insights Agent into a Kubernetes deployment",
 	Long:  "Inject the Postman Insights Agent into a Kubernetes deployment or set of deployments, and output the result to stdout or a file",
 	RunE: func(_ *cobra.Command, args []string) error {
-		if !injectDiscoveryMode && insightsProjectID == "" {
+		// Validate onboarding mode: exactly one of project, workspace-id, or discovery-mode.
+		if !injectDiscoveryMode && insightsProjectID == "" && injectWorkspaceID == "" {
 			return cmderr.AkitaErr{
-				Err: errors.New("--project must be specified (or use --discovery-mode)."),
+				Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified"),
+			}
+		}
+		if injectWorkspaceID != "" {
+			if injectSystemEnv == "" {
+				return cmderr.AkitaErr{Err: errors.New("--system-env is required when --workspace-id is specified")}
+			}
+			if _, err := uuid.Parse(injectWorkspaceID); err != nil {
+				return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
+			}
+			if _, err := uuid.Parse(injectSystemEnv); err != nil {
+				return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
 			}
 		}
 
-		// Lookup service *first* (if we are remote) ensuring that insightsProjectID is correct and exists.
-		// Skip in discovery mode since there's no project ID yet.
-		if !injectDiscoveryMode {
-			err := lookupService(insightsProjectID)
-			if err != nil {
+		// Lookup service when using project mode.
+		if !injectDiscoveryMode && injectWorkspaceID == "" && insightsProjectID != "" {
+			if err := lookupService(insightsProjectID); err != nil {
 				return err
 			}
 		}
@@ -83,6 +98,12 @@ var injectCmd = &cobra.Command{
 					injectFileNameFlag,
 				),
 			}
+		}
+
+		// Extract deployment metadata for discovery env vars
+		meta, err := injectr.InjectableDeploymentMeta()
+		if err != nil {
+			return cmderr.AkitaErr{Err: errors.Wrap(err, "Failed to read deployment metadata")}
 		}
 
 		// Generate a secret for each namespace in the deployment if the user specified secret generation
@@ -126,26 +147,32 @@ var injectCmd = &cobra.Command{
 			out = secretBuf
 		}
 
-		var container v1.Container
-
 		apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
-		// Inject the sidecar into the input file
-		container = createPostmanSidecar(insightsProjectID, true, apidumpArgs, injectDiscoveryMode, injectServiceName)
+		container := createPostmanSidecar(SidecarOpts{
+			ProjectID:         insightsProjectID,
+			WorkspaceID:       injectWorkspaceID,
+			SystemEnv:         injectSystemEnv,
+			DiscoveryMode:     injectDiscoveryMode,
+			ServiceName:       injectServiceName,
+			AddAPIKeyAsSecret: secretOpts.ShouldInject,
+			ClusterName:       injectClusterName,
+			WorkloadName:      meta.Name,
+			WorkloadType:      "Deployment",
+			Labels:            meta.Labels,
+			ApidumpArgs:       apidumpArgs,
+		})
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)
 		if err != nil {
 			return cmderr.AkitaErr{Err: errors.Wrap(err, "Failed to inject sidecars")}
 		}
-		// Append the injected YAML to the output
 		out.Write(rawInjected)
 
-		// If the user did not specify an output file, print the output to stdout
 		if injectOutputFlag == "" {
 			printer.Stdout.RawOutput(out.String())
 			return nil
 		}
 
-		// Write the output to the specified file
 		if err := writeFile(out.Bytes(), injectOutputFlag); err != nil {
 			return err
 		}
@@ -243,6 +270,27 @@ func init() {
 		"",
 		"Override the auto-derived service name (default: namespace/workload-name).",
 	)
+	injectCmd.Flags().StringVar(
+		&injectClusterName,
+		"cluster-name",
+		"",
+		"Kubernetes cluster name (used as discovery metadata; not derivable from manifests).",
+	)
+
+	// Workspace onboarding flags
+	injectCmd.Flags().StringVar(
+		&injectWorkspaceID,
+		"workspace-id",
+		"",
+		"Your Postman workspace ID. Used to automatically create/link with an API Catalog application.",
+	)
+	injectCmd.Flags().StringVar(
+		&injectSystemEnv,
+		"system-env",
+		"",
+		"The system environment UUID. Required when --workspace-id is specified.",
+	)
+	injectCmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode")
 
 	apidumpFlags = apidump.AddCommonApiDumpFlags(injectCmd)
 

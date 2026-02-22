@@ -14,11 +14,13 @@ var Cmd = &cobra.Command{
 }
 
 func init() {
-	// `kube` command level flags
+	// TODO: Move --project down to individual subcommands (inject, helm-fragment,
+	// tf-fragment) that actually use it. Keeping it here as a persistent flag
+	// forces kube run to hide it and prevents Cobra's MarkFlagsMutuallyExclusive
+	// from working across parent/child flag boundaries.
 	Cmd.PersistentFlags().StringVar(
 		&insightsProjectID,
 		"project",
 		"",
 		"Your Postman Insights project ID.")
-	_ = Cmd.MarkFlagRequired("project")
 }

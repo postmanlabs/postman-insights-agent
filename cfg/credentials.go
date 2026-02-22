@@ -68,7 +68,7 @@ func initCreds() {
 	creds.AutomaticEnv()
 	creds.BindEnv("default.api_key_id", "AKITA_API_KEY_ID")
 	creds.BindEnv("default.api_key_secret", "AKITA_API_KEY_SECRET")
-	creds.BindEnv("default.postman_api_key", "POSTMAN_API_KEY")
+	creds.BindEnv("default.postman_api_key", "POSTMAN_INSIGHTS_API_KEY", "POSTMAN_API_KEY")
 	creds.BindEnv("default.postman_env", "POSTMAN_ENV")
 
 	if err := creds.ReadInConfig(); err != nil {

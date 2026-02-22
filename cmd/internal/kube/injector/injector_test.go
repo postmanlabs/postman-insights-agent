@@ -97,3 +97,77 @@ func Test_Inject(t *testing.T) {
 		assert.Equal(t, expected, actual)
 	}
 }
+
+func Test_InjectableDeploymentMeta(t *testing.T) {
+	toUnstructured := func(obj runtime.Object) *unstructured.Unstructured {
+		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&obj)
+		if err != nil {
+			panic(err)
+		}
+		return &unstructured.Unstructured{Object: u}
+	}
+
+	t.Run("returns metadata from the first injectable Deployment", func(t *testing.T) {
+		deployment := &appsv1.Deployment{
+			TypeMeta: metav1.TypeMeta{Kind: "Deployment", APIVersion: "apps/v1"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "web-frontend",
+				Namespace: "production",
+			},
+			Spec: appsv1.DeploymentSpec{
+				Template: v1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": "web", "tier": "frontend"},
+					},
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "nginx", Image: "nginx"}},
+					},
+				},
+			},
+		}
+
+		inj := injectorImpl{objects: []*unstructured.Unstructured{toUnstructured(deployment)}}
+
+		meta, err := inj.InjectableDeploymentMeta()
+		if assert.NoError(t, err) {
+			assert.Equal(t, "web-frontend", meta.Name)
+			assert.Equal(t, "production", meta.Namespace)
+			assert.Equal(t, map[string]string{"app": "web", "tier": "frontend"}, meta.Labels)
+		}
+	})
+
+	t.Run("defaults namespace to 'default' when not set", func(t *testing.T) {
+		deployment := &appsv1.Deployment{
+			TypeMeta:   metav1.TypeMeta{Kind: "Deployment", APIVersion: "apps/v1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "worker"},
+			Spec: appsv1.DeploymentSpec{
+				Template: v1.PodTemplateSpec{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "worker", Image: "python:3.12"}},
+					},
+				},
+			},
+		}
+
+		inj := injectorImpl{objects: []*unstructured.Unstructured{toUnstructured(deployment)}}
+
+		meta, err := inj.InjectableDeploymentMeta()
+		if assert.NoError(t, err) {
+			assert.Equal(t, "default", meta.Namespace)
+		}
+	})
+
+	t.Run("returns error when no injectable Deployment exists", func(t *testing.T) {
+		// A ConfigMap is not injectable
+		configMap := &v1.ConfigMap{
+			TypeMeta:   metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "my-config"},
+		}
+
+		inj := injectorImpl{objects: []*unstructured.Unstructured{toUnstructured(configMap)}}
+
+		_, err := inj.InjectableDeploymentMeta()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "no injectable Deployment found")
+	})
+}
