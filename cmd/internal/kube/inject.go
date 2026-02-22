@@ -58,9 +58,6 @@ var injectCmd = &cobra.Command{
 			}
 		}
 		if injectWorkspaceID != "" {
-			if injectSystemEnv == "" {
-				return cmderr.AkitaErr{Err: errors.New("--system-env is required when --workspace-id is specified")}
-			}
 			if _, err := uuid.Parse(injectWorkspaceID); err != nil {
 				return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
 			}
@@ -68,9 +65,12 @@ var injectCmd = &cobra.Command{
 				return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
 			}
 		}
-
-		// Lookup service when using project mode.
-		if !injectDiscoveryMode && injectWorkspaceID == "" && insightsProjectID != "" {
+		// API key is required for all onboarding modes.
+		if _, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces."); err != nil {
+			return err
+		}
+		// In project mode, also validate that the project exists.
+		if !injectDiscoveryMode && injectWorkspaceID == "" {
 			if err := lookupService(insightsProjectID); err != nil {
 				return err
 			}
@@ -290,7 +290,8 @@ func init() {
 		"",
 		"The system environment UUID. Required when --workspace-id is specified.",
 	)
-	injectCmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode")
+	injectCmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
+	injectCmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
 
 	apidumpFlags = apidump.AddCommonApiDumpFlags(injectCmd)
 

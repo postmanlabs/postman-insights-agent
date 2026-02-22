@@ -83,7 +83,7 @@ type SidecarOpts struct {
 	DiscoveryMode bool
 	ServiceName   string
 
-	// When true, POSTMAN_API_KEY is sourced from a K8s Secret instead of a literal value.
+	// When true, POSTMAN_INSIGHTS_API_KEY is sourced from a K8s Secret instead of a literal value.
 	AddAPIKeyAsSecret bool
 
 	// Discovery metadata (set from manifest + flags)

@@ -53,9 +53,6 @@ func validateFragmentFlags() error {
 		return cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
 	}
 	if fragmentWorkspaceID != "" {
-		if fragmentSystemEnv == "" {
-			return cmderr.AkitaErr{Err: errors.New("--system-env is required when --workspace-id is specified")}
-		}
 		if _, err := uuid.Parse(fragmentWorkspaceID); err != nil {
 			return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
 		}
@@ -63,6 +60,11 @@ func validateFragmentFlags() error {
 			return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
 		}
 	}
+	// API key is required for all onboarding modes.
+	if _, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces."); err != nil {
+		return err
+	}
+	// In project mode, also validate that the project exists.
 	if !fragmentDiscoveryMode && fragmentWorkspaceID == "" {
 		if err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID); err != nil {
 			return err
@@ -238,7 +240,8 @@ func addFragmentModeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&fragmentClusterName, "cluster-name", "", "Kubernetes cluster name (discovery metadata).")
 	cmd.Flags().StringVar(&fragmentWorkspaceID, "workspace-id", "", "Your Postman workspace ID.")
 	cmd.Flags().StringVar(&fragmentSystemEnv, "system-env", "", "The system environment UUID. Required with --workspace-id.")
-	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode")
+	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
+	cmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
 }
 
 func init() {
