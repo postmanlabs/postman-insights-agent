@@ -6,6 +6,7 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	ecs_cloudformation_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/cloudformation/ecs"
 	ecs_console_utils "github.com/postmanlabs/postman-insights-agent/aws_utils/console/ecs"
@@ -35,6 +36,14 @@ var (
 
 	// Print out the steps that would be taken, but do not do them
 	dryRunFlag bool
+
+	// Discovery mode flags
+	discoveryMode bool
+	serviceName   string
+
+	// Workspace onboarding flags
+	workspaceID string
+	systemEnv   string
 
 	// apidump flags
 	// These flags will be passed to apidump command in task definition file
@@ -116,6 +125,16 @@ func init() {
 	Cmd.PersistentFlags().StringVar(&awsCredentialsFlag, "aws-credentials", "", "Location of AWS credentials file.")
 	Cmd.PersistentFlags().MarkHidden("aws-credentials")
 
+	// Discovery mode flags
+	Cmd.PersistentFlags().BoolVar(&discoveryMode, "discovery-mode", false, "Enable auto-discovery without requiring a project ID.")
+	Cmd.PersistentFlags().StringVar(&serviceName, "service-name", "", "Override the auto-derived service name.")
+
+	// Workspace onboarding flags
+	Cmd.PersistentFlags().StringVar(&workspaceID, "workspace-id", "", "Your Postman workspace ID.")
+	Cmd.PersistentFlags().StringVar(&systemEnv, "system-env", "", "The system environment UUID. Required with --workspace-id.")
+	Cmd.MarkFlagsMutuallyExclusive("project", "workspace-id", "discovery-mode")
+	Cmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
+
 	// initialize apidump flags as flags for the ecs add command
 	apidumpFlags = apidump.AddCommonApiDumpFlags(Cmd)
 
@@ -125,10 +144,33 @@ func init() {
 	Cmd.AddCommand(RemoveFromECSCmd)
 }
 
+func validateECSFlags() error {
+	if !discoveryMode && projectId == "" && workspaceID == "" {
+		return cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
+	}
+	if workspaceID != "" {
+		if _, err := uuid.Parse(workspaceID); err != nil {
+			return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
+		}
+		if _, err := uuid.Parse(systemEnv); err != nil {
+			return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
+		}
+	}
+	// API key is required for all onboarding modes.
+	if _, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces."); err != nil {
+		return err
+	}
+	// In project mode, also validate that the project exists.
+	if !discoveryMode && workspaceID == "" {
+		if err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func addAgentToECS(cmd *cobra.Command, args []string) error {
-	// Check if the API key and Insights project ID are valid
-	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId)
-	if err != nil {
+	if err := validateECSFlags(); err != nil {
 		return err
 	}
 
@@ -140,8 +182,7 @@ func removeAgentFromECS(cmd *cobra.Command, args []string) error {
 }
 
 func printCloudFormationFragment(cmd *cobra.Command, args []string) error {
-	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId)
-	if err != nil {
+	if err := validateECSFlags(); err != nil {
 		return err
 	}
 
@@ -167,8 +208,7 @@ func printCloudFormationFragment(cmd *cobra.Command, args []string) error {
 }
 
 func printECSTaskDefinition(cmd *cobra.Command, args []string) error {
-	err := cmderr.CheckAPIKeyAndInsightsProjectID(projectId)
-	if err != nil {
+	if err := validateECSFlags(); err != nil {
 		return err
 	}
 
