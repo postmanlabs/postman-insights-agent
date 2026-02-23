@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const APICatalogNotEnabledMsg = "API Catalog is not enabled for this team. " +
+const apiCatalogNotEnabledMsg = "API Catalog is not enabled for this team. " +
 	"Contact your Postman administrator to enable the API Catalog feature."
 
 const apiCatalogFeatureGateMarker = "API Catalog is not enabled"
@@ -15,7 +15,7 @@ const apiCatalogFeatureGateMarker = "API Catalog is not enabled"
 func MapAPICatalogError(err error) error {
 	httpErr, ok := err.(HTTPError)
 	if ok && httpErr.StatusCode == 403 && strings.Contains(string(httpErr.Body), apiCatalogFeatureGateMarker) {
-		return errors.New(APICatalogNotEnabledMsg)
+		return errors.New(apiCatalogNotEnabledMsg)
 	}
 	return err
 }

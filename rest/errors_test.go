@@ -10,7 +10,7 @@ import (
 func TestMapAPICatalogError_MapsMatchingBody(t *testing.T) {
 	err := HTTPError{StatusCode: 403, Body: []byte(`{"message":"API Catalog is not enabled for this team"}`)}
 	mapped := MapAPICatalogError(err)
-	assert.Equal(t, APICatalogNotEnabledMsg, mapped.Error())
+	assert.Equal(t, apiCatalogNotEnabledMsg, mapped.Error())
 }
 
 func TestMapAPICatalogError_PassThrough_On403_DifferentBody(t *testing.T) {
