@@ -109,14 +109,18 @@ func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID str
 		SystemEnv: systemEnv,
 	}
 
-	err := c.Post(ctx, p, req, &resp)
-	return resp, err
+	if err := c.Post(ctx, p, req, &resp); err != nil {
+		return resp, MapAPICatalogError(err)
+	}
+	return resp, nil
 }
 
 // RegisterDiscoveredService registers a service discovered via K8s autodiscovery
 // with the backend. Returns the service/project ID and whether it was newly created.
 func (c *frontClientImpl) RegisterDiscoveredService(ctx context.Context, req DiscoverServiceRequest) (DiscoverServiceResponse, error) {
 	var resp DiscoverServiceResponse
-	err := c.Post(ctx, "/v2/agent/api-catalog/services/discover", req, &resp)
-	return resp, err
+	if err := c.Post(ctx, "/v2/agent/api-catalog/services/discover", req, &resp); err != nil {
+		return resp, MapAPICatalogError(err)
+	}
+	return resp, nil
 }
