@@ -31,18 +31,6 @@ var (
 	// Otherwise, injectCmd will treat secretInjectFlag as the file path all secrets should be generated to
 	secretInjectFlag string
 
-	// Postman related flags
-	insightsProjectID string
-
-	// Discovery mode flags for kube inject
-	injectDiscoveryMode bool
-	injectServiceName   string
-	injectClusterName   string
-
-	// Workspace onboarding flags
-	injectWorkspaceID string
-	injectSystemEnv   string
-
 	apidumpFlags *apidump.CommonApidumpFlags
 )
 
@@ -52,16 +40,16 @@ var injectCmd = &cobra.Command{
 	Long:  "Inject the Postman Insights Agent into a Kubernetes deployment or set of deployments, and output the result to stdout or a file",
 	RunE: func(_ *cobra.Command, args []string) error {
 		// Validate onboarding mode: exactly one of project, workspace-id, or discovery-mode.
-		if !injectDiscoveryMode && insightsProjectID == "" && injectWorkspaceID == "" {
+		if !onboardDiscoveryMode && insightsProjectID == "" && onboardWorkspaceID == "" {
 			return cmderr.AkitaErr{
 				Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified"),
 			}
 		}
-		if injectWorkspaceID != "" {
-			if _, err := uuid.Parse(injectWorkspaceID); err != nil {
+		if onboardWorkspaceID != "" {
+			if _, err := uuid.Parse(onboardWorkspaceID); err != nil {
 				return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
 			}
-			if _, err := uuid.Parse(injectSystemEnv); err != nil {
+			if _, err := uuid.Parse(onboardSystemEnv); err != nil {
 				return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
 			}
 		}
@@ -70,7 +58,7 @@ var injectCmd = &cobra.Command{
 			return err
 		}
 		// In project mode, also validate that the project exists.
-		if !injectDiscoveryMode && injectWorkspaceID == "" {
+		if !onboardDiscoveryMode && onboardWorkspaceID == "" {
 			if err := lookupService(insightsProjectID); err != nil {
 				return err
 			}
@@ -150,12 +138,12 @@ var injectCmd = &cobra.Command{
 		apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
 		container := createPostmanSidecar(SidecarOpts{
 			ProjectID:         insightsProjectID,
-			WorkspaceID:       injectWorkspaceID,
-			SystemEnv:         injectSystemEnv,
-			DiscoveryMode:     injectDiscoveryMode,
-			ServiceName:       injectServiceName,
+			WorkspaceID:       onboardWorkspaceID,
+			SystemEnv:         onboardSystemEnv,
+			DiscoveryMode:     onboardDiscoveryMode,
+			ServiceName:       onboardServiceName,
 			AddAPIKeyAsSecret: secretOpts.ShouldInject,
-			ClusterName:       injectClusterName,
+			ClusterName:       onboardClusterName,
 			WorkloadName:      meta.Name,
 			WorkloadType:      "Deployment",
 			Labels:            meta.Labels,
@@ -257,41 +245,7 @@ func init() {
 	// Default value is "true" when the flag is given without an argument.
 	injectCmd.Flags().Lookup("secret").NoOptDefVal = "true"
 
-	// Discovery mode flags
-	injectCmd.Flags().BoolVar(
-		&injectDiscoveryMode,
-		"discovery-mode",
-		false,
-		"Enable auto-discovery without requiring a project ID.",
-	)
-	injectCmd.Flags().StringVar(
-		&injectServiceName,
-		"service-name",
-		"",
-		"Override the auto-derived service name (default: namespace/workload-name).",
-	)
-	injectCmd.Flags().StringVar(
-		&injectClusterName,
-		"cluster-name",
-		"",
-		"Kubernetes cluster name (used as discovery metadata; not derivable from manifests).",
-	)
-
-	// Workspace onboarding flags
-	injectCmd.Flags().StringVar(
-		&injectWorkspaceID,
-		"workspace-id",
-		"",
-		"Your Postman workspace ID. Used to automatically create/link with an API Catalog application.",
-	)
-	injectCmd.Flags().StringVar(
-		&injectSystemEnv,
-		"system-env",
-		"",
-		"The system environment UUID. Required when --workspace-id is specified.",
-	)
-	injectCmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
-	injectCmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
+	addOnboardingModeFlags(injectCmd)
 
 	apidumpFlags = apidump.AddCommonApiDumpFlags(injectCmd)
 

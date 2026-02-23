@@ -23,13 +23,6 @@ import (
 var (
 	printHelmApidumpFlags *apidump.CommonApidumpFlags
 	printTFApidumpFlags   *apidump.CommonApidumpFlags
-
-	// Shared flags for helm-fragment and tf-fragment
-	fragmentDiscoveryMode bool
-	fragmentServiceName   string
-	fragmentClusterName   string
-	fragmentWorkspaceID   string
-	fragmentSystemEnv     string
 )
 
 var printHelmChartFragmentCmd = &cobra.Command{
@@ -49,14 +42,14 @@ var printTerraformFragmentCmd = &cobra.Command{
 }
 
 func validateFragmentFlags() error {
-	if !fragmentDiscoveryMode && insightsProjectID == "" && fragmentWorkspaceID == "" {
+	if !onboardDiscoveryMode && insightsProjectID == "" && onboardWorkspaceID == "" {
 		return cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
 	}
-	if fragmentWorkspaceID != "" {
-		if _, err := uuid.Parse(fragmentWorkspaceID); err != nil {
+	if onboardWorkspaceID != "" {
+		if _, err := uuid.Parse(onboardWorkspaceID); err != nil {
 			return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
 		}
-		if _, err := uuid.Parse(fragmentSystemEnv); err != nil {
+		if _, err := uuid.Parse(onboardSystemEnv); err != nil {
 			return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
 		}
 	}
@@ -65,7 +58,7 @@ func validateFragmentFlags() error {
 		return err
 	}
 	// In project mode, also validate that the project exists.
-	if !fragmentDiscoveryMode && fragmentWorkspaceID == "" {
+	if !onboardDiscoveryMode && onboardWorkspaceID == "" {
 		if err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID); err != nil {
 			return err
 		}
@@ -76,12 +69,12 @@ func validateFragmentFlags() error {
 func buildFragmentSidecarOpts(apidumpArgs []string) SidecarOpts {
 	return SidecarOpts{
 		ProjectID:         insightsProjectID,
-		WorkspaceID:       fragmentWorkspaceID,
-		SystemEnv:         fragmentSystemEnv,
-		DiscoveryMode:     fragmentDiscoveryMode,
-		ServiceName:       fragmentServiceName,
+		WorkspaceID:       onboardWorkspaceID,
+		SystemEnv:         onboardSystemEnv,
+		DiscoveryMode:     onboardDiscoveryMode,
+		ServiceName:       onboardServiceName,
 		AddAPIKeyAsSecret: false,
-		ClusterName:       fragmentClusterName,
+		ClusterName:       onboardClusterName,
 		ApidumpArgs:       apidumpArgs,
 	}
 }
@@ -234,22 +227,12 @@ func indentCodeFragment(codeFragmentInBytes []byte, indentLevel int) string {
 	return indentPrefix + strings.ReplaceAll(string(codeFragmentInBytes), "\n", "\n"+indentPrefix)
 }
 
-func addFragmentModeFlags(cmd *cobra.Command) {
-	cmd.Flags().BoolVar(&fragmentDiscoveryMode, "discovery-mode", false, "Enable auto-discovery without requiring a project ID.")
-	cmd.Flags().StringVar(&fragmentServiceName, "service-name", "", "Override the auto-derived service name.")
-	cmd.Flags().StringVar(&fragmentClusterName, "cluster-name", "", "Kubernetes cluster name (discovery metadata).")
-	cmd.Flags().StringVar(&fragmentWorkspaceID, "workspace-id", "", "Your Postman workspace ID.")
-	cmd.Flags().StringVar(&fragmentSystemEnv, "system-env", "", "The system environment UUID. Required with --workspace-id.")
-	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
-	cmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
-}
-
 func init() {
 	printHelmApidumpFlags = apidump.AddCommonApiDumpFlags(printHelmChartFragmentCmd)
-	addFragmentModeFlags(printHelmChartFragmentCmd)
+	addOnboardingModeFlags(printHelmChartFragmentCmd)
 	Cmd.AddCommand(printHelmChartFragmentCmd)
 
 	printTFApidumpFlags = apidump.AddCommonApiDumpFlags(printTerraformFragmentCmd)
-	addFragmentModeFlags(printTerraformFragmentCmd)
+	addOnboardingModeFlags(printTerraformFragmentCmd)
 	Cmd.AddCommand(printTerraformFragmentCmd)
 }
