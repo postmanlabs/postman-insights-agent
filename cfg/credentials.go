@@ -68,7 +68,7 @@ func initCreds() {
 	creds.AutomaticEnv()
 	creds.BindEnv("default.api_key_id", "AKITA_API_KEY_ID")
 	creds.BindEnv("default.api_key_secret", "AKITA_API_KEY_SECRET")
-	creds.BindEnv("default.postman_api_key", "POSTMAN_INSIGHTS_API_KEY", "POSTMAN_API_KEY")
+	creds.BindEnv("default.postman_api_key", "POSTMAN_INSIGHTS_API_KEY")
 	creds.BindEnv("default.postman_env", "POSTMAN_ENV")
 
 	if err := creds.ReadInConfig(); err != nil {
@@ -106,7 +106,14 @@ func WriteAPIKeyAndSecret(profile, keyID, keySecret string) error {
 func GetPostmanAPIKeyAndEnvironment() (string, string) {
 	// Only support default profile for now.
 	env := strings.ToUpper(creds.GetString("default.postman_env"))
-	return creds.GetString("default.postman_api_key"), env
+	key := creds.GetString("default.postman_api_key")
+	// Viper v1.7.1 BindEnv only honours the first env var name, so we
+	// must check the POSTMAN_API_KEY fallback ourselves.
+	// TODO: Remove dependency on POSTMAN_API_KEY.
+	if key == "" {
+		key = os.Getenv("POSTMAN_API_KEY")
+	}
+	return key, env
 }
 
 // Writes Postman API key and environment to the config file.
