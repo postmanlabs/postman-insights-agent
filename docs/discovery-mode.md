@@ -180,6 +180,7 @@ postman-insights-agent kube inject \
   -f <deployment.yaml> \
   --discovery-mode \
   [--service-name <name>] \
+  [--cluster-name <cluster>] \
   [-o <output.yaml>]
 ```
 
@@ -187,9 +188,10 @@ postman-insights-agent kube inject \
 |---|---|---|---|
 | `--discovery-mode` | bool | `false` | Enable automatic service discovery. Removes the requirement for `--project`. |
 | `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name. See [Service Name Derivation](#service-name-derivation). |
+| `--cluster-name` | string | _(empty)_ | Kubernetes cluster name. Sent as discovery metadata; not derivable from manifests. |
 | `-f`, `--file` | string | _(required)_ | Path to the Kubernetes YAML file to inject. |
 | `-o`, `--output` | string | _(stdout)_ | Path to write the injected YAML. |
-| `-s`, `--secret` | string | `"false"` | Whether to generate a Kubernetes Secret. Set to `"true"` to include in output, or provide a file path. |
+| `-s`, `--secret` | string | `"false"` | Whether to generate a Kubernetes Secret for the API key. Set to `"true"` to include in output, or provide a file path. |
 
 **Example:**
 
@@ -198,6 +200,7 @@ postman-insights-agent kube inject \
   -f deployment.yaml \
   --discovery-mode \
   --service-name "my-namespace/my-service" \
+  --cluster-name "production-cluster" \
   --secret \
   -o injected-deployment.yaml
 ```
@@ -208,28 +211,49 @@ The injected sidecar container in the output YAML includes:
 
 - **Container name**: `postman-insights-agent`
 - **Image**: `public.ecr.aws/postman/postman-insights-agent:latest`
-- **Args**: `apidump --discovery-mode` (plus `--service-name` if provided)
-- **Environment variables**:
-  - `POSTMAN_API_KEY` -- referenced from a Kubernetes Secret (`postman-agent-secrets` / `postman-api-key`)
-  - `POSTMAN_INSIGHTS_DISCOVERY_MODE` = `"true"`
-  - `POSTMAN_INSIGHTS_SERVICE_NAME` -- set if `--service-name` was provided
-  - `POSTMAN_K8S_NODE`, `POSTMAN_K8S_NAMESPACE`, `POSTMAN_K8S_POD`, `POSTMAN_K8S_HOST_IP`, `POSTMAN_K8S_POD_IP` -- automatically populated from Kubernetes pod metadata via the downward API
+- **Args**: Constructed from the onboarding mode flags. For example, `apidump --discovery-mode` (plus `--service-name` if provided), or `apidump --workspace-id <id> --system-env <id>`, or `apidump --project <id>`.
+- **Environment variables** (always present):
+  - `POSTMAN_INSIGHTS_API_KEY` -- the API key, either as a literal value or referenced from a Kubernetes Secret (`postman-agent-secrets` / `postman-api-key`) when the `--secret` flag is used.
+  - `POSTMAN_K8S_NODE`, `POSTMAN_K8S_NAMESPACE`, `POSTMAN_K8S_POD`, `POSTMAN_K8S_HOST_IP`, `POSTMAN_K8S_POD_IP` -- automatically populated from Kubernetes pod metadata via the downward API.
+- **Environment variables** (discovery mode only):
+  - `POSTMAN_INSIGHTS_CLUSTER_NAME` -- set when `--cluster-name` is provided.
+  - `POSTMAN_INSIGHTS_WORKLOAD_NAME` -- auto-derived from the Deployment name in the input manifest.
+  - `POSTMAN_INSIGHTS_WORKLOAD_TYPE` -- set to `Deployment` (derived from the input manifest).
+  - `POSTMAN_INSIGHTS_LABELS` -- JSON-encoded map of the Deployment's labels from the input manifest.
 - **Resources**: 200m CPU / 500Mi memory (requests and limits)
 - **Security**: `NET_RAW` capability (required for packet capture)
 
-> **Prerequisite:** A Kubernetes Secret named `postman-agent-secrets` with the key `postman-api-key` must exist in each target namespace. Use the `--secret` flag to generate it automatically as part of the injection, or create it separately with `postman-insights-agent kube secret`.
+> **Note on API key handling:** By default, the API key is embedded as a literal environment variable in the sidecar container spec. Use the `--secret` flag to instead reference it from a Kubernetes Secret named `postman-agent-secrets` (key: `postman-api-key`). The secret can be generated automatically as part of the injection, or created separately with `postman-insights-agent kube secret`.
 
 #### Workspace Mode
 
-When using workspace mode with the sidecar, set the workspace and system environment IDs as environment variables in the pod spec before (or after) injecting the sidecar. The agent reads them at startup.
+In workspace mode, provide the workspace and system environment IDs directly via CLI flags. The agent uses these to create or link an application in the Postman API Catalog.
 
-```yaml
-env:
-  - name: POSTMAN_INSIGHTS_WORKSPACE_ID
-    value: "<YOUR_WORKSPACE_ID>"
-  - name: POSTMAN_INSIGHTS_SYSTEM_ENV
-    value: "<YOUR_SYSTEM_ENV_ID>"
+```bash
+postman-insights-agent kube inject \
+  -f <deployment.yaml> \
+  --workspace-id <YOUR_WORKSPACE_ID> \
+  --system-env <YOUR_SYSTEM_ENV_ID> \
+  [-o <output.yaml>]
 ```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--workspace-id` | string (UUID) | _(empty)_ | Your Postman workspace ID. Mutually exclusive with `--project` and `--discovery-mode`. |
+| `--system-env` | string (UUID) | _(empty)_ | Your system environment ID. Required when `--workspace-id` is specified. |
+
+**Example:**
+
+```bash
+postman-insights-agent kube inject \
+  -f deployment.yaml \
+  --workspace-id "550e8400-e29b-41d4-a716-446655440000" \
+  --system-env "7c9e6679-7425-40de-944b-e07fc1f90ae7" \
+  --secret \
+  -o injected-deployment.yaml
+```
+
+> **Note:** Exactly one of `--project`, `--workspace-id`, or `--discovery-mode` must be specified.
 
 ---
 
@@ -445,6 +469,7 @@ postman-insights-agent apidump --discovery-mode --service-name "my-namespace/my-
 
 | Environment variable | Applies to | Description |
 |---|---|---|
+| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. |
 | `POSTMAN_INSIGHTS_DISCOVERY_MODE` | DaemonSet, Sidecar, Standalone | Set to `"true"` to enable discovery mode. |
 | `POSTMAN_INSIGHTS_SERVICE_NAME` | Sidecar, Standalone | Override the auto-derived service name (discovery mode). |
 | `POSTMAN_INSIGHTS_INCLUDE_NAMESPACES` | DaemonSet | Comma-separated list of namespaces to include (discovery mode). |
@@ -453,6 +478,10 @@ postman-insights-agent apidump --discovery-mode --service-name "my-namespace/my-
 | `POSTMAN_INSIGHTS_EXCLUDE_LABELS` | DaemonSet | Comma-separated `key=value` pairs. Pods matching **any** label are excluded (discovery mode). |
 | `POSTMAN_INSIGHTS_WORKSPACE_ID` | DaemonSet, Sidecar, Standalone | Your Postman workspace ID (workspace mode). |
 | `POSTMAN_INSIGHTS_SYSTEM_ENV` | DaemonSet, Sidecar, Standalone | Your system environment ID (workspace mode). Required when workspace ID is set. |
+| `POSTMAN_INSIGHTS_CLUSTER_NAME` | Sidecar (discovery mode) | Kubernetes cluster name, sent as discovery metadata. Set by the `--cluster-name` flag in `kube inject`. |
+| `POSTMAN_INSIGHTS_WORKLOAD_NAME` | Sidecar (discovery mode) | Workload name, auto-derived from the Deployment name in the input manifest. |
+| `POSTMAN_INSIGHTS_WORKLOAD_TYPE` | Sidecar (discovery mode) | Workload type (e.g., `Deployment`), auto-derived from the input manifest. |
+| `POSTMAN_INSIGHTS_LABELS` | Sidecar (discovery mode) | JSON-encoded map of the Deployment's labels, auto-derived from the input manifest. |
 
 CLI flags always take precedence over environment variables.
 
@@ -474,12 +503,24 @@ CLI flags always take precedence over environment variables.
 
 ### `kube inject` (Sidecar)
 
-**Discovery mode flags:**
+**Onboarding mode flags (mutually exclusive -- exactly one of `--project`, `--workspace-id`, or `--discovery-mode` must be specified):**
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
+| `--project` | string | _(empty)_ | Your Postman Insights project ID (legacy mode). |
 | `--discovery-mode` | bool | `false` | Enable automatic service discovery. Removes the `--project` requirement. |
-| `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name. |
+| `--workspace-id` | string (UUID) | _(empty)_ | Your Postman workspace ID. Mutually exclusive with `--project` and `--discovery-mode`. |
+| `--system-env` | string (UUID) | _(empty)_ | Your system environment ID. Required when `--workspace-id` is specified. |
+| `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name (discovery mode). |
+| `--cluster-name` | string | _(empty)_ | Kubernetes cluster name, sent as discovery metadata. |
+
+**General flags:**
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-f`, `--file` | string | _(required)_ | Path to the Kubernetes YAML file to inject. |
+| `-o`, `--output` | string | _(stdout)_ | Path to write the injected YAML. |
+| `-s`, `--secret` | string | `"false"` | Whether to generate a Kubernetes Secret for the API key. Set to `"true"` to include in output, or provide a file path. |
 
 ### `apidump` (Standalone)
 
