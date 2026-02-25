@@ -372,6 +372,11 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 		// apidump flow instead of RegisterDiscoveredService.
 		printer.Infof("Pod %s has explicit service IDs; using them instead of auto-discovery.\n", pod.Name)
 
+		if req.workspaceID != "" && req.projectID != "" {
+			return errors.Errorf("pod %s: %s and %s are mutually exclusive; set one or the other, not both",
+				pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, POSTMAN_INSIGHTS_PROJECT_ID)
+		}
+
 		if req.workspaceID != "" {
 			if _, err := uuid.Parse(req.workspaceID); err != nil {
 				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, req.workspaceID)
@@ -395,6 +400,10 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 		apiKey := req.apiKey
 		if apiKey == "" {
 			apiKey = d.InsightsAPIKey
+		}
+		if apiKey == "" {
+			return errors.Errorf("pod %s: no API key configured; set %s on the pod or provide a DaemonSet-level key",
+				pod.Name, POSTMAN_INSIGHTS_API_KEY)
 		}
 		podArgs.PodCreds = PodCreds{
 			InsightsAPIKey:      apiKey,
@@ -422,8 +431,28 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 
 	// Apply optional per-pod configs regardless of which path was taken.
 	podArgs.DropNginxTraffic = parseBoolConfig(mainConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, viper.GetBool("drop-nginx-traffic"))
+
 	podArgs.ReproMode = d.InsightsReproModeEnabled
+	if !d.InsightsReproModeEnabled {
+		printer.Infof("Repro mode is disabled at the DaemonSet level for pod: %s\n", pod.Name)
+		return nil
+	}
+	podArgs.ReproMode = !parseBoolConfig(mainConfig.disableReproMode, "disableReproMode", pod.Name, !d.InsightsReproModeEnabled)
+
 	podArgs.AgentRateLimit = d.InsightsRateLimit
+	if mainConfig.agentRateLimit != "" {
+		if limit, err := strconv.ParseFloat(mainConfig.agentRateLimit, 64); err == nil {
+			podArgs.AgentRateLimit = limit
+		} else {
+			printer.Stderr.Warningf(
+				"POSTMAN_INSIGHTS_AGENT_RATE_LIMIT value: '%v' could not be parsed: %v, using default: '%v'\n",
+				mainConfig.agentRateLimit, err, apispec.DefaultRateLimit)
+		}
+	}
+	if podArgs.AgentRateLimit <= 0.0 {
+		podArgs.AgentRateLimit = apispec.DefaultRateLimit
+	}
+
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
 
 	return nil
