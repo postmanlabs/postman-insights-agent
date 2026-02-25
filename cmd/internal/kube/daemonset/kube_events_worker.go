@@ -257,9 +257,10 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		containerConfigMap[containerUUID] = containerEnvVars
 	}
 
-	// In discovery mode, we use the DaemonSet-level API key for all pods.
-	// Service name comes from the pod's POSTMAN_INSIGHTS_SERVICE_NAME env var
-	// if set, otherwise derived from K8s pod metadata.
+	// In discovery mode, check whether the pod has explicit service IDs
+	// (projectID or workspaceID+systemEnv). If so, use the traditional/workspace
+	// flow for that pod instead of auto-discovery's RegisterDiscoveredService.
+	// Pods without explicit IDs continue to use auto-discovery unchanged.
 	if d.DiscoveryMode {
 		// Pick the first running container for network namespace capture.
 		mainUUID := ""
@@ -274,31 +275,7 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 		podArgs.ContainerUUID = mainUUID
 
-		// Use per-pod service name env var if set, otherwise derive from K8s metadata.
-		serviceName := mainConfig.serviceName
-		if serviceName == "" {
-			serviceName = deriveServiceName(pod)
-		}
-
-		podArgs.DiscoveryMode = true
-		podArgs.DiscoveryServiceName = serviceName
-		podArgs.ClusterName = d.ClusterName // Will be empty if not set in the environment variables
-		podArgs.Namespace = pod.Namespace
-		podArgs.WorkloadName = deriveWorkloadName(pod)
-		podArgs.WorkloadType = deriveWorkloadType(pod)
-		podArgs.Labels = pod.Labels
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      d.InsightsAPIKey,
-			InsightsEnvironment: d.InsightsEnvironment,
-		}
-
-		// Apply optional per-pod configs from container env if present.
-		podArgs.DropNginxTraffic = parseBoolConfig(mainConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, viper.GetBool("drop-nginx-traffic"))
-		podArgs.ReproMode = d.InsightsReproModeEnabled
-		podArgs.AgentRateLimit = d.InsightsRateLimit
-		podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
-
-		return nil
+		return d.applyDiscoveryModeConfig(pod, podArgs, mainConfig)
 	}
 
 	mainUUID, mainContainerConfig, validation := selectMainContainer(containerConfigMap)
@@ -376,6 +353,107 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainContainerConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
+	return nil
+}
+
+// applyDiscoveryModeConfig processes the container config for a pod running under
+// discovery mode. If the pod has explicit service IDs (projectID or
+// workspaceID+systemEnv), it configures podArgs for the traditional/workspace
+// apidump flow. Otherwise, it sets up auto-discovery via RegisterDiscoveredService.
+// Optional per-pod configs (DropNginxTraffic, ReproMode, etc.) are applied in
+// both cases.
+func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, mainConfig containerConfig) error {
+	req := mainConfig.requiredContainerConfig
+	hasExplicitIDs := req.projectID != "" || req.workspaceID != ""
+
+	if hasExplicitIDs {
+		// Pod has explicit service IDs; route to the traditional/workspace
+		// apidump flow instead of RegisterDiscoveredService.
+		printer.Infof("Pod %s has explicit service IDs; using them instead of auto-discovery.\n", pod.Name)
+
+		if req.workspaceID != "" && req.projectID != "" {
+			return errors.Errorf("pod %s: %s and %s are mutually exclusive; set one or the other, not both",
+				pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, POSTMAN_INSIGHTS_PROJECT_ID)
+		}
+
+		if req.workspaceID != "" {
+			if _, err := uuid.Parse(req.workspaceID); err != nil {
+				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, req.workspaceID)
+			}
+			if req.systemEnv == "" {
+				return errors.Errorf("pod %s: %s is required when %s is set", pod.Name, POSTMAN_INSIGHTS_SYSTEM_ENV, POSTMAN_INSIGHTS_WORKSPACE_ID)
+			}
+			if _, err := uuid.Parse(req.systemEnv); err != nil {
+				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_SYSTEM_ENV, req.systemEnv)
+			}
+			podArgs.WorkspaceID = req.workspaceID
+			podArgs.SystemEnv = req.systemEnv
+		} else {
+			if err := akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
+				return errors.Wrapf(err, "pod %s: failed to parse %s", pod.Name, POSTMAN_INSIGHTS_PROJECT_ID)
+			}
+		}
+
+		// Use pod's own API key if available, otherwise fall back to the
+		// DaemonSet-level key so pods only need to set IDs, not credentials.
+		apiKey := req.apiKey
+		if apiKey == "" {
+			apiKey = d.InsightsAPIKey
+		}
+		if apiKey == "" {
+			return errors.Errorf("pod %s: no API key configured; set %s on the pod or provide a DaemonSet-level key",
+				pod.Name, POSTMAN_INSIGHTS_API_KEY)
+		}
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      apiKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+		}
+	} else {
+		// No explicit IDs: use auto-discovery (RegisterDiscoveredService).
+		serviceName := mainConfig.serviceName
+		if serviceName == "" {
+			serviceName = deriveServiceName(pod)
+		}
+
+		podArgs.DiscoveryMode = true
+		podArgs.DiscoveryServiceName = serviceName
+		podArgs.ClusterName = d.ClusterName
+		podArgs.Namespace = pod.Namespace
+		podArgs.WorkloadName = deriveWorkloadName(pod)
+		podArgs.WorkloadType = deriveWorkloadType(pod)
+		podArgs.Labels = pod.Labels
+		podArgs.PodCreds = PodCreds{
+			InsightsAPIKey:      d.InsightsAPIKey,
+			InsightsEnvironment: d.InsightsEnvironment,
+		}
+	}
+
+	// Apply optional per-pod configs regardless of which path was taken.
+	podArgs.DropNginxTraffic = parseBoolConfig(mainConfig.dropNginxTraffic, "dropNginxTraffic", pod.Name, viper.GetBool("drop-nginx-traffic"))
+
+	podArgs.ReproMode = d.InsightsReproModeEnabled
+	if !d.InsightsReproModeEnabled {
+		printer.Infof("Repro mode is disabled at the DaemonSet level for pod: %s\n", pod.Name)
+		return nil
+	}
+	podArgs.ReproMode = !parseBoolConfig(mainConfig.disableReproMode, "disableReproMode", pod.Name, !d.InsightsReproModeEnabled)
+
+	podArgs.AgentRateLimit = d.InsightsRateLimit
+	if mainConfig.agentRateLimit != "" {
+		if limit, err := strconv.ParseFloat(mainConfig.agentRateLimit, 64); err == nil {
+			podArgs.AgentRateLimit = limit
+		} else {
+			printer.Stderr.Warningf(
+				"POSTMAN_INSIGHTS_AGENT_RATE_LIMIT value: '%v' could not be parsed: %v, using default: '%v'\n",
+				mainConfig.agentRateLimit, err, apispec.DefaultRateLimit)
+		}
+	}
+	if podArgs.AgentRateLimit <= 0.0 {
+		podArgs.AgentRateLimit = apispec.DefaultRateLimit
+	}
+
+	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
 
 	return nil
 }
