@@ -90,9 +90,4 @@ func init() {
 		"Labels that exclude pods from capture (key=value pairs).",
 	)
 	Cmd.AddCommand(runCmd)
-
-	// Mark the inherited `project` flag as hidden
-	if flag := runCmd.InheritedFlags().Lookup("project"); flag != nil {
-		flag.Hidden = true
-	}
 }

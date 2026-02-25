@@ -18,6 +18,13 @@ import (
 	kyamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
 
+// DeploymentMeta holds metadata extracted from a Deployment manifest.
+type DeploymentMeta struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string // pod template labels
+}
+
 type (
 	Injector interface {
 		// Injects the given sidecar into all valid Deployment Objects and returns the result as a list of unstructured objects.
@@ -25,6 +32,8 @@ type (
 		// Returns a list of namespaces that contain injectable objects.
 		// This can be used to generate other Kuberenetes objects that need to be created in the same namespace.
 		InjectableNamespaces() ([]string, error)
+		// Returns metadata for the first injectable Deployment found in the parsed YAML.
+		InjectableDeploymentMeta() (*DeploymentMeta, error)
 	}
 	injectorImpl struct {
 		// The list of Kubernetes objects to traverse during injection. This is a list of
@@ -91,6 +100,32 @@ func (i *injectorImpl) InjectableNamespaces() ([]string, error) {
 	}
 
 	return set.AsSlice(), nil
+}
+
+func (i *injectorImpl) InjectableDeploymentMeta() (*DeploymentMeta, error) {
+	for _, obj := range i.objects {
+		if !isInjectable(obj.GetObjectKind().GroupVersionKind()) {
+			continue
+		}
+
+		deployment, err := toDeployment(obj)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to convert object to deployment during metadata extraction")
+		}
+
+		ns := deployment.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+
+		return &DeploymentMeta{
+			Name:      deployment.Name,
+			Namespace: ns,
+			Labels:    deployment.Spec.Template.Labels,
+		}, nil
+	}
+
+	return nil, errors.New("no injectable Deployment found in the provided YAML")
 }
 
 func (i *injectorImpl) Inject(sidecar v1.Container) ([]*unstructured.Unstructured, error) {

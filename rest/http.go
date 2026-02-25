@@ -40,7 +40,7 @@ type HTTPError struct {
 
 func (he HTTPError) Error() string {
 	if he.StatusCode == 401 {
-		return `Invalid credentials. Ensure the POSTMAN_API_KEY environment variable has a valid API key for Postman.`
+		return `Invalid credentials. Ensure the POSTMAN_INSIGHTS_API_KEY environment variable has a valid API key for Postman.`
 	}
 	printer.Debugln("Unexpected error, received status code:", he.StatusCode, "body:", string(he.Body))
 	return fmt.Sprintf(unexpectedErrMsg, he.StatusCode)

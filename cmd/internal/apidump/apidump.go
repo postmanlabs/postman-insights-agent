@@ -1,6 +1,7 @@
 package apidump
 
 import (
+	"encoding/json"
 	"math/rand"
 	"os"
 	"strconv"
@@ -160,6 +161,16 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		systemEnvFlag = envSystemEnv
 	}
 
+	// Discovery metadata env vars (set by kube inject sidecar or manually).
+	clusterName := os.Getenv("POSTMAN_INSIGHTS_CLUSTER_NAME")
+	namespace := os.Getenv("POSTMAN_K8S_NAMESPACE")
+	workloadName := os.Getenv("POSTMAN_INSIGHTS_WORKLOAD_NAME")
+	workloadType := os.Getenv("POSTMAN_INSIGHTS_WORKLOAD_TYPE")
+	var labels map[string]string
+	if labelsJSON := os.Getenv("POSTMAN_INSIGHTS_LABELS"); labelsJSON != "" {
+		_ = json.Unmarshal([]byte(labelsJSON), &labels)
+	}
+
 	var serviceID akid.ServiceID
 
 	// In non-discovery mode check for required project/collection/workspace flags.
@@ -306,11 +317,15 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		// TODO: remove the SendWitnessPayloads flag once all existing users are migrated to new flag.
 		ReproMode: commonApidumpFlags.EnableReproMode || commonApidumpFlags.SendWitnessPayloads,
 
-		// TODO: Add this flag in kube run command to fetch from service env vars
 		AlwaysCapturePayloads: commonApidumpFlags.AlwaysCapturePayloads,
 
 		DiscoveryMode: apidumpDiscoveryMode,
 		ServiceName:   apidumpServiceName,
+		ClusterName:   clusterName,
+		Namespace:     namespace,
+		WorkloadName:  workloadName,
+		WorkloadType:  workloadType,
+		Labels:        labels,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
