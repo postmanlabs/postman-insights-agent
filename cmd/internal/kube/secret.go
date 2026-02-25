@@ -24,7 +24,7 @@ var secretCmd = &cobra.Command{
 	Short: "Generate a Kubernetes Secret manifest containing your Postman API key",
 	Long:  "Generate a Kubernetes Secret manifest containing your Postman API key, and output the result to standard output or a file",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		key, err := cmderr.RequirePostmanAPICredentials("Postman API key must be specified in the POSTMAN_API_KEY environment variable.")
+		key, err := cmderr.RequirePostmanAPICredentials("Postman API key must be specified in the POSTMAN_INSIGHTS_API_KEY environment variable.")
 		if err != nil {
 			return err
 		}
