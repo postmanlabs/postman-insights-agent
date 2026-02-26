@@ -34,33 +34,3 @@ const (
 	DefaultTelemetryInterval      = 5 * time.Minute
 	DefaultPodHealthCheckInterval = 5 * time.Minute
 )
-
-// DefaultExcludedNamespaces are system and infrastructure namespaces that are
-// excluded from discovery by default in daemonset mode.
-var DefaultExcludedNamespaces = []string{
-	"argocd",
-	"calico-system",
-	"cert-manager",
-	"cilium",
-	"crossplane-system",
-	"external-secrets",
-	"flux-system",
-	"gatekeeper-system",
-	"grafana",
-	"ingress-nginx",
-	"istio-system",
-	"jaeger",
-	"kube-node-lease",
-	"kube-public",
-	"kube-system",
-	"kyverno",
-	"linkerd",
-	"logging",
-	"metallb-system",
-	"monitoring",
-	"postman-insights-namespace",
-	"prometheus",
-	"tekton-pipelines",
-	"traefik",
-	"velero",
-}
