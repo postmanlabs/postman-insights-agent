@@ -1,0 +1,26 @@
+excluded_namespaces:
+- argocd
+- calico-system
+- cert-manager
+- cilium
+- crossplane-system
+- external-secrets
+- flux-system
+- gatekeeper-system
+- grafana
+- ingress-nginx
+- istio-system
+- jaeger
+- kube-node-lease
+- kube-public
+- kube-system
+- kyverno
+- linkerd
+- logging
+- metallb-system
+- monitoring
+- postman-insights-namespace
+- prometheus
+- tekton-pipelines
+- traefik
+- velero
