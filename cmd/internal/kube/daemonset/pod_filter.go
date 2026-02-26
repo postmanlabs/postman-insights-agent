@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -29,7 +30,8 @@ type FilterResult struct {
 }
 
 // NewPodFilter creates a PodFilter from the given configuration. The default
-// excluded namespaces are always applied (merged with user-specified excludes).
+// excluded namespaces (loaded from excluded_namespaces.yaml) are always applied
+// (merged with user-specified excludes).
 // agentPodName is the name of the agent's own pod so it can be excluded from capture.
 func NewPodFilter(
 	agentPodName string,
@@ -37,14 +39,19 @@ func NewPodFilter(
 	excludeNamespaces []string,
 	includeLabels map[string]string,
 	excludeLabels map[string]string,
-) *PodFilter {
+) (*PodFilter, error) {
+	defaultExcluded, err := loadExcludedNamespacesFromFile()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to load default excluded namespaces")
+	}
+
 	includeNS := make(map[string]bool, len(includeNamespaces))
 	for _, ns := range includeNamespaces {
 		includeNS[ns] = true
 	}
 
-	excludeNS := make(map[string]bool, len(DefaultExcludedNamespaces)+len(excludeNamespaces))
-	for _, ns := range DefaultExcludedNamespaces {
+	excludeNS := make(map[string]bool, len(defaultExcluded)+len(excludeNamespaces))
+	for _, ns := range defaultExcluded {
 		excludeNS[ns] = true
 	}
 	for _, ns := range excludeNamespaces {
@@ -57,7 +64,7 @@ func NewPodFilter(
 		ExcludeNamespaces: excludeNS,
 		IncludeLabels:     includeLabels,
 		ExcludeLabels:     excludeLabels,
-	}
+	}, nil
 }
 
 // Evaluate runs the pod through all filter layers and returns a FilterResult.
