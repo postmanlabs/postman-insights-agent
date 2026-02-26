@@ -1,6 +1,8 @@
 package rest
 
 import (
+	"time"
+
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/api_schema"
 )
@@ -67,7 +69,8 @@ type DiscoverServiceRequest struct {
 
 // DiscoverServiceResponse is returned after discovering a service.
 type DiscoverServiceResponse struct {
-	ServiceID string `json:"service_id"`
-	Status    string `json:"status"`
-	IsNew     bool   `json:"is_new"`
+	ServiceID        string     `json:"service_id"`
+	Status           string     `json:"status"`
+	IsNew            bool       `json:"is_new"`
+	TrafficExpiresAt *time.Time `json:"traffic_expires_at,omitempty"`
 }
