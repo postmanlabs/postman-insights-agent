@@ -190,6 +190,9 @@ type apidump struct {
 	backendSvcName string
 	learnClient    rest.LearnClient
 
+	// Set by RegisterDiscoveredService; nil when TTL is not enforced.
+	trafficExpiresAt *time.Time
+
 	startTime        time.Time
 	dumpSummary      *Summary
 	successTelemetry *trace.SuccessTelemetry
@@ -280,6 +283,14 @@ func (a *apidump) LookupService() error {
 			},
 		)
 		if err != nil {
+			if rest.IsDiscoveryTTLExpiredError(err) {
+				printer.Warningf(
+					"Discovery traffic TTL expired for service %q. "+
+						"Onboard the service in Postman to resume traffic capture.\n",
+					serviceName,
+				)
+				return nil
+			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
 
@@ -290,7 +301,11 @@ func (a *apidump) LookupService() error {
 
 		a.backendSvc = svcID
 		a.backendSvcName = serviceName
+		a.trafficExpiresAt = resp.TrafficExpiresAt
 		printer.Infof("Registered discovered service %q (ID: %s, new: %v)\n", serviceName, resp.ServiceID, resp.IsNew)
+		if resp.TrafficExpiresAt != nil {
+			printer.Infof("Discovery traffic for this service expires at %s\n", resp.TrafficExpiresAt.Format(time.RFC3339))
+		}
 	} else if a.PostmanCollectionID != "" {
 		backendSvc, err := util.GetOrCreateServiceIDByPostmanCollectionID(frontClient, a.PostmanCollectionID)
 		if err != nil {
@@ -806,6 +821,20 @@ func (a *apidump) Run() error {
 	errChan := make(chan interfaceError, len(userFilters)+len(negationFilters)) // buffered enough so it never blocks
 	stop := make(chan struct{})
 
+	// If a discovery traffic TTL was provided by the backend, start a timer that
+	// will stop capture when the window elapses.
+	var discoveryTTLExpired <-chan time.Time
+	if a.trafficExpiresAt != nil {
+		remaining := time.Until(*a.trafficExpiresAt)
+		if remaining <= 0 {
+			printer.Warningf("Discovery traffic TTL already expired, stopping capture.\n")
+			return nil
+		}
+		t := time.NewTimer(remaining)
+		defer t.Stop()
+		discoveryTTLExpired = t.C
+	}
+
 	// If we're sending traffic to the cloud, then start telemetry and stop
 	// when the main collection process does.
 	if a.TargetIsRemote() {
@@ -1087,6 +1116,9 @@ func (a *apidump) Run() error {
 					}
 				case externalStopError := <-daemonSetProcessStopChan:
 					printer.Stderr.Infof("Received external stop signal, error: %v\n", externalStopError)
+					break DoneWaitingForSignal
+				case <-discoveryTTLExpired:
+					printer.Stderr.Infof("Discovery traffic TTL expired, stopping trace collection...\n")
 					break DoneWaitingForSignal
 				}
 			}
