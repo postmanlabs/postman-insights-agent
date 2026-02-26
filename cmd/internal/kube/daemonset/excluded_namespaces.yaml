@@ -1,26 +1,115 @@
+# System and infrastructure namespaces excluded from discovery by default
+# in daemonset mode. These are namespaces that typically run cluster
+# infrastructure, not user application workloads.
+
 excluded_namespaces:
-- argocd
-- calico-system
-- cert-manager
-- cilium
-- crossplane-system
-- external-secrets
-- flux-system
-- gatekeeper-system
-- grafana
-- ingress-nginx
-- istio-system
-- jaeger
+
+# --- Kubernetes core ---
 - kube-node-lease
 - kube-public
 - kube-system
-- kyverno
-- linkerd
-- logging
-- metallb-system
-- monitoring
+
+# --- Cloud provider system (GKE) ---
+- gke-gmp-system
+- gke-managed-system
+- gke-system
+
+# --- Cloud provider system (AWS EKS) ---
+- amazon-cloudwatch
+- amazon-guardduty
+- aws-observability
+
+# --- Postman Insights ---
 - postman-insights-namespace
-- prometheus
-- tekton-pipelines
+
+# --- Service mesh ---
+- consul
+- istio-system
+- linkerd
+
+# --- Ingress / API gateway ---
+- ambassador
+- contour-system
+- ingress-nginx
+- kong
+- nginx-ingress
+- nginx-ingress-internal
+- nginx-ingress-public
 - traefik
+
+# --- Networking ---
+- calico-system
+- cilium
+- metallb-system
+- tigera-operator
+
+# --- Certificate management ---
+- cert-manager
+
+# --- DNS ---
+- external-dns
+
+# --- Secrets management ---
+- external-secrets
+- vault
+- vault-operator
+
+# --- Monitoring / Observability ---
+- alloy
+- appdynamics
+- datadog
+- dynatrace
+- elastic-system
+- grafana
+- jaeger
+- logging
+- monitoring
+- newrelic
+- opencost
+- opentelemetry-operator-system
+- prometheus
+- solarwinds
+- splunk
+
+# --- Security / Policy ---
+- aqua
+- falco
+- gatekeeper-system
+- kyverno
+- trivy-system
+- twistlock
+- wiz
+
+# --- GitOps / CI-CD ---
+- argocd
+- argo-rollouts
+- flux-system
+- tekton-pipelines
+
+# --- Autoscaling ---
+- karpenter
+- keda
+
+# --- Infrastructure provisioning ---
+- crossplane
+- crossplane-system
+
+# --- Storage / Backup ---
+- longhorn-system
+- openebs
+- rook-ceph
 - velero
+
+# --- Serverless ---
+- knative-eventing
+- knative-serving
+
+# --- Logging ---
+- fluent-bit
+
+# --- Tunnel / Proxy ---
+- cloudflared
+
+# --- Utilities ---
+- reflector
+- stakater
