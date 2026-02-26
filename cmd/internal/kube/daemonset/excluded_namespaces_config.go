@@ -23,14 +23,13 @@ type excludedNamespacesConfig struct {
 
 func loadExcludedNamespacesFromFile() ([]string, error) {
 	onceExcludedNSLoad.Do(func() {
-		data, err := excludedNamespacesFS.Open("excluded_namespaces.yaml")
+		data, err := excludedNamespacesFS.ReadFile("excluded_namespaces.yaml")
 		if err != nil {
-			excludedNSErr = errors.Wrap(err, "failed to open excluded namespaces config")
+			excludedNSErr = errors.Wrap(err, "failed to read excluded namespaces config")
 			return
 		}
 
-		dec := yaml.NewDecoder(data)
-		if err := dec.Decode(&excludedNSConfig); err != nil {
+		if err := yaml.Unmarshal(data, &excludedNSConfig); err != nil {
 			excludedNSErr = errors.Wrap(err, "failed to parse excluded namespaces YAML")
 		}
 	})
