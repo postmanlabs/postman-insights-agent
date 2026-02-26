@@ -215,13 +215,17 @@ func StartDaemonset(args DaemonsetArgs) error {
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
 		daemonsetRun.InsightsAPIKey = apiKey
-		daemonsetRun.PodFilter = NewPodFilter(
+		podFilter, err := NewPodFilter(
 			daemonsetRun.KubeClient.AgentHost,
 			args.IncludeNamespaces,
 			args.ExcludeNamespaces,
 			args.IncludeLabels,
 			args.ExcludeLabels,
 		)
+		if err != nil {
+			return errors.Wrap(err, "failed to create pod filter")
+		}
+		daemonsetRun.PodFilter = podFilter
 		printer.Infof("Discovery mode enabled. Using DaemonSet-level API key.\n")
 	}
 	if err := daemonsetRun.Run(); err != nil {
