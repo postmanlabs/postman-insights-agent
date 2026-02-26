@@ -289,7 +289,7 @@ func (a *apidump) LookupService() error {
 						"Onboard the service in Postman to resume traffic capture.\n",
 					serviceName,
 				)
-				return nil
+				return errors.New("discovery traffic TTL expired")
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
