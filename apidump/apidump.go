@@ -258,6 +258,12 @@ func (a *apidump) LookupService() error {
 					"or use kube inject (derives it from kubernetes manifest)",
 			)
 		}
+		if a.ClusterName == "" {
+			return errors.New(
+				"discovery mode requires a cluster name: set POSTMAN_INSIGHTS_CLUSTER_NAME env var, " +
+					"or use --cluster-name with kube inject",
+			)
+		}
 
 		// Discovery mode: register the discovered service with the backend.
 		serviceName := a.ServiceName

@@ -164,6 +164,11 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	// Send initial telemetry
 	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
+	if clusterName == "" && args.DiscoveryMode {
+		return errors.New(
+			"discovery mode requires a cluster name: set POSTMAN_INSIGHTS_CLUSTER_NAME env var",
+		)
+	}
 	telemetryInterval := DefaultTelemetryInterval
 	if clusterName == "" {
 		printer.Infof(

@@ -32,7 +32,8 @@ func addOnboardingModeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&onboardSystemEnv, "system-env", "", "The system environment UUID. Required when --workspace-id is specified.")
 	cmd.Flags().BoolVar(&onboardDiscoveryMode, "discovery-mode", false, "Enable auto-discovery without requiring a project ID.")
 	cmd.Flags().StringVar(&onboardServiceName, "service-name", "", "Override the auto-derived service name.")
-	cmd.Flags().StringVar(&onboardClusterName, "cluster-name", "", "Kubernetes cluster name (used as discovery metadata; not derivable from manifests).")
+	cmd.Flags().StringVar(&onboardClusterName, "cluster-name", "", "Kubernetes cluster name (required for --discovery-mode). Used to uniquely identify the cluster and prevent data mixing across environments.")
 	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
 	cmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
+	cmd.MarkFlagsRequiredTogether("discovery-mode", "cluster-name")
 }
