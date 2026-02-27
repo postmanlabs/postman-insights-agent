@@ -374,6 +374,7 @@ func TestApplyDiscoveryModeConfig_OptionalConfigsApplied(t *testing.T) {
 		InsightsAPIKey:           "ds-api-key",
 		InsightsReproModeEnabled: true,
 		InsightsRateLimit:        42.0,
+		ClusterName:              "test-cluster",
 	}
 	pod := testPod("my-pod", "default")
 	podArgs := NewPodArgs(pod.Name)
@@ -447,6 +448,7 @@ func TestApplyDiscoveryModeConfig_ReproModeDisabledAtDaemonSet(t *testing.T) {
 		InsightsAPIKey:           "ds-api-key",
 		InsightsReproModeEnabled: false,
 		InsightsRateLimit:        100.0,
+		ClusterName:              "test-cluster",
 	}
 	pod := testPod("my-pod", "default")
 	podArgs := NewPodArgs(pod.Name)
@@ -470,6 +472,7 @@ func TestApplyDiscoveryModeConfig_PerPodDisableReproMode(t *testing.T) {
 		InsightsAPIKey:           "ds-api-key",
 		InsightsReproModeEnabled: true,
 		InsightsRateLimit:        50.0,
+		ClusterName:              "test-cluster",
 	}
 	pod := testPod("my-pod", "default")
 	podArgs := NewPodArgs(pod.Name)
@@ -490,6 +493,7 @@ func TestApplyDiscoveryModeConfig_PerPodAgentRateLimitOverride(t *testing.T) {
 		InsightsAPIKey:           "ds-api-key",
 		InsightsReproModeEnabled: true,
 		InsightsRateLimit:        50.0,
+		ClusterName:              "test-cluster",
 	}
 	pod := testPod("my-pod", "default")
 	podArgs := NewPodArgs(pod.Name)
@@ -509,6 +513,7 @@ func TestApplyDiscoveryModeConfig_AgentRateLimitFallbackToDefault(t *testing.T) 
 		InsightsAPIKey:           "ds-api-key",
 		InsightsReproModeEnabled: true,
 		InsightsRateLimit:        -1.0,
+		ClusterName:              "test-cluster",
 	}
 	pod := testPod("my-pod", "default")
 	podArgs := NewPodArgs(pod.Name)
@@ -525,6 +530,7 @@ func TestApplyDiscoveryModeConfig_AgentRateLimitInvalidString(t *testing.T) {
 		InsightsAPIKey:           "ds-api-key",
 		InsightsReproModeEnabled: true,
 		InsightsRateLimit:        50.0,
+		ClusterName:              "test-cluster",
 	}
 	pod := testPod("my-pod", "default")
 	podArgs := NewPodArgs(pod.Name)
