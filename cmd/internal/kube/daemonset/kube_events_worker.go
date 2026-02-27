@@ -411,6 +411,10 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 		}
 	} else {
 		// No explicit IDs: use auto-discovery (RegisterDiscoveredService).
+		if d.ClusterName == "" {
+			return errors.Errorf("pod %s: discovery mode requires a cluster name (set POSTMAN_INSIGHTS_CLUSTER_NAME)", pod.Name)
+		}
+
 		serviceName := mainConfig.serviceName
 		if serviceName == "" {
 			serviceName = deriveServiceName(pod)
