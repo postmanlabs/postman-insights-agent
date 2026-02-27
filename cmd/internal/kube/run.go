@@ -63,7 +63,7 @@ func init() {
 		&discoveryMode,
 		"discovery-mode",
 		false,
-		"Enable auto-discovery of K8s services without requiring a project ID.",
+		"Enable auto-discovery of K8s services without requiring a project ID. Requires POSTMAN_INSIGHTS_CLUSTER_NAME to be set.",
 	)
 	runCmd.PersistentFlags().StringSliceVar(
 		&includeNamespaces,

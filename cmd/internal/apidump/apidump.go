@@ -500,7 +500,7 @@ func init() {
 		&apidumpDiscoveryMode,
 		"discovery-mode",
 		false,
-		"Enable auto-discovery without requiring a project ID. The agent registers the service with the backend automatically.",
+		"Enable auto-discovery without requiring a project ID. Requires POSTMAN_INSIGHTS_CLUSTER_NAME env var or --cluster-name with kube inject.",
 	)
 	Cmd.Flags().StringVar(
 		&apidumpServiceName,
