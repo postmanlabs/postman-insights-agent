@@ -86,6 +86,8 @@ kubectl apply -f postman-insights-agent-discovery.yaml
 
 The manifest deploys the agent as a DaemonSet with `--discovery-mode` enabled and references your API key via a Kubernetes Secret.
 
+> **Important:** Ensure the `POSTMAN_INSIGHTS_CLUSTER_NAME` environment variable is set in the manifest. Discovery mode requires a cluster name to uniquely identify services across environments.
+
 > If you need to customize the deployment (namespace filtering, label filtering, etc.), edit the manifest's `args` or `env` sections before applying. See [DaemonSet flags](#discovery-mode) for all available options.
 
 ### 2. Verify
@@ -110,13 +112,15 @@ The DaemonSet mode deploys one agent pod per node. It supports both Discovery Mo
 
 In discovery mode, a single cluster-level API key is used instead of per-pod credentials. The agent watches for pod events across the cluster and automatically starts capturing traffic for eligible pods.
 
+> **Cluster name required:** Discovery mode requires `POSTMAN_INSIGHTS_CLUSTER_NAME` to be set. The backend uses the cluster name together with the namespace and workload name to build a unique service slug (`cluster/namespace/workload`) that prevents data mixing across environments.
+
 ```bash
 postman-insights-agent kube run --discovery-mode [flags]
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--discovery-mode` | bool | `false` | Enable automatic service discovery. |
+| `--discovery-mode` | bool | `false` | Enable automatic service discovery. Requires `POSTMAN_INSIGHTS_CLUSTER_NAME` to be set. |
 | `--include-namespaces` | string (comma-separated) | _(empty -- all non-excluded namespaces)_ | Only discover pods in these namespaces. |
 | `--exclude-namespaces` | string (comma-separated) | _(empty -- uses built-in defaults)_ | Exclude pods in these namespaces, in addition to the [default excluded namespaces](#default-excluded-namespaces). |
 | `--include-labels` | key=value pairs | _(empty)_ | Only capture pods that have **all** of these labels. |
@@ -128,6 +132,7 @@ All discovery flags can also be set via environment variables. CLI flags take pr
 | Environment variable | Maps to flag | Format |
 |---|---|---|
 | `POSTMAN_INSIGHTS_DISCOVERY_MODE` | `--discovery-mode` | `"true"` to enable |
+| `POSTMAN_INSIGHTS_CLUSTER_NAME` | _(env var only)_ | Cluster name string (**required** in discovery mode) |
 | `POSTMAN_INSIGHTS_INCLUDE_NAMESPACES` | `--include-namespaces` | Comma-separated list |
 | `POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES` | `--exclude-namespaces` | Comma-separated list |
 | `POSTMAN_INSIGHTS_INCLUDE_LABELS` | `--include-labels` | Comma-separated `key=value` pairs |
@@ -147,6 +152,8 @@ Or equivalently via environment variables:
 env:
   - name: POSTMAN_INSIGHTS_DISCOVERY_MODE
     value: "true"
+  - name: POSTMAN_INSIGHTS_CLUSTER_NAME
+    value: "production-cluster"
   - name: POSTMAN_INSIGHTS_INCLUDE_NAMESPACES
     value: "production,staging"
 ```
@@ -158,6 +165,18 @@ postman-insights-agent kube run \
   --discovery-mode \
   --exclude-labels=team=infrastructure
 ```
+
+#### Hybrid mode: pods with explicit service IDs
+
+In DaemonSet discovery mode, pods that have explicit service IDs set in their environment are routed to the traditional onboarding flow instead of auto-discovery. This lets teams gradually adopt discovery mode while keeping existing per-pod configurations.
+
+| Pod environment variable | Effect |
+|---|---|
+| `POSTMAN_INSIGHTS_WORKSPACE_ID` + `POSTMAN_INSIGHTS_SYSTEM_ENV` | Pod uses the workspace-based `CreateApplication` flow. |
+| `POSTMAN_INSIGHTS_PROJECT_ID` | Pod uses the legacy project-based flow. |
+| _(neither set)_ | Pod uses auto-discovery via `RegisterDiscoveredService` (default). |
+
+The pod's own `POSTMAN_INSIGHTS_API_KEY` is used if set; otherwise, the DaemonSet-level API key is used as a fallback. Both `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` must be valid UUIDs when set together.
 
 #### Workspace Mode
 
@@ -175,20 +194,22 @@ Sidecar mode injects the agent as an additional container into your existing dep
 
 In discovery mode, the `--project` flag is no longer required. The agent registers the service automatically.
 
+> **Cluster name required:** `--cluster-name` is required together with `--discovery-mode`. The agent uses it to uniquely identify the cluster and prevent data mixing across environments.
+
 ```bash
 postman-insights-agent kube inject \
   -f <deployment.yaml> \
   --discovery-mode \
+  --cluster-name <cluster> \
   [--service-name <name>] \
-  [--cluster-name <cluster>] \
   [-o <output.yaml>]
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--discovery-mode` | bool | `false` | Enable automatic service discovery. Removes the requirement for `--project`. |
+| `--cluster-name` | string | _(empty)_ | Kubernetes cluster name (**required** when `--discovery-mode` is set). Used to uniquely identify the cluster and prevent data mixing across environments. |
 | `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name. See [Service Name Derivation](#service-name-derivation). |
-| `--cluster-name` | string | _(empty)_ | Kubernetes cluster name. Sent as discovery metadata; not derivable from manifests. |
 | `-f`, `--file` | string | _(required)_ | Path to the Kubernetes YAML file to inject. |
 | `-o`, `--output` | string | _(stdout)_ | Path to write the injected YAML. |
 | `-s`, `--secret` | string | `"false"` | Whether to generate a Kubernetes Secret for the API key. Set to `"true"` to include in output, or provide a file path. |
@@ -199,8 +220,8 @@ postman-insights-agent kube inject \
 postman-insights-agent kube inject \
   -f deployment.yaml \
   --discovery-mode \
-  --service-name "my-namespace/my-service" \
   --cluster-name "production-cluster" \
+  --service-name "my-namespace/my-service" \
   --secret \
   -o injected-deployment.yaml
 ```
@@ -216,14 +237,14 @@ The injected sidecar container in the output YAML includes:
   - `POSTMAN_INSIGHTS_API_KEY` -- the API key, either as a literal value or referenced from a Kubernetes Secret (`postman-agent-secrets` / `postman-api-key`) when the `--secret` flag is used.
   - `POSTMAN_K8S_NODE`, `POSTMAN_K8S_NAMESPACE`, `POSTMAN_K8S_POD`, `POSTMAN_K8S_HOST_IP`, `POSTMAN_K8S_POD_IP` -- automatically populated from Kubernetes pod metadata via the downward API.
 - **Environment variables** (discovery mode only):
-  - `POSTMAN_INSIGHTS_CLUSTER_NAME` -- set when `--cluster-name` is provided.
+  - `POSTMAN_INSIGHTS_CLUSTER_NAME` -- set from the `--cluster-name` flag (required in discovery mode).
   - `POSTMAN_INSIGHTS_WORKLOAD_NAME` -- auto-derived from the Deployment name in the input manifest.
   - `POSTMAN_INSIGHTS_WORKLOAD_TYPE` -- set to `Deployment` (derived from the input manifest).
   - `POSTMAN_INSIGHTS_LABELS` -- JSON-encoded map of the Deployment's labels from the input manifest.
 - **Resources**: 200m CPU / 500Mi memory (requests and limits)
 - **Security**: `NET_RAW` capability (required for packet capture)
 
-> **Note on API key handling:** By default, the API key is embedded as a literal environment variable in the sidecar container spec. Use the `--secret` flag to instead reference it from a Kubernetes Secret named `postman-agent-secrets` (key: `postman-api-key`). The secret can be generated automatically as part of the injection, or created separately with `postman-insights-agent kube secret`.
+> **Note on API key handling:** By default, the API key is embedded as a literal environment variable (`POSTMAN_INSIGHTS_API_KEY`) in the sidecar container spec. Use the `--secret` flag to instead reference it from a Kubernetes Secret named `postman-agent-secrets` (key: `postman-api-key`). The secret can be generated automatically as part of the injection, or created separately with `postman-insights-agent kube secret`.
 
 #### Workspace Mode
 
@@ -265,25 +286,35 @@ Standalone mode runs the agent directly on a host (outside of Kubernetes orchest
 
 In discovery mode, the agent registers the service with the backend and begins capturing traffic without requiring a project ID, collection ID, or workspace ID.
 
+> **Required environment variables:** Discovery mode requires `POSTMAN_INSIGHTS_CLUSTER_NAME`, `POSTMAN_K8S_NAMESPACE`, and `POSTMAN_INSIGHTS_WORKLOAD_NAME` to be set. These are automatically populated when using `kube inject`, but must be set manually for standalone deployments.
+
 ```bash
 postman-insights-agent apidump --discovery-mode [--service-name <name>]
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--discovery-mode` | bool | `false` | Enable automatic service discovery. Bypasses the `--project` / `--collection` / `--workspace-id` requirement. |
+| `--discovery-mode` | bool | `false` | Enable automatic service discovery. Bypasses the `--project` / `--collection` / `--workspace-id` requirement. Requires `POSTMAN_INSIGHTS_CLUSTER_NAME` env var. |
 | `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name. |
 
 | Environment variable | Description |
 |---|---|
 | `POSTMAN_INSIGHTS_DISCOVERY_MODE` | Set to `"true"` to enable discovery mode. |
+| `POSTMAN_INSIGHTS_CLUSTER_NAME` | Kubernetes cluster name (**required** in discovery mode). |
+| `POSTMAN_K8S_NAMESPACE` | Pod namespace (**required** in discovery mode). Auto-set by `kube inject`. |
+| `POSTMAN_INSIGHTS_WORKLOAD_NAME` | Workload name (**required** in discovery mode). Auto-set by `kube inject`. |
+| `POSTMAN_INSIGHTS_WORKLOAD_TYPE` | Workload type (e.g., `Deployment`). Auto-set by `kube inject`. |
+| `POSTMAN_INSIGHTS_LABELS` | JSON-encoded map of the workload's labels. Auto-set by `kube inject`. |
 | `POSTMAN_INSIGHTS_SERVICE_NAME` | Override the auto-derived service name. |
 
 **Example:**
 
 ```bash
 POSTMAN_INSIGHTS_DISCOVERY_MODE=true \
-POSTMAN_INSIGHTS_SERVICE_NAME=my-service \
+POSTMAN_INSIGHTS_CLUSTER_NAME=production-cluster \
+POSTMAN_K8S_NAMESPACE=default \
+POSTMAN_INSIGHTS_WORKLOAD_NAME=my-service \
+POSTMAN_INSIGHTS_SERVICE_NAME=my-namespace/my-service \
 postman-insights-agent apidump
 ```
 
@@ -341,17 +372,30 @@ The exclude list always starts with the [default excluded namespaces](#default-e
 
 #### Default excluded namespaces
 
-The following namespaces are excluded by default:
+The following namespaces are excluded by default. This list is loaded from a YAML configuration file (`excluded_namespaces.yaml`) shipped with the agent, making it easy to update and extend.
 
-| | | | |
-|---|---|---|---|
-| `argocd` | `calico-system` | `cert-manager` | `cilium` |
-| `crossplane-system` | `external-secrets` | `flux-system` | `gatekeeper-system` |
-| `grafana` | `ingress-nginx` | `istio-system` | `jaeger` |
-| `kube-node-lease` | `kube-public` | `kube-system` | `kyverno` |
-| `linkerd` | `logging` | `metallb-system` | `monitoring` |
-| `postman-insights-namespace` | `prometheus` | `tekton-pipelines` | `traefik` |
-| `velero` | | | |
+| Category | Namespaces |
+|---|---|
+| **Kubernetes core** | `kube-node-lease`, `kube-public`, `kube-system` |
+| **Cloud provider (GKE)** | `gke-gmp-system`, `gke-managed-system`, `gke-system` |
+| **Cloud provider (AWS EKS)** | `amazon-cloudwatch`, `amazon-guardduty`, `aws-observability` |
+| **Postman Insights** | `postman-insights-namespace` |
+| **Service mesh** | `consul`, `istio-system`, `linkerd` |
+| **Ingress / API gateway** | `ambassador`, `contour-system`, `ingress-nginx`, `kong`, `nginx-ingress`, `nginx-ingress-internal`, `nginx-ingress-public`, `traefik` |
+| **Networking** | `calico-system`, `cilium`, `metallb-system`, `tigera-operator` |
+| **Certificate management** | `cert-manager` |
+| **DNS** | `external-dns` |
+| **Secrets management** | `external-secrets`, `vault`, `vault-operator` |
+| **Monitoring / Observability** | `alloy`, `appdynamics`, `datadog`, `dynatrace`, `elastic-system`, `grafana`, `jaeger`, `logging`, `monitoring`, `newrelic`, `opencost`, `opentelemetry-operator-system`, `prometheus`, `solarwinds`, `splunk` |
+| **Security / Policy** | `aqua`, `falco`, `gatekeeper-system`, `kyverno`, `trivy-system`, `twistlock`, `wiz` |
+| **GitOps / CI-CD** | `argocd`, `argo-rollouts`, `flux-system`, `tekton-pipelines` |
+| **Autoscaling** | `karpenter`, `keda` |
+| **Infrastructure provisioning** | `crossplane`, `crossplane-system` |
+| **Storage / Backup** | `longhorn-system`, `openebs`, `rook-ceph`, `velero` |
+| **Serverless** | `knative-eventing`, `knative-serving` |
+| **Logging** | `fluent-bit` |
+| **Tunnel / Proxy** | `cloudflared` |
+| **Utilities** | `reflector`, `stakater` |
 
 ### Layer 2: Label and annotation filtering
 
@@ -465,23 +509,41 @@ postman-insights-agent apidump --discovery-mode --service-name "my-namespace/my-
 
 ---
 
+## Discovery Traffic TTL
+
+When a service is discovered but not yet onboarded in the Postman app, the backend enforces a **traffic time-to-live (TTL)**. The discovery registration response includes a `traffic_expires_at` timestamp. If the service is not onboarded before this window elapses, the agent gracefully stops capturing traffic for that service.
+
+**How it works:**
+
+1. The agent registers a discovered service with the backend via `RegisterDiscoveredService`.
+2. The backend returns a `traffic_expires_at` timestamp indicating when the capture window ends.
+3. The agent sets an internal timer. When the TTL expires, it stops trace collection and marks the pod as `TrafficMonitoringEnded` (not failed).
+4. If the backend returns a 403 indicating the TTL has already expired, the agent logs a warning and exits gracefully.
+
+**To resume capture**, onboard the service in the Postman app. Once onboarded, the TTL restriction is lifted and the agent captures traffic indefinitely.
+
+> **Note:** This TTL only applies to services discovered via auto-discovery that have not yet been onboarded. Services onboarded via workspace mode, project mode, or the hybrid per-pod IDs described in [Hybrid mode](#hybrid-mode-pods-with-explicit-service-ids) are not subject to this limit.
+
+---
+
 ## Environment Variables Reference
 
 | Environment variable | Applies to | Description |
 |---|---|---|
-| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. |
+| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. Also accepts `POSTMAN_API_KEY` as a fallback. |
 | `POSTMAN_INSIGHTS_DISCOVERY_MODE` | DaemonSet, Sidecar, Standalone | Set to `"true"` to enable discovery mode. |
+| `POSTMAN_INSIGHTS_CLUSTER_NAME` | DaemonSet, Sidecar, Standalone | Kubernetes cluster name (**required** in discovery mode). Used to build a unique service slug and prevent data mixing across environments. Set via `--cluster-name` in `kube inject`, or as an env var for `kube run` and standalone. |
 | `POSTMAN_INSIGHTS_SERVICE_NAME` | Sidecar, Standalone | Override the auto-derived service name (discovery mode). |
 | `POSTMAN_INSIGHTS_INCLUDE_NAMESPACES` | DaemonSet | Comma-separated list of namespaces to include (discovery mode). |
 | `POSTMAN_INSIGHTS_EXCLUDE_NAMESPACES` | DaemonSet | Comma-separated list of namespaces to exclude, added to defaults (discovery mode). |
 | `POSTMAN_INSIGHTS_INCLUDE_LABELS` | DaemonSet | Comma-separated `key=value` pairs. Pods must match **all** labels (discovery mode). |
 | `POSTMAN_INSIGHTS_EXCLUDE_LABELS` | DaemonSet | Comma-separated `key=value` pairs. Pods matching **any** label are excluded (discovery mode). |
-| `POSTMAN_INSIGHTS_WORKSPACE_ID` | DaemonSet, Sidecar, Standalone | Your Postman workspace ID (workspace mode). |
-| `POSTMAN_INSIGHTS_SYSTEM_ENV` | DaemonSet, Sidecar, Standalone | Your system environment ID (workspace mode). Required when workspace ID is set. |
-| `POSTMAN_INSIGHTS_CLUSTER_NAME` | Sidecar (discovery mode) | Kubernetes cluster name, sent as discovery metadata. Set by the `--cluster-name` flag in `kube inject`. |
-| `POSTMAN_INSIGHTS_WORKLOAD_NAME` | Sidecar (discovery mode) | Workload name, auto-derived from the Deployment name in the input manifest. |
-| `POSTMAN_INSIGHTS_WORKLOAD_TYPE` | Sidecar (discovery mode) | Workload type (e.g., `Deployment`), auto-derived from the input manifest. |
-| `POSTMAN_INSIGHTS_LABELS` | Sidecar (discovery mode) | JSON-encoded map of the Deployment's labels, auto-derived from the input manifest. |
+| `POSTMAN_INSIGHTS_WORKSPACE_ID` | DaemonSet, Sidecar, Standalone | Your Postman workspace ID (workspace mode, or [hybrid mode](#hybrid-mode-pods-with-explicit-service-ids) in DaemonSet discovery). |
+| `POSTMAN_INSIGHTS_SYSTEM_ENV` | DaemonSet, Sidecar, Standalone | Your system environment ID. Required when workspace ID is set. |
+| `POSTMAN_INSIGHTS_PROJECT_ID` | DaemonSet | Per-pod project ID ([hybrid mode](#hybrid-mode-pods-with-explicit-service-ids)). Routes the pod to the legacy project flow instead of auto-discovery. |
+| `POSTMAN_INSIGHTS_WORKLOAD_NAME` | Sidecar, Standalone (discovery mode) | Workload name. Auto-derived from the Deployment name by `kube inject`; must be set manually for standalone. |
+| `POSTMAN_INSIGHTS_WORKLOAD_TYPE` | Sidecar, Standalone (discovery mode) | Workload type (e.g., `Deployment`). Auto-derived from the input manifest by `kube inject`. |
+| `POSTMAN_INSIGHTS_LABELS` | Sidecar, Standalone (discovery mode) | JSON-encoded map of the Deployment's labels. Auto-derived from the input manifest by `kube inject`. |
 
 CLI flags always take precedence over environment variables.
 
@@ -495,7 +557,7 @@ CLI flags always take precedence over environment variables.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--discovery-mode` | bool | `false` | Enable automatic service discovery. |
+| `--discovery-mode` | bool | `false` | Enable automatic service discovery. Requires `POSTMAN_INSIGHTS_CLUSTER_NAME` env var. |
 | `--include-namespaces` | string | _(empty)_ | Comma-separated namespaces to include. |
 | `--exclude-namespaces` | string | _(empty)_ | Comma-separated namespaces to exclude (added to defaults). |
 | `--include-labels` | key=value | _(empty)_ | Labels that pods must have to be captured. |
@@ -509,10 +571,10 @@ CLI flags always take precedence over environment variables.
 |---|---|---|---|
 | `--project` | string | _(empty)_ | Your Postman Insights project ID (legacy mode). |
 | `--discovery-mode` | bool | `false` | Enable automatic service discovery. Removes the `--project` requirement. |
+| `--cluster-name` | string | _(empty)_ | Kubernetes cluster name (**required** when `--discovery-mode` is set). Used to uniquely identify the cluster and prevent data mixing. |
 | `--workspace-id` | string (UUID) | _(empty)_ | Your Postman workspace ID. Mutually exclusive with `--project` and `--discovery-mode`. |
 | `--system-env` | string (UUID) | _(empty)_ | Your system environment ID. Required when `--workspace-id` is specified. |
 | `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name (discovery mode). |
-| `--cluster-name` | string | _(empty)_ | Kubernetes cluster name, sent as discovery metadata. |
 
 **General flags:**
 
@@ -528,7 +590,7 @@ CLI flags always take precedence over environment variables.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--discovery-mode` | bool | `false` | Enable automatic service discovery. Bypasses `--project` / `--collection` / `--workspace-id`. |
+| `--discovery-mode` | bool | `false` | Enable automatic service discovery. Bypasses `--project` / `--collection` / `--workspace-id`. Requires `POSTMAN_INSIGHTS_CLUSTER_NAME` env var. |
 | `--service-name` | string | _(auto-derived)_ | Override the auto-derived service name. |
 
 **Workspace mode flags:**
@@ -602,6 +664,26 @@ Yes. The DaemonSet automatically skips any pod that already has the Postman Insi
 ### Can I use discovery mode and legacy `--project` mode in the same cluster?
 
 This is technically possible -- the DaemonSet skips pods that already have the agent sidecar container, so traffic will not be captured twice. However, mixing legacy `--project` mode with discovery mode is **not recommended** and may not be supported in future releases. We strongly encourage migrating all workloads to either Discovery Mode or Workspace Mode.
+
+### Why is cluster name required in discovery mode?
+
+The backend uses the cluster name together with the namespace and workload name to build a unique service slug (`cluster/namespace/workload`). Without a cluster name, services with the same namespace and workload name across different clusters would collide, causing data mixing. The agent enforces this at startup and will exit with a clear error if the cluster name is missing.
+
+- **`kube run`**: Set `POSTMAN_INSIGHTS_CLUSTER_NAME` as an environment variable.
+- **`kube inject`**: Use the `--cluster-name` flag (required together with `--discovery-mode`).
+- **`apidump`**: Set `POSTMAN_INSIGHTS_CLUSTER_NAME` as an environment variable.
+
+### What happens when a discovered service's traffic TTL expires?
+
+If a discovered service is not onboarded in the Postman app within the backend-enforced time window, the agent gracefully stops capturing traffic for that service. The pod is marked as `TrafficMonitoringEnded` (not failed), and the agent logs a warning. To resume capture, onboard the service in the Postman app -- the TTL restriction is then lifted.
+
+### Can I use per-pod workspace or project IDs alongside DaemonSet discovery mode?
+
+Yes. In DaemonSet discovery mode, pods that have explicit `POSTMAN_INSIGHTS_WORKSPACE_ID` (plus `POSTMAN_INSIGHTS_SYSTEM_ENV`) or `POSTMAN_INSIGHTS_PROJECT_ID` set in their environment are routed to the traditional onboarding flow instead of auto-discovery. This lets you gradually adopt discovery mode while keeping existing per-pod configurations. See [Hybrid mode: pods with explicit service IDs](#hybrid-mode-pods-with-explicit-service-ids) for details.
+
+### I'm seeing "API Catalog is not enabled for this team". What does this mean?
+
+This error means the API Catalog feature is not enabled for your Postman team. The agent detects this specific backend response and surfaces a user-friendly message. Contact your Postman team administrator to enable the API Catalog feature, then redeploy the agent.
 
 ### What format should the workspace ID and system environment ID be in?
 
