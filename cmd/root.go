@@ -201,6 +201,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&rest.Domain, "domain", "", "The domain name of the back-end instance to use.")
 	rootCmd.PersistentFlags().MarkHidden("domain")
 
+	rootCmd.PersistentFlags().StringVar(&rest.Region, "region", "", "Data residency region for the Insights API: US (default) or EU.")
+
 	// Use a proxy or permit a mismatched certificate.
 	rootCmd.PersistentFlags().StringVar(&rest.ProxyAddress, "proxy", "", "The domain name, IP address, or URL of an HTTP proxy server to use")
 	rootCmd.PersistentFlags().StringVar(&rest.ExpectedServerName, "server-tls-name", "", "Provide an alternate TLS server name to accept")
