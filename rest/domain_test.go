@@ -16,7 +16,7 @@ func TestDefaultObservabilityHost(t *testing.T) {
 		{"US dev", RegionUS, "DEV", "localhost:50443"},
 		{"EU production empty", RegionEU, "", "api.observability.eu.postman.com"},
 		{"EU production explicit", RegionEU, "PRODUCTION", "api.observability.eu.postman.com"},
-		{"EU alpha", RegionEU, "ALPHA", "api.observability.eu.postman-alphta.com"},
+		{"EU alpha", RegionEU, "ALPHA", "api.observability.eu.postman-alpha.com"},
 		{"EU unknown env uses prod", RegionEU, "STAGE", "api.observability.eu.postman.com"},
 	}
 	for _, tt := range tests {
