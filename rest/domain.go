@@ -59,7 +59,7 @@ func euObservabilityHost(envUpper, envRaw string) string {
 	switch envUpper {
 	case "ALPHA":
 		printer.Debugf("Selecting Postman EU alpha backend.\n")
-		return "api.observability.eu.postman-alphta.com"
+		return "api.observability.eu.postman-alpha.com"
 	case "", "PRODUCTION":
 		printer.Debugf("Selecting Postman EU production backend.\n")
 		return "api.observability.eu.postman.com"
