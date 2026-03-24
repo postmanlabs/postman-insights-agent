@@ -7,21 +7,70 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
-// This global setting identifies which back end to use, and defaults to
-// api.observability.postman.com.
+const (
+	RegionUS = "US"
+	RegionEU = "EU"
+)
+
+// Domain is the backend host (or host:port) to use. When empty, DefaultDomain() runs before use.
 //
-// The domain is chosen based on the selected Postman environment (which may be
-// the default or set in an environment variable.)
-//
-// If the --domain flag is used, it unconditionally overrides this choice.
+// Resolution order: --domain wins if set; otherwise host comes from region (--region /
+// POSTMAN_REGION / credentials) plus POSTMAN_ENV, same as historical US behavior.
 var Domain string
 
-// Return the default domain, given the settings in use
+// Region is the --region flag; empty means use cfg.PostmanRegion() / POSTMAN_REGION.
+var Region string
+
+// EffectivePostmanRegion returns US or EU (default US).
+func EffectivePostmanRegion() string {
+	r := strings.TrimSpace(Region)
+	if r == "" {
+		r = cfg.PostmanRegion()
+	}
+	if r == "" {
+		return RegionUS
+	}
+	switch strings.ToUpper(r) {
+	case RegionUS:
+		return RegionUS
+	case RegionEU:
+		return RegionEU
+	default:
+		printer.Warningf("Unknown region %q, using %s.\n", r, RegionUS)
+		return RegionUS
+	}
+}
+
+// DefaultDomain returns the observability API host for the current region and POSTMAN_ENV.
 func DefaultDomain() string {
 	_, env := cfg.GetPostmanAPIKeyAndEnvironment()
+	return defaultObservabilityHost(EffectivePostmanRegion(), env)
+}
 
-	// Dispatch based on Postman environment.
-	switch strings.ToUpper(env) {
+func defaultObservabilityHost(region, env string) string {
+	u := strings.ToUpper(strings.TrimSpace(env))
+	if region == RegionEU {
+		return euObservabilityHost(u, env)
+	}
+	return usObservabilityHost(u, env)
+}
+
+func euObservabilityHost(envUpper, envRaw string) string {
+	switch envUpper {
+	case "ALPHA":
+		printer.Debugf("Selecting Postman EU alpha backend.\n")
+		return "api.observability.eu.postman-alpha.com"
+	case "", "PRODUCTION":
+		printer.Debugf("Selecting Postman EU production backend.\n")
+		return "api.observability.eu.postman.com"
+	default:
+		printer.Warningf("Unknown Postman environment %q for EU region; using EU production.\n", envRaw)
+		return "api.observability.eu.postman.com"
+	}
+}
+
+func usObservabilityHost(envUpper, envRaw string) string {
+	switch envUpper {
 	case "":
 		// Not specified by user, default to PRODUCTION
 		return "api.observability.postman.com"
@@ -41,7 +90,7 @@ func DefaultDomain() string {
 		printer.Debugf("Selecting Postman production backend.\n")
 		return "api.observability.postman.com"
 	default:
-		printer.Warningf("Unknown Postman environment %q, using production.\n")
+		printer.Warningf("Unknown Postman environment %q, using production.\n", envRaw)
 		return "api.observability.postman.com"
 	}
 }

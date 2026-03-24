@@ -144,6 +144,13 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 		})
 	}
 
+	if r := rest.EffectivePostmanRegion(); r != rest.RegionUS {
+		envs = append(envs, v1.EnvVar{
+			Name:  "POSTMAN_REGION",
+			Value: r,
+		})
+	}
+
 	k8sEnvVars := []v1.EnvVar{
 		{
 			Name: "POSTMAN_K8S_NODE",
