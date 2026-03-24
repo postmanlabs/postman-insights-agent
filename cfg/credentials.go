@@ -20,6 +20,7 @@ import (
 //     default:
 //     api_key_id: apk_6NiejyYEVpWfziUXJgovV6
 //     api_key_secret: 09328501313h39tgh91238tg
+//     postman_region: EU  # optional; US (default) or EU
 //     profile-1:
 //     api_key_id: apk_XvGyglmvHQoMcq3WOoLly
 //     api_key_secret: 34985g298g2498ty243gh2jl
@@ -70,6 +71,7 @@ func initCreds() {
 	creds.BindEnv("default.api_key_secret", "AKITA_API_KEY_SECRET")
 	creds.BindEnv("default.postman_api_key", "POSTMAN_INSIGHTS_API_KEY")
 	creds.BindEnv("default.postman_env", "POSTMAN_ENV")
+	creds.BindEnv("default.postman_region", "POSTMAN_REGION")
 
 	if err := creds.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
@@ -114,6 +116,11 @@ func GetPostmanAPIKeyAndEnvironment() (string, string) {
 		key = os.Getenv("POSTMAN_API_KEY")
 	}
 	return key, env
+}
+
+// PostmanRegion returns POSTMAN_REGION / credentials postman_region (trimmed), or "" if unset.
+func PostmanRegion() string {
+	return strings.TrimSpace(creds.GetString("default.postman_region"))
 }
 
 // Writes Postman API key and environment to the config file.

@@ -177,6 +177,12 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 		pmEnvBody.SetAttributeValue("value", cty.StringVal(pmEnv))
 	}
 
+	if r := rest.EffectivePostmanRegion(); r != rest.RegionUS {
+		pmRegionBody := containerBody.AppendNewBlock("env", []string{}).Body()
+		pmRegionBody.SetAttributeValue("name", cty.StringVal("POSTMAN_REGION"))
+		pmRegionBody.SetAttributeValue("value", cty.StringVal(r))
+	}
+
 	// K8s downward API env vars (via value_from / field_ref in Terraform)
 	addTFDownwardAPIEnv := func(name, fieldPath string) {
 		envBody := containerBody.AppendNewBlock("env", []string{}).Body()
