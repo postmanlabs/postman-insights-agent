@@ -234,5 +234,6 @@ ignored_regexes:
 - (?i)\b(5AEP861[a-zA-Z0-9._=]{80,})\b
 - \b(3MVG9[0-9a-zA-Z._+/=]{80,251})
 - (?i)"key"\s*:\s*"[^"]*(?<![a-z0-9])(?:password|secret|token|credential|auth|private|jwt|sensitive|confidential|key)(?![a-z0-9])[^"]*"\s*,\s*"value"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+- \bSFMC_[A-Za-z0-9]{51}[0-9a-f]{8}\b
 rewritten_regexes:
 - (?i)\beyJhbGciOi[a-z0-9_\-\.]{2,1001}\b
