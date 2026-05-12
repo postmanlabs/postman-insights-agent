@@ -11,6 +11,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
+	apidumpebpf "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-ebpf"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ascii"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ec2"
@@ -289,6 +290,12 @@ func init() {
 	}
 
 	rootCmd.AddCommand(apidump.Cmd)
+
+	// Phase 1 spike command for HTTPS capture via eBPF. Stub on non-Linux
+	// / non-insights_bpf builds returns a friendly error.
+	// See docs/https-capture-design.md.
+	apidumpebpf.Cmd.Hidden = true
+	rootCmd.AddCommand(apidumpebpf.Cmd)
 
 	rootCmd.AddCommand(ecs.Cmd)
 	rootCmd.AddCommand(kube.Cmd)
