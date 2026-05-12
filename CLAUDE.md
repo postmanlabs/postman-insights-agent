@@ -2,6 +2,20 @@
 
 Guidance for Claude Code (and other AI coding agents) when working in this repository.
 
+## Active work
+
+**HTTPS capture via eBPF** is in progress on branch `feat/https-capture-ebpf`.
+- Design doc: [`docs/https-capture-design.md`](docs/https-capture-design.md)
+- Phased session briefs: [`docs/phases/`](docs/phases/) (one brief per session)
+- Scaffold (committed): `ebpf/` package and `cmd/internal/apidump-ebpf/`
+
+When starting a new session to advance this work, the standard prompt is:
+> Read `docs/phases/phase-N.md` and execute it end-to-end. Branch from
+> `feat/https-capture-ebpf` into `feat/https-capture-ebpf-phaseN`.
+
+Reference repos are cloned (read-only) at `../insights-ebpf-research/` —
+OBI (primary), Datadog system-probe, Pixie, ecapture.
+
 ## Project overview
 
 This is the **Postman Insights Agent** — an open-source Go CLI that captures HTTP traffic from network interfaces (via libpcap), parses/witnesses requests and responses, and ships them to the Postman Insights backend so users can see endpoints, errors, latency, and volume in Postman.

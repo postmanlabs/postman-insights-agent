@@ -420,6 +420,16 @@ The Postman Insights Agent asks for the **same posture** — not more.
 
 ## 9. Phased delivery plan
 
+Each phase is delivered in **its own session** with a self-contained execution brief in [`docs/phases/`](phases/). See [`docs/phases/README.md`](phases/README.md) for the session-by-session execution model.
+
+| Phase | Brief | Status |
+|---|---|---|
+| 1 | [`phases/phase-1.md`](phases/phase-1.md) | Scaffold committed; spike pending Linux execution |
+| 2 | [`phases/phase-2.md`](phases/phase-2.md) | Brief written, not started |
+| 3 | [`phases/phase-3.md`](phases/phase-3.md) | Brief written, not started |
+| 4 | [`phases/phase-4.md`](phases/phase-4.md) | Brief written, not started |
+| 5 | [`phases/phase-5.md`](phases/phase-5.md) | Brief written, not started |
+
 Each phase is independently demoable.
 
 ### Phase 0 — Decisions locked (this document)
