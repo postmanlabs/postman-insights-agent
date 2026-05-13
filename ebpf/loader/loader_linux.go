@@ -13,7 +13,14 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64,arm64 -cc clang -cflags "-O2 -g -Wall -Werror" libssl ../programs/libssl.bpf.c -- -I../programs
+// bpf2go targets are intentionally limited to the *host* arch for the Phase 1
+// spike: cross-arch compilation requires either libbpf >= 1.3 (which defines
+// synthetic per-arch pt_regs structs) or per-arch vmlinux.h headers. Debian
+// bookworm ships libbpf 1.1, so we cross-compile in CI on Linux/amd64 runners.
+// On a developer machine, generate locally for whichever arch the host kernel
+// exposes via /sys/kernel/btf/vmlinux.
+//
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror" libssl ../programs/libssl.bpf.c -- -I../programs
 
 // Loader owns the loaded BPF objects (maps + programs) for a single Insights
 // Agent process. One Loader serves all target processes; per-process state

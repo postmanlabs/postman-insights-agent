@@ -19,6 +19,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.16.7
 	github.com/aws/smithy-go v1.13.4
 	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
+	github.com/cilium/ebpf v0.18.0
 	github.com/containernetworking/plugins v1.5.1
 	github.com/golang/gddo v0.0.0-20210115222349-20d68f94ee1f
 	github.com/golang/mock v1.4.4
@@ -42,6 +43,7 @@ require (
 	github.com/stretchr/testify v1.8.4
 	github.com/zclconf/go-cty v1.15.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
+	golang.org/x/sys v0.31.0
 	golang.org/x/term v0.30.0
 	golang.org/x/text v0.23.0
 	google.golang.org/grpc v1.67.3
@@ -110,7 +112,6 @@ require (
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
-	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240814211410-ddb44dafa142 // indirect
