@@ -170,6 +170,44 @@ type Args struct {
 	// The number of upload buffers. Anything larger than 1 results in async uploads.
 	MaxWitnessUploadBuffers int
 
+	// --- HTTPS-via-eBPF capture (Phase 2) ---------------------------------
+	//
+	// When EnableHTTPSCapture is true, the agent additionally runs the eBPF
+	// libssl-uprobe pipeline (see ebpf/) alongside libpcap. Decrypted HTTPS
+	// bytes flow through the *same* trace.Collector chain as pcap traffic
+	// (data_masks, rate_limit, backend_collector). The libpcap filter on each
+	// interface is also adjusted to exclude HTTPSCBPFExcludePort to avoid
+	// double-counting TLS handshakes already tracked by tls_conn_tracker.
+	//
+	// Requires a build with the `insights_bpf` tag on Linux. Stubbed elsewhere.
+	EnableHTTPSCapture bool
+
+	// HTTPSLibraries is the comma-separated list of userspace TLS libraries
+	// to attach probes to. Currently only "openssl" is wired (libssl.so.*).
+	// Phase 3 adds "gotls" and "boringssl".
+	HTTPSLibraries []string
+
+	// HTTPSTargetNamespaces, when non-empty, restricts uprobe attachment to
+	// processes whose Kubernetes namespace is in the list. Empty = all
+	// namespaces in scope of normal apidump discovery.
+	HTTPSTargetNamespaces []string
+
+	// HTTPSBodySizeCap is the per-event plaintext byte cap (forwarded to BPF
+	// as max_capture_bytes). Defaults to 1024.
+	HTTPSBodySizeCap uint32
+
+	// HTTPSCaptureMode is one of "headers" | "truncated" | "full".
+	// Phase 2 wires only "truncated" (the default, capped by HTTPSBodySizeCap).
+	HTTPSCaptureMode string
+
+	// HTTPSCBPFExcludePort is the TCP port whose packets are removed from the
+	// cBPF filter when EnableHTTPSCapture is true (defaults to 443).
+	HTTPSCBPFExcludePort uint16
+
+	// PrivacyMode is one of "standard" | "strict" | "dry-run". Currently a
+	// passthrough; Phase 4 wires it into data_masks.
+	PrivacyMode string
+
 	// Discovery mode fields: when DiscoveryMode is true, the agent registers the
 	// service with the backend via RegisterDiscoveredService before starting capture.
 	DiscoveryMode bool
@@ -707,6 +745,23 @@ func (a *apidump) Run() error {
 		a.SendErrorTelemetry(api_schema.ApidumpError_InvalidFilters, err)
 		return err
 	}
+
+	// When HTTPS-via-eBPF capture is active, drop the TLS port from the cBPF
+	// filter so the libpcap path doesn't double-count handshake bytes already
+	// captured by the userspace TLS uprobes. See docs/https-capture-design.md
+	// §6.1 and apidump/ebpf_integration.go.
+	if args.EnableHTTPSCapture && args.HTTPSCBPFExcludePort > 0 {
+		printer.Stderr.Infof(
+			"HTTPS capture enabled: excluding TCP port %d from cBPF filter (pcap path).\n",
+			args.HTTPSCBPFExcludePort)
+		userFilters = excludePortFromBPF(userFilters, args.HTTPSCBPFExcludePort)
+		// Negation filters intentionally untouched: if the user runs in
+		// "capture everything else too" mode, the eBPF-captured plaintext
+		// flow is the source of truth for 443, so the negation channel
+		// would still want to see port 443's *non-TLS* traffic (rare in
+		// practice). Override behaviour gated behind the existing
+		// --bpf-filter knob for power users.
+	}
 	printer.Debugln("User-specified BPF filters:", userFilters)
 	if capturingNegation {
 		printer.Debugln("Negation BPF filters:", negationFilters)
@@ -820,6 +875,7 @@ func (a *apidump) Run() error {
 		prefilterSummary,
 		negationSummary,
 	)
+	a.dumpSummary.HTTPSCaptureEnabled = args.EnableHTTPSCapture
 
 	// Synchronization for collectors + collector errors, each of which is run in a separate goroutine.
 	var doneWG sync.WaitGroup
@@ -1009,6 +1065,66 @@ func (a *apidump) Run() error {
 				}
 			}(interfaceName, filter)
 		}
+	}
+
+	// ---- HTTPS-via-eBPF capture (Phase 2) -------------------------------
+	// Decrypted HTTPS bytes from libssl uprobes are pushed through a dedicated
+	// collector chain that mirrors the matched-filter chain WITHOUT the TLS /
+	// TCP packet trackers (the eBPF path delivers already-decrypted HTTP, not
+	// TLS handshake or raw TCP). Redaction, rate limiting, path/host filters
+	// and the backend sink are all reused unchanged.
+	if args.EnableHTTPSCapture && args.Out.AkitaURI != nil {
+		httpsSummary := trace.NewPacketCounter()
+		var httpsCollector trace.Collector = trace.NewBackendCollector(
+			a.backendSvc,
+			traceTags,
+			backendLrn,
+			a.learnClient,
+			redactor,
+			optionals.Some(a.MaxWitnessSize_bytes),
+			httpsSummary,
+			args.ReproMode,
+			optionals.Some(args.AlwaysCapturePayloads),
+			args.Plugins,
+			args.MaxWitnessUploadBuffers,
+			apidumpTelemetry,
+		)
+		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
+			toRotate = append(toRotate, lsc)
+		}
+		httpsCollector = &trace.PacketCountCollector{
+			PacketCounts:     httpsSummary,
+			Collector:        httpsCollector,
+			SuccessTelemetry: a.successTelemetry,
+		}
+		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector)
+		if rateLimit != nil {
+			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary)
+		}
+		if len(hostExclusions) > 0 {
+			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector)
+		}
+		if len(pathExclusions) > 0 {
+			httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector)
+		}
+		if len(hostAllowlist) > 0 {
+			httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector)
+		}
+		if len(pathAllowlist) > 0 {
+			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector)
+		}
+
+		httpsCtx, httpsCancel := context.WithCancel(context.Background())
+		go func() {
+			<-stop
+			httpsCancel()
+		}()
+		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG)
+		printer.Stderr.Infof("HTTPS capture (eBPF) started with body-cap=%d, mode=%q.\n",
+			args.HTTPSBodySizeCap, args.HTTPSCaptureMode)
+	} else if args.EnableHTTPSCapture {
+		printer.Stderr.Warningf(
+			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")
 	}
 
 	if len(toRotate) > 0 && args.LearnSessionLifetime != time.Duration(0) {

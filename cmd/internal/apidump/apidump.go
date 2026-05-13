@@ -53,6 +53,15 @@ var (
 	apidumpDiscoveryMode bool
 	apidumpServiceName   string
 
+	// HTTPS-via-eBPF capture flags (Phase 2).
+	enableHTTPSCapture    bool
+	httpsLibraries        []string
+	httpsTargetNamespaces []string
+	httpsBodySizeCap      uint32
+	httpsCaptureMode      string
+	httpsCBPFExcludePort  uint16
+	privacyMode           string
+
 	commonApidumpFlags *CommonApidumpFlags
 )
 
@@ -326,6 +335,15 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		WorkloadName:  workloadName,
 		WorkloadType:  workloadType,
 		Labels:        labels,
+
+		// HTTPS-via-eBPF.
+		EnableHTTPSCapture:    enableHTTPSCapture,
+		HTTPSLibraries:        httpsLibraries,
+		HTTPSTargetNamespaces: httpsTargetNamespaces,
+		HTTPSBodySizeCap:      httpsBodySizeCap,
+		HTTPSCaptureMode:      httpsCaptureMode,
+		HTTPSCBPFExcludePort:  httpsCBPFExcludePort,
+		PrivacyMode:           privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
@@ -507,6 +525,55 @@ func init() {
 		"service-name",
 		"",
 		"Override the auto-derived service name (default: namespace/workload-name).",
+	)
+
+	// --- HTTPS-via-eBPF flags (Phase 2) ---
+	// All gated behind --enable-https-capture; when false, none of the other
+	// HTTPS-* flags have any effect. The agent emits a warning instead of
+	// silently ignoring stray values.
+	Cmd.Flags().BoolVar(
+		&enableHTTPSCapture,
+		"enable-https-capture",
+		false,
+		"Enable HTTPS traffic capture via eBPF uprobes on userspace TLS libraries. "+
+			"Requires a Linux kernel >= 5.8, CAP_BPF + CAP_PERFMON, and a binary built with the insights_bpf build tag.",
+	)
+	Cmd.Flags().StringSliceVar(
+		&httpsLibraries,
+		"https-libraries",
+		[]string{"openssl"},
+		"TLS libraries to probe. Currently supported: openssl. (gotls, boringssl in later phases.)",
+	)
+	Cmd.Flags().StringSliceVar(
+		&httpsTargetNamespaces,
+		"https-target-namespaces",
+		nil,
+		"Kubernetes namespaces to attach HTTPS uprobes in. Empty = all namespaces in scope.",
+	)
+	Cmd.Flags().Uint32Var(
+		&httpsBodySizeCap,
+		"https-body-size-cap",
+		1024,
+		"Maximum plaintext bytes captured per SSL_read/SSL_write event. Larger bodies are truncated.",
+	)
+	Cmd.Flags().StringVar(
+		&httpsCaptureMode,
+		"https-capture-mode",
+		"truncated",
+		"HTTPS capture mode: 'headers' | 'truncated' | 'full'. Phase 2 implements 'truncated' only.",
+	)
+	Cmd.Flags().Uint16Var(
+		&httpsCBPFExcludePort,
+		"https-cbpf-exclude-port",
+		443,
+		"TCP port whose packets are removed from the cBPF filter when --enable-https-capture is set. "+
+			"Avoids double-counting handshake bytes already captured via eBPF.",
+	)
+	Cmd.Flags().StringVar(
+		&privacyMode,
+		"privacy-mode",
+		"standard",
+		"Privacy mode: 'standard' | 'strict' | 'dry-run'. Currently a passthrough; full effect lands in Phase 4.",
 	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)
