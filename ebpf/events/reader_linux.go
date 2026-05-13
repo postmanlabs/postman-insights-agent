@@ -67,7 +67,9 @@ func (r *Reader) Run(ctx context.Context) error {
 		}
 
 		r.EventsRead.Add(1)
-		r.EventsLost.Add(rec.LostSamples)
+		// NOTE: ringbuf has no per-record lost count (that's a perf-event API).
+		// Drops are visible via bpf_ringbuf_query() on the map (BPF_RB_AVAIL_DATA /
+		// BPF_RB_RING_SIZE) and polled by the telemetry loop in Phase 2.
 
 		ev, err := Decode(rec.RawSample)
 		if err != nil {

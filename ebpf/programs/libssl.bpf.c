@@ -35,6 +35,17 @@
 
 #include "event.h"
 
+// libbpf < 1.3 (Debian bookworm ships 1.1) lacks BPF_UPROBE / BPF_URETPROBE.
+// They are documented aliases for BPF_KPROBE / BPF_KRETPROBE — uprobes use the
+// same struct pt_regs * context. Define the aliases if absent so the source
+// compiles on older libbpf and is still readable.
+#ifndef BPF_UPROBE
+#define BPF_UPROBE(name, args...)    BPF_KPROBE(name, ##args)
+#endif
+#ifndef BPF_URETPROBE
+#define BPF_URETPROBE(name, args...) BPF_KRETPROBE(name, ##args)
+#endif
+
 char LICENSE[] SEC("license") = "GPL";    // required for some BPF helpers
 
 // -----------------------------------------------------------------------------
