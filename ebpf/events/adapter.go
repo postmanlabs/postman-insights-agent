@@ -83,6 +83,11 @@ type flowState struct {
 	dropped   bool // permanent: malformed or oversized
 	ifaceTag  string
 
+	// HTTP/2 path: if h2 != nil, all bytes for this flow are routed to
+	// the stateful HTTP/2 decoder instead of the akinet single-use parser.
+	// Detection happens on the first bytes via IsHTTP2Preface.
+	h2 *h2State
+
 	// Resolved (or cached) socket info for this flow. Resolved on first
 	// event with a valid fd; reused for the lifetime of the flow.
 	socketResolved bool
@@ -162,6 +167,45 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	}
 	st.lastSeen = ev.Time(monoEpoch)
 	st.totalIn += int(ev.LenCaptured)
+
+	// If we've already committed this flow to the HTTP/2 path, stay there.
+	if st.h2 != nil {
+		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
+			// Backfill source/dest IPs from the resolver cache, mirroring
+			// the HTTP/1 toPNT path.
+			if st.socketResolved {
+				if key.Direction == DirEgress {
+					pnt.SrcIP, pnt.SrcPort = st.localIP, st.localPort
+					pnt.DstIP, pnt.DstPort = st.remoteIP, st.remotePort
+				} else {
+					pnt.SrcIP, pnt.SrcPort = st.remoteIP, st.remotePort
+					pnt.DstIP, pnt.DstPort = st.localIP, st.localPort
+				}
+			}
+			a.Out <- pnt
+			a.MessagesEmitted++
+		}
+		return
+	}
+
+	// Detect HTTP/2 on the first bytes we see on this flow.
+	if st.pending.Len() == 0 && IsHTTP2Preface(ev.Bytes()) {
+		st.h2 = newH2State(st.ifaceTag)
+		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
+			if st.socketResolved {
+				if key.Direction == DirEgress {
+					pnt.SrcIP, pnt.SrcPort = st.localIP, st.localPort
+					pnt.DstIP, pnt.DstPort = st.remoteIP, st.remotePort
+				} else {
+					pnt.SrcIP, pnt.SrcPort = st.remoteIP, st.remotePort
+					pnt.DstIP, pnt.DstPort = st.localIP, st.localPort
+				}
+			}
+			a.Out <- pnt
+			a.MessagesEmitted++
+		}
+		return
+	}
 
 	// Copy bytes — the underlying ringbuf record is reused once Feed returns.
 	chunk := append([]byte(nil), ev.Bytes()...)
