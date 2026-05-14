@@ -32,10 +32,10 @@ Rolling PR: **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/
 | 1 | Spike: decrypted HTTPS reaches `trace.Collector` | ✅ Done |
 | 2 | Production integration into `apidump` (DaemonSet, sampling, telemetry, namespace filter, kind e2e) | ✅ Done — all 6 exit criteria |
 | 3 | Go via DWARF inspector + crypto/tls uprobes | 🟡 ~75% (foundation + HTTP/2 + bidirectional capture + gRPC) |
-| 4 | Privacy hardening (the 8 gaps from design §7.3) | ❌ Not started — **gates production** |
+| 4 | Privacy hardening (the 8 gaps from design §7.3) | 🟡 **~75% (5 of 8 gaps closed)** — standard/strict/dry-run modes, hash tokenisation, coverage telemetry, customer docs all live |
 | 5 | Java agent + `ioctl` bridge + mutating webhook | ❌ Not started |
 
-**Roughly 55% of the v1 program by design-doc scope.**
+**Roughly 70% of the v1 program by design-doc scope.**
 
 ---
 
@@ -197,22 +197,29 @@ gotls-stats: emitted=19 ringbuf_drops=0 read_fail=0 bytes=2192
 
 ### Phase 4 — Privacy hardening
 
-**Not started.** Brief: [`phases/phase-4.md`](phases/phase-4.md).
-
-Of the 8 gaps from design doc §7.3:
+**~75% (5 of 8 gaps closed).** Brief: [`phases/phase-4.md`](phases/phase-4.md).
+Results: [`phases/phase-4-results.md`](phases/phase-4-results.md).
 
 | # | Gap | Status |
 |---|---|:---:|
-| 1 | `Authorization` header in default sensitive-keys list | ❌ |
-| 2 | Body-size cap as redaction concept | ✅ `--https-body-size-cap` |
-| 3 | HIPAA preset (`--privacy-mode=strict`) | ❌ (flag wired, passthrough) |
+| 1 | `Authorization` + `cookie` + 11 more headers in default list | ✅ `data_masks/redaction_config.yaml` expanded; 40+ defaults |
+| 2 | Body-size cap as redaction concept | ✅ `--https-body-size-cap` (BPF-enforced) |
+| 3 | HIPAA preset (`--privacy-mode=strict`) | ✅ `data_masks/privacy_mode.go`; drops bodies + header allowlist |
 | 4 | Per-namespace opt-out | ✅ `--https-target-namespaces` |
-| 5 | Tokenization (hash-replace) | ❌ |
-| 6 | Redaction-coverage telemetry | ❌ |
-| 7 | Dry-run mode (`--privacy-mode=dry-run`) | ❌ (flag wired, passthrough) |
-| 8 | `docs/https-data-flow.md` for customer security review | ❌ |
+| 5 | Tokenization (hash-replace) | ✅ `--redaction-style=hash`; sha256(value)[:8] |
+| 6 | Redaction-coverage telemetry | ✅ `data_masks/coverage.go`; per-rule atomic counters |
+| 7 | Dry-run mode (`--privacy-mode=dry-run`) | ✅ `data_masks/dry_run.go`; per-window JSON reports with reservoir-sampled redacted samples |
+| 8 | Customer-facing security docs | ✅ `docs/https-data-flow.md`, `docs/security-permissions.md`, `docs/redaction-defaults.md` |
 
-**Recommendation: do not enable HTTPS capture for any non-trial customer until Phase 4 ships.** The flags exist; the privacy story doesn't yet.
+**Remaining (lower priority):**
+- Body-size cap as a *redactor-side* metadata enrichment (today truncation happens at BPF; redactor doesn't decorate the truncated body with `{_truncated: true, _original_length: N}` metadata).
+- Discovery-config `decrypt: false` (per-namespace eBPF opt-out *at the kube layer*; the `--target-namespaces` whitelist is the simpler equivalent today).
+
+**Status: HTTPS capture is now safe to enable for trial deployments that opt into `--privacy-mode=dry-run` for a customer-defined trust-building period.** Live mode (`standard` / `strict`) is appropriate after dry-run audit.
+
+**Test coverage added this phase:**
+- 13 new unit tests in `data_masks/` (privacy modes, tokenization, coverage counters, redaction corpus)
+- Regression corpus with 14 sensitive samples + 36 safe strings; assert 100% sensitive detection + 0% false positives
 
 ---
 
