@@ -69,6 +69,13 @@ func (l *GoTLSLoader) EventsMap() *ebpf.Map { return l.gotls.GotlsEvents }
 // WriteProg returns the entry uprobe for crypto/tls.(*Conn).Write.
 func (l *GoTLSLoader) WriteProg() *ebpf.Program { return l.gotls.UprobeGotlsWrite }
 
+// ReadEntryProg returns the entry uprobe for crypto/tls.(*Conn).Read.
+func (l *GoTLSLoader) ReadEntryProg() *ebpf.Program { return l.gotls.UprobeGotlsReadEntry }
+
+// ReadRetProg returns the RET-instruction uprobe for crypto/tls.(*Conn).Read.
+// Attached once per RET site in the function body.
+func (l *GoTLSLoader) ReadRetProg() *ebpf.Program { return l.gotls.UprobeGotlsReadRet }
+
 // ReadCounter sums per-CPU values for the gotls counters map.
 func (l *GoTLSLoader) ReadCounter(idx uint32) (uint64, error) {
 	var perCPU []uint64

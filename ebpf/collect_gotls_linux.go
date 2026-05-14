@@ -120,25 +120,57 @@ func (c *GoTLSCollector) Attach(t GoTLSTarget) error {
 		return fmt.Errorf("ebpf: gotls open %s: %w", t.BinaryPath, err)
 	}
 
-	// Let cilium/ebpf resolve the symbol. Go uses mangled names like
-	// `crypto/tls.(*Conn).Write` which are valid ELF symbol-table strings
-	// and the library handles the .text-segment file-offset conversion.
-	sym := "crypto/tls.(*Conn).Write"
-	lnk, err := exe.Uprobe(sym,
-		c.loader.WriteProg(),
+	var attached []link.Link
+	rollback := func() {
+		for _, l := range attached {
+			_ = l.Close()
+		}
+	}
+
+	// 1. crypto/tls.(*Conn).Write entry probe (Phase 3 foundation).
+	writeSym := "crypto/tls.(*Conn).Write"
+	lnk, err := exe.Uprobe(writeSym, c.loader.WriteProg(),
 		&link.UprobeOptions{PID: int(t.PID)})
 	if err != nil {
-		return fmt.Errorf("ebpf: gotls attach %s pid=%d: %w", sym, t.PID, err)
+		return fmt.Errorf("ebpf: gotls attach %s pid=%d: %w", writeSym, t.PID, err)
 	}
+	attached = append(attached, lnk)
+
+	// 2. crypto/tls.(*Conn).Read entry probe — stashes (buf, ssl) keyed by
+	// goroutine. Plus one uprobe per RET site reading n_bytes from rax/x0.
+	readSym := "crypto/tls.(*Conn).Read"
+	lnk, err = exe.Uprobe(readSym, c.loader.ReadEntryProg(),
+		&link.UprobeOptions{PID: int(t.PID)})
+	if err != nil {
+		rollback()
+		return fmt.Errorf("ebpf: gotls attach %s entry pid=%d: %w", readSym, t.PID, err)
+	}
+	attached = append(attached, lnk)
+
+	readOffsets, err := goexec.FindReturnOffsets(t.BinaryPath, readSym)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("ebpf: find RETs in %s: %w", readSym, err)
+	}
+	for _, off := range readOffsets {
+		lnk, err = exe.Uprobe("", c.loader.ReadRetProg(),
+			&link.UprobeOptions{PID: int(t.PID), Address: off})
+		if err != nil {
+			rollback()
+			return fmt.Errorf("ebpf: gotls attach %s RET@0x%x pid=%d: %w", readSym, off, t.PID, err)
+		}
+		attached = append(attached, lnk)
+	}
+
 	c.mu.Lock()
-	c.links[t.PID] = append(c.links[t.PID], lnk)
+	c.links[t.PID] = append(c.links[t.PID], attached...)
 	c.mu.Unlock()
 	goVer := ""
 	if info != nil {
 		goVer = info.GoVersion
 	}
-	printer.Debugf("ebpf: attached gotls write uprobe pid=%d binary=%s go=%s symbol=%s\n",
-		t.PID, t.BinaryPath, goVer, sym)
+	printer.Stderr.Infof("ebpf: attached gotls probes pid=%d binary=%s go=%s (write + read_entry + %d read_rets)\n",
+		t.PID, t.BinaryPath, goVer, len(readOffsets))
 	return nil
 }
 

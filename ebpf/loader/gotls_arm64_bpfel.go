@@ -12,6 +12,11 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type gotlsGotlsReadArgs struct {
+	SslCtx uint64
+	Buf    uint64
+}
+
 // loadGotls returns the embedded CollectionSpec for gotls.
 func loadGotls() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_GotlsBytes)
@@ -54,15 +59,18 @@ type gotlsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type gotlsProgramSpecs struct {
-	UprobeGotlsWrite *ebpf.ProgramSpec `ebpf:"uprobe_gotls_write"`
+	UprobeGotlsReadEntry *ebpf.ProgramSpec `ebpf:"uprobe_gotls_read_entry"`
+	UprobeGotlsReadRet   *ebpf.ProgramSpec `ebpf:"uprobe_gotls_read_ret"`
+	UprobeGotlsWrite     *ebpf.ProgramSpec `ebpf:"uprobe_gotls_write"`
 }
 
 // gotlsMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type gotlsMapSpecs struct {
-	GotlsCounters *ebpf.MapSpec `ebpf:"gotls_counters"`
-	GotlsEvents   *ebpf.MapSpec `ebpf:"gotls_events"`
+	GotlsCounters     *ebpf.MapSpec `ebpf:"gotls_counters"`
+	GotlsEvents       *ebpf.MapSpec `ebpf:"gotls_events"`
+	GotlsReadInFlight *ebpf.MapSpec `ebpf:"gotls_read_in_flight"`
 }
 
 // gotlsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -92,14 +100,16 @@ func (o *gotlsObjects) Close() error {
 //
 // It can be passed to loadGotlsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type gotlsMaps struct {
-	GotlsCounters *ebpf.Map `ebpf:"gotls_counters"`
-	GotlsEvents   *ebpf.Map `ebpf:"gotls_events"`
+	GotlsCounters     *ebpf.Map `ebpf:"gotls_counters"`
+	GotlsEvents       *ebpf.Map `ebpf:"gotls_events"`
+	GotlsReadInFlight *ebpf.Map `ebpf:"gotls_read_in_flight"`
 }
 
 func (m *gotlsMaps) Close() error {
 	return _GotlsClose(
 		m.GotlsCounters,
 		m.GotlsEvents,
+		m.GotlsReadInFlight,
 	)
 }
 
@@ -114,11 +124,15 @@ type gotlsVariables struct {
 //
 // It can be passed to loadGotlsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type gotlsPrograms struct {
-	UprobeGotlsWrite *ebpf.Program `ebpf:"uprobe_gotls_write"`
+	UprobeGotlsReadEntry *ebpf.Program `ebpf:"uprobe_gotls_read_entry"`
+	UprobeGotlsReadRet   *ebpf.Program `ebpf:"uprobe_gotls_read_ret"`
+	UprobeGotlsWrite     *ebpf.Program `ebpf:"uprobe_gotls_write"`
 }
 
 func (p *gotlsPrograms) Close() error {
 	return _GotlsClose(
+		p.UprobeGotlsReadEntry,
+		p.UprobeGotlsReadRet,
 		p.UprobeGotlsWrite,
 	)
 }

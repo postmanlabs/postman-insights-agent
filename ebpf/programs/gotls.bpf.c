@@ -74,6 +74,21 @@ static __always_inline void gotls_counter_inc(__u32 idx, __u64 by) {
 // Read-only knob configured by userspace at load time.
 volatile const __u32 gotls_max_capture_bytes = MAX_EVENT_PAYLOAD;
 
+// Per-goroutine stash for in-flight (*Conn).Read calls.
+//   Entry probe writes:  goroutine_ptr → { ssl_ctx, buf_ptr }
+//   Each RET probe reads it, looks at return reg for n, copies n bytes, deletes.
+struct gotls_read_args {
+    __u64 ssl_ctx;
+    __u64 buf;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u64);                   // goroutine pointer
+    __type(value, struct gotls_read_args);
+} gotls_read_in_flight SEC(".maps");
+
 // ------------------------------------------------------------------
 // Argument extraction.
 //
@@ -113,6 +128,31 @@ static __always_inline __u64 go_arg(struct pt_regs *ctx, int n) {
     if (n >= 0 && n < 8) {
         return ctx->regs[n];
     }
+#endif
+    return 0;
+}
+
+// goroutine_ptr returns the current goroutine's `g` struct pointer.
+// Go's runtime keeps this in a dedicated register:
+//   amd64 (Go 1.17+ register ABI): r14
+//   arm64:                          x28
+static __always_inline __u64 goroutine_ptr(struct pt_regs *ctx) {
+#if defined(bpf_target_x86) || defined(__x86_64__) || defined(__TARGET_ARCH_x86)
+    return ctx->r14;
+#elif defined(bpf_target_arm64) || defined(__aarch64__) || defined(__TARGET_ARCH_arm64)
+    return ctx->regs[28];
+#endif
+    return 0;
+}
+
+// go_ret returns the function's return-value register, which on Go's ABI is:
+//   amd64: rax  (first return slot)
+//   arm64: x0   (first return slot)
+static __always_inline __u64 go_ret(struct pt_regs *ctx) {
+#if defined(bpf_target_x86) || defined(__x86_64__) || defined(__TARGET_ARCH_x86)
+    return ctx->ax;
+#elif defined(bpf_target_arm64) || defined(__aarch64__) || defined(__TARGET_ARCH_arm64)
+    return ctx->regs[0];
 #endif
     return 0;
 }
@@ -178,17 +218,47 @@ int BPF_UPROBE(uprobe_gotls_write) {
 
 // crypto/tls.(*Conn).Read(c *Conn, b []byte) (int, error)
 //
-// On entry, `b` is the destination buffer — empty at this point (filled by
-// the call). We need the bytes *after* the read completes. Two options:
+// We use OBI's RET-instruction trick because Go uretprobes are unreliable
+// (stack growth invalidates saved return addresses).
 //
-//   (a) uretprobe (unreliable on Go due to stack moves).
-//   (b) Stash buf pointer in a map keyed by goroutine, then attach a
-//       uprobe at each RET instruction in the function body and read
-//       n_read from rax.
+//   Entry: stash (ssl_ctx, buf_ptr) keyed by goroutine pointer.
+//   Each RET: look up the stash; read n from the return register; if n > 0,
+//             copy n bytes from buf_ptr and emit DIR_INGRESS; delete stash.
 //
-// (b) is what OBI does. For Phase 3 minimum-viable we accept the gap —
-// Go HTTPS request bodies are captured (Write side); Response bodies
-// from the SERVER perspective are also captured (server calls Write to
-// send response). Client-side response reading is the only gap.
-//
-// TODO(phase3-followup): implement RET-instruction probing for Read.
+// On entry the args are:
+//   arg0 = c                    (*tls.Conn)
+//   arg1 = b.data               (byte pointer to destination buffer)
+//   arg2 = b.len                (length of destination)
+SEC("uprobe/crypto_tls_Conn_Read_entry")
+int BPF_UPROBE(uprobe_gotls_read_entry) {
+    __u64 g = goroutine_ptr(ctx);
+    if (g == 0) return 0;
+    struct gotls_read_args a = {
+        .ssl_ctx = go_arg(ctx, 0),
+        .buf     = go_arg(ctx, 1),
+    };
+    bpf_map_update_elem(&gotls_read_in_flight, &g, &a, BPF_ANY);
+    return 0;
+}
+
+// crypto/tls.(*Conn).Read return path. Attached at each RET file offset in
+// the function body.
+SEC("uprobe/crypto_tls_Conn_Read_ret")
+int BPF_UPROBE(uprobe_gotls_read_ret) {
+    __u64 g = goroutine_ptr(ctx);
+    if (g == 0) return 0;
+    struct gotls_read_args *a = bpf_map_lookup_elem(&gotls_read_in_flight, &g);
+    if (!a) return 0;
+
+    __s64 n = (__s64)go_ret(ctx);
+    __u64 ssl = a->ssl_ctx;
+    __u64 buf = a->buf;
+    // Delete BEFORE emitting so an emit failure doesn't leak the entry.
+    bpf_map_delete_elem(&gotls_read_in_flight, &g);
+
+    if (n > 0 && buf != 0) {
+        __u64 id = bpf_get_current_pid_tgid();
+        gotls_emit(id, ssl, (const void *)buf, (__u32)n, DIR_INGRESS);
+    }
+    return 0;
+}

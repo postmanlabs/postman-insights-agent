@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -116,6 +117,108 @@ func Inspect(path string, wantSymbols []string) (*GoBinaryInfo, error) {
 		return info, fmt.Errorf("goexec: none of the requested symbols (%v) were found; binary may be stripped (-s) \u2014 pclntab fallback not yet implemented", wantSymbols)
 	}
 	return info, nil
+}
+
+// FunctionExtent returns the file offset range [start, end) for a named
+// function, or an error if the symbol isn't found. Used by FindReturnOffsets
+// to scope disassembly.
+func FunctionExtent(path, symbol string) (start, end uint64, err error) {
+	f, err := elf.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	syms, _ := f.Symbols()
+	dyn, _ := f.DynamicSymbols()
+	for _, s := range append(syms, dyn...) {
+		if s.Name != symbol {
+			continue
+		}
+		off, err := vaddrToFileOff(f, s.Value)
+		if err != nil {
+			return 0, 0, err
+		}
+		return off, off + s.Size, nil
+	}
+	return 0, 0, fmt.Errorf("goexec: symbol %s not found", symbol)
+}
+
+// FindReturnOffsets scans the function body for RET instructions and returns
+// the file offset of each one. Used by callers that need to attach "return"
+// uprobes on Go binaries (Go uretprobes are unreliable due to stack growth).
+//
+// Supports arm64 and amd64.
+func FindReturnOffsets(path, symbol string) ([]uint64, error) {
+	start, end, err := FunctionExtent(path, symbol)
+	if err != nil {
+		return nil, err
+	}
+	if end <= start {
+		return nil, fmt.Errorf("goexec: zero-size symbol %s (stripped binary?)", symbol)
+	}
+
+	f, err := elf.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	machine := f.Machine
+	f.Close()
+
+	code, err := readFileRange(path, int64(start), int(end-start))
+	if err != nil {
+		return nil, fmt.Errorf("goexec: read function bytes: %w", err)
+	}
+
+	switch machine {
+	case elf.EM_AARCH64:
+		return findRetARM64(code, start), nil
+	case elf.EM_X86_64:
+		return findRetAMD64(code, start), nil
+	}
+	return nil, fmt.Errorf("goexec: RET scanning not supported for machine %v", machine)
+}
+
+func readFileRange(path string, off int64, n int) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	buf := make([]byte, n)
+	if _, err := file.ReadAt(buf, off); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// findRetARM64 returns the file offsets of every RET instruction in code.
+// RET (X30) on AArch64 is the single instruction 0xd65f03c0 (4 bytes,
+// little-endian).
+func findRetARM64(code []byte, base uint64) []uint64 {
+	var offsets []uint64
+	for i := 0; i+4 <= len(code); i += 4 {
+		w := uint32(code[i]) | uint32(code[i+1])<<8 |
+			uint32(code[i+2])<<16 | uint32(code[i+3])<<24
+		if w == 0xd65f03c0 {
+			offsets = append(offsets, base+uint64(i))
+		}
+	}
+	return offsets
+}
+
+// findRetAMD64 returns the file offsets of every RET instruction in code.
+// On x86_64 with Go binaries we expect plain `RET` (0xc3) or `REP RET`
+// (0xf3 0xc3). We do NOT decode operands of preceding instructions; this
+// is a *good-enough* scan that may miss complex returns (e.g. tail jumps)
+// but works for the common Go function shape.
+func findRetAMD64(code []byte, base uint64) []uint64 {
+	var offsets []uint64
+	for i := 0; i < len(code); i++ {
+		if code[i] == 0xc3 || (i+1 < len(code) && code[i] == 0xf3 && code[i+1] == 0xc3) {
+			offsets = append(offsets, base+uint64(i))
+		}
+	}
+	return offsets
 }
 
 // vaddrToFileOff converts a virtual address into a file offset by walking the
