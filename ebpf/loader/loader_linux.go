@@ -78,6 +78,7 @@ func (l *Loader) EventsMap() *ebpf.Map        { return l.libssl.Events }
 func (l *Loader) TargetPIDsMap() *ebpf.Map    { return l.libssl.TargetPids }
 func (l *Loader) CountersMap() *ebpf.Map      { return l.libssl.Counters }
 func (l *Loader) RateBucketsMap() *ebpf.Map   { return l.libssl.PidRateBuckets }
+func (l *Loader) SSLFdMap() (*ebpf.Map, bool)  { return l.libssl.SslCtxToFd, true }
 
 // SetRateCapPerSec updates the BPF-side per-PID rate cap (tokens/sec). 0
 // disables rate limiting.
@@ -144,6 +145,12 @@ func (l *Loader) SSLWriteProgs() (entry, exit *ebpf.Program) {
 }
 func (l *Loader) SSLWriteExProgs() (entry, exit *ebpf.Program) {
 	return l.libssl.UprobeSslWriteEx, l.libssl.UretprobeSslWriteEx
+}
+func (l *Loader) SSLSetFDProg() *ebpf.Program {
+	return l.libssl.UprobeSslSetFd
+}
+func (l *Loader) SSLFreeProg() *ebpf.Program {
+	return l.libssl.UprobeSslFree
 }
 
 // OpenExecutable is a thin wrapper around link.OpenExecutable so callers

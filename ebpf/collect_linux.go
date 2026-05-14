@@ -108,6 +108,7 @@ func Collect(ctx context.Context, args Args) error {
 
 	// 3. Construct adapter; feed events into akinet parsers → args.Out.
 	adapter := events.NewAdapter(args.FactorySelector, args.Out)
+	adapter.Resolver = events.NewResolver(1 * time.Second)
 
 	// 4. Start uprobe manager + process discovery.
 	mgr := uprobes.NewManager(l)
@@ -121,6 +122,18 @@ func Collect(ctx context.Context, args Args) error {
 
 	// 4c. Per-PID rate cap — sampling layer 2.
 	go rateCapRefiller(ctx, l, mgr, args.RateCapPerSec)
+
+	// 4d. Proactive (pid, ssl_ctx) → 4-tuple resolver: scans the BPF
+	// ssl_ctx_to_fd map every 5ms while sockets are still alive, caches
+	// results on the adapter so late-arriving events still get IPs even
+	// after the connection has closed. The 5ms interval is calibrated for
+	// the worst-case loopback test: a curl HTTPS request completes in ~5ms,
+	// so a 100ms poll would miss almost everything. In production, where
+	// connections live milliseconds-to-minutes, the polling cost is
+	// negligible and effectiveness is high.
+	if adapter.Resolver != nil {
+		go preResolveLoop(ctx, l, adapter.Resolver, adapter, 5*time.Millisecond)
+	}
 
 	// Expose subsystem handles to the caller's telemetry hook (now that all
 	// of loader/thermostat/manager/adapter are wired up).
@@ -158,6 +171,9 @@ func Collect(ctx context.Context, args Args) error {
 					printer.Debugf("ebpf: detach pid=%d failed: %v\n", tgt.PID, err)
 				} else {
 					printer.Debugf("ebpf: detached libssl uprobes pid=%d (process exited or out of scope)\n", tgt.PID)
+				}
+				if adapter.Resolver != nil {
+					adapter.Resolver.Forget(tgt.PID)
 				}
 				continue
 			}

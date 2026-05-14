@@ -53,8 +53,19 @@ type Adapter struct {
 	// Out receives one ParsedNetworkTraffic per parsed HTTP message.
 	Out chan<- akinet.ParsedNetworkTraffic
 
+	// Resolver, when non-nil, is consulted to fill SrcIP/DstIP/SrcPort/DstPort
+	// on emitted ParsedNetworkTraffic from the (pid, fd) carried in each
+	// SSLEvent. When nil, IPs are left zero (the Phase 1 spike behaviour).
+	Resolver *Resolver
+
 	mu    sync.Mutex
 	flows map[FlowKey]*flowState
+
+	// resolved caches socket tuples by (pid, ssl_ctx) so the ingress and
+	// egress sides of the same TLS connection share one /proc lookup, and
+	// so a successful early-event resolve survives even after the socket
+	// has been closed.
+	resolved map[resolvedKey]SocketInfo
 
 	// Counters exported for telemetry / tests.
 	MessagesEmitted uint64
@@ -71,6 +82,25 @@ type flowState struct {
 	totalIn   int  // total bytes ever observed on this flow
 	dropped   bool // permanent: malformed or oversized
 	ifaceTag  string
+
+	// Resolved (or cached) socket info for this flow. Resolved on first
+	// event with a valid fd; reused for the lifetime of the flow.
+	socketResolved bool
+	localIP        net.IP
+	localPort      int
+	remoteIP       net.IP
+	remotePort     int
+	pid            uint32 // for Forget on flow close
+}
+
+// resolvedKey includes fd because nginx (and other servers) maintain SSL*
+// connection pools — the same SSL* pointer is reused across distinct TCP
+// connections, each with a different fd. Keying only by (pid, ssl_ctx) would
+// return stale tuples from a previous connection.
+type resolvedKey struct {
+	PID    uint32
+	SSLCtx uint64
+	FD     int32
 }
 
 // NewAdapter constructs an adapter wired to an output channel.
@@ -79,6 +109,7 @@ func NewAdapter(fs akinet.TCPParserFactorySelector, out chan<- akinet.ParsedNetw
 		FactorySelector: fs,
 		Out:             out,
 		flows:           make(map[FlowKey]*flowState),
+		resolved:        make(map[resolvedKey]SocketInfo),
 	}
 }
 
@@ -97,11 +128,37 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 			firstSeen: ev.Time(monoEpoch),
 			bidiID:    akinet.TCPBidiID(uuid.New()),
 			ifaceTag:  fmt.Sprintf("ebpf-pid-%d", ev.PID),
+			pid:       ev.PID,
 		}
 		a.flows[key] = st
 	}
 	if st.dropped {
 		return
+	}
+
+	// Lazily resolve the 4-tuple from (pid, fd). On success we cache by
+	// (pid, ssl_ctx, fd) — fd is needed because SSL* pointers are reused
+	// across distinct TCP connections by servers with connection pools.
+	// Same (pid, ssl_ctx, fd) means same actual connection and the tuple
+	// is safe to share between ingress and egress and between events whose
+	// fd has been reclaimed.
+	if !st.socketResolved && a.Resolver != nil && ev.FD >= 0 {
+		rk := resolvedKey{PID: ev.PID, SSLCtx: ev.SSLCtx, FD: ev.FD}
+		if info, ok := a.resolved[rk]; ok {
+			st.localIP = info.LocalIP
+			st.localPort = info.LocalPort
+			st.remoteIP = info.RemoteIP
+			st.remotePort = info.RemotePort
+			st.socketResolved = true
+		} else if info, err := a.Resolver.Resolve(ev.PID, ev.FD); err == nil {
+			a.resolved[rk] = info
+			st.localIP = info.LocalIP
+			st.localPort = info.LocalPort
+			st.remoteIP = info.RemoteIP
+			st.remotePort = info.RemotePort
+			st.socketResolved = true
+		}
+		// Failed lookups are non-fatal; we'll retry on the next event.
 	}
 	st.lastSeen = ev.Time(monoEpoch)
 	st.totalIn += int(ev.LenCaptured)
@@ -154,7 +211,7 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 		}
 
 		// Got a complete message. Emit it and continue with unused tail.
-		a.Out <- a.toPNT(st, result, now)
+		a.Out <- a.toPNT(st, key, result, now)
 		a.MessagesEmitted++
 		st.msgSeq++
 		st.parser = nil
@@ -173,19 +230,37 @@ func (a *Adapter) dropFlow(key FlowKey, st *flowState) {
 }
 
 // toPNT wraps a parser result in the ParsedNetworkTraffic envelope that the
-// downstream pipeline expects. Phase 1 leaves IPs zero; Phase 2 follow-up
-// fills them from /proc/<pid>/net/tcp.
-func (a *Adapter) toPNT(st *flowState, c akinet.ParsedNetworkContent, now time.Time) akinet.ParsedNetworkTraffic {
-	return akinet.ParsedNetworkTraffic{
-		SrcIP:           net.IPv4zero,
-		DstIP:           net.IPv4zero,
-		SrcPort:         0,
-		DstPort:         0,
+// downstream pipeline expects. When the resolver has produced a 4-tuple,
+// IPs/ports are filled; otherwise they fall back to zero with the PID stashed
+// in the Interface field for traceability.
+//
+// Direction mapping: for HTTPRequest (egress=write, ingress=read on server),
+// SrcIP=local, DstIP=remote when we wrote (egress) — what we sent goes from
+// us to them. For ingress (we received bytes), SrcIP=remote, DstIP=local.
+func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkContent, now time.Time) akinet.ParsedNetworkTraffic {
+	pnt := akinet.ParsedNetworkTraffic{
 		Content:         c,
 		Interface:       st.ifaceTag,
 		ObservationTime: st.firstSeen,
 		FinalPacketTime: now,
 	}
+	if st.socketResolved {
+		if key.Direction == DirEgress {
+			pnt.SrcIP = st.localIP
+			pnt.SrcPort = st.localPort
+			pnt.DstIP = st.remoteIP
+			pnt.DstPort = st.remotePort
+		} else {
+			pnt.SrcIP = st.remoteIP
+			pnt.SrcPort = st.remotePort
+			pnt.DstIP = st.localIP
+			pnt.DstPort = st.localPort
+		}
+	} else {
+		pnt.SrcIP = net.IPv4zero
+		pnt.DstIP = net.IPv4zero
+	}
+	return pnt
 }
 
 // GC removes flows idle for longer than `maxIdle`. Call periodically.
@@ -220,4 +295,24 @@ func (a *Adapter) Snapshot() (numFlows int, totalBytes int) {
 		totalBytes += st.totalIn
 	}
 	return
+}
+
+// PreResolve caches a (pid, ssl_ctx, fd) → SocketInfo mapping. Called by
+// the proactive resolver goroutine that scans the BPF ssl_ctx_to_fd map;
+// lets late-arriving events whose socket has already closed still get IPs.
+func (a *Adapter) PreResolve(pid uint32, sslCtx uint64, fd int32, info SocketInfo) {
+	a.mu.Lock()
+	a.resolved[resolvedKey{PID: pid, SSLCtx: sslCtx, FD: fd}] = info
+	a.mu.Unlock()
+}
+
+// ForgetResolved drops cached resolutions for a PID (on PID exit).
+func (a *Adapter) ForgetResolved(pid uint32) {
+	a.mu.Lock()
+	for k := range a.resolved {
+		if k.PID == pid {
+			delete(a.resolved, k)
+		}
+	}
+	a.mu.Unlock()
 }
