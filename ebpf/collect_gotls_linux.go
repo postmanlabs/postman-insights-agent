@@ -98,8 +98,9 @@ func (c *GoTLSCollector) Run(ctx context.Context, monoEpoch time.Time) {
 				return
 			}
 			if c.rawTap {
-				printer.Stderr.Infof("gotls-raw: pid=%d ssl_ctx=0x%x len=%d/%d dir=%d %s\n",
+				printer.Stderr.Infof("gotls-raw: pid=%d ssl_ctx=0x%x len=%d/%d dir=%d hex=%x %s\n",
 					ev.PID, ev.SSLCtx, ev.LenCaptured, ev.LenTotal, ev.Direction,
+					ev.Bytes()[:min(16, len(ev.Bytes()))],
 					printableSnippet(ev.Bytes()))
 			}
 			c.adapter.Feed(ev, monoEpoch)

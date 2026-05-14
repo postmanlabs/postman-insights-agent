@@ -31,7 +31,7 @@ Rolling PR: **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/
 |---|---|:---:|
 | 1 | Spike: decrypted HTTPS reaches `trace.Collector` | ✅ Done |
 | 2 | Production integration into `apidump` (DaemonSet, sampling, telemetry, namespace filter, kind e2e) | ✅ Done — all 6 exit criteria |
-| 3 | Go via DWARF inspector + crypto/tls uprobes | 🟡 ~65% (foundation + HTTP/2 + bidirectional capture) |
+| 3 | Go via DWARF inspector + crypto/tls uprobes | 🟡 ~75% (foundation + HTTP/2 + bidirectional capture + gRPC) |
 | 4 | Privacy hardening (the 8 gaps from design §7.3) | ❌ Not started — **gates production** |
 | 5 | Java agent + `ioctl` bridge + mutating webhook | ❌ Not started |
 
@@ -53,7 +53,7 @@ Rolling PR: **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/
 | **Go HTTP/1.1 server-side** (`net/http` + TLS) | ✅ | `crypto/tls.(*Conn).Write` uprobe |
 | **Go HTTP/2 server-side** (Go default!) | ✅ | HTTP/2 frame decoder + HPACK |
 | **Go HTTPS client-side** (`http.Get`) | ✅ | `crypto/tls.(*Conn).Read` via RET-instruction probing |
-| Go gRPC | 🟡 | HTTP/2 layer captured, gRPC framing not decoded → Phase 3 task #3 |
+| Go gRPC | ✅ | gRPC method/service from `:path`; length-prefixed framing inside DATA stripped; mid-stream h2 detection. **Caveat:** start the agent before the connection opens (HPACK is stateful; mid-connection attach loses headers). |
 | Java / JVM (Spring, Netty, Tomcat, gRPC-Java) | ❌ | Phase 5 |
 | Rust (rustls) | ❌ | Out of scope for v1 per design §4.4 |
 
@@ -169,7 +169,11 @@ ebpf: thermostat throttling — 7.5% CPU over 10s exceeded 5.0%; max_capture_byt
 
 **Not done:**
 
-- ❌ **gRPC framing decoder** — HTTP/2 layer works; what's missing is the length-prefixed protobuf framing inside DATA payloads. **This is Phase 3 task #3 and is the recommended next session's work.** Concrete starting points in [`SESSION-RESUME.md`](phases/SESSION-RESUME.md).
+- ✅ **gRPC framing decoder + mid-stream h2 detection** (commit `<this commit>`):
+  - `IsHTTP2Frame` heuristic in `ebpf/events/http2.go` — detects HTTP/2 mid-conversation by parsing a frame header and validating stream-id requirements (DATA/HEADERS on stream 0 = reject, SETTINGS on non-zero stream = reject). Kills false positives on all-zero / random garbage.
+  - `handleData` strips 5-byte length-prefixed gRPC framing from DATA payloads, reassembles split messages across DATA frames, and surfaces count + total via `X-Pi-Grpc-Messages` / `X-Pi-Grpc-Total-Bytes` synthetic headers.
+  - `hpackErrors` counter on each h2State surfaces the mid-connection-attach failure mode.
+  - Verified live: gRPC health check (`/grpc.health.v1.Health/Check`) decodes as POST + status=200, 11 REQ/RESP pairs at 1Hz, zero drops.
 - ❌ Multi-Go-version test matrix (Go 1.17 / 1.21 / 1.22 / 1.23).
 - ❌ Stripped-binary pclntab fallback.
 - ❌ Multi-layer dedup (`net/http` + `crypto/tls` + `net.netFD`).

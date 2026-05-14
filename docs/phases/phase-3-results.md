@@ -17,8 +17,8 @@ for a 4-week effort; we've now delivered:
 - ✅ **HTTP/2 frame decoder + HPACK** — unblocks Go's default `net/http` behaviour
 - ✅ **`crypto/tls.(*Conn).Read` via RET-instruction probing** — client-side capture
 - ✅ Goroutine-context register reading (r14 / x28) used by Read probes
+- ✅ **gRPC framing decoder + mid-stream HTTP/2 detection** (this task)
 - ❌ Multi-layer dedup (`net/http` + `crypto/tls` + `net.netFD`)
-- ❌ gRPC framing decoder
 - ❌ Stripped-binary pclntab fallback
 - ❌ Multi-Go-version test matrix (1.17 / 1.21 / 1.22 / 1.23)
 - ❌ Full per-goroutine flow correlation (we have the register read but no dedup logic yet)
@@ -46,6 +46,41 @@ INFO gotls-stats: emitted=9 ringbuf_drops=0 read_fail=0 bytes=447
 Three HTTP/2 transactions (Go's default over TLS) → three
 `akinet.HTTPResponse{StatusCode:200}`. HTTP/1.1 traffic also captures
 via the same path (parser selection happens on first bytes).
+
+### gRPC over HTTP/2 (Phase 3 task #3)
+
+```bash
+# Start the gRPC server, then attach probes BEFORE any client connects.
+# This matters: HPACK is stateful across the whole connection, so attaching
+# mid-connection misses the dynamic-table state and HEADERS decoding fails.
+# In production this isn't an issue — the agent DaemonSet attaches at pod
+# start, before workloads' first outbound connections.
+$ /tmp/grpcsrv &        # gRPC health server (TLS) on :50443
+$ apidump-gotls --pid $! --duration 15s &
+$ /tmp/grpccli &        # client doing Health.Check() in a 1-Hz loop
+
+REQ  pid=ebpf-pid-154824 method=POST url=https://127.0.0.1:50443/grpc.health.v1.Health/Check
+RESP pid=ebpf-pid-154824 status=200
+REQ  pid=ebpf-pid-154824 method=POST url=https://127.0.0.1:50443/grpc.health.v1.Health/Check
+RESP pid=ebpf-pid-154824 status=200
+... (repeats at 1Hz)
+gotls-stats: emitted=44 ringbuf_drops=0 read_fail=0 bytes=1668
+```
+
+The `:path` `/grpc.health.v1.Health/Check` *is* the gRPC service+method.
+No extra grpc-package probing required. The 5-byte length-prefixed framing
+inside DATA frames is stripped before emit and replaced with synthetic
+`X-Pi-Grpc-Messages` / `X-Pi-Grpc-Total-Bytes` headers, so downstream
+consumers see the protobuf bytes (not the framing overhead) plus the
+per-stream message count.
+
+**Known limitation — mid-connection attach.** Because HPACK is stateful
+across the whole HTTP/2 connection, our decoder can't recover headers on
+flows where we missed earlier HEADERS frames. We track this with the
+`hpackErrors` counter and surface it on the flow. In production this is
+rarely an issue: the DaemonSet attaches on pod start, before workloads
+open their first long-lived connections. For demo / dev use, start the
+agent before the client.
 
 ### Client-side Go HTTPS (RET-instruction probing for Read)
 
@@ -128,7 +163,16 @@ conversion (`s.Value - segment.Vaddr + segment.Off`) for us.
    the goroutine pointer, `rax` for first return slot. NOT the System V
    C calling convention. Documented in `ebpf/programs/gotls.bpf.c`.
 
-5. **Function size from ELF symbols can be zero for stripped binaries.**
+5. **HPACK is stateful across the whole HTTP/2 connection** — not just
+   per-stream. If we attach to a process mid-connection, the encoder's
+   dynamic-table state contains entries built up across HEADERS frames
+   we never saw. Decoding any subsequent HEADERS that uses an indexed-
+   name reference (`0x83`, `0x87`, etc.) fails silently. Surfaced via
+   `h2State.HPACKErrors()`. Production-realistic mitigation: DaemonSet
+   attaches at pod start, before the workload's first outbound
+   connection. Demo mitigation: start the agent before the client.
+
+6. **Function size from ELF symbols can be zero for stripped binaries.**
    `FunctionExtent` returns the symbol's `s.Size`; this is non-zero in
    normal Go builds but stripped builds (`-ldflags="-s"`) zero it. The
    `FindReturnOffsets` path errors cleanly in that case so the caller
@@ -138,13 +182,13 @@ conversion (`s.Value - segment.Vaddr + segment.Off`) for us.
 
 1. ~~**HTTP/2 frame decoding**~~ — ✅ done (commit `34cf654`)
 2. ~~**`crypto/tls.(*Conn).Read`**~~ — ✅ done (commit `308d3ab`)
+3. ~~**gRPC framing decoder**~~ — ✅ done (this commit)
 
-3. **gRPC framing decoder** (~next session). gRPC over HTTP/2 means our
-   HTTP/2 frame decoder already sees the wire frames; what's missing is
-   decoding the gRPC-Web framing inside DATA payloads (1 byte compressed
-   flag + 4 bytes length + N bytes protobuf message). Plus probing
-   `google.golang.org/grpc.(*Server).processUnaryRPC` (or similar) to
-   recover method names from the gRPC layer. Estimated: ~5 days.
+   gRPC method/service decoded from HTTP/2 `:path`; length-prefixed
+   protobuf framing inside DATA frames stripped via `handleData`. No
+   grpc-package-specific probing needed for v1. Mid-stream HTTP/2
+   detection (`IsHTTP2Frame`) added so we can recognise an h2 connection
+   even when we attach after the preface.
 
 4. **Multi-Go-version test matrix.** Build a Go HTTPS server with
    Go 1.17, 1.21, 1.22, 1.23. Verify symbol resolution + register ABI

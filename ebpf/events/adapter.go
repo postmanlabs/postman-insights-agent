@@ -189,7 +189,11 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	}
 
 	// Detect HTTP/2 on the first bytes we see on this flow.
-	if st.pending.Len() == 0 && IsHTTP2Preface(ev.Bytes()) {
+	// Two paths: full preface (when we attach before the connection opens)
+	// or a recognisable frame header (when we attach mid-connection, which is
+	// the common case for gotls because the TLS handshake + preface complete
+	// before the uprobes catch their first non-handshake call).
+	if st.pending.Len() == 0 && (IsHTTP2Preface(ev.Bytes()) || IsHTTP2Frame(ev.Bytes())) {
 		st.h2 = newH2State(st.ifaceTag)
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			if st.socketResolved {
