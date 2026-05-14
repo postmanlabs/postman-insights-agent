@@ -323,6 +323,58 @@ By customer impact + dependency:
 
 ---
 
+## PR strategy
+
+**Today: one rolling PR ([#173](https://github.com/postmanlabs/postman-insights-agent/pull/173), DRAFT).**
+All phase work lands on `feat/https-capture-ebpf`. 22 commits, +10,600/−33
+as of `120bd13`. This was a deliberate choice — single place for reviewers
+to see the whole story, no merge-order coordination, commit messages tell
+the per-phase narrative.
+
+**Tradeoffs accruing as the PR grows:**
+
+- +10,600 lines is past the realistic threshold for end-to-end human
+  review. A reviewer has to trust the per-phase results docs as proxy.
+- Cannot ship Phase 1+2 to customers independently of Phase 3+4. If a
+  trial customer asks for libssl-only HTTPS today, we can't merge that
+  without dragging in-progress Go work along.
+- One huge fast-forward into `main` once it lands; bisect granularity at
+  the merge boundary is poor.
+- Conflict surface against `main` grows while Phases 3+4+5 finish.
+
+**Recommended split (do after the customer demo, once feedback says
+whether Phase 1+2 alone is shippable):**
+
+| Stacked PR | Branch | Scope | Size |
+|---|---|---|---|
+| **A** | `feat/https-capture-ebpf-libssl` | Phases 1+2 — libssl path, kind e2e, namespace filter, sampling stack, telemetry. Through commit `f2e2459`. | ~6,500 LOC |
+| **B** | `feat/https-capture-ebpf-go` | Phase 3 — Go ELF inspector + gotls probes + HTTP/2 + RET-probing. Stacked on A. | ~2,500 LOC |
+| **C** | `feat/https-capture-ebpf-privacy` | Phase 4 — 8 privacy gaps. Stacked on B. | TBD |
+| **D** | `feat/https-capture-ebpf-java` | Phase 5 — Java agent + ioctl bridge + webhook. Independent of A/B/C (different runtime). | TBD |
+
+Stacked-PR mechanics: B's base branch is A's branch (not `main`); GitHub
+renders the diff cleanly. When A merges to main, GitHub auto-retargets B
+to main. Same for C→B, D→main.
+
+**Decision triggers for when to split:**
+
+1. Customer demo (tomorrow) reveals Phase 1+2 alone is enough for the
+   first trial → split immediately, get PR A reviewed + merged so the
+   trial customer can run a released binary.
+2. Phase 3 task #3 (gRPC) lands and Phase 4 starts → split at minimum to
+   isolate the privacy work, which has different reviewers (security)
+   than the runtime work.
+3. PR #173 hits +15,000 LOC → split regardless. Past that point nobody
+   reviews it.
+
+**What stays on the rolling PR until split:**
+
+- All work between split decisions.
+- The `docs/progress.md` + `docs/phases/SESSION-RESUME.md` updates that
+  let any reviewer / fresh session pick up cleanly.
+
+---
+
 ## Don't-forget items / open questions
 
 1. **`--privacy-mode` semantics.** Today both `strict` and `dry-run` are
