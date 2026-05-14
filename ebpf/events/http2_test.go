@@ -222,3 +222,106 @@ func TestIsHTTP2Preface(t *testing.T) {
 
 // Ensure http import isn't pruned.
 var _ = http.Header{}
+
+// TestIsHTTP2Frame: mid-stream detection accepts plausible frame headers,
+// rejects all-zero garbage (DATA frame on stream 0 is illegal), and rejects
+// HTTP/1.1 plaintext.
+func TestIsHTTP2Frame(t *testing.T) {
+	// A HEADERS frame on stream 1 — a typical first-frame-after-attach.
+	hdr := buildHeadersFrame(t, 1, true, []hpack.HeaderField{
+		{Name: ":method", Value: "POST"},
+		{Name: ":path", Value: "/svc.Foo/Bar"},
+	})
+	if !IsHTTP2Frame(hdr) {
+		t.Error("HEADERS frame should detect as h2")
+	}
+
+	// All-zero — type=0 (DATA), stream_id=0 — illegal per RFC 7540 §6.1.
+	zeros := make([]byte, 64)
+	if IsHTTP2Frame(zeros) {
+		t.Error("all-zero garbage must not detect as h2 (DATA on stream 0 is illegal)")
+	}
+
+	// HTTP/1.1 ASCII shouldn't be confused with an h2 frame header.
+	if IsHTTP2Frame([]byte("GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")) {
+		t.Error("HTTP/1.1 request must not detect as h2 frame")
+	}
+
+	// SETTINGS on stream != 0 is illegal — must reject.
+	badSettings := []byte{0, 0, 0, h2FrameSettings, 0, 0, 0, 0, 1}
+	if IsHTTP2Frame(badSettings) {
+		t.Error("SETTINGS frame on non-zero stream must not detect")
+	}
+}
+
+// TestH2_GRPCFraming: a gRPC stream (content-type: application/grpc) with
+// a length-prefixed message inside DATA should be decoded and the message
+// body should equal the protobuf payload (framing stripped).
+func TestH2_GRPCFraming(t *testing.T) {
+	s := newH2State("iface-1")
+
+	// Build a gRPC request: HEADERS with :method=POST, :path=/svc/Method,
+	// content-type: application/grpc, followed by a DATA frame whose
+	// payload is [0 (uncompressed)][4-byte BE length][payload bytes].
+	headers := buildHeadersFrame(t, 1, false, []hpack.HeaderField{
+		{Name: ":method", Value: "POST"},
+		{Name: ":path", Value: "/demo.MyService/Check"},
+		{Name: ":authority", Value: "localhost"},
+		{Name: ":scheme", Value: "https"},
+		{Name: "content-type", Value: "application/grpc+proto"},
+	})
+
+	payload := []byte("hello-proto-bytes")
+	framed := append([]byte{0, 0, 0, 0, byte(len(payload))}, payload...)
+	data := buildDataFrame(1, true, framed)
+
+	got := s.feed(append(headers, data...), time.Now(), "iface-1")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 PNT, got %d", len(got))
+	}
+	req, ok := got[0].Content.(akinet.HTTPRequest)
+	if !ok {
+		t.Fatalf("expected HTTPRequest, got %T", got[0].Content)
+	}
+	if req.URL.Path != "/demo.MyService/Check" {
+		t.Errorf("Path = %q", req.URL.Path)
+	}
+	if req.Body.String() != string(payload) {
+		t.Errorf("Body = %q, want %q (framing should be stripped)", req.Body.String(), payload)
+	}
+	if req.Header.Get("X-Pi-Grpc-Messages") != "1" {
+		t.Errorf("X-Pi-Grpc-Messages = %q, want \"1\"", req.Header.Get("X-Pi-Grpc-Messages"))
+	}
+	if req.Header.Get("X-Pi-Grpc-Total-Bytes") != "17" {
+		t.Errorf("X-Pi-Grpc-Total-Bytes = %q, want \"17\"", req.Header.Get("X-Pi-Grpc-Total-Bytes"))
+	}
+}
+
+// TestH2_GRPCFramingSplit: a gRPC message that arrives split across two
+// DATA frames must be reassembled (framing reassembly).
+func TestH2_GRPCFramingSplit(t *testing.T) {
+	s := newH2State("iface-1")
+
+	headers := buildHeadersFrame(t, 3, false, []hpack.HeaderField{
+		{Name: ":method", Value: "POST"},
+		{Name: ":path", Value: "/svc/Foo"},
+		{Name: "content-type", Value: "application/grpc"},
+	})
+	payload := bytes.Repeat([]byte{'x'}, 100)
+	framed := append([]byte{0, 0, 0, 0, byte(len(payload))}, payload...)
+
+	// Split the framed bytes mid-payload across two DATA frames.
+	part1 := buildDataFrame(3, false, framed[:30])
+	part2 := buildDataFrame(3, true, framed[30:])
+
+	got := s.feed(headers, time.Now(), "iface-1")
+	got = append(got, s.feed(part1, time.Now(), "iface-1")...)
+	got = append(got, s.feed(part2, time.Now(), "iface-1")...)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 PNT, got %d", len(got))
+	}
+	req := got[0].Content.(akinet.HTTPRequest)
+	if req.Body.String() != string(payload) {
+		t.Errorf("reassembled body len=%d, want %d", req.Body.Len(), len(payload))
+	}
+}

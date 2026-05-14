@@ -100,6 +100,19 @@ type h2State struct {
 
 	// Connection-flow identity used for emitted PNTs.
 	bidiID akinet.TCPBidiID
+
+	// hpackErrors counts HEADERS+CONTINUATION decode failures. Non-zero on
+	// a flow strongly suggests we attached mid-connection and missed the
+	// dynamic-table state. Exposed via HPACKErrors() for telemetry.
+	hpackErrors uint64
+}
+
+// HPACKErrors returns the number of HEADERS decode failures on this flow.
+// Use it to detect the mid-connection-attach failure mode.
+func (s *h2State) HPACKErrors() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hpackErrors
 }
 
 // h2Stream accumulates pseudo-headers + body for a single HTTP/2 stream.
@@ -120,6 +133,15 @@ type h2Stream struct {
 
 	// Whether HEADERS frame indicated END_STREAM (no body coming).
 	endStreamOnHeaders bool
+
+	// gRPC flag (set when content-type starts with application/grpc).
+	// When true, DATA frame payloads are parsed as length-prefixed gRPC
+	// messages (1 byte compressed flag + 4 bytes BE length + N bytes msg).
+	isGRPC bool
+
+	// gRPC message reassembly: protobuf-message bytes can be split across
+	// DATA frames; we buffer here and split out one message at a time.
+	grpcMessages [][]byte
 }
 
 // h2MaxBodyBytes bounds the body bytes we'll buffer per stream. Mirrors
@@ -152,6 +174,76 @@ func IsHTTP2Preface(b []byte) bool {
 		}
 	}
 	return false
+}
+
+// IsHTTP2Frame is a heuristic for detecting an HTTP/2 frame header mid-
+// stream. We use this when we attach to a process AFTER the preface has
+// already been exchanged (common for gotls, since the TLS handshake +
+// preface complete before our uprobes catch the first non-handshake
+// read/write).
+//
+// An HTTP/2 frame header (RFC 7540 §4.1) is 9 bytes:
+//   length(3) | type(1) | flags(1) | R+streamID(4, top bit reserved=0)
+//
+// We require:
+//   - at least 9 bytes,
+//   - type byte in [0, 9] (the defined HTTP/2 frame types),
+//   - the reserved top bit of stream-id is zero,
+//   - declared length is reasonable (<= 16 MiB, the HTTP/2 max frame size
+//     ceiling is 2^24-1, but practical SETTINGS_MAX_FRAME_SIZE never
+//     exceeds 16 MiB), and
+//   - if there's a second frame header after the first, IT also passes the
+//     same type-byte test. Two valid frame headers back-to-back is a
+//     strong signal we're looking at HTTP/2 rather than coincidentally-
+//     shaped HTTP/1.
+func IsHTTP2Frame(b []byte) bool {
+	if len(b) < 9 {
+		return false
+	}
+	if !looksLikeH2FrameHeader(b) {
+		return false
+	}
+	length := uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
+	// If we have a second frame after the first, validate it too.
+	offset := 9 + int(length)
+	if offset+9 <= len(b) {
+		return looksLikeH2FrameHeader(b[offset:])
+	}
+	// Only one frame visible — single-header heuristic.
+	return true
+}
+
+func looksLikeH2FrameHeader(b []byte) bool {
+	if len(b) < 9 {
+		return false
+	}
+	typ := b[3]
+	if typ > h2FrameContinuation {
+		return false
+	}
+	if b[5]&0x80 != 0 {
+		// Reserved high bit of stream-id must be zero.
+		return false
+	}
+	length := uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
+	if length > 16<<20 {
+		return false
+	}
+	streamID := binary.BigEndian.Uint32(b[5:9]) & 0x7fffffff
+	// RFC 7540 stream-id requirements per frame type. Rejecting these
+	// kills false positives on all-zero / random byte streams.
+	switch typ {
+	case h2FrameData, h2FrameHeaders, h2FramePriority, h2FrameRstStream,
+		h2FramePushPromise, h2FrameContinuation:
+		if streamID == 0 {
+			return false
+		}
+	case h2FrameSettings, h2FramePing, h2FrameGoaway:
+		if streamID != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // feed accepts new bytes from the eBPF event stream and parses any complete
@@ -258,6 +350,10 @@ func (s *h2State) finalizeHeaderBlock(now time.Time, ifaceTag string) (akinet.Pa
 	fields, err := s.hpack.DecodeFull(s.headerBlock)
 	s.headerBlock = s.headerBlock[:0]
 	if err != nil {
+		// Likely mid-connection attach: the encoder's HPACK dynamic table
+		// state was built across HEADERS frames we never observed.
+		// Counter is exposed via HPACKErrors() so telemetry can surface it.
+		s.hpackErrors++
 		return akinet.ParsedNetworkTraffic{}, false
 	}
 
@@ -283,6 +379,10 @@ func (s *h2State) finalizeHeaderBlock(now time.Time, ifaceTag string) (akinet.Pa
 		default:
 			if !isPseudoHeader(f.Name) {
 				st.header.Add(f.Name, f.Value)
+			}
+			if f.Name == "content-type" && len(f.Value) >= len("application/grpc") &&
+				f.Value[:len("application/grpc")] == "application/grpc" {
+				st.isGRPC = true
 			}
 		}
 	}
@@ -319,6 +419,28 @@ func (s *h2State) handleData(flags uint8, streamID uint32, payload []byte, now t
 		st.body = append(st.body, payload...)
 	}
 
+	// For gRPC streams, peel off as many complete length-prefixed messages
+	// as st.body contains. Each message becomes its own entry in
+	// st.grpcMessages so the downstream emitter can attach the
+	// per-message bytes to its event. Partial trailing bytes stay in
+	// st.body until the next DATA frame arrives.
+	if st.isGRPC {
+		for {
+			if len(st.body) < 5 {
+				break
+			}
+			compressedFlag := st.body[0]
+			_ = compressedFlag // surfaced via grpc-encoding header; we just demux
+			msgLen := binary.BigEndian.Uint32(st.body[1:5])
+			if uint32(len(st.body)) < 5+msgLen {
+				break
+			}
+			msg := append([]byte(nil), st.body[5:5+msgLen]...)
+			st.grpcMessages = append(st.grpcMessages, msg)
+			st.body = st.body[5+msgLen:]
+		}
+	}
+
 	if flags&h2FlagEndStream != 0 {
 		return s.emitStream(streamID, now, ifaceTag)
 	}
@@ -340,6 +462,28 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 		FinalPacketTime: now,
 	}
 
+	// For gRPC, the "body" we attach to the emitted event is the
+	// concatenation of the protobuf-message payloads with their
+	// length-prefix framing stripped. This matches what an application-
+	// layer gRPC handler observes (the protobuf bytes, not the framing).
+	// We also stamp two synthetic headers so downstream observability can
+	// tell a gRPC event apart from a plain h2 event:
+	//   x-pi-grpc-messages: <count>
+	//   x-pi-grpc-total-bytes: <bytes>
+	body := st.body
+	if st.isGRPC {
+		total := 0
+		for _, m := range st.grpcMessages {
+			total += len(m)
+		}
+		body = make([]byte, 0, total)
+		for _, m := range st.grpcMessages {
+			body = append(body, m...)
+		}
+		st.header.Set("X-Pi-Grpc-Messages", strconv.Itoa(len(st.grpcMessages)))
+		st.header.Set("X-Pi-Grpc-Total-Bytes", strconv.Itoa(total))
+	}
+
 	if st.method != "" {
 		// Request.
 		u := &url.URL{Path: st.path}
@@ -359,7 +503,7 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 			URL:        u,
 			Host:       st.authority,
 			Header:     st.header,
-			Body:       memview.New(st.body),
+			Body:       memview.New(body),
 		}
 		return pnt, true
 	}
@@ -371,7 +515,7 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 			ProtoMajor: 2,
 			ProtoMinor: 0,
 			Header:     st.header,
-			Body:       memview.New(st.body),
+			Body:       memview.New(body),
 		}
 		return pnt, true
 	}
