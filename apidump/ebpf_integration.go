@@ -5,6 +5,7 @@ package apidump
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
@@ -156,6 +158,49 @@ func startHTTPSeBPFCapture(
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
 	ebpfArgs.RateCapPerSec = args.HTTPSRateCapPerSec
+
+	// Namespace filtering. When --https-target-namespaces is set, build a
+	// KubeNamespaceResolver and wire it into discovery.Watch via Args.Discovery.
+	// If kube client init fails (e.g. running outside a cluster), warn and
+	// fall back to no filtering — the user explicitly opted in to capture,
+	// and silently dropping everything would be more surprising than the
+	// fallback.
+	if len(args.HTTPSTargetNamespaces) > 0 {
+		procRoot := "/proc"
+		if _, err := os.Stat("/host/proc/self"); err == nil {
+			procRoot = "/host/proc"
+		}
+		resolver, err := discovery.NewKubeNamespaceResolver(procRoot)
+		if err != nil {
+			printer.Stderr.Warningf(
+				"ebpf: --https-target-namespaces set but kube client init failed (%v); "+
+					"falling back to no namespace filtering.\n", err)
+		} else {
+			allowed := make(map[string]struct{}, len(args.HTTPSTargetNamespaces))
+			for _, ns := range args.HTTPSTargetNamespaces {
+				allowed[ns] = struct{}{}
+			}
+			printer.Stderr.Infof(
+				"ebpf: namespace filtering enabled — allowed namespaces: %v\n",
+				args.HTTPSTargetNamespaces)
+
+			// Drive a 30s refresh in the background so new pods become
+			// visible without restarting the agent.
+			stop := make(chan struct{})
+			go func() {
+				<-captureCtx.Done()
+				close(stop)
+				resolver.Close()
+			}()
+			go resolver.RunRefresh(stop, 30*time.Second)
+
+			ebpfArgs.Discovery = discovery.WatchWith(captureCtx, discovery.WatchOpts{
+				Interval:          2 * time.Second,
+				NamespaceResolver: resolver,
+				AllowedNamespaces: allowed,
+			})
+		}
+	}
 
 	// HookLoader captures the subsystem handles after Collect has wired them
 	// up, so the telemetry goroutine can read counters / probe counts / etc.
