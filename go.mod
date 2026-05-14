@@ -43,6 +43,7 @@ require (
 	github.com/stretchr/testify v1.8.4
 	github.com/zclconf/go-cty v1.15.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
+	golang.org/x/net v0.38.0
 	golang.org/x/sys v0.31.0
 	golang.org/x/term v0.30.0
 	golang.org/x/text v0.23.0
@@ -109,7 +110,6 @@ require (
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
 	golang.org/x/mod v0.17.0 // indirect
-	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
