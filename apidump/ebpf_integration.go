@@ -177,7 +177,10 @@ func startHTTPSeBPFCapture(
 		if _, err := os.Stat("/host/proc/self"); err == nil {
 			procRoot = "/host/proc"
 		}
-		resolver, err := discovery.NewKubeNamespaceResolver(procRoot)
+		// agentProcRoot is always /proc — that's the agent's own PID-namespace
+		// view, which is where CRI-returned container init PIDs live.
+		// procRoot is /host/proc on a DaemonSet (root-ns PIDs that BPF emits).
+		resolver, err := discovery.NewKubeNamespaceResolver(procRoot, "/proc")
 		if err != nil {
 			printer.Stderr.Warningf(
 				"ebpf: --https-target-namespaces set but kube client init failed (%v); "+

@@ -1,21 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // kube_linux.go implements ebpf/discovery.NamespaceResolver against a real
-// Kubernetes cluster, by combining:
+// Kubernetes cluster.
 //
-//   - integrations/kube_apis.KubeClient — lists pods on the agent's node and
-//     gives us each pod's metadata (namespace, UID).
-//   - /host/proc/<pid>/cgroup           — extract the pod UID for any PID.
+// Why this is harder than just reading /proc/<pid>/cgroup
+// -------------------------------------------------------
+// On modern container runtimes (containerd, CRI-O on K8s 1.24+), each pod
+// runs in its own cgroup namespace. When the agent reads /proc/<pid>/cgroup
+// for a process in a different cgroup namespace, the kernel returns paths
+// relative to the *reader's* cgroup namespace — typically "0::/../..", with
+// no pod-UID visible. This affects both kind dev clusters AND real K8s
+// production nodes; it's not a kind-specific bug.
 //
-// The cgroup path on Kubernetes nodes looks like:
+// Two patterns avoid the problem:
+//   1. Run the agent in the root cgroup namespace (requires privileged +
+//      explicit cgroup-ns escape; not portable across CNIs and security
+//      contexts).
+//   2. Use CRI to enumerate containers and their init PIDs, then bridge
+//      across PID namespaces via the cgroup-namespace inode (which IS
+//      stable across PID namespaces — children inherit the parent's
+//      cgroup ns by default).
 //
-//     0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod<UID>.slice/cri-containerd-<container_id>.scope
+// We use pattern (2), which is what OBI, Datadog system-probe, and Falco
+// all do. Specifically:
 //
-// (different runtimes vary the prefix slightly; we match on the pod UID
-// segment, which is stable across containerd / cri-o / kind / GKE / EKS.)
+//   For each pod on the node:
+//     - kube_apis tells us its K8s namespace.
+//     - CRI tells us the container init PIDs (in the agent's PID namespace).
+//     - readlink /proc/<init_pid>/ns/cgroup → "cgroup:[N]" gives us the
+//       cgroup-namespace inode N.
+//   Build map: cgroup_ns_inode → k8s_namespace.
 //
-// Build constraint: linux only — /proc layout and the kube client API are
-// both Linux-only. Default builds get the stub.
+//   For each BPF event PID X (root-namespace PID):
+//     - readlink /host/proc/X/ns/cgroup → "cgroup:[N']" gives the cgroup
+//       namespace inode of the target process. (The kernel doesn't depend
+//       on the reader's namespace for ns/* symlink content — it's the
+//       absolute inode.)
+//     - Lookup namespace by N'.
+//
+// This works identically in kind and on real K8s.
 
 //go:build linux
 
@@ -31,76 +54,95 @@ import (
 	"sync"
 	"time"
 
+	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
-// podUIDFromCgroupRE matches the pod UID portion of a Kubernetes cgroup path.
-// Pod UIDs are RFC 4122 UUIDs but Kubernetes normalises them by replacing
-// dashes with underscores in some cgroup paths (the `_` form is used in
-// systemd-managed cgroups).
-var podUIDFromCgroupRE = regexp.MustCompile(`pod([0-9a-fA-F]{8}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{12})`)
+// cgroupNsRE matches the inode in `cgroup:[N]` symlink targets.
+var cgroupNsRE = regexp.MustCompile(`cgroup:\[(\d+)\]`)
 
 // KubeNamespaceResolver implements NamespaceResolver via the Kubernetes API
-// and /proc. Safe for concurrent use.
+// + CRI + cgroup-namespace inode matching. Safe for concurrent use.
 type KubeNamespaceResolver struct {
-	procRoot string // /host/proc in DaemonSet, /proc otherwise
-	client   *kube_apis.KubeClient
+	procRoot     string // /host/proc when running as a DaemonSet (BPF event PIDs)
+	agentProc    string // /proc — agent's own view, used for CRI-reported init PIDs
+	kubeClient   *kube_apis.KubeClient
+	criClient    *cri_apis.CriClient
 
-	mu      sync.RWMutex
-	uid2ns  map[string]string // pod UID (normalised, dashes) → namespace
-	updated time.Time
+	mu        sync.RWMutex
+	cgroup2ns map[uint64]string // cgroup-ns inode → k8s namespace
+	updated   time.Time
 }
 
-// NewKubeNamespaceResolver builds a resolver. procRoot defaults to /proc;
-// pass /host/proc when running as a DaemonSet with /proc bind-mounted.
+// NewKubeNamespaceResolver builds a resolver.
 //
-// If a kube client can't be constructed (e.g. running outside a cluster), an
-// error is returned and the caller can fall back to a nil NamespaceResolver
-// (i.e. no namespace filtering — all libssl-loaded PIDs in scope).
-func NewKubeNamespaceResolver(procRoot string) (*KubeNamespaceResolver, error) {
+//   procRoot      — /host/proc on a DaemonSet (where BPF-emitted root-ns
+//                   PIDs live). Defaults to /proc when empty.
+//   agentProcRoot — /proc (the agent's own view). CRI returns init PIDs in
+//                   this namespace. Defaults to /proc when empty.
+//
+// Returns an error if either the kube client or CRI client can't be built —
+// callers should fall back to nil NamespaceResolver (no filtering) in that
+// case rather than dropping all traffic.
+func NewKubeNamespaceResolver(procRoot, agentProcRoot string) (*KubeNamespaceResolver, error) {
 	if procRoot == "" {
 		procRoot = "/proc"
+	}
+	if agentProcRoot == "" {
+		agentProcRoot = "/proc"
 	}
 	kc, err := kube_apis.NewKubeClient()
 	if err != nil {
 		return nil, fmt.Errorf("ebpf/discovery: kube client init: %w", err)
 	}
-	r := &KubeNamespaceResolver{
-		procRoot: procRoot,
-		client:   &kc,
-		uid2ns:   map[string]string{},
+	cc, err := cri_apis.NewCRIClient()
+	if err != nil {
+		kc.Close()
+		return nil, fmt.Errorf("ebpf/discovery: CRI client init: %w", err)
 	}
-	// Prime the cache immediately so the first scan after Watch starts
-	// already has data.
+	r := &KubeNamespaceResolver{
+		procRoot:   procRoot,
+		agentProc:  agentProcRoot,
+		kubeClient: &kc,
+		criClient:  cc,
+		cgroup2ns:  map[uint64]string{},
+	}
 	if err := r.refresh(); err != nil {
-		printer.Stderr.Warningf("ebpf/discovery: initial pod list failed: %v; will retry\n", err)
+		printer.Stderr.Warningf("ebpf/discovery: initial CRI+kube enumeration failed: %v; will retry\n", err)
 	}
 	return r, nil
 }
 
-// Close releases the kube client.
+// Close releases the kube client. CriClient has no Close; the underlying
+// gRPC connection is reaped on process exit.
 func (r *KubeNamespaceResolver) Close() {
-	if r.client != nil {
-		r.client.Close()
+	if r.kubeClient != nil {
+		r.kubeClient.Close()
 	}
 }
 
 // Namespace returns the Kubernetes namespace for a PID, or "" if the PID
-// isn't part of any pod on this node (host process, unknown pod, etc.).
+// isn't part of any known pod on this node.
+//
+// The PID argument here is in the *agent's* PID namespace (the same one
+// discovery walks via /proc and uprobes attach with). cgroup-namespace
+// inodes are stable across PID namespaces — children inherit their parent's
+// cgroup ns — so reading /proc/<agent_ns_pid>/ns/cgroup gives the same
+// inode as /host/proc/<root_ns_pid>/ns/cgroup for the same process.
 func (r *KubeNamespaceResolver) Namespace(pid uint32) string {
-	uid, err := r.podUIDForPID(pid)
-	if err != nil || uid == "" {
+	cgIno, err := readCgroupNsInode(r.agentProc, pid)
+	if err != nil {
 		return ""
 	}
 	r.mu.RLock()
-	ns := r.uid2ns[uid]
+	ns := r.cgroup2ns[cgIno]
 	r.mu.RUnlock()
 	return ns
 }
 
-// RunRefresh polls the pod list every interval and updates the cache. Returns
-// when ctx is cancelled.
+// RunRefresh polls every interval and updates the cache. Returns when
+// stopCh is closed.
 func (r *KubeNamespaceResolver) RunRefresh(stopCh <-chan struct{}, interval time.Duration) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -113,42 +155,75 @@ func (r *KubeNamespaceResolver) RunRefresh(stopCh <-chan struct{}, interval time
 			return
 		case <-t.C:
 			if err := r.refresh(); err != nil {
-				printer.Debugf("ebpf/discovery: pod refresh failed: %v\n", err)
+				printer.Debugf("ebpf/discovery: CRI+kube refresh failed: %v\n", err)
 			}
 		}
 	}
 }
 
-// refresh re-lists pods on the node and rebuilds the uid → ns map.
+// refresh rebuilds the cgroup_ns_inode → namespace map.
 func (r *KubeNamespaceResolver) refresh() error {
-	pods, err := r.client.GetPodsInAgentNode()
+	pods, err := r.kubeClient.GetPodsInAgentNode()
 	if err != nil {
-		return err
+		return fmt.Errorf("list pods: %w", err)
 	}
-	fresh := make(map[string]string, len(pods))
+
+	fresh := map[uint64]string{}
 	for _, pod := range pods {
-		// Pod UID is the canonical dash-separated form. We normalise the
-		// cgroup-extracted UID to that form before lookup.
-		fresh[string(pod.UID)] = pod.Namespace
+		ns := pod.Namespace
+		containerIDs, err := r.kubeClient.GetContainerUUIDs(pod)
+		if err != nil {
+			continue
+		}
+		for _, cid := range containerIDs {
+			pid, err := r.criClient.GetContainerPID(cid)
+			if err != nil || pid <= 0 {
+				continue
+			}
+			ino, err := readCgroupNsInode(r.agentProc, uint32(pid))
+			if err != nil {
+				continue
+			}
+			fresh[ino] = ns
+		}
 	}
 
 	r.mu.Lock()
-	r.uid2ns = fresh
+	r.cgroup2ns = fresh
 	r.updated = time.Now()
 	r.mu.Unlock()
+	if len(fresh) > 0 {
+		printer.Debugf("ebpf/discovery: refreshed cgroup_ns→namespace map (%d containers)\n", len(fresh))
+	}
 	return nil
 }
 
-// podUIDForPID reads /proc/<pid>/cgroup and extracts the pod UID, if any.
-func (r *KubeNamespaceResolver) podUIDForPID(pid uint32) (string, error) {
-	b, err := os.ReadFile(filepath.Join(r.procRoot, strconv.Itoa(int(pid)), "cgroup"))
+// readCgroupNsInode reads procRoot/<pid>/ns/cgroup as a symlink and parses
+// the inode number from the target "cgroup:[N]".
+func readCgroupNsInode(procRoot string, pid uint32) (uint64, error) {
+	link := filepath.Join(procRoot, strconv.Itoa(int(pid)), "ns", "cgroup")
+	target, err := os.Readlink(link)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-	m := podUIDFromCgroupRE.FindSubmatch(b)
+	m := cgroupNsRE.FindStringSubmatch(target)
 	if m == nil {
-		return "", nil
+		return 0, fmt.Errorf("unexpected ns/cgroup target %q", target)
 	}
-	// Normalise underscores → dashes (kubelet uses `_` in systemd cgroup names).
-	return strings.ReplaceAll(string(m[1]), "_", "-"), nil
+	return strconv.ParseUint(m[1], 10, 64)
 }
+
+// CgroupNsMapSnapshot returns a copy of the current cgroup_ns_inode → namespace
+// map. Exposed for diagnostics; not used in the hot path.
+func (r *KubeNamespaceResolver) CgroupNsMapSnapshot() map[uint64]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[uint64]string, len(r.cgroup2ns))
+	for k, v := range r.cgroup2ns {
+		out[k] = v
+	}
+	return out
+}
+
+// silence unused-import linter when no calls remain
+var _ = strings.Split
