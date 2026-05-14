@@ -20,7 +20,15 @@
 
 package ebpf
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
+)
+
+// DiscoveryChan is a typed alias so callers don't need to import the
+// ebpf/discovery package directly when overriding Args.Discovery.
+type DiscoveryChan = <-chan discovery.Target
 
 // ErrUnsupported is returned by Collect on platforms / builds where the eBPF
 // subsystem is unavailable.

@@ -9,7 +9,18 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+
+	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 )
+
+// Thermostat is a no-op stub on non-eBPF builds so callers can keep referring
+// to *ebpf.Thermostat in their telemetry plumbing.
+type Thermostat struct{}
+
+func (*Thermostat) CurrentCap() uint32   { return 0 }
+func (*Thermostat) CPUPercent() float64 { return 0 }
 
 // Args is the platform-neutral declaration so callers can construct it
 // without per-build-tag code. On stub builds Collect immediately returns
@@ -21,6 +32,8 @@ type Args struct {
 	FlowIdleTimeout     time.Duration
 	FactorySelector     akinet.TCPParserFactorySelector
 	Out                 chan<- akinet.ParsedNetworkTraffic
+	Discovery           DiscoveryChan
+	HookLoader          func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
 }
 
 func Defaults() Args {

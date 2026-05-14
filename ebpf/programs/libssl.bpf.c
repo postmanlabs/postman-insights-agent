@@ -113,13 +113,14 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
     }
 }
 
-// Volatile knob set from userspace at load time.
+// Set from userspace at load time. Lives in .rodata (read-only after load).
 // 0 = trace all PIDs (spike); 1 = only trace PIDs in target_pids.
 volatile const __u32 enforce_pid_allowlist = 0;
 
-// Volatile knob: max bytes to copy from plaintext buffer. Clamped to
+// Set from userspace at load time AND can be updated at runtime by the CPU
+// thermostat goroutine. Lives in .data (writable post-load). Clamped to
 // MAX_EVENT_PAYLOAD at compile time. Power of two recommended.
-volatile const __u32 max_capture_bytes = MAX_EVENT_PAYLOAD;
+__u32 max_capture_bytes = MAX_EVENT_PAYLOAD;
 
 // -----------------------------------------------------------------------------
 // Helpers

@@ -78,6 +78,22 @@ func (l *Loader) EventsMap() *ebpf.Map     { return l.libssl.Events }
 func (l *Loader) TargetPIDsMap() *ebpf.Map { return l.libssl.TargetPids }
 func (l *Loader) CountersMap() *ebpf.Map   { return l.libssl.Counters }
 
+// SetMaxCaptureBytes updates the BPF-side max_capture_bytes knob at runtime.
+// Used by the CPU thermostat to throttle copy work without reloading. Requires
+// Linux 5.5+ (BPF_F_MMAPABLE on the global's data section).
+func (l *Loader) SetMaxCaptureBytes(v uint32) error {
+	return l.libssl.MaxCaptureBytes.Set(v)
+}
+
+// GetMaxCaptureBytes reads the current BPF-side knob value.
+func (l *Loader) GetMaxCaptureBytes() (uint32, error) {
+	var v uint32
+	if err := l.libssl.MaxCaptureBytes.Get(&v); err != nil {
+		return 0, err
+	}
+	return v, nil
+}
+
 // Counter indices — must match the BPF C source.
 const (
 	CounterEventsEmitted uint32 = 0

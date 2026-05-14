@@ -1119,7 +1119,7 @@ func (a *apidump) Run() error {
 			<-stop
 			httpsCancel()
 		}()
-		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG)
+		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpTelemetry)
 		printer.Stderr.Infof("HTTPS capture (eBPF) started with body-cap=%d, mode=%q.\n",
 			args.HTTPSBodySizeCap, args.HTTPSCaptureMode)
 	} else if args.EnableHTTPSCapture {
