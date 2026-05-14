@@ -49,6 +49,12 @@ type Args struct {
 	// userspace refiller resets buckets every second.
 	RateCapPerSec uint32
 
+	// ProcRoot is the path the resolver should treat as /proc. Default ""
+	// resolves to /proc. DaemonSet deployments that bind-mount the kernel's
+	// root /proc into the agent pod (typically at /host/proc) pass that here
+	// so BPF-emitted root-namespace PIDs match /proc entries.
+	ProcRoot string
+
 	// Discovery is an optional pre-built discovery channel. When nil,
 	// Collect builds its own via discovery.Watch (spike behaviour). Set this
 	// to use WatchWith with namespace filtering or a custom CRI integration.
@@ -108,7 +114,7 @@ func Collect(ctx context.Context, args Args) error {
 
 	// 3. Construct adapter; feed events into akinet parsers → args.Out.
 	adapter := events.NewAdapter(args.FactorySelector, args.Out)
-	adapter.Resolver = events.NewResolver(1 * time.Second)
+	adapter.Resolver = events.NewResolverWithProcRoot(1*time.Second, args.ProcRoot)
 
 	// 4. Start uprobe manager + process discovery.
 	mgr := uprobes.NewManager(l)
@@ -145,7 +151,15 @@ func Collect(ctx context.Context, args Args) error {
 	if args.Discovery != nil {
 		disco = args.Discovery
 	} else {
-		disco = discovery.Watch(ctx, args.DiscoveryInterval)
+		// Discovery scans the agent-visible /proc (not args.ProcRoot) because
+		// uprobe attach via perf_event_open interprets PIDs in the calling
+		// process's PID namespace. Using /host/proc here would emit root-ns
+		// PIDs that the kernel can't match against the agent's ns view. The
+		// resolver (events.NewResolverWithProcRoot above) handles BPF-emitted
+		// root-ns PIDs separately and reads /host/proc directly.
+		disco = discovery.WatchWith(ctx, discovery.WatchOpts{
+			Interval: args.DiscoveryInterval,
+		})
 	}
 
 	// Establish monotonic-clock epoch so event timestamps map to wall clock.

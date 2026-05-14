@@ -48,13 +48,17 @@ type LibSSLPath struct {
 
 var libsslPattern = regexp.MustCompile(`/libssl(?:\.so(?:\.\d+)*)?$`)
 
-// FindLibSSL locates the libssl shared object loaded by the given PID by
-// reading /proc/<pid>/maps. Returns ErrNotFound if no libssl mapping exists.
-//
-// This is the "dynamic libssl" case. For statically-linked binaries, callers
-// should fall back to FindStaticLibSSL.
-func FindLibSSL(pid uint32) (*LibSSLPath, error) {
-	mapsPath := fmt.Sprintf("/proc/%d/maps", pid)
+// FindLibSSL is equivalent to FindLibSSLAt("/proc", pid).
+func FindLibSSL(pid uint32) (*LibSSLPath, error) { return FindLibSSLAt("/proc", pid) }
+
+// FindLibSSLAt locates the libssl shared object loaded by the given PID by
+// reading <procRoot>/<pid>/maps. Use /host/proc when running inside a
+// DaemonSet so the PIDs match BPF's root-namespace view.
+func FindLibSSLAt(procRoot string, pid uint32) (*LibSSLPath, error) {
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
+	mapsPath := fmt.Sprintf("%s/%d/maps", procRoot, pid)
 	data, err := os.ReadFile(mapsPath)
 	if err != nil {
 		return nil, fmt.Errorf("uprobes: read %s: %w", mapsPath, err)
@@ -72,7 +76,7 @@ func FindLibSSL(pid uint32) (*LibSSLPath, error) {
 		}
 		guestPath := fields[len(fields)-1]
 		// Translate to a host-visible path that link.OpenExecutable can open.
-		hostPath := filepath.Join(fmt.Sprintf("/proc/%d/root", pid), guestPath)
+		hostPath := filepath.Join(fmt.Sprintf("%s/%d/root", procRoot, pid), guestPath)
 		if _, statErr := os.Stat(hostPath); statErr != nil {
 			// Fallback: use the agent's own filesystem mount of the same
 			// path. This works when the agent shares a libssl with the target

@@ -60,14 +60,26 @@ type WatchOpts struct {
 	// namespaces allowed" (i.e. discovery emits nothing). Empty set with a
 	// nil resolver means "no filtering" (every libssl-loaded PID is emitted).
 	AllowedNamespaces map[string]struct{}
+
+	// ProcRoot defaults to /proc. DaemonSet deployments pass /host/proc so
+	// the PIDs we discover match BPF-emitted root-namespace PIDs.
+	ProcRoot string
 }
 
 // ScanProc walks /proc once and returns every PID that has a libssl mapping.
-// No namespace filtering is applied at this layer; callers filter the result.
-func ScanProc() ([]Target, error) {
-	entries, err := os.ReadDir("/proc")
+// Equivalent to ScanProcAt("/proc").
+func ScanProc() ([]Target, error) { return ScanProcAt("/proc") }
+
+// ScanProcAt walks the specified /proc mount and returns every PID that has
+// a libssl mapping. Use /host/proc when running inside a DaemonSet so the
+// scanned PIDs match BPF's root-namespace view.
+func ScanProcAt(procRoot string) ([]Target, error) {
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
+	entries, err := os.ReadDir(procRoot)
 	if err != nil {
-		return nil, fmt.Errorf("discovery: read /proc: %w", err)
+		return nil, fmt.Errorf("discovery: read %s: %w", procRoot, err)
 	}
 
 	var targets []Target
@@ -89,7 +101,7 @@ func ScanProc() ([]Target, error) {
 			continue
 		}
 
-		lib, err := uprobes.FindLibSSL(pid)
+		lib, err := uprobes.FindLibSSLAt(procRoot, pid)
 		if err != nil {
 			continue
 		}
@@ -147,7 +159,7 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 		defer t.Stop()
 
 		scan := func() {
-			ts, err := ScanProc()
+			ts, err := ScanProcAt(opts.ProcRoot)
 			if err != nil {
 				return
 			}

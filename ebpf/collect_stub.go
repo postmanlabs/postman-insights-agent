@@ -35,6 +35,7 @@ type Args struct {
 	Discovery           DiscoveryChan
 	HookLoader          func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
 	RateCapPerSec       uint32
+	ProcRoot            string
 }
 
 func Defaults() Args {
