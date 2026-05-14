@@ -5,13 +5,19 @@ sensitive_keys:
 - auth
 - auth-key
 - authKey
+# RFC 7235 standard authentication headers.
+- authorization
 - clientSecret
 - clientToken
 - consumerSecret
+# HTTP cookie headers — carry session tokens.
+- cookie
 - encryption_key
+- grpc-authorization
 - password
 - postman_sid
 - primarySecret
+- proxy-authenticate
 - proxy-authorization
 - secondarySecret
 - secretKey
@@ -20,14 +26,22 @@ sensitive_keys:
 - sso_jwt_key
 - token
 - tokenSecret
+- www-authenticate
 - x-access-token
+- x-amz-content-sha256
 - x-amz-security-token
 - x-api-key
+- x-api-secret
 - x-auth-token
 - x-csrf-token
-- x-support-secret
+# X.509 client certificate forwarded by proxies (often contains PII).
+- x-forwarded-client-cert
+- x-forwarded-authorization
+- x-internal-token
 - x-portkey-api-key
 - x-portkey-virtual-key
+- x-shared-secret
+- x-support-secret
 sensitive_value_regexes:
 - \bPMAK-[a-f0-9]{24}\b
 - (?i)https:\/\/creator\.zoho\.com\/api\/[A-Za-z0-9\/\-_\.]+\?authtoken=[A-Za-z0-9]+

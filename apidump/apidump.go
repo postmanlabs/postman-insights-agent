@@ -208,9 +208,16 @@ type Args struct {
 	// disables. Forwarded into the BPF rate_cap_per_sec global.
 	HTTPSRateCapPerSec uint32
 
-	// PrivacyMode is one of "standard" | "strict" | "dry-run". Currently a
-	// passthrough; Phase 4 wires it into data_masks.
+	// PrivacyMode is one of "standard" | "strict" | "dry-run". Wired into
+	// data_masks.Redactor in Phase 4.
 	PrivacyMode string
+
+	// RedactionStyle is one of "redact" | "hash". Default "redact".
+	RedactionStyle string
+
+	// DryRunDir is the directory where --privacy-mode=dry-run writes its
+	// redaction reports. Default /var/log/postman-insights.
+	DryRunDir string
 
 	// Discovery mode fields: when DiscoveryMode is true, the agent registers the
 	// service with the backend via RegisterDiscoveredService before starting capture.
@@ -916,6 +923,37 @@ func (a *apidump) Run() error {
 	if err != nil {
 		return errors.Wrapf(err, "unable to instantiate redactor for %s", a.backendSvc)
 	}
+
+	// Apply privacy-mode + redaction-style settings. Empty strings fall
+	// through to the historical defaults (PrivacyStandard / StyleRedact).
+	privMode, err := data_masks.ParsePrivacyMode(a.PrivacyMode)
+	if err != nil {
+		return errors.Wrap(err, "invalid --privacy-mode")
+	}
+	redactor.SetPrivacyMode(privMode)
+	style, err := data_masks.ParseRedactionStyle(a.RedactionStyle)
+	if err != nil {
+		return errors.Wrap(err, "invalid --redaction-style")
+	}
+	redactor.SetStyle(style)
+	printer.Infof("data masks: privacy-mode=%s redaction-style=%s upload=%t\n",
+		privMode, style, redactor.PrivacyConfig.UploadEnabled)
+
+	// In dry-run mode, start the redaction reporter. It writes redacted
+	// samples + per-rule hit counts to DryRunDir every minute. The
+	// backend collector still receives PNTs but the dry-run reporter
+	// short-circuits the actual upload (see data_masks.DryRunReporter).
+	var dryRunReporter *data_masks.DryRunReporter
+	if privMode == data_masks.PrivacyDryRun {
+		dryRunReporter, err = data_masks.NewDryRunReporter(a.DryRunDir, redactor.Coverage)
+		if err != nil {
+			return errors.Wrap(err, "dry-run reporter init")
+		}
+		go dryRunReporter.Run(stop)
+		defer dryRunReporter.Close()
+		printer.Infof("dry-run mode active — redaction reports will be written to %s, no uploads to backend\n", a.DryRunDir)
+	}
+	_ = dryRunReporter // referenced by the goroutine; keep alive
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0

@@ -62,6 +62,8 @@ var (
 	httpsCBPFExcludePort  uint16
 	httpsRateCapPerSec    uint32
 	privacyMode           string
+	redactionStyle        string
+	dryRunDir             string
 
 	commonApidumpFlags *CommonApidumpFlags
 )
@@ -346,6 +348,8 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		HTTPSCBPFExcludePort:  httpsCBPFExcludePort,
 		HTTPSRateCapPerSec:    httpsRateCapPerSec,
 		PrivacyMode:           privacyMode,
+		RedactionStyle:        redactionStyle,
+		DryRunDir:             dryRunDir,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
@@ -582,7 +586,19 @@ func init() {
 		&privacyMode,
 		"privacy-mode",
 		"standard",
-		"Privacy mode: 'standard' | 'strict' | 'dry-run'. Currently a passthrough; full effect lands in Phase 4.",
+		"Privacy mode: 'standard' (default) | 'strict' (drop bodies, header-allowlist) | 'dry-run' (capture+redact, do not upload). See docs/redaction-defaults.md.",
+	)
+	Cmd.Flags().StringVar(
+		&redactionStyle,
+		"redaction-style",
+		"redact",
+		"Redaction style: 'redact' (default; replaces with *REDACTED*) | 'hash' (replaces with REDACTED:sha256[:8] so customers can correlate without seeing raw values).",
+	)
+	Cmd.Flags().StringVar(
+		&dryRunDir,
+		"dry-run-dir",
+		"/var/log/postman-insights",
+		"Directory where --privacy-mode=dry-run writes its redaction reports.",
 	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)

@@ -2,6 +2,7 @@ package data_masks
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -39,6 +40,18 @@ type Redactor struct {
 	// The dynamic portion of the configuration. Periodically updated from the
 	// back end.
 	userConfig *userRedactionConfig
+
+	// Style controls the replacement (RedactionString vs hash). Defaults to
+	// StyleRedact (zero value of RedactionStyle is "" which parses to redact).
+	Style RedactionStyle
+
+	// PrivacyConfig is the resolved privacy-mode config. Empty struct = the
+	// historical PrivacyStandard behaviour.
+	PrivacyConfig PrivacyModeConfig
+
+	// Coverage tracks per-rule redaction counts for telemetry. nil is safe
+	// (the Inc* helpers no-op on nil).
+	Coverage *CoverageCounters
 
 	// When this channel is closed, it signals that the goroutine for updating
 	// userConfig should exit.
@@ -118,9 +131,25 @@ func NewRedactor(
 		SensitiveDataKeys:          sets.NewSet(config.SensitiveKeys...),
 		SensitiveDataValuePatterns: sensitiveDataRegex,
 		userConfig:                 activeUserConfig,
+		Style:                      StyleRedact,
+		PrivacyConfig:              PrivacyStandard.Config(),
+		Coverage:                   NewCoverageCounters(),
 		exitChannel:                exitChannel,
 		closeExitChannelOnce:       &sync.Once{},
 	}, nil
+}
+
+// SetStyle replaces the redaction style. Must be called before any
+// concurrent RedactSensitiveData invocations; not safe to change at
+// runtime.
+func (o *Redactor) SetStyle(s RedactionStyle) {
+	o.Style = s
+}
+
+// SetPrivacyMode resolves the privacy-mode config and stores it. Must be
+// called before any concurrent RedactSensitiveData invocations.
+func (o *Redactor) SetPrivacyMode(m PrivacyMode) {
+	o.PrivacyConfig = m.Config()
 }
 
 func (o *Redactor) StopPeriodicUpdates() {
@@ -133,10 +162,24 @@ func (o *Redactor) RedactSensitiveData(m *pb.Method) {
 	o.userConfig.RLock()
 	defer o.userConfig.RUnlock()
 
+	o.Coverage.IncRequestScanned()
+
 	pov := redactSensitiveInfoVisitor{
 		redactionOptions: o,
 	}
 	vis.Apply(&pov, m)
+
+	// Apply privacy-mode body/header dropping AFTER the standard
+	// redaction pass. ZeroAllPrimitives produces a zero-typed value for
+	// each primitive, which is what downstream type inference wants.
+	if o.PrivacyConfig.DropBodies || len(o.PrivacyConfig.HeaderAllowlist) > 0 {
+		pmv := privacyModeVisitor{
+			redactor: o,
+			dropBodies: o.PrivacyConfig.DropBodies,
+			headerAllowed: o.PrivacyConfig.HeaderAllowed,
+		}
+		vis.Apply(&pmv, m)
+	}
 }
 
 func (o *Redactor) ZeroAllPrimitives(m *pb.Method) {
@@ -154,17 +197,31 @@ func (o *Redactor) ZeroAllPrimitives(m *pb.Method) {
 // Determines whether fields with the given name should be redacted. Caller must
 // hold at least a read lock on muUserConfig.
 func (o *Redactor) redactFieldsNamed(fieldName string) bool {
+	lc := strings.ToLower(fieldName)
+
 	// Determine whether to redact based on default rules.
-	if o.SensitiveDataKeys.Contains(strings.ToLower(fieldName)) {
+	if o.SensitiveDataKeys.Contains(lc) {
+		o.Coverage.IncSensitiveKey(lc)
 		return true
 	}
 
 	// Determine whether to redact based on user settings.
 	if o.userConfig.redactFieldsNamed(fieldName) {
+		o.Coverage.IncUserRule(lc)
 		return true
 	}
 
 	return false
+}
+
+// styledReplacement returns the appropriate replacement for the redactor's
+// configured style. Centralises the choice so callers don't have to know
+// about RedactionStyle.
+func (o *Redactor) styledReplacement(orig string) string {
+	if o == nil {
+		return RedactionString
+	}
+	return applyRedactionStyle(orig, o.Style)
 }
 
 type redactSensitiveInfoVisitor struct {
@@ -189,8 +246,13 @@ var _ vis.DefaultSpecVisitor = (*redactSensitiveInfoVisitor)(nil)
 func (s *redactSensitiveInfoVisitor) EnterData(self interface{}, ctx vis.SpecVisitorContext, d *pb.Data) Cont {
 	// Redact cookies and authorization headers.
 	switch ctx.GetValueType() {
-	case vis.AUTH, vis.COOKIE:
-		redactPrimitivesInIR(d)
+	case vis.AUTH:
+		s.redactionOptions.Coverage.IncSensitiveKey("authorization")
+		redactPrimitivesInIR(d, s.redactionOptions)
+		return SkipChildren
+	case vis.COOKIE:
+		s.redactionOptions.Coverage.IncSensitiveKey("cookie")
+		redactPrimitivesInIR(d, s.redactionOptions)
 		return SkipChildren
 	}
 
@@ -198,7 +260,7 @@ func (s *redactSensitiveInfoVisitor) EnterData(self interface{}, ctx vis.SpecVis
 		// We have a primitive value. Redact if the value is sensitive. Otherwise,
 		// fall through and redact based on the field name.
 		if s.primitiveHasSensitiveValue(p) {
-			redactPrimitive(p)
+			redactPrimitive(p, s.redactionOptions)
 			return SkipChildren
 		}
 	}
@@ -210,7 +272,7 @@ func (s *redactSensitiveInfoVisitor) EnterData(self interface{}, ctx vis.SpecVis
 		if innermostFieldPathElt.IsFieldName() {
 			fieldName := innermostFieldPathElt.String()
 			if s.redactionOptions.redactFieldsNamed(fieldName) {
-				redactPrimitivesInIR(d)
+				redactPrimitivesInIR(d, s.redactionOptions)
 				return SkipChildren
 			}
 		}
@@ -235,12 +297,17 @@ func (s *redactSensitiveInfoVisitor) EnterHTTPMethodMeta(self interface{}, ctx v
 
 // Determines whether the given string is a sensitive value.
 func (s *redactSensitiveInfoVisitor) isSensitiveString(v string) bool {
-	for _, pattern := range s.redactionOptions.SensitiveDataValuePatterns {
+	for i, pattern := range s.redactionOptions.SensitiveDataValuePatterns {
 		if pattern.MatchString(v) {
+			s.redactionOptions.Coverage.IncSensitiveRegex(fmt.Sprintf("builtin[%d]", i))
 			return true
 		}
 	}
-	return s.redactionOptions.userConfig.redactStringRegex(v)
+	if s.redactionOptions.userConfig.redactStringRegex(v) {
+		s.redactionOptions.Coverage.IncUserRule("value_regex")
+		return true
+	}
+	return false
 }
 
 // Determines whether the given Primitive has a sensitive value.
@@ -254,32 +321,39 @@ func (s *redactSensitiveInfoVisitor) primitiveHasSensitiveValue(p *pb.Primitive)
 	return s.isSensitiveString(sv.Value)
 }
 
-func redactPrimitivesInIR[nodeT any](node nodeT) {
-	var v redactPrimitivesVisitor
+// redactPrimitivesInIR walks node and replaces every leaf primitive with
+// the redactor's configured replacement.
+func redactPrimitivesInIR(node interface{}, r *Redactor) {
+	v := redactPrimitivesVisitor{redactor: r}
 	vis.Apply(&v, node)
 }
 
 type redactPrimitivesVisitor struct {
 	vis.DefaultSpecVisitorImpl
+	redactor *Redactor
 }
 
 var _ vis.DefaultSpecVisitor = (*redactPrimitivesVisitor)(nil)
 
-// If the Data being visited is a Primitive, it is replaced with the redaction
-// string.
-func (*redactPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext, d *pb.Data) Cont {
+// If the Data being visited is a Primitive, it is replaced with the
+// redactor's configured replacement (fixed string or hash token).
+func (v *redactPrimitivesVisitor) EnterData(self interface{}, _ vis.SpecVisitorContext, d *pb.Data) Cont {
 	dp := d.GetPrimitive()
 	if dp == nil {
 		return Continue
 	}
-
-	redactPrimitive(dp)
+	redactPrimitive(dp, v.redactor)
 	return SkipChildren
 }
 
-// Replaces the value in the given Primitive with the redaction string.
-func redactPrimitive(p *pb.Primitive) {
-	p.Value = spec_util.NewPrimitiveString(RedactionString).Value
+// redactPrimitive replaces the value in the given Primitive with the
+// redactor's configured replacement.
+func redactPrimitive(p *pb.Primitive, r *Redactor) {
+	orig := ""
+	if sv := p.GetStringValue(); sv != nil {
+		orig = sv.Value
+	}
+	p.Value = spec_util.NewPrimitiveString(r.styledReplacement(orig)).Value
 }
 
 // Replaces all primitive values with zero values.
@@ -342,10 +416,79 @@ func (s *zeroPrimitivesVisitor) EnterHTTPMethodMeta(self interface{}, ctx vis.Sp
 }
 
 func (s *zeroPrimitivesVisitor) isSensitiveString(v string) bool {
-	for _, pattern := range s.redactionOptions.SensitiveDataValuePatterns {
+	for i, pattern := range s.redactionOptions.SensitiveDataValuePatterns {
 		if pattern.MatchString(v) {
+			s.redactionOptions.Coverage.IncSensitiveRegex(fmt.Sprintf("builtin[%d]", i))
 			return true
 		}
 	}
-	return s.redactionOptions.userConfig.redactStringRegex(v)
+	if s.redactionOptions.userConfig.redactStringRegex(v) {
+		s.redactionOptions.Coverage.IncUserRule("value_regex")
+		return true
+	}
+	return false
+}
+
+// privacyModeVisitor implements the PrivacyStrict body-drop / header-
+// allowlist behaviour. It runs AFTER the sensitive-key + regex pass so
+// the per-rule counters reflect what the redactor saw; the drops here
+// are a separate, coarser layer.
+type privacyModeVisitor struct {
+	vis.DefaultSpecVisitorImpl
+	redactor      *Redactor
+	dropBodies    bool
+	headerAllowed func(string) bool
+}
+
+var _ vis.DefaultSpecVisitor = (*privacyModeVisitor)(nil)
+
+// EnterData zeroes body primitives (when dropBodies is set) and drops
+// non-allowlisted headers (when headerAllowed is set).
+func (v *privacyModeVisitor) EnterData(self interface{}, ctx vis.SpecVisitorContext, d *pb.Data) Cont {
+	dp := d.GetPrimitive()
+	if dp == nil {
+		return Continue
+	}
+
+	switch ctx.GetValueType() {
+	case vis.BODY:
+		if v.dropBodies {
+			pv, err := spec_util.PrimitiveValueFromProto(dp)
+			if err == nil {
+				dp.Value = pv.Obfuscate().ToProto().Value
+				v.redactor.Coverage.IncBodyDropped()
+			}
+			return SkipChildren
+		}
+	case vis.HEADER:
+		// Only filter headers when an allowlist is configured.
+		if v.headerAllowed == nil {
+			return Continue
+		}
+		fieldPath := ctx.GetFieldPath()
+		if len(fieldPath) == 0 {
+			return Continue
+		}
+		// The header name is typically the second-to-last path element
+		// (the last is the value primitive itself). Be defensive.
+		var headerName string
+		for i := len(fieldPath) - 1; i >= 0; i-- {
+			if fieldPath[i].IsFieldName() {
+				headerName = fieldPath[i].String()
+				break
+			}
+		}
+		if headerName == "" {
+			return Continue
+		}
+		if !v.headerAllowed(headerName) {
+			pv, err := spec_util.PrimitiveValueFromProto(dp)
+			if err == nil {
+				dp.Value = pv.Obfuscate().ToProto().Value
+				v.redactor.Coverage.IncHeaderDropped()
+			}
+			return SkipChildren
+		}
+	}
+	return Continue
 }
