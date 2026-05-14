@@ -5,8 +5,13 @@
 Last updated: end of session that delivered Phase 3 tasks #1 (HTTP/2 frame
 decoder) and #2 (`crypto/tls.(*Conn).Read` via RET-instruction probing).
 
-Branch: [`feat/https-capture-ebpf`](https://github.com/postmanlabs/postman-insights-agent/tree/feat/https-capture-ebpf)
-Rolling PR: **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/173)**
+## PR structure (current)
+
+| PR | Branch | Scope | Status | Base |
+|---|---|---|---|---|
+| **[#174](https://github.com/postmanlabs/postman-insights-agent/pull/174)** | `feat/https-capture-ebpf-libssl` | **Phases 1+2** — libssl path, kind e2e, namespace filter, sampling stack, telemetry | DRAFT | `main` |
+| **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/173)** | `feat/https-capture-ebpf` | **Phases 3+4** — Go support + privacy hardening | DRAFT | `main` (will auto-narrow after #174 merges) |
+| (future) | `feat/https-capture-ebpf-java` | Phase 5 — Java agent + ioctl bridge + webhook | not started | TBD |
 
 ---
 
@@ -362,11 +367,20 @@ By customer impact + dependency:
 
 ## PR strategy
 
-**Today: one rolling PR ([#173](https://github.com/postmanlabs/postman-insights-agent/pull/173), DRAFT).**
-All phase work lands on `feat/https-capture-ebpf`. 22 commits, +10,600/−33
-as of `120bd13`. This was a deliberate choice — single place for reviewers
-to see the whole story, no merge-order coordination, commit messages tell
-the per-phase narrative.
+**Today: 2 PRs (split executed 2026-05-14).** PR #174 targets `main` and
+contains Phases 1+2 only — production-ready libssl path, can ship
+independently. PR #173 (the original rolling PR) still targets `main`
+and contains the full history including Phase 3+4 on top of #174; its
+diff will auto-narrow to just Phase 3+4 commits once #174 merges.
+
+Historical rationale (kept here for record): the project ran as a single
+rolling PR for most of its history. Single-PR review trades reviewer-
+friendliness for reduced merge-order coordination and a coherent
+commit-message narrative. Once Phase 4 was substantially complete and
+the branch was at ~13k LOC, we split to let Phases 1+2 land
+independently.
+
+**Original 4-PR plan (now partially executed):**
 
 **Tradeoffs accruing as the PR grows:**
 
@@ -379,36 +393,27 @@ the per-phase narrative.
   the merge boundary is poor.
 - Conflict surface against `main` grows while Phases 3+4+5 finish.
 
-**Recommended split (do after the customer demo, once feedback says
-whether Phase 1+2 alone is shippable):**
+| PR | Branch | Scope | Size | Status |
+|---|---|---|---|---|
+| **A (#174)** | `feat/https-capture-ebpf-libssl` | Phases 1+2 — libssl path. | ~8,000 LOC | ✅ **done** |
+| **B+C (#173)** | `feat/https-capture-ebpf` | Phases 3+4 combined — Go + privacy. | ~13,400 LOC (auto-narrows to ~5,400 once A merges) | 🟡 **open**, depends on A |
+| **D** | `feat/https-capture-ebpf-java` | Phase 5 — Java agent + ioctl bridge + webhook. | TBD | ⏳ not started |
 
-| Stacked PR | Branch | Scope | Size |
-|---|---|---|---|
-| **A** | `feat/https-capture-ebpf-libssl` | Phases 1+2 — libssl path, kind e2e, namespace filter, sampling stack, telemetry. Through commit `f2e2459`. | ~6,500 LOC |
-| **B** | `feat/https-capture-ebpf-go` | Phase 3 — Go ELF inspector + gotls probes + HTTP/2 + RET-probing. Stacked on A. | ~2,500 LOC |
-| **C** | `feat/https-capture-ebpf-privacy` | Phase 4 — 8 privacy gaps. Stacked on B. | TBD |
-| **D** | `feat/https-capture-ebpf-java` | Phase 5 — Java agent + ioctl bridge + webhook. Independent of A/B/C (different runtime). | TBD |
+We collapsed the originally-planned 4-PR split (A/B/C/D) into 3 because
+Phase 3 and Phase 4 had interleaved commits that would have required
+an invasive history rewrite to separate. The combined Phase 3+4 PR is
+still reviewable per-phase via `docs/phases/phase-3-results.md` and
+`docs/phases/phase-4-results.md`.
 
-Stacked-PR mechanics: B's base branch is A's branch (not `main`); GitHub
-renders the diff cleanly. When A merges to main, GitHub auto-retargets B
-to main. Same for C→B, D→main.
-
-**Decision triggers for when to split:**
-
-1. Customer demo (tomorrow) reveals Phase 1+2 alone is enough for the
-   first trial → split immediately, get PR A reviewed + merged so the
-   trial customer can run a released binary.
-2. Phase 3 task #3 (gRPC) lands and Phase 4 starts → split at minimum to
-   isolate the privacy work, which has different reviewers (security)
-   than the runtime work.
-3. PR #173 hits +15,000 LOC → split regardless. Past that point nobody
-   reviews it.
-
-**What stays on the rolling PR until split:**
-
-- All work between split decisions.
-- The `docs/progress.md` + `docs/phases/SESSION-RESUME.md` updates that
-  let any reviewer / fresh session pick up cleanly.
+**Mechanics that worked:** PR A's branch is created at the historical
+SHA where Phase 2 ended (`f2e2459`). No commit reordering or cherry-
+picking required — #174's commits are a strict prefix of #173's. Once
+#174 merges to main, #173's diff against the new main automatically
+narrows to just the commits that aren't on #174. GitHub handles the
+rebase implicitly. One small fix-up was applied to PR A: a non-Linux
+build stub for `KubeNamespaceResolver` that had been left for Phase 4
+to fix; cherry-picking it back onto the libssl branch makes #174
+self-contained for cross-platform builds.
 
 ---
 
