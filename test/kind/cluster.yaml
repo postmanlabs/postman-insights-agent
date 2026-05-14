@@ -1,0 +1,20 @@
+# Single-node kind cluster for HTTPS-capture-via-eBPF e2e testing.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pia-https-test
+nodes:
+- role: control-plane
+  # Bind-mount the LinuxKit VM's /proc into the kind node container as
+  # /linuxkit-proc. The agent DaemonSet then bind-mounts this further to
+  # /host/proc inside its container. Without this, the agent sees the kind
+  # node's PID namespace, but BPF emits PIDs from the LinuxKit kernel's
+  # root namespace — the two don't match, and the resolver can't find any
+  # PID's /proc/<pid>/net/tcp.
+  #
+  # In a real (non-kind) Kubernetes deployment, the agent's hostPID:true
+  # already gives matching PIDs because there's only one PID namespace
+  # boundary. This extra hop is a kind-specific workaround.
+  extraMounts:
+  - hostPath: /proc
+    containerPath: /linuxkit-proc
+    readOnly: true

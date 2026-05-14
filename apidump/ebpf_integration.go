@@ -159,6 +159,13 @@ func startHTTPSeBPFCapture(
 	ebpfArgs.Out = out
 	ebpfArgs.RateCapPerSec = args.HTTPSRateCapPerSec
 
+	// DaemonSet deployments bind-mount the kernel's root /proc to /host/proc.
+	// When present, use it for resolver lookups so BPF-emitted root-ns PIDs
+	// match /proc entries. Outside of DaemonSets, /proc is correct.
+	if _, err := os.Stat("/host/proc/self"); err == nil {
+		ebpfArgs.ProcRoot = "/host/proc"
+	}
+
 	// Namespace filtering. When --https-target-namespaces is set, build a
 	// KubeNamespaceResolver and wire it into discovery.Watch via Args.Discovery.
 	// If kube client init fails (e.g. running outside a cluster), warn and

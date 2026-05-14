@@ -24,8 +24,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// DebugCounters exposes resolver internals for diagnostic logging without
+// requiring callers to import sync/atomic types.
+type DebugCounters struct {
+	InodeReadOK   atomic.Uint64
+	InodeReadFail atomic.Uint64 // /proc/<pid>/fd/<fd> readlink failed
+	InodeMiss     atomic.Uint64 // inode not in /proc/<pid>/net/tcp{,6}
+	InodeHit      atomic.Uint64
+}
 
 // SocketInfo is the resolved 4-tuple for a socket.
 type SocketInfo struct {
@@ -37,10 +47,13 @@ type SocketInfo struct {
 
 // Resolver caches /proc/<pid>/net/tcp{,6} contents keyed by socket inode.
 type Resolver struct {
-	ttl time.Duration
+	ttl      time.Duration
+	procRoot string // "/proc" by default; DaemonSet sets to "/host/proc"
 
 	mu     sync.Mutex
 	perPID map[uint32]*pidCache
+
+	Debug DebugCounters
 }
 
 type pidCache struct {
@@ -49,14 +62,25 @@ type pidCache struct {
 	byInode     map[uint64]SocketInfo
 }
 
-// NewResolver constructs a resolver. ttl <= 0 defaults to 1s.
+// NewResolver constructs a resolver. ttl <= 0 defaults to 1s. procRoot==""
+// defaults to /proc, but DaemonSet deployments pass /host/proc when /proc
+// is bind-mounted from outside the container.
 func NewResolver(ttl time.Duration) *Resolver {
+	return NewResolverWithProcRoot(ttl, "")
+}
+
+// NewResolverWithProcRoot builds a resolver against a specific /proc mount.
+func NewResolverWithProcRoot(ttl time.Duration, procRoot string) *Resolver {
 	if ttl <= 0 {
 		ttl = 1 * time.Second
 	}
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
 	return &Resolver{
-		ttl:    ttl,
-		perPID: make(map[uint32]*pidCache),
+		ttl:      ttl,
+		procRoot: procRoot,
+		perPID:   make(map[uint32]*pidCache),
 	}
 }
 
@@ -66,10 +90,12 @@ func (r *Resolver) Resolve(pid uint32, fd int32) (SocketInfo, error) {
 	if fd < 0 {
 		return SocketInfo{}, errors.New("ebpf/events: fd is unknown (-1)")
 	}
-	inode, err := inodeFromFD(pid, int(fd))
+	inode, err := inodeFromFD(r.procRoot, pid, int(fd))
 	if err != nil {
+		r.Debug.InodeReadFail.Add(1)
 		return SocketInfo{}, err
 	}
+	r.Debug.InodeReadOK.Add(1)
 
 	r.mu.Lock()
 	c, ok := r.perPID[pid]
@@ -80,13 +106,16 @@ func (r *Resolver) Resolve(pid uint32, fd int32) (SocketInfo, error) {
 	r.mu.Unlock()
 
 	// Try cached lookup; on miss, force a fresh refresh and retry.
-	if info, ok := c.lookup(pid, inode, r.ttl, false); ok {
+	if info, ok := c.lookup(r.procRoot, pid, inode, r.ttl, false); ok {
+		r.Debug.InodeHit.Add(1)
 		return info, nil
 	}
-	if info, ok := c.lookup(pid, inode, r.ttl, true); ok {
+	if info, ok := c.lookup(r.procRoot, pid, inode, r.ttl, true); ok {
+		r.Debug.InodeHit.Add(1)
 		return info, nil
 	}
-	return SocketInfo{}, fmt.Errorf("ebpf/events: socket inode %d not in /proc/%d/net/tcp{,6}", inode, pid)
+	r.Debug.InodeMiss.Add(1)
+	return SocketInfo{}, fmt.Errorf("ebpf/events: socket inode %d not in %s/%d/net/tcp{,6}", inode, r.procRoot, pid)
 }
 
 // Forget drops the cache for a PID (called on PID exit to bound memory).
@@ -97,14 +126,14 @@ func (r *Resolver) Forget(pid uint32) {
 }
 
 // lookup refreshes the cache if needed (or forced), then returns inode hit.
-func (c *pidCache) lookup(pid uint32, inode uint64, ttl time.Duration, force bool) (SocketInfo, bool) {
+func (c *pidCache) lookup(procRoot string, pid uint32, inode uint64, ttl time.Duration, force bool) (SocketInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if force || time.Since(c.lastRefresh) > ttl {
 		fresh := map[uint64]SocketInfo{}
 		// Best-effort: tcp6 absent on IPv6-disabled hosts.
-		_ = parseProcNetTCPForPID(pid, "tcp", fresh)
-		_ = parseProcNetTCPForPID(pid, "tcp6", fresh)
+		_ = parseProcNetTCPForPID(procRoot, pid, "tcp", fresh)
+		_ = parseProcNetTCPForPID(procRoot, pid, "tcp6", fresh)
 		c.byInode = fresh
 		c.lastRefresh = time.Now()
 	}
@@ -112,8 +141,8 @@ func (c *pidCache) lookup(pid uint32, inode uint64, ttl time.Duration, force boo
 	return info, ok
 }
 
-func inodeFromFD(pid uint32, fd int) (uint64, error) {
-	linkPath := filepath.Join("/proc", strconv.Itoa(int(pid)), "fd", strconv.Itoa(fd))
+func inodeFromFD(procRoot string, pid uint32, fd int) (uint64, error) {
+	linkPath := filepath.Join(procRoot, strconv.Itoa(int(pid)), "fd", strconv.Itoa(fd))
 	target, err := os.Readlink(linkPath)
 	if err != nil {
 		return 0, fmt.Errorf("ebpf/events: readlink %s: %w", linkPath, err)
@@ -125,8 +154,8 @@ func inodeFromFD(pid uint32, fd int) (uint64, error) {
 	return strconv.ParseUint(inodeStr, 10, 64)
 }
 
-func parseProcNetTCPForPID(pid uint32, which string, cache map[uint64]SocketInfo) error {
-	path := filepath.Join("/proc", strconv.Itoa(int(pid)), "net", which)
+func parseProcNetTCPForPID(procRoot string, pid uint32, which string, cache map[uint64]SocketInfo) error {
+	path := filepath.Join(procRoot, strconv.Itoa(int(pid)), "net", which)
 	f, err := os.Open(path)
 	if err != nil {
 		return err
