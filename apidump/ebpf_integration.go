@@ -4,16 +4,111 @@ package apidump
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 	"github.com/postmanlabs/postman-insights-agent/printer"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/trace"
 )
+
+// HTTPSCaptureStats is a point-in-time snapshot of the eBPF HTTPS capture
+// subsystem, suitable for logging or shipping to the telemetry pipeline.
+type HTTPSCaptureStats struct {
+	ProbesAttached  int
+	FlowsActive     int
+	EventsEmitted   uint64
+	EventsDropped   uint64 // ringbuf full
+	ReadFailures    uint64 // probe_read_user failures
+	BytesCaptured   uint64
+	MessagesEmitted uint64 // HTTP messages parsed (from adapter)
+	FlowsDropped    uint64 // adapter flow drops (parse error / oversize)
+	CurrentCapBytes uint32 // current max_capture_bytes (thermostat-adjusted)
+	CPUPercent      float64
+}
+
+// String produces a single-line, customer-readable summary suitable for
+// 'kubectl logs'-style consumption.
+func (s HTTPSCaptureStats) String() string {
+	return fmt.Sprintf(
+		"probes=%d flows_active=%d events=%d bytes=%d msgs=%d "+
+			"dropped_ringbuf=%d dropped_flows=%d read_failures=%d "+
+			"cap_bytes=%d cpu=%.1f%%",
+		s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
+		s.MessagesEmitted, s.EventsDropped, s.FlowsDropped, s.ReadFailures,
+		s.CurrentCapBytes, s.CPUPercent)
+}
+
+// httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
+// stream and to the analytics pipeline. Stops when ctx is cancelled.
+func httpsTelemetryWorker(
+	ctx context.Context,
+	interval time.Duration,
+	ldr *loader.Loader,
+	therm *ebpf.Thermostat,
+	mgr *uprobes.Manager,
+	adapter *events.Adapter,
+	tracker telemetry.Tracker,
+) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	read := func() HTTPSCaptureStats {
+		s := HTTPSCaptureStats{}
+		if mgr != nil {
+			s.ProbesAttached = len(mgr.AttachedPIDs())
+		}
+		if adapter != nil {
+			s.FlowsActive, _ = adapter.Snapshot()
+			s.MessagesEmitted = adapter.MessagesEmitted
+			s.FlowsDropped = adapter.FlowsDropped
+		}
+		if ldr != nil {
+			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
+				s.EventsEmitted = v
+			}
+			if v, err := ldr.ReadCounter(loader.CounterEventsDropped); err == nil {
+				s.EventsDropped = v
+			}
+			if v, err := ldr.ReadCounter(loader.CounterReadFailed); err == nil {
+				s.ReadFailures = v
+			}
+			if v, err := ldr.ReadCounter(loader.CounterBytesCaptured); err == nil {
+				s.BytesCaptured = v
+			}
+		}
+		if therm != nil {
+			s.CurrentCapBytes = therm.CurrentCap()
+			s.CPUPercent = therm.CPUPercent()
+		}
+		return s
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s := read()
+			printer.Stderr.Infof("ebpf-stats: %s\n", s.String())
+			if tracker != nil {
+				tracker.WorkflowStep("ebpf_capture_stats", s.String())
+			}
+		}
+	}
+}
 
 // startHTTPSeBPFCapture launches the eBPF HTTPS capture pipeline in its own
 // goroutine and returns a stop function. The pipeline pushes
@@ -34,6 +129,7 @@ func startHTTPSeBPFCapture(
 	pool buffer_pool.BufferPool,
 	collector trace.Collector,
 	wg *sync.WaitGroup,
+	tracker telemetry.Tracker,
 ) (stop context.CancelFunc) {
 	captureCtx, cancel := context.WithCancel(ctx)
 
@@ -56,14 +152,22 @@ func startHTTPSeBPFCapture(
 
 	ebpfArgs := ebpf.Defaults()
 	ebpfArgs.MaxCaptureBytes = bodyCap
-	// Phase 2 production: trust apidump's discovery to scope what gets probed.
-	// The current discovery code attaches to every libssl-loaded PID; namespace
-	// filtering is task 6 (deferred). Until that lands we still gate at the
-	// command level via --enable-https-capture and at the BPF level via
-	// max-capture-bytes.
 	ebpfArgs.EnforcePIDAllowlist = false
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
+
+	// HookLoader captures the subsystem handles after Collect has wired them
+	// up, so the telemetry goroutine can read counters / probe counts / etc.
+	ebpfArgs.HookLoader = func(
+		ldr *loader.Loader, therm *ebpf.Thermostat,
+		mgr *uprobes.Manager, adapter *events.Adapter,
+	) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker)
+		}()
+	}
 
 	// Pump: read parsed traffic, hand to the collector chain.
 	wg.Add(1)

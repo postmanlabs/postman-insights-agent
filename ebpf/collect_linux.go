@@ -43,6 +43,16 @@ type Args struct {
 
 	// Out is where parsed HTTP requests and responses are pushed.
 	Out chan<- akinet.ParsedNetworkTraffic
+
+	// Discovery is an optional pre-built discovery channel. When nil,
+	// Collect builds its own via discovery.Watch (spike behaviour). Set this
+	// to use WatchWith with namespace filtering or a custom CRI integration.
+	Discovery DiscoveryChan
+
+	// Loader observability: Thermostat / counter access is via the returned
+	// Stats interface (see Stats()). Set HookLoader to receive the loader
+	// handle for telemetry wiring; the lifecycle remains owned by Collect.
+	HookLoader func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
 }
 
 // Defaults returns the default Args for Phase 1 spike mode.
@@ -98,7 +108,24 @@ func Collect(ctx context.Context, args Args) error {
 	mgr := uprobes.NewManager(l)
 	defer func() { _ = mgr.Close() }()
 
-	disco := discovery.Watch(ctx, args.DiscoveryInterval)
+	// 4b. CPU thermostat — sampling layer 5 (design doc §6.2). Runs for the
+	// lifetime of Collect and lowers max_capture_bytes if the agent itself
+	// exceeds the CPU budget.
+	therm := NewThermostat(l, args.MaxCaptureBytes)
+	go therm.Run(ctx)
+
+	// Expose subsystem handles to the caller's telemetry hook (now that all
+	// of loader/thermostat/manager/adapter are wired up).
+	if args.HookLoader != nil {
+		args.HookLoader(l, therm, mgr, adapter)
+	}
+
+	var disco <-chan discovery.Target
+	if args.Discovery != nil {
+		disco = args.Discovery
+	} else {
+		disco = discovery.Watch(ctx, args.DiscoveryInterval)
+	}
 
 	// Establish monotonic-clock epoch so event timestamps map to wall clock.
 	monoEpoch := time.Now().Add(-time.Duration(monotonicNow()))

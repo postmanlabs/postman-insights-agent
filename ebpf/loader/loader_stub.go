@@ -28,10 +28,23 @@ func (*Loader) Close() error { return nil }
 //
 // We use `any` to avoid pulling cilium/ebpf into the dependency graph for
 // non-eBPF builds.
-func (*Loader) EventsMap() any                            { return nil }
-func (*Loader) TargetPIDsMap() any                        { return nil }
-func (*Loader) SSLReadProgs() (entry, exit any)           { return nil, nil }
-func (*Loader) SSLReadExProgs() (entry, exit any)         { return nil, nil }
-func (*Loader) SSLWriteProgs() (entry, exit any)          { return nil, nil }
-func (*Loader) SSLWriteExProgs() (entry, exit any)        { return nil, nil }
-func OpenExecutable(_ string) (any, error)                { return nil, ErrUnsupported }
+func (*Loader) EventsMap() any                          { return nil }
+func (*Loader) TargetPIDsMap() any                      { return nil }
+func (*Loader) CountersMap() any                        { return nil }
+func (*Loader) SSLReadProgs() (entry, exit any)         { return nil, nil }
+func (*Loader) SSLReadExProgs() (entry, exit any)       { return nil, nil }
+func (*Loader) SSLWriteProgs() (entry, exit any)        { return nil, nil }
+func (*Loader) SSLWriteExProgs() (entry, exit any)      { return nil, nil }
+func (*Loader) ReadCounter(_ uint32) (uint64, error)    { return 0, ErrUnsupported }
+func (*Loader) SetMaxCaptureBytes(_ uint32) error       { return ErrUnsupported }
+func (*Loader) GetMaxCaptureBytes() (uint32, error)     { return 0, ErrUnsupported }
+func OpenExecutable(_ string) (any, error)              { return nil, ErrUnsupported }
+
+// Counter index constants (mirrored from loader_linux.go) so non-eBPF builds
+// can still compile against the same call sites.
+const (
+	CounterEventsEmitted uint32 = 0
+	CounterEventsDropped uint32 = 1
+	CounterReadFailed    uint32 = 2
+	CounterBytesCaptured uint32 = 3
+)
