@@ -204,6 +204,10 @@ type Args struct {
 	// cBPF filter when EnableHTTPSCapture is true (defaults to 443).
 	HTTPSCBPFExcludePort uint16
 
+	// HTTPSRateCapPerSec is the per-PID events/sec cap (sampling layer 2). 0
+	// disables. Forwarded into the BPF rate_cap_per_sec global.
+	HTTPSRateCapPerSec uint32
+
 	// PrivacyMode is one of "standard" | "strict" | "dry-run". Currently a
 	// passthrough; Phase 4 wires it into data_masks.
 	PrivacyMode string

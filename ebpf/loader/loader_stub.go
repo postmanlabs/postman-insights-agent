@@ -38,6 +38,10 @@ func (*Loader) SSLWriteExProgs() (entry, exit any)      { return nil, nil }
 func (*Loader) ReadCounter(_ uint32) (uint64, error)    { return 0, ErrUnsupported }
 func (*Loader) SetMaxCaptureBytes(_ uint32) error       { return ErrUnsupported }
 func (*Loader) GetMaxCaptureBytes() (uint32, error)     { return 0, ErrUnsupported }
+func (*Loader) RateBucketsMap() any                     { return nil }
+func (*Loader) SetRateCapPerSec(_ uint32) error         { return ErrUnsupported }
+func (*Loader) RefillRateBucket(_ uint32, _ uint64) error { return ErrUnsupported }
+func (*Loader) DeleteRateBucket(_ uint32) error         { return ErrUnsupported }
 func OpenExecutable(_ string) (any, error)              { return nil, ErrUnsupported }
 
 // Counter index constants (mirrored from loader_linux.go) so non-eBPF builds

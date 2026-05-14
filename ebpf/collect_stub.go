@@ -34,6 +34,7 @@ type Args struct {
 	Out                 chan<- akinet.ParsedNetworkTraffic
 	Discovery           DiscoveryChan
 	HookLoader          func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
+	RateCapPerSec       uint32
 }
 
 func Defaults() Args {

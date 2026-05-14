@@ -155,6 +155,7 @@ func startHTTPSeBPFCapture(
 	ebpfArgs.EnforcePIDAllowlist = false
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
+	ebpfArgs.RateCapPerSec = args.HTTPSRateCapPerSec
 
 	// HookLoader captures the subsystem handles after Collect has wired them
 	// up, so the telemetry goroutine can read counters / probe counts / etc.
