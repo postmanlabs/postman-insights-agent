@@ -93,6 +93,26 @@ struct {
     __type(value, __u8);                  // sentinel
 } target_pids SEC(".maps");
 
+// Telemetry counters. Single-element per-CPU arrays so increments are
+// lock-free; userspace sums across CPUs when reading. Indices:
+//   0 = events emitted (ringbuf submits)
+//   1 = events dropped due to ringbuf-reserve failure (ringbuf full)
+//   2 = events dropped due to probe_read_user failure
+//   3 = bytes captured (sum of len_captured across submitted events)
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 4);
+    __type(key, __u32);
+    __type(value, __u64);
+} counters SEC(".maps");
+
+static __always_inline void counter_inc(__u32 idx, __u64 by) {
+    __u64 *v = bpf_map_lookup_elem(&counters, &idx);
+    if (v) {
+        *v += by;  // per-CPU array; no atomic needed
+    }
+}
+
 // Volatile knob set from userspace at load time.
 // 0 = trace all PIDs (spike); 1 = only trace PIDs in target_pids.
 volatile const __u32 enforce_pid_allowlist = 0;
@@ -129,7 +149,7 @@ static __always_inline int emit_event(
 
     struct ssl_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
-        // Ringbuf full — kernel will count this in bpf_ringbuf_query().
+        counter_inc(1, 1);  // ringbuf full — dropped
         return -1;
     }
 
@@ -156,10 +176,13 @@ static __always_inline int emit_event(
 
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);
+        counter_inc(2, 1);  // probe_read_user failed (target VMA gone, etc.)
         return -1;
     }
 
     bpf_ringbuf_submit(e, 0);
+    counter_inc(0, 1);          // emitted
+    counter_inc(3, to_copy);    // bytes
     return 0;
 }
 
