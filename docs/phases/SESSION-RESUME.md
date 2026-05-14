@@ -34,7 +34,26 @@ Branch: `feat/https-capture-ebpf` (all work) — rolling PR is **#173**.
 
 ## Next task
 
-**Phase 3 task #3 — gRPC framing decoder.**
+**Phase 4 is mostly done (5 of 8 gaps closed) as of commit `6714ccd`.
+Recommended next: Phase 3 task #4 — Stripped-binary pclntab fallback.**
+
+Why this matters: production Go builds typically pass `-ldflags="-s -w"`
+which strips the ELF symbol table. Today our `goexec.Inspect` returns
+zero-length functions for these binaries and `FindReturnOffsets` errors
+out. Most enterprise Go services we'd want to instrument are stripped.
+
+Where to start:
+- `ebpf/goexec/goexec.go::FunctionExtent` is the failure point: relies on
+  `s.Size` from `elf.Symbol`, zero for stripped builds.
+- Go binaries still contain `pclntab` (function symbol table for
+  stack traces) even when stripped. `golang.org/x/debug/elf` and OBI's
+  `pkg/internal/goexec/pclntab.go` parse it.
+- Validation target: build `/tmp/gohttps` with `-ldflags="-s -w"`, verify
+  attach succeeds and bidirectional capture still works.
+
+Estimated: 2-3 days for arm64, +1 day for amd64.
+
+## Earlier completed: Phase 3 task #3 — gRPC framing decoder (✅ done in commit `f8d3627`)
 
 What's already in place that helps:
 - HTTP/2 frame decoder + HPACK in `ebpf/events/http2.go` already extracts
