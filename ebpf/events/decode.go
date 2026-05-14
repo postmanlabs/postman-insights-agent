@@ -37,8 +37,9 @@ func Decode(raw []byte) (*SSLEvent, error) {
 	e.SSLCtx = binary.LittleEndian.Uint64(raw[off:]);       off += 8
 	e.LenCaptured = binary.LittleEndian.Uint32(raw[off:]);  off += 4
 	e.LenTotal = binary.LittleEndian.Uint32(raw[off:]);     off += 4
+	e.FD = int32(binary.LittleEndian.Uint32(raw[off:]));    off += 4
 	e.Direction = raw[off];                                  off += 1
-	off += 7 // _pad
+	off += 3 // _pad
 
 	n := int(e.LenCaptured)
 	if n > MaxEventPayload {

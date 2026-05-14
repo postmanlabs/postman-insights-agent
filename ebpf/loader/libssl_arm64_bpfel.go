@@ -20,6 +20,12 @@ type libsslSslArgsT struct {
 	LenPtr uint64
 }
 
+type libsslSslFdKey struct {
+	Tgid uint32
+	Pad  uint32
+	Ssl  uint64
+}
+
 // loadLibssl returns the embedded CollectionSpec for libssl.
 func loadLibssl() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_LibsslBytes)
@@ -62,8 +68,10 @@ type libsslSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type libsslProgramSpecs struct {
+	UprobeSslFree       *ebpf.ProgramSpec `ebpf:"uprobe_ssl_free"`
 	UprobeSslRead       *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read"`
 	UprobeSslReadEx     *ebpf.ProgramSpec `ebpf:"uprobe_ssl_read_ex"`
+	UprobeSslSetFd      *ebpf.ProgramSpec `ebpf:"uprobe_ssl_set_fd"`
 	UprobeSslWrite      *ebpf.ProgramSpec `ebpf:"uprobe_ssl_write"`
 	UprobeSslWriteEx    *ebpf.ProgramSpec `ebpf:"uprobe_ssl_write_ex"`
 	UretprobeSslRead    *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_read"`
@@ -81,6 +89,7 @@ type libsslMapSpecs struct {
 	Counters           *ebpf.MapSpec `ebpf:"counters"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
 	PidRateBuckets     *ebpf.MapSpec `ebpf:"pid_rate_buckets"`
+	SslCtxToFd         *ebpf.MapSpec `ebpf:"ssl_ctx_to_fd"`
 	TargetPids         *ebpf.MapSpec `ebpf:"target_pids"`
 }
 
@@ -118,6 +127,7 @@ type libsslMaps struct {
 	Counters           *ebpf.Map `ebpf:"counters"`
 	Events             *ebpf.Map `ebpf:"events"`
 	PidRateBuckets     *ebpf.Map `ebpf:"pid_rate_buckets"`
+	SslCtxToFd         *ebpf.Map `ebpf:"ssl_ctx_to_fd"`
 	TargetPids         *ebpf.Map `ebpf:"target_pids"`
 }
 
@@ -128,6 +138,7 @@ func (m *libsslMaps) Close() error {
 		m.Counters,
 		m.Events,
 		m.PidRateBuckets,
+		m.SslCtxToFd,
 		m.TargetPids,
 	)
 }
@@ -145,8 +156,10 @@ type libsslVariables struct {
 //
 // It can be passed to loadLibsslObjects or ebpf.CollectionSpec.LoadAndAssign.
 type libsslPrograms struct {
+	UprobeSslFree       *ebpf.Program `ebpf:"uprobe_ssl_free"`
 	UprobeSslRead       *ebpf.Program `ebpf:"uprobe_ssl_read"`
 	UprobeSslReadEx     *ebpf.Program `ebpf:"uprobe_ssl_read_ex"`
+	UprobeSslSetFd      *ebpf.Program `ebpf:"uprobe_ssl_set_fd"`
 	UprobeSslWrite      *ebpf.Program `ebpf:"uprobe_ssl_write"`
 	UprobeSslWriteEx    *ebpf.Program `ebpf:"uprobe_ssl_write_ex"`
 	UretprobeSslRead    *ebpf.Program `ebpf:"uretprobe_ssl_read"`
@@ -157,8 +170,10 @@ type libsslPrograms struct {
 
 func (p *libsslPrograms) Close() error {
 	return _LibsslClose(
+		p.UprobeSslFree,
 		p.UprobeSslRead,
 		p.UprobeSslReadEx,
+		p.UprobeSslSetFd,
 		p.UprobeSslWrite,
 		p.UprobeSslWriteEx,
 		p.UretprobeSslRead,

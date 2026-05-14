@@ -93,6 +93,33 @@ struct {
     __type(value, __u8);                  // sentinel
 } target_pids SEC(".maps");
 
+// ssl_ctx → fd mapping. Populated by the SSL_set_fd uprobe (and the BIO_set_fd
+// uprobe for OpenSSL programs that use BIOs directly). Looked up at
+// emit_event time so the userspace adapter has the fd needed to resolve
+// the 4-tuple via /proc/<pid>/net/tcp.
+//
+// Keyed by a (pid_tgid_lo32, ssl_ctx) compound — SSL* pointers can collide
+// across processes. We pack as a 16-byte key.
+struct ssl_fd_key {
+    __u32 tgid;
+    __u32 _pad;
+    __u64 ssl;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 32768);
+    __type(key, struct ssl_fd_key);
+    __type(value, __s32);                 // fd
+} ssl_ctx_to_fd SEC(".maps");
+
+static __always_inline __s32 lookup_fd(__u32 tgid, __u64 ssl_ctx) {
+    struct ssl_fd_key k = { .tgid = tgid, .ssl = ssl_ctx };
+    __s32 *fd = bpf_map_lookup_elem(&ssl_ctx_to_fd, &k);
+    if (fd) return *fd;
+    return -1;
+}
+
 // Telemetry counters. Single-element per-CPU arrays so increments are
 // lock-free; userspace sums across CPUs when reading. Indices:
 //   0 = events emitted (ringbuf submits)
@@ -100,9 +127,11 @@ struct {
 //   2 = events dropped due to probe_read_user failure
 //   3 = bytes captured (sum of len_captured across submitted events)
 //   4 = events dropped by per-PID rate cap (sampling layer 2)
+//   5 = SSL_set_fd uprobe firings (diagnostic)
+//   6 = events emitted with fd != -1 (i.e. fd resolution worked)
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 5);
+    __uint(max_entries, 7);
     __type(key, __u32);
     __type(value, __u64);
 } counters SEC(".maps");
@@ -225,6 +254,8 @@ static __always_inline int emit_event(
     e->ssl_ctx      = ssl_ctx;
     e->len_total    = reported_len;
     e->len_captured = to_copy;
+    e->fd           = lookup_fd(pid_tgid >> 32, ssl_ctx);
+    if (e->fd >= 0) counter_inc(6, 1);
     e->direction    = direction;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
@@ -237,6 +268,34 @@ static __always_inline int emit_event(
     bpf_ringbuf_submit(e, 0);
     counter_inc(0, 1);          // emitted
     counter_inc(3, to_copy);    // bytes
+    return 0;
+}
+
+// -----------------------------------------------------------------------------
+// SSL_set_fd — binds an SSL* to a socket fd. Populates ssl_ctx_to_fd.
+// -----------------------------------------------------------------------------
+// int SSL_set_fd(SSL *s, int fd);
+//
+SEC("uprobe/SSL_set_fd")
+int BPF_UPROBE(uprobe_ssl_set_fd, void *ssl, int fd) {
+    __u64 id = bpf_get_current_pid_tgid();
+    __u32 tgid = id >> 32;
+    if (!pid_allowed(tgid)) return 0;
+
+    counter_inc(5, 1);
+    struct ssl_fd_key k = { .tgid = tgid, .ssl = (__u64)ssl };
+    __s32 v = fd;
+    bpf_map_update_elem(&ssl_ctx_to_fd, &k, &v, BPF_ANY);
+    return 0;
+}
+
+// SSL_free — connection torn down; drop the fd mapping.
+SEC("uprobe/SSL_free")
+int BPF_UPROBE(uprobe_ssl_free, void *ssl) {
+    __u64 id = bpf_get_current_pid_tgid();
+    __u32 tgid = id >> 32;
+    struct ssl_fd_key k = { .tgid = tgid, .ssl = (__u64)ssl };
+    bpf_map_delete_elem(&ssl_ctx_to_fd, &k);
     return 0;
 }
 

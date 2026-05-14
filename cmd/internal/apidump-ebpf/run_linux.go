@@ -63,11 +63,12 @@ func runE(cmd *cobra.Command, _ []string) error {
 	out := make(chan akinet.ParsedNetworkTraffic, 256)
 	go func() {
 		for pnt := range out {
+			flow := fmt.Sprintf("%v:%d -> %v:%d (%s)", pnt.SrcIP, pnt.SrcPort, pnt.DstIP, pnt.DstPort, pnt.Interface)
 			switch c := pnt.Content.(type) {
 			case akinet.HTTPRequest:
-				printer.Stdout.Infof("REQ  pid? method=%s url=%v\n", c.Method, c.URL)
+				printer.Stdout.Infof("REQ  %s method=%s url=%v\n", flow, c.Method, c.URL)
 			case akinet.HTTPResponse:
-				printer.Stdout.Infof("RESP pid? status=%d\n", c.StatusCode)
+				printer.Stdout.Infof("RESP %s status=%d\n", flow, c.StatusCode)
 			}
 		}
 	}()
@@ -96,9 +97,11 @@ func runE(cmd *cobra.Command, _ []string) error {
 						rd, _ := ldr.ReadCounter(loader.CounterReadFailed)
 						rc, _ := ldr.ReadCounter(4) // rate-cap drops
 						by, _ := ldr.ReadCounter(loader.CounterBytesCaptured)
+						sf, _ := ldr.ReadCounter(5) // SSL_set_fd calls
+						fdok, _ := ldr.ReadCounter(6) // events with fd>=0
 						printer.Stderr.Infof(
-							"stats: emitted=%d ringbuf_drops=%d ratecap_drops=%d read_fail=%d bytes=%d\n",
-							em, dr, rc, rd, by)
+							"stats: emitted=%d ringbuf_drops=%d ratecap_drops=%d read_fail=%d bytes=%d ssl_set_fd=%d events_with_fd=%d\n",
+							em, dr, rc, rd, by, sf, fdok)
 					}
 				}
 			}()

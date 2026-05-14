@@ -19,15 +19,16 @@ const MaxEventPayload = 1024
 // Field order, sizes, and padding MUST match the C struct exactly. The
 // alignment is verified by an init() check in event_decode.go.
 type SSLEvent struct {
-	TimestampNS  uint64 // bpf_ktime_get_ns() — boot-time-relative
-	PID          uint32 // tgid (Linux "process id")
-	TID          uint32 // pid  (Linux "thread id")
-	SSLCtx       uint64 // SSL* pointer — opaque per-connection identifier
-	LenCaptured  uint32 // bytes actually copied into Payload
-	LenTotal     uint32 // total bytes the SSL syscall reported
-	Direction    uint8  // DirEgress or DirIngress
-	_            [7]byte
-	Payload      [MaxEventPayload]byte
+	TimestampNS uint64 // bpf_ktime_get_ns() — boot-time-relative
+	PID         uint32 // tgid (Linux "process id")
+	TID         uint32 // pid  (Linux "thread id")
+	SSLCtx      uint64 // SSL* pointer — opaque per-connection identifier
+	LenCaptured uint32 // bytes actually copied into Payload
+	LenTotal    uint32 // total bytes the SSL syscall reported
+	FD          int32  // socket fd associated with the SSL*, or -1 if unknown
+	Direction   uint8  // DirEgress or DirIngress
+	_           [3]byte
+	Payload     [MaxEventPayload]byte
 }
 
 // Time returns the event timestamp as a Go time.Time. The BPF timestamp is

@@ -35,10 +35,13 @@ func (*Loader) SSLReadProgs() (entry, exit any)         { return nil, nil }
 func (*Loader) SSLReadExProgs() (entry, exit any)       { return nil, nil }
 func (*Loader) SSLWriteProgs() (entry, exit any)        { return nil, nil }
 func (*Loader) SSLWriteExProgs() (entry, exit any)      { return nil, nil }
+func (*Loader) SSLSetFDProg() any                       { return nil }
+func (*Loader) SSLFreeProg() any                        { return nil }
 func (*Loader) ReadCounter(_ uint32) (uint64, error)    { return 0, ErrUnsupported }
 func (*Loader) SetMaxCaptureBytes(_ uint32) error       { return ErrUnsupported }
 func (*Loader) GetMaxCaptureBytes() (uint32, error)     { return 0, ErrUnsupported }
 func (*Loader) RateBucketsMap() any                     { return nil }
+func (*Loader) SSLFdMap() (any, bool)                   { return nil, false }
 func (*Loader) SetRateCapPerSec(_ uint32) error         { return ErrUnsupported }
 func (*Loader) RefillRateBucket(_ uint32, _ uint64) error { return ErrUnsupported }
 func (*Loader) DeleteRateBucket(_ uint32) error         { return ErrUnsupported }

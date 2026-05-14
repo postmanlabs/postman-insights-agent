@@ -74,6 +74,8 @@ func (m *Manager) AttachLibSSL(pid uint32, path string) error {
 	rxEnt, rxExt := m.loader.SSLReadExProgs()
 	wEnt, wExt := m.loader.SSLWriteProgs()
 	wxEnt, wxExt := m.loader.SSLWriteExProgs()
+	setFD := m.loader.SSLSetFDProg()
+	sslFree := m.loader.SSLFreeProg()
 
 	pairs := []probePair{
 		{"SSL_read", rEnt, rExt},
@@ -83,6 +85,26 @@ func (m *Manager) AttachLibSSL(pid uint32, path string) error {
 	}
 
 	opts := &link.UprobeOptions{PID: int(pid)}
+
+	// Single-shot uprobes (no exit probe) for fd-tracking helpers.
+	singles := []struct {
+		symbol string
+		prog   *ebpf.Program
+	}{
+		{"SSL_set_fd", setFD},
+		{"SSL_free", sslFree},
+	}
+	for _, s := range singles {
+		up, err := exe.Uprobe(s.symbol, s.prog, opts)
+		if err != nil {
+			if errors.Is(err, link.ErrNoSymbol) {
+				continue
+			}
+			cleanup()
+			return fmt.Errorf("uprobes: attach %s pid=%d: %w", s.symbol, pid, err)
+		}
+		att.links = append(att.links, up)
+	}
 
 	for _, p := range pairs {
 		up, err := exe.Uprobe(p.symbol, p.entry, opts)
