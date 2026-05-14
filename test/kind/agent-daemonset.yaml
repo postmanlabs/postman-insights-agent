@@ -68,25 +68,22 @@ spec:
           - "apidump-ebpf"
           - "--stats-every=10s"
           - "--max-capture-bytes=512"
-          # --target-namespaces is intentionally NOT set in the kind demo:
-          # kind's nested PID/cgroup namespaces make /host/proc/<pid>/cgroup
-          # show '0::/../..' instead of paths with pod UIDs, breaking the
-          # cgroup-based pod→namespace lookup. The filter code itself is
-          # exercised by unit tests in ebpf/discovery/proc_test.go and works
-          # correctly on real (non-kind) Kubernetes nodes where the agent's
-          # cgroup namespace matches the kernel's. See
-          # docs/phases/phase-2-results-v2.md for the full analysis.
-          #
-          # To enable: add e.g. --target-namespaces=team-py,team-srv
+          # Namespace filtering via CRI + cgroup-namespace-inode matching.
+          # Works on both kind and real K8s clusters (it bridges PID
+          # namespaces via cgroup_ns_inode, which is stable across them).
+          # See ebpf/discovery/kube_linux.go for the algorithm.
+          - "--target-namespaces=team-py,team-srv"
         env:
         - name: POSTMAN_K8S_NODE
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
         - name: POSTMAN_INSIGHTS_K8S_NODE
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        # CRI socket on the kind node (containerd default path). On a real
+        # K8s node this is the same path for containerd; cri-o uses
+        # /var/run/crio/crio.sock instead — override via
+        # POSTMAN_INSIGHTS_CRI_ENDPOINT in that case.
+        - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
+          value: "unix:///run/containerd/containerd.sock"
         securityContext:
           privileged: true   # kind requires this for BPF on the LinuxKit kernel
           capabilities:
@@ -99,6 +96,9 @@ spec:
         # namespace PIDs that match entries here. In real (non-kind) K8s,
         # /host/proc maps directly to the host's /proc.
         - { name: host-proc,        mountPath: /host/proc, readOnly: true }
+        # CRI socket bind-mount — the cgroup-ns-inode→namespace mapping
+        # requires CRI to enumerate container init PIDs.
+        - { name: cri-sock,         mountPath: /run/containerd/containerd.sock }
       volumes:
       - name: sys-kernel-debug
         hostPath: { path: /sys/kernel/debug, type: Directory }
@@ -106,3 +106,5 @@ spec:
         hostPath: { path: /sys/fs/bpf,       type: Directory }
       - name: host-proc
         hostPath: { path: /linuxkit-proc,    type: Directory }
+      - name: cri-sock
+        hostPath: { path: /run/containerd/containerd.sock, type: Socket }

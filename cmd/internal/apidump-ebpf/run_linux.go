@@ -91,7 +91,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 	// apidump --https-target-namespaces; we mirror it here so the same demo
 	// flow works without backend credentials.
 	if len(flagTargetNamespaces) > 0 {
-		resolver, err := discovery.NewKubeNamespaceResolver(args.ProcRoot)
+		resolver, err := discovery.NewKubeNamespaceResolver(args.ProcRoot, "/proc")
 		if err != nil {
 			printer.Stderr.Warningf("--target-namespaces set but kube client init failed: %v; falling back to no filter\n", err)
 		} else {
