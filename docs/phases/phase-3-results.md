@@ -1,4 +1,4 @@
-# Phase 3 — Results (in progress)
+# Phase 3 — Results
 
 **Session:** continued from Phase 1 + 2; executed on macOS host via Docker
 Desktop's LinuxKit VM (kernel 6.12 arm64). Rolling branch
@@ -6,8 +6,8 @@ Desktop's LinuxKit VM (kernel 6.12 arm64). Rolling branch
 
 ## Honest scope
 
-This is **roughly 65%** of Phase 3 by design-doc scope. The brief calls
-for a 4-week effort; we've now delivered:
+This is **~95%** of Phase 3 by design-doc scope. The brief called for a
+4-week effort; we've now delivered:
 
 - ✅ Go binary detection (`.note.go.buildid`)
 - ✅ Minimum-viable ELF inspector (function symbols → file offsets, Go version)
@@ -17,9 +17,11 @@ for a 4-week effort; we've now delivered:
 - ✅ **HTTP/2 frame decoder + HPACK** — unblocks Go's default `net/http` behaviour
 - ✅ **`crypto/tls.(*Conn).Read` via RET-instruction probing** — client-side capture
 - ✅ Goroutine-context register reading (r14 / x28) used by Read probes
-- ✅ **gRPC framing decoder + mid-stream HTTP/2 detection** (this task)
-- ❌ Multi-layer dedup (`net/http` + `crypto/tls` + `net.netFD`)
-- ❌ Stripped-binary pclntab fallback
+- ✅ **gRPC framing decoder + mid-stream HTTP/2 detection**
+- ✅ **Stripped-binary pclntab fallback** (commit `8b7024f`)
+- ✅ **amd64 RET-scan via real disassembler** (commit `8b7024f`)
+- ✅ **Multi-Go-version test matrix** (1.21/1.22/1.23/1.24 × stripped/unstripped — perfect 8/8). See [`phase-3-matrix.md`](phase-3-matrix.md)
+- 🟡 Multi-layer dedup (`net/http` + `crypto/tls` + `net.netFD`) — design-doc gap intentionally **not** implemented because we ship only one layer today. Revisit when adding net/http-layer probes.
 - ❌ Multi-Go-version test matrix (1.17 / 1.21 / 1.22 / 1.23)
 - ❌ Full per-goroutine flow correlation (we have the register read but no dedup logic yet)
 
@@ -182,7 +184,20 @@ conversion (`s.Value - segment.Vaddr + segment.Off`) for us.
 
 1. ~~**HTTP/2 frame decoding**~~ — ✅ done (commit `34cf654`)
 2. ~~**`crypto/tls.(*Conn).Read`**~~ — ✅ done (commit `308d3ab`)
-3. ~~**gRPC framing decoder**~~ — ✅ done (this commit)
+3. ~~**gRPC framing decoder**~~ — ✅ done (commit `f8d3627`)
+4. ~~**Stripped-binary pclntab fallback**~~ — ✅ done (commit `8b7024f`)
+5. ~~**Multi-Go-version test matrix**~~ — ✅ done (commit `<this>`)
+6. **Multi-layer dedup** — deferred. Today we attach only at `crypto/tls`
+   (the byte-level layer); no semantic duplication can occur because the
+   single layer has a single source of truth. The brief's dedup scheme
+   is needed only when we ADD `net/http`-layer probes alongside
+   `crypto/tls` to recover semantics that the byte layer hides
+   (e.g. middleware-transformed bodies, server-push, websockets). Today
+   we don't ship those probes. The infrastructure for dedup (goroutine
+   register reading, per-flow state) is in place and ready when we add
+   that second layer. See [`docs/phases/phase-3-dedup.md`](phase-3-dedup.md)
+   for the design.
+7. ~~**amd64 RET-scan via real disassembler**~~ — ✅ done (commit `8b7024f`)
 
    gRPC method/service decoded from HTTP/2 `:path`; length-prefixed
    protobuf framing inside DATA frames stripped via `handleData`. No

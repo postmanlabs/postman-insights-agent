@@ -35,11 +35,11 @@ Rolling PR: **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/
 |---|---|:---:|
 | 1 | Spike: decrypted HTTPS reaches `trace.Collector` | ✅ Done |
 | 2 | Production integration into `apidump` (DaemonSet, sampling, telemetry, namespace filter, kind e2e) | ✅ Done — all 6 exit criteria |
-| 3 | Go via DWARF inspector + crypto/tls uprobes | 🟡 ~75% (foundation + HTTP/2 + bidirectional capture + gRPC) |
+| 3 | Go via DWARF inspector + crypto/tls uprobes | ✅ **~95% (sealed)** — foundation + HTTP/2 + bidirectional + gRPC + stripped + multi-version + amd64 disassembler; multi-layer dedup designed but deferred ([why](phases/phase-3-dedup.md)) |
 | 4 | Privacy hardening (the 8 gaps from design §7.3) | 🟡 **~75% (5 of 8 gaps closed)** — standard/strict/dry-run modes, hash tokenisation, coverage telemetry, customer docs all live |
 | 5 | Java agent + `ioctl` bridge + mutating webhook | ❌ Not started |
 
-**Roughly 70% of the v1 program by design-doc scope.**
+**Roughly 85% of the v1 program by design-doc scope.** Only Phase 5 (Java) remains as a major track.
 
 ---
 
@@ -58,6 +58,7 @@ Rolling PR: **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/
 | **Go HTTP/2 server-side** (Go default!) | ✅ | HTTP/2 frame decoder + HPACK |
 | **Go HTTPS client-side** (`http.Get`) | ✅ | `crypto/tls.(*Conn).Read` via RET-instruction probing |
 | Go gRPC | ✅ | gRPC method/service from `:path`; length-prefixed framing inside DATA stripped; mid-stream h2 detection. **Caveat:** start the agent before the connection opens (HPACK is stateful; mid-connection attach loses headers). |
+| **Go (stripped, `-ldflags='-s -w'`)** | ✅ | pclntab fallback via `debug/gosym`. Verified 8/8 across Go 1.21–1.24 × stripped/unstripped matrix. |
 | Java / JVM (Spring, Netty, Tomcat, gRPC-Java) | ❌ | Phase 5 |
 | Rust (rustls) | ❌ | Out of scope for v1 per design §4.4 |
 
@@ -237,23 +238,24 @@ Results: [`phases/phase-4-results.md`](phases/phase-4-results.md).
 
 ## Recommended next-session ordering
 
-With Phase 4 ~75% done, the remaining high-leverage work in priority order:
+Phases 1+2+3+4 are essentially done. Remaining work:
 
-1. **Phase 3 task #4 — Stripped-binary pclntab fallback** (~3 days). Production
-   Go builds use `-ldflags="-s -w"` and we miss them today. High blast
-   radius: most enterprise Go services use stripped binaries.
-2. **Phase 5 — Java agent + ioctl bridge + webhook** (~6 weeks). Largest
-   remaining piece. Java is the biggest enterprise gap.
-3. **PR split** (~30min). Extract Phase 1+2 into a separate stacked PR
+1. **Phase 5 — Java agent + ioctl bridge + webhook** (~6 weeks). Largest
+   remaining piece. Java is the biggest enterprise gap. Needs a separate
+   Gradle build for a ByteBuddy java-agent, a kprobe on `sys_ioctl` to
+   pipe bytes from JVM userspace into the same redactor pipeline, and a
+   mutating webhook to inject the agent into pod specs.
+2. **PR split** (~30min). Extract Phase 1+2 into a separate stacked PR
    (`feat/https-capture-ebpf-libssl`) so reviewers can land the
-   production-ready libssl path independently of the in-progress Go work.
-   See [PR strategy](#pr-strategy) above.
+   production-ready libssl path independently of remaining Java work.
+   See [PR strategy](#pr-strategy) below.
+3. **CI hardening** (~0.5 day) — Linux/amd64 runner that produces both
+   `libssl_arm64_bpfel.o` and `libssl_amd64_bpfel.o` at release time.
 4. **Phase 4 task 2** (redactor-side truncation metadata) and task 4
    (discovery-YAML `decrypt: false`) when customer feedback drives demand.
-5. **Phase 3 task #6** (multi-layer dedup) when we add `net/http`-layer
-   probes alongside `crypto/tls`.
-6. **CI hardening** for cross-arch BPF (Linux/amd64 runner so we ship
-   both arm64 + amd64 `.o` files).
+5. **Phase 3 task #6** (multi-layer dedup, design at
+   [`phases/phase-3-dedup.md`](phases/phase-3-dedup.md)) when we add
+   `net/http`-layer probes alongside `crypto/tls`.
 
 ## Commit timeline (this branch)
 

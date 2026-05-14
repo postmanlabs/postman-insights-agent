@@ -34,26 +34,33 @@ Branch: `feat/https-capture-ebpf` (all work) — rolling PR is **#173**.
 
 ## Next task
 
-**Phase 4 is mostly done (5 of 8 gaps closed) as of commit `6714ccd`.
-Recommended next: Phase 3 task #4 — Stripped-binary pclntab fallback.**
+**Phase 3 is sealed (~95% as of commit `<this>`).** All meaningful Phase
+3 gaps are closed: stripped-binary pclntab fallback, amd64 real-
+disassembler RET scan, multi-Go-version matrix (8/8 across
+1.21×1.22×1.23×1.24 × stripped/unstripped). The remaining task #6
+(multi-layer dedup) is **deliberately deferred** because we ship only
+one layer today; design is captured in
+[`phase-3-dedup.md`](phase-3-dedup.md) ready to execute when needed.
 
-Why this matters: production Go builds typically pass `-ldflags="-s -w"`
-which strips the ELF symbol table. Today our `goexec.Inspect` returns
-zero-length functions for these binaries and `FindReturnOffsets` errors
-out. Most enterprise Go services we'd want to instrument are stripped.
+**Recommended next: Phase 5 — Java agent + ioctl bridge + webhook.**
+Largest remaining piece (~6 weeks per the brief). Java is the biggest
+enterprise gap by language coverage. See [`phase-5.md`](phase-5.md)
+for the full execution plan.
 
-Where to start:
-- `ebpf/goexec/goexec.go::FunctionExtent` is the failure point: relies on
-  `s.Size` from `elf.Symbol`, zero for stripped builds.
-- Go binaries still contain `pclntab` (function symbol table for
-  stack traces) even when stripped. `golang.org/x/debug/elf` and OBI's
-  `pkg/internal/goexec/pclntab.go` parse it.
-- Validation target: build `/tmp/gohttps` with `-ldflags="-s -w"`, verify
-  attach succeeds and bidirectional capture still works.
+Alternative: take the **PR-split** path before Phase 5. PR #173 is
+now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the
+phase 1+2 libssl path land independently while Java work runs.
+See 'PR strategy' in [`../progress.md`](../progress.md).
 
-Estimated: 2-3 days for arm64, +1 day for amd64.
+## Earlier completed in this branch
 
-## Earlier completed: Phase 3 task #3 — gRPC framing decoder (✅ done in commit `f8d3627`)
+- Phase 1 (libssl spike) — commits up to `7513ce7`.
+- Phase 2 (production integration + kind e2e) — commits up to `f2e2459`.
+- Phase 3 foundation + HTTP/2 + Read RET probing + gRPC —
+  commits `43b604b`, `34cf654`, `308d3ab`, `f8d3627`.
+- Phase 4 (privacy hardening, 5/8 gaps) — commits `fad8e3d`, `6714ccd`.
+- Phase 3 #4 (stripped binaries) + #7 (amd64 disassembler) + #5
+  (multi-version matrix) — commits `8b7024f`, `<this>`.
 
 What's already in place that helps:
 - HTTP/2 frame decoder + HPACK in `ebpf/events/http2.go` already extracts
