@@ -74,9 +74,27 @@ func (l *Loader) Close() error {
 	return nil
 }
 
-func (l *Loader) EventsMap() *ebpf.Map     { return l.libssl.Events }
-func (l *Loader) TargetPIDsMap() *ebpf.Map { return l.libssl.TargetPids }
-func (l *Loader) CountersMap() *ebpf.Map   { return l.libssl.Counters }
+func (l *Loader) EventsMap() *ebpf.Map        { return l.libssl.Events }
+func (l *Loader) TargetPIDsMap() *ebpf.Map    { return l.libssl.TargetPids }
+func (l *Loader) CountersMap() *ebpf.Map      { return l.libssl.Counters }
+func (l *Loader) RateBucketsMap() *ebpf.Map   { return l.libssl.PidRateBuckets }
+
+// SetRateCapPerSec updates the BPF-side per-PID rate cap (tokens/sec). 0
+// disables rate limiting.
+func (l *Loader) SetRateCapPerSec(v uint32) error {
+	return l.libssl.RateCapPerSec.Set(v)
+}
+
+// RefillRateBucket sets a single PID's bucket to `tokens`. Userspace calls
+// this once per second from the per-PID refill goroutine.
+func (l *Loader) RefillRateBucket(pid uint32, tokens uint64) error {
+	return l.libssl.PidRateBuckets.Update(&pid, &tokens, ebpf.UpdateAny)
+}
+
+// DeleteRateBucket removes a PID from the rate-bucket map (called on PID exit).
+func (l *Loader) DeleteRateBucket(pid uint32) error {
+	return l.libssl.PidRateBuckets.Delete(&pid)
+}
 
 // SetMaxCaptureBytes updates the BPF-side max_capture_bytes knob at runtime.
 // Used by the CPU thermostat to throttle copy work without reloading. Requires

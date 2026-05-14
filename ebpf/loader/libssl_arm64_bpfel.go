@@ -12,6 +12,8 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type libsslRateBucket struct{ Tokens uint64 }
+
 type libsslSslArgsT struct {
 	Buf    uint64
 	Ssl    uint64
@@ -78,6 +80,7 @@ type libsslMapSpecs struct {
 	ActiveSslWriteArgs *ebpf.MapSpec `ebpf:"active_ssl_write_args"`
 	Counters           *ebpf.MapSpec `ebpf:"counters"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
+	PidRateBuckets     *ebpf.MapSpec `ebpf:"pid_rate_buckets"`
 	TargetPids         *ebpf.MapSpec `ebpf:"target_pids"`
 }
 
@@ -87,6 +90,7 @@ type libsslMapSpecs struct {
 type libsslVariableSpecs struct {
 	EnforcePidAllowlist *ebpf.VariableSpec `ebpf:"enforce_pid_allowlist"`
 	MaxCaptureBytes     *ebpf.VariableSpec `ebpf:"max_capture_bytes"`
+	RateCapPerSec       *ebpf.VariableSpec `ebpf:"rate_cap_per_sec"`
 }
 
 // libsslObjects contains all objects after they have been loaded into the kernel.
@@ -113,6 +117,7 @@ type libsslMaps struct {
 	ActiveSslWriteArgs *ebpf.Map `ebpf:"active_ssl_write_args"`
 	Counters           *ebpf.Map `ebpf:"counters"`
 	Events             *ebpf.Map `ebpf:"events"`
+	PidRateBuckets     *ebpf.Map `ebpf:"pid_rate_buckets"`
 	TargetPids         *ebpf.Map `ebpf:"target_pids"`
 }
 
@@ -122,6 +127,7 @@ func (m *libsslMaps) Close() error {
 		m.ActiveSslWriteArgs,
 		m.Counters,
 		m.Events,
+		m.PidRateBuckets,
 		m.TargetPids,
 	)
 }
@@ -132,6 +138,7 @@ func (m *libsslMaps) Close() error {
 type libsslVariables struct {
 	EnforcePidAllowlist *ebpf.Variable `ebpf:"enforce_pid_allowlist"`
 	MaxCaptureBytes     *ebpf.Variable `ebpf:"max_capture_bytes"`
+	RateCapPerSec       *ebpf.Variable `ebpf:"rate_cap_per_sec"`
 }
 
 // libsslPrograms contains all programs after they have been loaded into the kernel.

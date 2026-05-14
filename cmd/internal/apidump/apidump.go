@@ -60,6 +60,7 @@ var (
 	httpsBodySizeCap      uint32
 	httpsCaptureMode      string
 	httpsCBPFExcludePort  uint16
+	httpsRateCapPerSec    uint32
 	privacyMode           string
 
 	commonApidumpFlags *CommonApidumpFlags
@@ -343,6 +344,7 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		HTTPSBodySizeCap:      httpsBodySizeCap,
 		HTTPSCaptureMode:      httpsCaptureMode,
 		HTTPSCBPFExcludePort:  httpsCBPFExcludePort,
+		HTTPSRateCapPerSec:    httpsRateCapPerSec,
 		PrivacyMode:           privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
@@ -568,6 +570,13 @@ func init() {
 		443,
 		"TCP port whose packets are removed from the cBPF filter when --enable-https-capture is set. "+
 			"Avoids double-counting handshake bytes already captured via eBPF.",
+	)
+	Cmd.Flags().Uint32Var(
+		&httpsRateCapPerSec,
+		"https-rate-cap-per-sec",
+		0,
+		"Per-PID rate cap (events/sec) for HTTPS capture (sampling layer 2). 0 disables. "+
+			"Recommended: 1000 for production workloads. Kernel-enforced via a token bucket.",
 	)
 	Cmd.Flags().StringVar(
 		&privacyMode,

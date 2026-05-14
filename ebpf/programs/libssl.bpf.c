@@ -99,9 +99,10 @@ struct {
 //   1 = events dropped due to ringbuf-reserve failure (ringbuf full)
 //   2 = events dropped due to probe_read_user failure
 //   3 = bytes captured (sum of len_captured across submitted events)
+//   4 = events dropped by per-PID rate cap (sampling layer 2)
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 4);
+    __uint(max_entries, 5);
     __type(key, __u32);
     __type(value, __u64);
 } counters SEC(".maps");
@@ -111,6 +112,51 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
     if (v) {
         *v += by;  // per-CPU array; no atomic needed
     }
+}
+
+// Per-PID rate-cap token bucket (sampling layer 2; design doc §6.2).
+// Userspace refills tokens periodically; the BPF probe decrements one token
+// per event and drops the event when the bucket is empty.
+//
+//   Key:   tgid (__u32)
+//   Value: bucket { tokens, _pad }
+//
+// We use __sync_fetch_and_sub for the atomic decrement so multi-CPU access
+// is safe. If a PID isn't in the map (e.g. wasn't refilled yet), default to
+// "unlimited" — favours availability over strictness.
+struct rate_bucket {
+    __u64 tokens;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u32);                   // tgid
+    __type(value, struct rate_bucket);
+} pid_rate_buckets SEC(".maps");
+
+// Userspace-controlled global rate cap. 0 disables rate limiting (default).
+// When > 0, userspace refills each known PID's bucket to this value once a
+// second.
+__u32 rate_cap_per_sec = 0;
+
+static __always_inline int rate_take(__u32 tgid) {
+    if (rate_cap_per_sec == 0) {
+        return 1;  // disabled — always allow
+    }
+    struct rate_bucket *b = bpf_map_lookup_elem(&pid_rate_buckets, &tgid);
+    if (!b) {
+        return 1;  // unknown PID — don't drop; let userspace catch up
+    }
+    __u64 prev = __sync_fetch_and_sub(&b->tokens, 1);
+    // __sync_fetch_and_sub returns the OLD value. If it was 0, our
+    // decrement just made it underflow — we should treat that as "no
+    // tokens" and reject. Restore by re-adding so the count stays at 0.
+    if (prev == 0) {
+        __sync_fetch_and_add(&b->tokens, 1);
+        return 0;
+    }
+    return 1;
 }
 
 // Set from userspace at load time. Lives in .rodata (read-only after load).
@@ -145,6 +191,13 @@ static __always_inline int emit_event(
         __u32 reported_len,
         __u8 direction) {
     if (!user_buf || reported_len == 0) {
+        return -1;
+    }
+
+    // Sampling layer 2: per-PID rate cap. Checked AFTER cheaper rejections
+    // (zero-length, nil buf) so the common refusal path stays free.
+    if (!rate_take(pid_tgid >> 32)) {
+        counter_inc(4, 1);
         return -1;
     }
 

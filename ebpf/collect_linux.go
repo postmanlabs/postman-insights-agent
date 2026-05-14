@@ -44,6 +44,11 @@ type Args struct {
 	// Out is where parsed HTTP requests and responses are pushed.
 	Out chan<- akinet.ParsedNetworkTraffic
 
+	// RateCapPerSec is the per-PID rate cap (events/sec) for sampling layer 2.
+	// 0 disables rate limiting. The kernel takes one token per event; the
+	// userspace refiller resets buckets every second.
+	RateCapPerSec uint32
+
 	// Discovery is an optional pre-built discovery channel. When nil,
 	// Collect builds its own via discovery.Watch (spike behaviour). Set this
 	// to use WatchWith with namespace filtering or a custom CRI integration.
@@ -113,6 +118,9 @@ func Collect(ctx context.Context, args Args) error {
 	// exceeds the CPU budget.
 	therm := NewThermostat(l, args.MaxCaptureBytes)
 	go therm.Run(ctx)
+
+	// 4c. Per-PID rate cap — sampling layer 2.
+	go rateCapRefiller(ctx, l, mgr, args.RateCapPerSec)
 
 	// Expose subsystem handles to the caller's telemetry hook (now that all
 	// of loader/thermostat/manager/adapter are wired up).
