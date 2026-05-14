@@ -1,4 +1,4 @@
-# Phase 3 — Foundation Results
+# Phase 3 — Results (in progress)
 
 **Session:** continued from Phase 1 + 2; executed on macOS host via Docker
 Desktop's LinuxKit VM (kernel 6.12 arm64). Rolling branch
@@ -6,47 +6,70 @@ Desktop's LinuxKit VM (kernel 6.12 arm64). Rolling branch
 
 ## Honest scope
 
-This is **roughly 25%** of Phase 3 by design-doc scope. The brief calls
-for a 4-week effort; this session delivers the foundation that makes
-session-by-session expansion possible:
+This is **roughly 65%** of Phase 3 by design-doc scope. The brief calls
+for a 4-week effort; we've now delivered:
 
 - ✅ Go binary detection (`.note.go.buildid`)
 - ✅ Minimum-viable ELF inspector (function symbols → file offsets, Go version)
-- ✅ One BPF uprobe (`crypto/tls.(*Conn).Write`) verifier-validated
+- ✅ `crypto/tls.(*Conn).Write` uprobe verifier-validated
 - ✅ Per-collection BPF loader (handles per-binary offset variance)
-- ✅ End-to-end demo: Go HTTPS server → captured `HTTP/1.1 200 OK` plaintext
-- ❌ HTTP/2 frame decoding (Go's `net/http` defaults to h2 over TLS)
-- ❌ `crypto/tls.(*Conn).Read` (needs RET-instruction probing for Go's
-  unreliable uretprobes)
+- ✅ End-to-end Go HTTPS server capture (HTTP/1.1)
+- ✅ **HTTP/2 frame decoder + HPACK** — unblocks Go's default `net/http` behaviour
+- ✅ **`crypto/tls.(*Conn).Read` via RET-instruction probing** — client-side capture
+- ✅ Goroutine-context register reading (r14 / x28) used by Read probes
 - ❌ Multi-layer dedup (`net/http` + `crypto/tls` + `net.netFD`)
-- ❌ gRPC probes
+- ❌ gRPC framing decoder
 - ❌ Stripped-binary pclntab fallback
 - ❌ Multi-Go-version test matrix (1.17 / 1.21 / 1.22 / 1.23)
-- ❌ Goroutine-context tracking via register `r14`
+- ❌ Full per-goroutine flow correlation (we have the register read but no dedup logic yet)
 
 ## What works today
+
+### Server-side Go HTTPS (foundation + HTTP/2)
 
 A Go HTTPS server using `net/http` and a self-signed cert, captured by
 the standalone spike command:
 
 ```bash
-$ /tmp/gohttps &              # the Go HTTPS server, PID 141438
-$ postman-insights-agent apidump-gotls --pid 141438 --duration 10s &
-$ curl -sk --http1.1 https://127.0.0.1:9443/ ×3
+$ /tmp/gohttps &              # Go HTTPS server, PID 145155
+$ postman-insights-agent apidump-gotls --pid 145155 --duration 10s &
+$ for i in 1 2 3; do curl -sk https://127.0.0.1:9443/; done    # no --http1.1
 
 # Output:
-INFO Attached gotls write uprobe to pid=141438 binary=/proc/141438/exe
-INFO gotls-raw: pid=141438 ssl_ctx=0x4000096008 len=138 dir=0
-     "HTTP/1.1 200 OK\r\nDate: Thu, 14 May 2026 15:56:33 GMT\r\n
-      Content-Length: 21\r\nConten"...
-INFO RESP pid=ebpf-pid-141438 status=200
-INFO RESP pid=ebpf-pid-141438 status=200
-INFO RESP pid=ebpf-pid-141438 status=200
-INFO gotls-stats: emitted=3 ringbuf_drops=0 read_fail=0 bytes=414
+INFO Attached gotls probes pid=145155 (write + read_entry + 7 read_rets)
+INFO RESP pid=ebpf-pid-145155 status=200
+INFO RESP pid=ebpf-pid-145155 status=200
+INFO RESP pid=ebpf-pid-145155 status=200
+INFO gotls-stats: emitted=9 ringbuf_drops=0 read_fail=0 bytes=447
 ```
 
-3 curls × 1 response/curl → 3 emitted BPF events → 3 parsed
-`akinet.HTTPResponse{StatusCode:200}`.
+Three HTTP/2 transactions (Go's default over TLS) → three
+`akinet.HTTPResponse{StatusCode:200}`. HTTP/1.1 traffic also captures
+via the same path (parser selection happens on first bytes).
+
+### Client-side Go HTTPS (RET-instruction probing for Read)
+
+A Go binary using `http.Client.Get` in a loop:
+
+```bash
+$ /tmp/goclient &             # Go HTTPS client, PID 149471
+$ postman-insights-agent apidump-gotls --pid $! --duration 12s
+INFO Attached gotls probes pid=149471 (write + read_entry + 7 read_rets)
+
+REQ  pid=ebpf-pid-149471 method=GET url=/         ←  Write entry probe (egress)
+RESP pid=ebpf-pid-149471 status=200               ←  Read RET probe (ingress)
+REQ  pid=ebpf-pid-149471 method=GET url=/
+RESP pid=ebpf-pid-149471 status=200
+... (repeats at 1Hz matching the client's request loop)
+
+gotls-stats: emitted=19 ringbuf_drops=0 read_fail=0 bytes=2192
+```
+
+**Bidirectional Go HTTPS capture.** Both REQ and RESP visible from a
+Go client. Read uses entry probe + N RET probes (7 RETs in this Go
+binary's `(*Conn).Read`) because Go's uretprobes are unreliable
+due to stack growth. Goroutine-pointer register (r14/x28) keys the
+stash so concurrent Reads don't interfere.
 
 ## Architecture
 
@@ -80,42 +103,50 @@ conversion (`s.Value - segment.Vaddr + segment.Off`) for us.
    "encrypted noise with plaintext at the end" — actually HTTP/2 HEADERS
    + DATA frames (HPACK-compressed). Forcing `curl --http1.1` revealed
    plaintext immediately. Production Go services running `net/http` will
-   ship h2 unless they explicitly disable it. **This is the most important
-   gap to close next.**
+   ship h2 unless they explicitly disable it. Closed by the HTTP/2 frame
+   decoder in `ebpf/events/http2.go`.
 
 2. **Go symbol names work fine with cilium/ebpf's ELF lookup.** I initially
    tried to hand-resolve `crypto/tls.(*Conn).Write` → file offset via my
    own DWARF inspector. The result was wrong (picked up a `.deferwrap`
    shadow). cilium/ebpf's standard symbol-name path with `Uprobe(sym, prog, &UprobeOptions{PID:...})`
-   works correctly — let it do the work.
+   works correctly — let it do the work. For absolute-offset attach
+   (RET probes), pass `symbol=""` + `UprobeOptions.Address: file_offset`.
 
-3. **`UprobeOptions.Address` is "absolute address minus addressOffset"**,
-   not "raw file offset". Documentation is inconsistent. Recommend always
-   passing the symbol name when possible; Address is reserved for cases
-   where symbol resolution genuinely fails (e.g., stripped binaries).
+3. **Go uretprobes are unreliable.** Standard `link.Uretprobe("sym", ...)`
+   silently fails because Go's runtime grows/shrinks goroutine stacks,
+   invalidating the saved return address that uretprobe relies on. The
+   OBI workaround (used here): disassemble the function, find every RET
+   instruction, attach entry-style uprobes at each RET. At RET time the
+   return-value register (rax/x0) holds the result and the entry probe's
+   stash (keyed by goroutine pointer) provides the original args.
 
 4. **Go register ABI register-number conventions on arm64**: x0..x7 map
-   to `ctx->regs[0]`..`ctx->regs[7]`. On amd64 register ABI it's the
-   weird sequence `rax, rbx, rcx, rdi, rsi, r8, r9, r10, r11, r12` (NOT
-   the System V C calling convention). Documented in
-   `ebpf/programs/gotls.bpf.c::go_arg`.
+   to `ctx->regs[0]`..`ctx->regs[7]`; the goroutine register is x28
+   (`regs[28]`). On amd64 register ABI it's the weird sequence
+   `rax, rbx, rcx, rdi, rsi, r8, r9, r10, r11, r12` for args, `r14` for
+   the goroutine pointer, `rax` for first return slot. NOT the System V
+   C calling convention. Documented in `ebpf/programs/gotls.bpf.c`.
+
+5. **Function size from ELF symbols can be zero for stripped binaries.**
+   `FunctionExtent` returns the symbol's `s.Size`; this is non-zero in
+   normal Go builds but stripped builds (`-ldflags="-s"`) zero it. The
+   `FindReturnOffsets` path errors cleanly in that case so the caller
+   can fall back — fallback (pclntab) is task #5.
 
 ## Top follow-up tasks (in priority order)
 
-1. **HTTP/2 frame decoding** in akinet or a new userspace decoder. Without
-   this, Go HTTPS capture only works when clients force HTTP/1.1, which
-   is unrealistic for production. Estimated: ~3 days. Major work because
-   HPACK is a stateful encoder/decoder.
+1. ~~**HTTP/2 frame decoding**~~ — ✅ done (commit `34cf654`)
+2. ~~**`crypto/tls.(*Conn).Read`**~~ — ✅ done (commit `308d3ab`)
 
-2. **`crypto/tls.(*Conn).Read`**. Needed to capture HTTPS *requests* (the
-   spike captures server-side responses; clients are uncovered). Requires
-   the RET-instruction probing pattern from OBI's
-   `pkg/internal/goexec/funcs.go`. Estimated: ~2 days.
+3. **gRPC framing decoder** (~next session). gRPC over HTTP/2 means our
+   HTTP/2 frame decoder already sees the wire frames; what's missing is
+   decoding the gRPC-Web framing inside DATA payloads (1 byte compressed
+   flag + 4 bytes length + N bytes protobuf message). Plus probing
+   `google.golang.org/grpc.(*Server).processUnaryRPC` (or similar) to
+   recover method names from the gRPC layer. Estimated: ~5 days.
 
-3. **gRPC probes** on `google.golang.org/grpc.(*ServerStream)` etc.
-   Probably the highest customer-impact addition. Estimated: ~5 days.
-
-4. **Multi-Go-version test matrix.** Build the spike Go-HTTPS-server with
+4. **Multi-Go-version test matrix.** Build a Go HTTPS server with
    Go 1.17, 1.21, 1.22, 1.23. Verify symbol resolution + register ABI
    work across all of them. Estimated: ~1 day if no issues; ~3 if Go ABI
    changed between versions (it did at 1.17 amd64 register ABI rollout).
@@ -123,10 +154,17 @@ conversion (`s.Value - segment.Vaddr + segment.Off`) for us.
 5. **Stripped-binary pclntab fallback** for production builds compiled
    with `-ldflags="-s -w"`. Estimated: ~3 days.
 
-6. **Multi-layer dedup.** Once we have `net/http` AND `crypto/tls` probes
-   firing on the same byte stream, we need to pick one source per
-   goroutine. Goroutine-address correlation (read `r14` register) plus a
-   `(goroutine, source)` keyed dedup map. Estimated: ~2 days.
+6. **Multi-layer dedup.** Once we add `net/http`-layer probes alongside
+   `crypto/tls`, we need to pick one source per goroutine. Goroutine-
+   pointer register reading is already in place (commit `308d3ab`);
+   what's missing is the `(goroutine, source)` keyed dedup map and the
+   policy for choosing the highest-layer source. Estimated: ~2 days.
+
+7. **amd64 RET-scan accuracy.** Current implementation matches the byte
+   `0xc3` anywhere in the function body, which can false-positive on
+   instructions that contain `0xc3` in their encoding (rare but real).
+   Need a real disassembler library (`golang.org/x/arch/x86/x86asm`) for
+   production-grade scanning. arm64 is correct (fixed-width instructions).
 
 ## Verification
 
@@ -154,14 +192,25 @@ curl -sk --http1.1 https://127.0.0.1:9443/  # captured
 
 | File | Purpose |
 |---|---|
-| `ebpf/goexec/goexec.go` | ELF inspector — IsGoBinary, Inspect, .go.buildinfo parse |
-| `ebpf/goexec/goexec_test.go` | Unit tests (self + tiny built Go HTTPS server) |
-| `ebpf/programs/gotls.bpf.c` | Uprobe on `crypto/tls.(*Conn).Write` |
-| `ebpf/loader/loader_gotls_linux.go` | Per-collection loader for the gotls BPF object |
+| `ebpf/goexec/goexec.go` | ELF inspector — IsGoBinary, Inspect, .go.buildinfo parse, FunctionExtent, FindReturnOffsets (arm64+amd64 RET scanning) |
+| `ebpf/goexec/goexec_test.go` + `funcs_test.go` | Unit tests — self + built Go HTTPS server + RET-scan |
+| `ebpf/programs/gotls.bpf.c` | Uprobes: `(*Conn).Write` entry, `(*Conn).Read` entry + RET. goroutine_ptr/go_ret helpers. |
+| `ebpf/events/http2.go` | HTTP/2 frame decoder + HPACK; routed from `adapter.Feed` on h2 detection |
+| `ebpf/events/http2_test.go` | 7 unit tests (request, request+body, response, preface, multi-stream, chunked, detection) |
+| `ebpf/loader/loader_gotls_linux.go` | Per-collection loader; exposes WriteProg / ReadEntryProg / ReadRetProg |
 | `ebpf/loader/loader_gotls_test.go` | Root-gated verifier smoke test |
-| `ebpf/collect_gotls_linux.go` | `GoTLSCollector` orchestrating load + reader + adapter |
+| `ebpf/collect_gotls_linux.go` | `GoTLSCollector` orchestrating load + reader + adapter; attaches write entry + read entry + N read RETs |
 | `cmd/internal/apidump-gotls/` | Spike CLI `apidump-gotls --pid N` |
 | `docs/phases/phase-3-results.md` | This document |
+
+## Commit map (this phase)
+
+| Commit | Summary |
+|---|---|
+| `43b604b` | Phase 3 foundation — `crypto/tls.(*Conn).Write` + goexec + spike |
+| `2bd2602` | phase-3-results.md initial draft |
+| `34cf654` | HTTP/2 frame decoder + HPACK + 7 unit tests |
+| `308d3ab` | `crypto/tls.(*Conn).Read` via RET-instruction probing |
 
 ## What this does NOT change
 
