@@ -128,23 +128,40 @@ func (c *GoTLSCollector) Attach(t GoTLSTarget) error {
 		}
 	}
 
-	// 1. crypto/tls.(*Conn).Write entry probe (Phase 3 foundation).
+	// Resolve symbol file offsets via our enhanced goexec so we cover
+	// stripped binaries (-ldflags='-s -w') via the .gopclntab fallback.
+	// cilium/ebpf's Uprobe(symbol, ...) does its own ELF lookup which
+	// fails on stripped binaries; passing UprobeOptions.Address skips it.
 	writeSym := "crypto/tls.(*Conn).Write"
-	lnk, err := exe.Uprobe(writeSym, c.loader.WriteProg(),
-		&link.UprobeOptions{PID: int(t.PID)})
+	readSym := "crypto/tls.(*Conn).Read"
+	resolved, rerr := goexec.Inspect(t.BinaryPath, []string{writeSym, readSym})
+	if rerr != nil {
+		return fmt.Errorf("ebpf: gotls inspect %s: %w", t.BinaryPath, rerr)
+	}
+	writeOff, hasWrite := resolved.Symbols[writeSym]
+	readOff, hasRead := resolved.Symbols[readSym]
+	if !hasWrite {
+		return fmt.Errorf("ebpf: gotls: %s not found in %s (symtab + pclntab both failed)", writeSym, t.BinaryPath)
+	}
+	if !hasRead {
+		return fmt.Errorf("ebpf: gotls: %s not found in %s (symtab + pclntab both failed)", readSym, t.BinaryPath)
+	}
+
+	// 1. crypto/tls.(*Conn).Write entry probe (Phase 3 foundation).
+	lnk, err := exe.Uprobe("", c.loader.WriteProg(),
+		&link.UprobeOptions{PID: int(t.PID), Address: writeOff})
 	if err != nil {
-		return fmt.Errorf("ebpf: gotls attach %s pid=%d: %w", writeSym, t.PID, err)
+		return fmt.Errorf("ebpf: gotls attach %s@0x%x pid=%d: %w", writeSym, writeOff, t.PID, err)
 	}
 	attached = append(attached, lnk)
 
 	// 2. crypto/tls.(*Conn).Read entry probe — stashes (buf, ssl) keyed by
 	// goroutine. Plus one uprobe per RET site reading n_bytes from rax/x0.
-	readSym := "crypto/tls.(*Conn).Read"
-	lnk, err = exe.Uprobe(readSym, c.loader.ReadEntryProg(),
-		&link.UprobeOptions{PID: int(t.PID)})
+	lnk, err = exe.Uprobe("", c.loader.ReadEntryProg(),
+		&link.UprobeOptions{PID: int(t.PID), Address: readOff})
 	if err != nil {
 		rollback()
-		return fmt.Errorf("ebpf: gotls attach %s entry pid=%d: %w", readSym, t.PID, err)
+		return fmt.Errorf("ebpf: gotls attach %s@0x%x entry pid=%d: %w", readSym, readOff, t.PID, err)
 	}
 	attached = append(attached, lnk)
 

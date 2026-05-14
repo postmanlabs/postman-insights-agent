@@ -42,6 +42,7 @@ require (
 	github.com/spf13/viper v1.7.1
 	github.com/stretchr/testify v1.8.4
 	github.com/zclconf/go-cty v1.15.0
+	golang.org/x/arch v0.11.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
 	golang.org/x/net v0.38.0
 	golang.org/x/sys v0.31.0

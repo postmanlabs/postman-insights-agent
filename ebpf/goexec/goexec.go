@@ -30,6 +30,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"golang.org/x/arch/x86/x86asm"
 )
 
 // IsGoBinary returns true if the file at path is a Go-built ELF (looks for
@@ -113,8 +115,28 @@ func Inspect(path string, wantSymbols []string) (*GoBinaryInfo, error) {
 		info.Symbols[sym.Name] = off
 	}
 
+	// Pclntab fallback for stripped binaries (-ldflags='-s -w'). If the
+	// caller asked for symbols and we didn't find them all, try pclntab.
+	// Common case: stripped production Go services.
+	missing := make([]string, 0, len(want))
+	for name := range want {
+		if _, ok := info.Symbols[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		if pclnSyms, perr := listPclntabSymbols(f, missing); perr == nil {
+			for name, off := range pclnSyms {
+				info.Symbols[name] = off
+			}
+		}
+		// Pclntab parse errors are non-fatal; we still return whatever ELF
+		// symbols we resolved. The none-found check below catches the
+		// fully-empty case.
+	}
+
 	if len(info.Symbols) == 0 && len(want) > 0 {
-		return info, fmt.Errorf("goexec: none of the requested symbols (%v) were found; binary may be stripped (-s) \u2014 pclntab fallback not yet implemented", wantSymbols)
+		return info, fmt.Errorf("goexec: none of the requested symbols (%v) were found; binary may be stripped (-s) \u2014 stripped and .gopclntab unparseable", wantSymbols)
 	}
 	return info, nil
 }
@@ -134,13 +156,24 @@ func FunctionExtent(path, symbol string) (start, end uint64, err error) {
 		if s.Name != symbol {
 			continue
 		}
+		if s.Size == 0 {
+			// Stripped/incomplete symbol record. Fall through to pclntab.
+			break
+		}
 		off, err := vaddrToFileOff(f, s.Value)
 		if err != nil {
 			return 0, 0, err
 		}
 		return off, off + s.Size, nil
 	}
-	return 0, 0, fmt.Errorf("goexec: symbol %s not found", symbol)
+
+	// Pclntab fallback for stripped binaries. Returns (vaddr, size); we
+	// convert vaddr to a file offset via the same vaddrToFileOff helper.
+	off, size, perr := findFunctionViaPclntab(f, symbol)
+	if perr == nil {
+		return off, off + size, nil
+	}
+	return 0, 0, fmt.Errorf("goexec: symbol %s not found via .symtab or .gopclntab: %w", symbol, perr)
 }
 
 // FindReturnOffsets scans the function body for RET instructions and returns
@@ -207,16 +240,41 @@ func findRetARM64(code []byte, base uint64) []uint64 {
 }
 
 // findRetAMD64 returns the file offsets of every RET instruction in code.
-// On x86_64 with Go binaries we expect plain `RET` (0xc3) or `REP RET`
-// (0xf3 0xc3). We do NOT decode operands of preceding instructions; this
-// is a *good-enough* scan that may miss complex returns (e.g. tail jumps)
-// but works for the common Go function shape.
+//
+// x86_64 is a variable-length CISC ISA so a naive byte-match for 0xc3
+// has false positives on instructions whose operands happen to contain
+// 0xc3 (e.g. `mov $0xc3, %al` is `b0 c3`; `cmp $0xc3, ...` is `80 ... c3`).
+//
+// We walk the function using golang.org/x/arch/x86/x86asm to decode each
+// instruction properly and skip its operand bytes before looking at the
+// next one. This is the same approach OBI and Datadog's bininspect take.
+//
+// Instructions classified as "return":
+//   x86asm.RET     plain RET (0xc3, 0xcb, 0xc2 imm16, 0xca imm16)
+//   x86asm.IRET    interrupt return (kernel code; should not appear in
+//                  Go functions but harmless to include).
+//
+// Tail-call returns implemented as JMP <symbol> are NOT classified as
+// returns; they're outbound transfers. This matches Go's runtime model
+// (deferred returns still emit a literal RET).
 func findRetAMD64(code []byte, base uint64) []uint64 {
 	var offsets []uint64
-	for i := 0; i < len(code); i++ {
-		if code[i] == 0xc3 || (i+1 < len(code) && code[i] == 0xf3 && code[i+1] == 0xc3) {
+	i := 0
+	for i < len(code) {
+		inst, err := x86asm.Decode(code[i:], 64)
+		if err != nil || inst.Len == 0 {
+			// Indecipherable instruction: skip one byte and hope to
+			// resync (Go-emitted code rarely contains data-in-text
+			// segments, but defensive coding here keeps us from
+			// looping forever).
+			i++
+			continue
+		}
+		switch inst.Op {
+		case x86asm.RET, x86asm.IRET:
 			offsets = append(offsets, base+uint64(i))
 		}
+		i += inst.Len
 	}
 	return offsets
 }
