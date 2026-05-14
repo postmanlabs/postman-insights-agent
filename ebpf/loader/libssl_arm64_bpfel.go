@@ -76,6 +76,7 @@ type libsslProgramSpecs struct {
 type libsslMapSpecs struct {
 	ActiveSslReadArgs  *ebpf.MapSpec `ebpf:"active_ssl_read_args"`
 	ActiveSslWriteArgs *ebpf.MapSpec `ebpf:"active_ssl_write_args"`
+	Counters           *ebpf.MapSpec `ebpf:"counters"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
 	TargetPids         *ebpf.MapSpec `ebpf:"target_pids"`
 }
@@ -110,6 +111,7 @@ func (o *libsslObjects) Close() error {
 type libsslMaps struct {
 	ActiveSslReadArgs  *ebpf.Map `ebpf:"active_ssl_read_args"`
 	ActiveSslWriteArgs *ebpf.Map `ebpf:"active_ssl_write_args"`
+	Counters           *ebpf.Map `ebpf:"counters"`
 	Events             *ebpf.Map `ebpf:"events"`
 	TargetPids         *ebpf.Map `ebpf:"target_pids"`
 }
@@ -118,6 +120,7 @@ func (m *libsslMaps) Close() error {
 	return _LibsslClose(
 		m.ActiveSslReadArgs,
 		m.ActiveSslWriteArgs,
+		m.Counters,
 		m.Events,
 		m.TargetPids,
 	)

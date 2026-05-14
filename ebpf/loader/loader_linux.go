@@ -76,6 +76,28 @@ func (l *Loader) Close() error {
 
 func (l *Loader) EventsMap() *ebpf.Map     { return l.libssl.Events }
 func (l *Loader) TargetPIDsMap() *ebpf.Map { return l.libssl.TargetPids }
+func (l *Loader) CountersMap() *ebpf.Map   { return l.libssl.Counters }
+
+// Counter indices — must match the BPF C source.
+const (
+	CounterEventsEmitted uint32 = 0
+	CounterEventsDropped uint32 = 1
+	CounterReadFailed    uint32 = 2
+	CounterBytesCaptured uint32 = 3
+)
+
+// ReadCounter sums the per-CPU values for a counter index.
+func (l *Loader) ReadCounter(idx uint32) (uint64, error) {
+	var perCPU []uint64
+	if err := l.libssl.Counters.Lookup(&idx, &perCPU); err != nil {
+		return 0, fmt.Errorf("ebpf: read counter %d: %w", idx, err)
+	}
+	var sum uint64
+	for _, v := range perCPU {
+		sum += v
+	}
+	return sum, nil
+}
 
 func (l *Loader) SSLReadProgs() (entry, exit *ebpf.Program) {
 	return l.libssl.UprobeSslRead, l.libssl.UretprobeSslRead

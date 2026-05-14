@@ -118,6 +118,14 @@ func Collect(ctx context.Context, args Args) error {
 				disco = nil
 				continue
 			}
+			if tgt.Removed {
+				if err := mgr.Detach(tgt.PID); err != nil {
+					printer.Debugf("ebpf: detach pid=%d failed: %v\n", tgt.PID, err)
+				} else {
+					printer.Debugf("ebpf: detached libssl uprobes pid=%d (process exited or out of scope)\n", tgt.PID)
+				}
+				continue
+			}
 			if err := mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath); err != nil {
 				printer.Debugf("ebpf: attach pid=%d path=%s failed: %v\n",
 					tgt.PID, tgt.Lib.HostPath, err)
