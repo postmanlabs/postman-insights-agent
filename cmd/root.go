@@ -12,6 +12,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	apidumpebpf "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-ebpf"
+	apidumpjavatls "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-javatls"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ascii"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ec2"
@@ -296,6 +297,7 @@ func init() {
 	// See docs/https-capture-design.md.
 	apidumpebpf.Cmd.Hidden = true
 	rootCmd.AddCommand(apidumpebpf.Cmd)
+	rootCmd.AddCommand(apidumpjavatls.Cmd)
 
 	rootCmd.AddCommand(ecs.Cmd)
 	rootCmd.AddCommand(kube.Cmd)
