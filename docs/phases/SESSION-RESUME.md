@@ -56,8 +56,16 @@ Current Phase 5 status:
   [`phase-5a-results.md`](phase-5a-results.md). All five exit criteria
   green; wire format frozen at the 41-byte packed header; verifier
   budget healthy (xlated 2464B).
-* **5b — Java agent MVP (`SSLEngineInst` only):** ❌ not started.
-  Inherits the 5a wire format + ringbuf + adapter path verbatim.
+* **5b — Java agent MVP** — split into 5b.1 / 5b.2 / 5b.3 mid-session;
+  see [`phase-5-plan.md`](phase-5-plan.md) for the updated brief.
+  * **5b.1 — Java→ioctl bridge spike:** ✅ done. See
+    [`phase-5b1-results.md`](phase-5b1-results.md). Real JVM via JNI
+    delivers REQ + RESP end-to-end; burst 1000 pairs = 2000 events,
+    zero ringbuf drops. `java-agent/` Gradle project skeleton in
+    place; JDK 17 + Gradle 8.7 baked into `Dockerfile.dev`.
+  * **5b.2 — ByteBuddy + `SSLEngineInst`:** ❌ not started. Inherits
+    `IoctlPacket.send(...)` + `NativeMemory` API verbatim.
+  * **5b.3 — hardening:** ❌ not started.
 * **5c — Framework matrix + webhook:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
