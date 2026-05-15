@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         make \
         git \
         curl \
+        unzip \
         ca-certificates \
         pkg-config \
         sudo \
@@ -23,7 +24,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-requests \
         nodejs \
+        openjdk-17-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
+
+# Gradle for Phase 5b/5c Java agent work. Pinned for reproducibility; the
+# Java agent's `./gradlew` will lock it down further once a wrapper is in.
+ENV GRADLE_VERSION=8.7
+RUN curl -fsSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && ln -s /opt/gradle-${GRADLE_VERSION}/bin/gradle /usr/local/bin/gradle \
+    && rm /tmp/gradle.zip
+
+# Standard JAVA_HOME so JNI headers resolve cleanly (jni.h ships under
+# $JAVA_HOME/include in OpenJDK). The -jdk-headless package installs to
+# /usr/lib/jvm/java-17-openjdk-${ARCH}/ but doesn't create the
+# default-java symlink, so we materialise it ourselves. This works on both
+# amd64 and arm64.
+RUN set -e; \
+    arch="$(dpkg --print-architecture)"; \
+    ln -sf "/usr/lib/jvm/java-17-openjdk-${arch}" /usr/lib/jvm/default-java
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # bpf2go used to materialize Go bindings from BPF C sources.
 RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0

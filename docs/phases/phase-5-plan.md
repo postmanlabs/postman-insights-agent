@@ -171,44 +171,101 @@ Update `docs/phases/SESSION-RESUME.md` "Next task" to point at 5b.
 
 ---
 
-## Session 5b — Java agent MVP (~2–3 weeks)
+## Session 5b — Java agent MVP (~2–3 weeks, split into 5b.1 / 5b.2 / 5b.3)
+
+**Why split:** the original 5b brief bundles three risks together —
+JNI tooling, ByteBuddy instrumentation, and JDK build packaging. Same
+rationale as the 5a split: prove the new ingredient in isolation before
+layering the next one. Decided at the start of 5b.1; sessions 5b.1, 5b.2,
+and 5b.3 each have their own commit + results doc.
+
+### Session 5b.1 — Java→ioctl bridge spike (~1 session) ✅
+
+**Goal:** prove the JNI + off-heap path against the **5a BPF program**,
+with the minimum new ingredients. The Java-side analogue of 5a's C
+harness.
+
+**Scope:**
+1. Add `openjdk-17-jdk-headless` + Gradle to `Dockerfile.dev`.
+2. `java-agent/` Gradle project skeleton (`build.gradle.kts`,
+   `settings.gradle.kts`).
+3. `postman_jni.c` + `Makefile` — single JNI native method wrapping
+   `ioctl(2)`.
+4. `NativeMemory.java` — library loading + off-heap allocator via
+   `sun.misc.Unsafe`.
+5. `IoctlPacket.java` — 41-byte packed header builder + `send()`.
+6. `Main.java` — CLI with `pair` / `send` / `recv` / `wrong-cmd` /
+   `bad-op` / `burst N` modes.
+
+**Exit criteria (all green per [`phase-5b1-results.md`](phase-5b1-results.md)):**
+* `java -jar postman-java-agent.jar pair` against `apidump-javatls`
+  emits one `REQ method=GET url=/phase5b1` + one `RESP status=200`.
+* Negative tests (wrong-cmd, bad-op) emit zero events.
+* Burst 1000 pairs: 2000 events emitted, zero ringbuf drops.
+
+**Deferred to 5b.2:** ByteBuddy, `Agent.premain`, `SSLEngineInst`, off-
+heap thread-local pool, native-lib unpack-from-JAR, real HTTPS workload.
+
+### Session 5b.2 — ByteBuddy + `SSLEngineInst` (~1-2 sessions)
 
 **Goal:** `java -javaagent:postman-java-agent.jar HelloHttps` captures
-REQ + RESP end-to-end against the **5a BPF program**.
+one REQ + RESP per HTTPS transaction on JDK 17.
 
-### Scope
+**Scope:**
+1. Add ByteBuddy dependency + `Premain-Class:` manifest attribute.
+2. Use `com.github.johnrengelman.shadow` (or equivalent) to produce a
+   single shaded JAR.
+3. `Agent.premain(String, Instrumentation)` registers `SSLEngineInst`.
+4. `SSLEngineInst` — advice on `wrap(ByteBuffer src, ByteBuffer dst)`
+   and `unwrap(ByteBuffer src, ByteBuffer dst)` exit, reading plaintext
+   from `dst` after the method returns.
+5. `SocketChannelExtractor` — walk back to the engine's owning channel
+   to recover remote `InetSocketAddress` (port-zero is acceptable for
+   spike).
+6. Off-heap thread-local 64 KiB buffer in `NativeMemory` instead of
+   per-call `allocateMemory`.
+7. Native-lib unpack from `META-INF/native/<os>-<arch>/` so the JAR is
+   single-artefact.
+8. `java-agent/testdata/hello-https/HelloHttps.java` — minimal HTTPS
+   server using `HttpsServer.create(...)` from JDK built-ins.
+9. End-to-end validation against `apidump-javatls`.
 
-1. `java-agent/` Gradle project (`build.gradle.kts`, `settings.gradle.kts`).
-2. ByteBuddy `Agent.premain(...)` + **`SSLEngineInst` only**. Skip
-   `SSLSocketInst`, `SSLSocketStreamInst`, `NettySSLHandlerInst`.
-3. JNI shim (`src/main/c/postman_jni.c`) + `NativeMemory.java`. Build for
-   linux-amd64 and linux-arm64; pack natives under `native/<os>-<arch>/`.
-4. Off-heap thread-local buffer (64 KiB per thread, allocated lazily).
-5. One workload: minimal `HttpsServer.create(...)` in
-   `java-agent/testdata/hello-https/`. No Spring Boot, no Tomcat.
+**Exit criteria:**
+1. `gradle build` produces one shaded JAR ~1.5 MB.
+2. `HelloHttps` workload + agent + curl → one REQ + one RESP captured.
+3. 1000-request load: no crashes, no leaks (RSS stable).
+4. JDK 17 only; 8 / 11 / 21 deferred to 5c.
 
-### Exit criteria
+### Session 5b.3 — hardening (~half a session, before 5c)
 
-1. `./gradlew build` produces a single shaded JAR `~1.5 MB`.
-2. Running the hello-https workload with the agent attached, against
-   `apidump-javatls`, captures one REQ + one RESP per HTTP transaction.
-3. Works on **JDK 17** only at this stage (8 / 11 / 21 deferred to 5c).
-4. No crashes under a 1000-request load.
+**Goal:** close the 5b exit criteria from the original brief.
 
-### Out of scope (deferred to 5c)
+**Scope:**
+* Stress test: 10k requests, no crashes, no FD leaks.
+* Error-handling cleanup (advice classes must NOT throw into user code).
+* JDK 17 startup-overhead measurement (target ≤ 500 ms per design).
+* Per-request overhead measurement via simple wallclock (JMH is a 5c
+  task, not a 5b.3 task).
 
+**Out of scope (still deferred to 5c):**
 * Netty / Spring Boot / gRPC-Java / Tomcat / Jetty.
-* JDK 8 / 11 / 21 (we'll widen the matrix in 5c).
+* JDK 8 / 11 / 21.
 * JMH benchmarks.
 * Webhook.
 
-### Decision points to surface during 5b
+### Decision points surfaced during 5b.1
 
-* `Unsafe` vs `MemorySegment` — start with `MemorySegment` on JDK 17.
-  Add `Unsafe` fallback only when 5c needs JDK 8/11.
-* Remote-address extraction for `SSLEngine` (engine is not a socket).
-  Lift OBI's `NettyChannelExtractor` pattern but only the
-  `SocketChannel` path — Netty extraction comes in 5c.
+* `Unsafe` vs `MemorySegment` — **landed on `Unsafe`.** Works JDK 8–21
+  with no preview flags or `--add-opens` on JDK 17. The plan brief
+  said "prefer `MemorySegment` on JDK 17+" but the incubator/preview
+  module flags make it noisier than `Unsafe` for a spike. 5c may add a
+  `MemorySegment` fast-path on JDK 21+ once we have a JMH measurement
+  that justifies it.
+* JNI return packing — use a 64-bit `jlong` packing `errno` in the high
+  32 bits and the `ioctl` rc in the low 32. Avoids a second JNI hop
+  just to read errno.
+* Native-lib loading — 5b.1 uses `-Djava.library.path` /
+  `-Dpostman.agent.native.lib=…`. 5b.2 adds the unpack-from-JAR path.
 
 ---
 
