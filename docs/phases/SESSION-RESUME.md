@@ -44,8 +44,17 @@ one layer today; design is captured in
 
 **Recommended next: Phase 5 — Java agent + ioctl bridge + webhook.**
 Largest remaining piece (~6 weeks per the brief). Java is the biggest
-enterprise gap by language coverage. See [`phase-5.md`](phase-5.md)
-for the full execution plan.
+enterprise gap by language coverage.
+
+**Phase 5 is split into 5a / 5b / 5c — read [`phase-5-plan.md`](phase-5-plan.md) first.**
+[`phase-5.md`](phase-5.md) remains the full 6-week reference brief; use
+it for deep context on a specific sub-task. The plan doc explains why
+we split, what each session ships, and what the exit criteria are.
+
+Current Phase 5 status:
+* **5a — eBPF foundation + C harness:** 🟡 in progress (this session).
+* **5b — Java agent MVP (`SSLEngineInst` only):** ❌ not started.
+* **5c — Framework matrix + webhook:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
 now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the
