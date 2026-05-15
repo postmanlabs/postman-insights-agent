@@ -52,8 +52,12 @@ it for deep context on a specific sub-task. The plan doc explains why
 we split, what each session ships, and what the exit criteria are.
 
 Current Phase 5 status:
-* **5a — eBPF foundation + C harness:** 🟡 in progress (this session).
+* **5a — eBPF foundation + C harness:** ✅ done. See
+  [`phase-5a-results.md`](phase-5a-results.md). All five exit criteria
+  green; wire format frozen at the 41-byte packed header; verifier
+  budget healthy (xlated 2464B).
 * **5b — Java agent MVP (`SSLEngineInst` only):** ❌ not started.
+  Inherits the 5a wire format + ringbuf + adapter path verbatim.
 * **5c — Framework matrix + webhook:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
