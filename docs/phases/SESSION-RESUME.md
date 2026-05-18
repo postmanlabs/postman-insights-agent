@@ -63,9 +63,14 @@ Current Phase 5 status:
     delivers REQ + RESP end-to-end; burst 1000 pairs = 2000 events,
     zero ringbuf drops. `java-agent/` Gradle project skeleton in
     place; JDK 17 + Gradle 8.7 baked into `Dockerfile.dev`.
-  * **5b.2 — ByteBuddy + `SSLEngineInst`:** ❌ not started. Inherits
-    `IoctlPacket.send(...)` + `NativeMemory` API verbatim.
-  * **5b.3 — hardening:** ❌ not started.
+  * **5b.2 — ByteBuddy + `SSLEngineInst`:** ✅ done. See
+    [`phase-5b2-results.md`](phase-5b2-results.md). Real JDK
+    `HttpsServer` driven by `curl` captured end-to-end through
+    ByteBuddy-inlined advice on `SSLEngineImpl.wrap`/`unwrap`. 1000
+    parallel requests → 1000/1000 REQ + RESP parsed, zero ringbuf drops,
+    JVM stable. Agent attach 178 ms (target ≤ 500 ms).
+  * **5b.3 — hardening:** ❌ not started. Needs 10k soak, FD-leak
+    audit, crash-resilience test, per-request latency measurement.
 * **5c — Framework matrix + webhook:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is

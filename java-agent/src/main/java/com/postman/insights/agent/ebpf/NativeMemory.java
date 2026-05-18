@@ -3,36 +3,42 @@
 package com.postman.insights.agent.ebpf;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 import sun.misc.Unsafe;
 
 /**
- * Phase 5b.1 native-memory + JNI glue.
+ * Off-heap memory + JNI glue for the postman-java-agent.
  *
  * <p>Two responsibilities:</p>
  * <ol>
- *   <li>Allocate / free off-heap memory via {@link Unsafe} (works on JDK 8+
- *       without preview flags; 5c may add a {@code MemorySegment}
- *       fast-path for JDK 21+).</li>
+ *   <li>Allocate / free off-heap memory via {@link Unsafe} (works JDK 8–21
+ *       with no preview flags or {@code --add-opens}).</li>
  *   <li>Expose {@link #doIoctl(int, long, long)} which dispatches into
  *       libpostman_jni.so → {@code ioctl(2)}.</li>
  * </ol>
  *
- * <p>Library loading order:</p>
- * <ul>
- *   <li>If system property {@code postman.agent.native.lib} is set to an
- *       absolute path, that file is loaded via {@link System#load}.</li>
- *   <li>Otherwise we delegate to {@link System#loadLibrary} with the name
- *       {@code "postman_jni"}, which honors {@code -Djava.library.path}
- *       and {@code LD_LIBRARY_PATH}.</li>
- * </ul>
+ * <p><b>Native-library resolution order:</b></p>
+ * <ol>
+ *   <li>{@code -Dpostman.agent.native.lib=/abs/path/to/libpostman_jni.so}
+ *       → loaded via {@link System#load}. Used by the 5b.1 spike.</li>
+ *   <li>Otherwise, unpack from
+ *       {@code META-INF/native/linux-<arch>/libpostman_jni.so} bundled in
+ *       the agent JAR to a per-process temp file, then {@link System#load}.
+ *       Used by the {@code -javaagent:} attach path.</li>
+ *   <li>Otherwise, {@link System#loadLibrary "postman_jni"} which honours
+ *       {@code -Djava.library.path} and {@code LD_LIBRARY_PATH}.</li>
+ * </ol>
  *
- * <p>The unpack-from-JAR path (extract {@code META-INF/native/<os>-<arch>/}
- * to a temp dir) is 5b.2 work. For the 5b.1 spike we expect the operator
- * to point at the built {@code .so} directly.</p>
+ * <p><b>Thread-local off-heap buffer:</b> {@link #threadLocalBuffer()} gives
+ * each thread a reusable 64 KiB segment. The agent advice paths use this to
+ * avoid per-call {@code allocateMemory}/{@code freeMemory} pressure on the
+ * critical {@code SSLEngine} path; the 5b.1 spike's per-call allocator
+ * remains for {@link IoctlPacket#sendOnce}.</p>
  */
 public final class NativeMemory {
 
@@ -41,6 +47,11 @@ public final class NativeMemory {
 
     /** Sentinel fd checked by the kernel-side kprobe. */
     public static final int  IOCTL_FD = 0;
+
+    /** Thread-local buffer size: 64 KiB. Holds the 41-byte header plus up
+     *  to ~65 KiB of payload — the kernel program clamps to MAX_EVENT_PAYLOAD
+     *  (currently 1 KiB) anyway, so 64 KiB is generous. */
+    public static final int THREAD_BUFFER_SIZE = 64 * 1024;
 
     private static final Unsafe UNSAFE = getUnsafeOrFail();
 
@@ -52,12 +63,6 @@ public final class NativeMemory {
 
     // -- JNI -----------------------------------------------------------------
 
-    /**
-     * Calls {@code ioctl(fd, cmd, (void*) arg)} in native code.
-     *
-     * @return packed result: high 32 bits = errno (0 if rc≥0); low 32 bits = ioctl rc.
-     *         Decode with {@link #ioctlReturn(long)} and {@link #ioctlErrno(long)}.
-     */
     private static native long doIoctlNative(int fd, long cmd, long arg);
 
     public static long doIoctl(int fd, long cmd, long arg) {
@@ -67,9 +72,9 @@ public final class NativeMemory {
     public static int  ioctlReturn(long packed) { return (int) packed; }
     public static int  ioctlErrno(long packed)  { return (int) (packed >>> 32); }
 
-    // -- Off-heap memory -----------------------------------------------------
+    // -- Off-heap memory (per-call) ------------------------------------------
 
-    /** Allocate {@code size} bytes off-heap. Caller MUST {@link #freeMemory(long)} it. */
+    /** Allocate {@code size} bytes off-heap, zeroed. Caller MUST {@link #freeMemory(long)} it. */
     public static long allocateMemory(long size) {
         long addr = UNSAFE.allocateMemory(size);
         UNSAFE.setMemory(addr, size, (byte) 0);
@@ -78,9 +83,53 @@ public final class NativeMemory {
 
     public static void freeMemory(long addr) { UNSAFE.freeMemory(addr); }
 
-    // Byte-addressable accessors. Java is big-endian by default; we explicitly
-    // write little-endian where the BPF program expects host order (which on
-    // x86 + arm64 == little-endian — see ebpf/programs/java_tls.bpf.c).
+    // -- Off-heap memory (thread-local, agent fast-path) ---------------------
+
+    /**
+     * Lazily-allocated per-thread off-heap segment. Each thread gets its own
+     * {@link #THREAD_BUFFER_SIZE}-byte chunk on first call; subsequent calls
+     * return the same address. Memory is released when the thread exits via
+     * {@link ThreadLocal#remove()} on the {@link FinalizableBuffer} guard.
+     *
+     * <p>Returns the base address of the segment, zeroed on first allocation
+     * only (not on every call — agent advice is responsible for not reading
+     * stale bytes).</p>
+     */
+    public static long threadLocalBuffer() {
+        FinalizableBuffer buf = THREAD_BUFFER.get();
+        return buf.addr;
+    }
+
+    /** Size of the thread-local buffer (convenience for advice paths). */
+    public static int threadLocalBufferSize() { return THREAD_BUFFER_SIZE; }
+
+    private static final ThreadLocal<FinalizableBuffer> THREAD_BUFFER =
+            ThreadLocal.withInitial(() -> new FinalizableBuffer(THREAD_BUFFER_SIZE));
+
+    /**
+     * Holds the off-heap address for a thread-local buffer. When the
+     * {@link ThreadLocal} entry is cleared (e.g. thread exit, GC), this
+     * object becomes unreachable and its finalizer (deprecated but still
+     * functional on JDK 17) returns the memory.
+     *
+     * <p>This is a deliberate use of {@code finalize()} for off-heap cleanup
+     * in a long-lived agent. Replacing with a {@link java.lang.ref.Cleaner}
+     * is a 5b.3 follow-up; for the spike, finalisation is sufficient.</p>
+     */
+    @SuppressWarnings("removal")  // finalize() is deprecated but not removed
+    private static final class FinalizableBuffer {
+        final long addr;
+        FinalizableBuffer(int size) {
+            this.addr = allocateMemory(size);
+        }
+        @Override
+        protected void finalize() {
+            try { freeMemory(addr); } catch (Throwable ignored) { /* shutdown */ }
+        }
+    }
+
+    // -- Byte-addressable accessors -----------------------------------------
+
     public static void putByte(long addr, byte v)   { UNSAFE.putByte(addr, v); }
     public static void putBytes(long addr, byte[] src, int srcOff, int len) {
         UNSAFE.copyMemory(src, Unsafe.ARRAY_BYTE_BASE_OFFSET + srcOff,
@@ -113,31 +162,94 @@ public final class NativeMemory {
     }
 
     private static void loadNative() {
+        // 1. Explicit absolute path (5b.1 spike compat).
         String explicit = System.getProperty("postman.agent.native.lib");
         if (explicit != null && !explicit.isEmpty()) {
             Path p = Path.of(explicit);
             if (!Files.exists(p)) {
                 throw new ExceptionInInitializerError(
-                        "postman-java-agent: -Dpostman.agent.native.lib=" + p +
-                        " does not exist");
+                        "postman-java-agent: -Dpostman.agent.native.lib=" + p + " does not exist");
             }
-            try {
-                System.load(p.toAbsolutePath().toString());
-            } catch (UnsatisfiedLinkError e) {
-                throw new ExceptionInInitializerError(
-                        "postman-java-agent: System.load failed for " + p +
-                        ": " + e.getMessage());
-            }
+            loadSafely(p.toAbsolutePath().toString());
             return;
         }
+
+        // 2. Unpack from JAR if we find the right resource.
+        String osArch = detectOsArch();
+        String resource = "META-INF/native/" + osArch + "/libpostman_jni.so";
+        if (tryUnpackAndLoad(resource)) {
+            return;
+        }
+
+        // 3. Last resort — System.loadLibrary via java.library.path / LD_LIBRARY_PATH.
         try {
             System.loadLibrary("postman_jni");
         } catch (UnsatisfiedLinkError e) {
+            if (isAlreadyLoadedError(e)) {
+                return;  // another classloader already loaded it process-wide
+            }
             throw new ExceptionInInitializerError(
-                    "postman-java-agent: System.loadLibrary(\"postman_jni\") failed. " +
-                    "Either set -Dpostman.agent.native.lib=/abs/path/to/libpostman_jni.so " +
-                    "or add the directory to -Djava.library.path / LD_LIBRARY_PATH. " +
-                    "Cause: " + e.getMessage());
+                    "postman-java-agent: failed to load libpostman_jni.so. " +
+                    "Tried: -Dpostman.agent.native.lib, META-INF/native/" + osArch +
+                    "/, and java.library.path. Last error: " + e.getMessage());
         }
+    }
+
+    /** {@link System#load} that tolerates the duplicate-load case which
+     *  happens when both the app-loader and bootstrap copies of this class
+     *  initialise (we put the agent JAR on bootstrap in Agent.premain). */
+    private static void loadSafely(String absPath) {
+        try {
+            System.load(absPath);
+        } catch (UnsatisfiedLinkError e) {
+            if (!isAlreadyLoadedError(e)) throw e;
+        }
+    }
+
+    private static boolean isAlreadyLoadedError(UnsatisfiedLinkError e) {
+        String m = e.getMessage();
+        return m != null && m.contains("already loaded");
+    }
+
+    private static boolean tryUnpackAndLoad(String resource) {
+        ClassLoader cl = NativeMemory.class.getClassLoader();
+        if (cl == null) {
+            cl = ClassLoader.getSystemClassLoader();
+        }
+        try (InputStream in = cl.getResourceAsStream(resource)) {
+            if (in == null) {
+                return false;
+            }
+            Path tmp = Files.createTempFile("postman-jni-", ".so");
+            tmp.toFile().deleteOnExit();
+            Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+            try {
+                System.load(tmp.toAbsolutePath().toString());
+            } catch (UnsatisfiedLinkError e) {
+                if (!isAlreadyLoadedError(e)) throw e;
+            }
+            return true;
+        } catch (IOException e) {
+            return false;
+        } catch (UnsatisfiedLinkError e) {
+            return false;
+        }
+    }
+
+    private static String detectOsArch() {
+        String os = System.getProperty("os.name", "").toLowerCase().contains("linux") ? "linux" : "linux";
+        String archProp = System.getProperty("os.arch", "").toLowerCase();
+        String arch;
+        switch (archProp) {
+            case "amd64":
+            case "x86_64":
+                arch = "amd64"; break;
+            case "aarch64":
+            case "arm64":
+                arch = "arm64"; break;
+            default:
+                arch = archProp;
+        }
+        return os + "-" + arch;
     }
 }

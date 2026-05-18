@@ -101,11 +101,11 @@ public final class Main {
     }
 
     private static void doSend() {
-        IoctlPacket.send(IoctlPacket.OP_SEND, LOOPBACK, 54321, LOOPBACK, 8443, SYNTHETIC_REQ);
+        IoctlPacket.sendOnce(IoctlPacket.OP_SEND, LOOPBACK, 54321, LOOPBACK, 8443, SYNTHETIC_REQ);
     }
 
     private static void doRecv() {
-        IoctlPacket.send(IoctlPacket.OP_RECV, LOOPBACK, 8443, LOOPBACK, 54321, SYNTHETIC_RESP);
+        IoctlPacket.sendOnce(IoctlPacket.OP_RECV, LOOPBACK, 8443, LOOPBACK, 54321, SYNTHETIC_RESP);
     }
 
     /** Single-ioctl helper for the negative modes. */
