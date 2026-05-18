@@ -1,8 +1,12 @@
 # Reviewer's guide — HTTPS capture via eBPF
 
-**Audience:** engineers about to look at PR #174 and PR #173.
-**Goal:** orient you in ~10 minutes so the big diffs don't feel like a wall of code.
-**TL;DR:** there are two stacked PRs. #174 is the production-ready slice and should be reviewed first. #173 sits on top and includes Go support + privacy work + Java foundation; it's larger and has more "spike" code, so skim some parts and read others carefully — pointers below.
+**Audience:** engineers and the external eBPF consultant reviewing PR #173.
+**Goal:** orient you in ~10 minutes so the big diff doesn't feel like a wall of code.
+**TL;DR:** the rolling integration branch (`feat/https-capture-ebpf`, PR #173)
+now contains Phases 1 through 5b — the complete program except for Phase 5c
+(framework matrix + admission webhook, separate PR later). PR #174 still exists
+but is a strict subset of PR #173 and is kept open for historical reference only.
+Review happens on this single branch, not against `main`.
 
 ---
 
@@ -39,29 +43,26 @@ Each lists exit criteria, what passed, what didn't, and the evidence.
 
 ---
 
-## How the PRs are stacked
+## Where the work lives
 
 ```
 main
   │
   ├─ PR #174 ─ feat/https-capture-ebpf-libssl  (17 commits, +8013/-33, 70 files)
   │            "the libssl path — Phases 1+2"
-  │            ← REVIEW THIS FIRST. Ships independently.
+  │            STATUS: open, but strict subset of PR #173. Can be closed.
   │
-  └─ PR #173 ─ feat/https-capture-ebpf         (32 commits, +14193/-54, 110 files)
-               "Phase 3 (Go) + Phase 4 (privacy) + Phase 5a"
-               ← The first 17 commits are #174's.
-                 GitHub will narrow this diff to the remaining 15-ish
-                 commits once #174 merges.
+  └─ PR #173 ─ feat/https-capture-ebpf         (35+ commits, ~+18k/-54, ~140 files)
+               "Phases 1–5b complete"
+               ← REVIEW HERE. Single integration surface.
 ```
 
-So **the actual Phase 3+4+5a-only diff is +7657 LOC across 59 files** —
-manageable once #174 is out of the way.
+The branches are content-equivalent for everything in PR #174 — PR #173's
+branch is a strict superset (it contains every Phase 1+2 change plus all the
+later phases). There's nothing in PR #174 that isn't already in PR #173.
 
-> ⚠️ **Branch drift to fix before review:** PR #174's branch has one
-> commit (`12b0c55` — non-Linux stub for `KubeNamespaceResolver`) that
-> isn't in PR #173's branch. Trivial cherry-pick; flag it but don't let
-> it block review.
+Reviewers don't need to context-switch between PRs. **All review activity
+happens on PR #173 / the `feat/https-capture-ebpf` branch.**
 
 ---
 
@@ -73,79 +74,84 @@ manageable once #174 is out of the way.
 (architecture diagram) first, then §6 (sampling & rate caps), then §7
 (privacy), then §9 (phased delivery). The rest is reference material.
 
-### 2. Review PR #174 (libssl path — Phases 1+2)
+### 2. Skim the per-phase results docs (~30 min total)
 
-**Why first:** smaller, more polished, has 6/6 exit criteria green
-including a real kind-cluster end-to-end demo. It can merge to `main`
-on its own; doing so makes PR #173 immediately smaller.
+Each phase has a results doc with what passed, what didn't, and the
+evidence. Reading these first scopes the rest of the review:
 
-**Read carefully:**
+* [`phase-1-results.md`](phases/phase-1-results.md) — libssl spike
+* [`phase-2-results.md`](phases/phase-2-results.md) — production integration
+* [`phase-3-results.md`](phases/phase-3-results.md) — Go support
+* [`phase-4-results.md`](phases/phase-4-results.md) — privacy hardening
+* [`phase-5a-results.md`](phases/phase-5a-results.md) — Java kernel foundation
+* [`phase-5b1-results.md`](phases/phase-5b1-results.md) — Java JNI bridge
+* [`phase-5b2-results.md`](phases/phase-5b2-results.md) — Java ByteBuddy advice
+* [`phase-5b3-results.md`](phases/phase-5b3-results.md) — Java hardening
+
+### 3. Review the eBPF core (consultant's primary focus)
+
+**Why this matters:** these are the files an external eBPF consultant
+should scrutinise most carefully — they're the program's load-bearing
+architecture. Tests and Go scaffolding can be skimmed; this cannot.
+
+**Read carefully (BPF C — the kernel side):**
 
 | File | What it is | Why care |
 | --- | --- | --- |
-| `ebpf/programs/libssl.bpf.c` | The kernel-side uprobes on `SSL_read`/`SSL_write`/etc. | This is the only BPF C in #174. Verifier complexity, max event payload, telemetry counters all live here. |
+| `ebpf/programs/libssl.bpf.c` | Uprobes on `SSL_read`/`SSL_write`/etc. | Verifier complexity, max event payload, telemetry counters all live here. |
+| `ebpf/programs/gotls.bpf.c` | Go `crypto/tls.(*Conn).Write` + Read RET probing | Non-obvious: Go uretprobes don't work (stack moves) — we attach at every RET instruction. |
+| `ebpf/programs/java_tls.bpf.c` | `sys_ioctl` kprobe filtering on fd=0 + magic cmd | The Java bridge. Pairs with the JNI shim in `java-agent/`. |
 | `ebpf/programs/event.h` | The shared C/Go ABI for `struct ssl_event` | Tiny, but **ABI-stable**. Any change must be mirrored in `ebpf/events/event.go`. |
-| `ebpf/loader/loader_linux.go` | Loads BPF, exposes maps/programs to userspace | Reasonably standard cilium/ebpf usage. Note: rate-bucket refill semantics. |
-| `ebpf/events/adapter.go` | Bytes → `akinet.ParsedNetworkTraffic` per (PID, SSLCtx, direction) flow | The "where do bytes meet the existing pipeline" hinge. |
-| `ebpf/discovery/kube_linux.go` | CRI + cgroup-namespace-inode trick for K8s namespace filtering | Non-obvious. The README in there explains why `hostPID: true` alone is insufficient. |
-| `ebpf/thermostat_linux.go` | CPU-budget feedback loop that throttles `max_capture_bytes` | New runtime control. Worth checking the hysteresis math. |
-| `apidump/apidump.go` | `--enable-https-capture` flag wiring | Where the existing command grows the new mode. |
+
+**Read carefully (loaders, events, discovery):**
+
+| File | Why care |
+| --- | --- |
+| `ebpf/loader/loader_linux.go` + `loader_gotls_linux.go` + `loader_javatls_linux.go` | cilium/ebpf usage. Rate-bucket refill semantics. Per-target attach handles. |
+| `ebpf/events/adapter.go` | Bytes → `akinet.ParsedNetworkTraffic` per (PID, SSLCtx, direction) flow. The hinge. |
+| `ebpf/events/http2.go` | HTTP/2 frame decoder + HPACK. Required because Go's `net/http` defaults to h2 over TLS. |
+| `ebpf/goexec/` | Hand-rolled DWARF/symtab/pclntab inspector + amd64 disassembler. Cilium/ebpf can't handle stripped Go. |
+| `ebpf/discovery/kube_linux.go` | CRI + cgroup-namespace-inode trick for K8s namespace filtering. Non-obvious. |
+| `ebpf/thermostat_linux.go` | CPU-budget feedback loop. Throttles `max_capture_bytes` at runtime. Check the hysteresis math. |
+
+**Read carefully (Java agent, Phase 5b):**
+
+| File | Why care |
+| --- | --- |
+| `java-agent/src/main/java/.../Agent.java` | premain entry. Bootstrap CL append + `redefineModule`. Standard but subtle. |
+| `java-agent/src/main/java/.../instrumentations/SSLEngineInst.java` | ByteBuddy advice on the 4-arg `wrap`/`unwrap`. `suppress = Throwable.class` discipline. |
+| `java-agent/src/main/java/.../ebpf/NativeMemory.java` | Off-heap allocator + JNI loader + thread-local 64 KiB buffer. Handles double-load edge case. |
+| `java-agent/build.gradle.kts` | The two-JAR split (bootstrap helpers separate from ByteBuddy) — explained in `phase-5b2-results.md`. |
+
+**Read carefully (privacy, Phase 4):**
+
+| File | Why care |
+| --- | --- |
+| `data_masks/privacy_mode.go` + `coverage.go` + `tokenization.go` + `dry_run.go` | The customer-facing privacy guarantees. Production gating until Phase 4 finishes. |
+| `docs/redaction-defaults.md` + `docs/security-permissions.md` + `docs/https-data-flow.md` | Customer security docs — confirm we're comfortable with these contracts. |
 
 **Skim (no need to read line-by-line):**
 
-* `ebpf/loader/libssl_arm64_bpfel.{go,o}` — bpf2go-generated, do not
-  hand-edit. (amd64 generated in CI.)
-* `test/kind/*.yaml` — kind-cluster e2e manifests. Look at
-  `agent-daemonset.yaml` once to understand the deploy shape; skip the rest.
+* `ebpf/loader/*_arm64_bpfel.{go,o}` — bpf2go-generated, do not hand-edit.
+  CI re-runs `go generate` on amd64.
+* `test/kind/*.yaml`, `test/gomatrix/*`, `test/java-tls-harness/*` — test
+  fixtures and harnesses. Skim once to understand the validation shape.
+* `cmd/internal/{apidump-ebpf,apidump-gotls,apidump-javatls}/` — hidden
+  spike subcommands, NOT user-facing. Skim flag lists only.
 * All `*_test.go` — confirm coverage exists, don't read every assertion.
+* All generated / shaded code under `com/postman/insights/agent/shaded/`.
 
-**Validation that already happened** (from `phase-1-results.md` +
-`phase-2-results.md`):
-* Local: real curl → real nginx → captured.
-* Kind cluster: 3-namespace e2e (`team-py`, `team-node`, `team-srv`),
-  DaemonSet deploy, namespace filtering working, BPF counters reported
-  via telemetry.
+**Estimated review time for the eBPF core:** 90 min skimming + reading
+the results docs; 3–6 hours reading carefully.
 
-**Estimated review time:** 90 min if you read the design doc first; 2-3
-hours if you read everything carefully.
+### 4. Review the rest (Go, privacy, Java)
 
-### 3. Review PR #173 (Phase 3 Go + Phase 4 privacy + Phase 5a Java foundation)
+Once the BPF core is reviewed, the remaining areas are application-level
+Go code, Java agent code, and tests. Coverage is high and patterns are
+standard — review at whatever depth feels useful given confidence in the
+BPF core.
 
-**Why second:** stacked on #174. Has more code, more spike-flavor
-commands, and some intentionally-deferred items. Once #174 lands GitHub
-will collapse this PR to the ~16 commits / +7657 LOC of net-new work.
-
-**Read carefully (Phase 3 — Go support):**
-
-| File | What it is | Why care |
-| --- | --- | --- |
-| `ebpf/programs/gotls.bpf.c` | Uprobes on `crypto/tls.(*Conn).Write` and RET-probing for `Read` | The non-obvious part: **Go uretprobes don't work** (runtime moves stacks). We attach a one-shot uprobe at every RET instruction. Disassembler trick. |
-| `ebpf/goexec/` | DWARF/symtab inspector + pclntab fallback for stripped binaries | Hand-rolled because cilium/ebpf doesn't cover stripped Go. Has a real amd64 disassembler for RET-finding. |
-| `ebpf/events/http2.go` | HTTP/2 frame decoder + HPACK | Go's `net/http` defaults to h2 over TLS. Without this, decoded h2 looks like binary noise. |
-| `ebpf/events/http2_grpc*.go` (or equivalent in adapter) | gRPC length-prefixed framing parsed out of h2 DATA frames | Lets us identify gRPC methods on the wire without per-Go-version DWARF coupling. |
-
-**Read carefully (Phase 4 — privacy):**
-
-| File | What it is | Why care |
-| --- | --- | --- |
-| `data_masks/` (5/8 gaps land here) | Adds privacy modes (`strict` / `dry-run`), per-field tokenization, expanded redaction corpus | This is the path to "production-safe for finance/enterprise customers". The dry-run mode is what unblocks security review. |
-| `docs/redaction-defaults.md` | The customer-facing redaction guarantees | One-time read; confirm we're comfortable with the contract. |
-
-**Skim or skip:**
-
-* `cmd/internal/apidump-gotls/` — hidden spike CLI for Phase 3
-  validation, NOT a user-facing command. Skim the `init()` flags only.
-* `cmd/internal/apidump-javatls/` — same shape as above, Phase 5a
-  validation only. Skim only.
-* `ebpf/programs/java_tls.bpf.c` — Phase 5a kernel side. **There is no
-  Java agent yet** — this program is driven by a C harness in
-  `test/java-tls-harness/`. Read the file header comment for context,
-  skim the rest.
-* `ebpf/loader/{gotls,javatls}_arm64_bpfel.{go,o}` — generated.
-* `test/gomatrix/`, `test/java-tls-harness/` — test fixtures.
-* All `phase-N-results.md` docs — recommended, but they're docs not code.
-
-**Known limitations explicitly documented in this PR (NOT bugs to file):**
+**Known limitations explicitly documented in this branch (NOT bugs to file):**
 
 1. **Static-libssl Node 20 / Envoy** — Phase 3 task #4 closes this for
    Go; Node remains open (no `libssl.so` in `/proc/<pid>/maps`).
@@ -155,34 +161,32 @@ will collapse this PR to the ~16 commits / +7657 LOC of net-new work.
 3. **gRPC method names** — captured via wire-format parsing; richer
    message decoding deferred (would need per-Go-version grpc-package
    DWARF; the design doc explains why we said no for v1).
-4. **Phase 5 Java** — only the kernel side and a C harness are in this
-   PR. There is **no Java agent** yet. The wire format is frozen at
-   OBI's 41-byte packed header so 5b's Java agent (next session) plugs
-   in without changing anything here.
+4. **Java framework matrix** — only JDK 17 with `HttpsServer` is
+   validated in Phase 5b. Spring Boot, gRPC-Java, Tomcat, Jetty, and
+   JDK 8 / 11 / 21 are explicitly deferred to Phase 5c.
+5. **Admission webhook** — not yet built. Phase 5c.
 
-**Estimated review time:** 4-6 hours if reading carefully. With the
-"skim spike CLIs and generated files" approach, 2-3 hours.
+**Estimated total review time:** 4-8 hours for engineers; eBPF
+consultant should plan 1-2 days for a thorough audit of the BPF
+programs + loaders + events pipeline.
 
 ---
 
 ## What to verify before approving
 
-For #174:
-* [ ] BPF verifier complexity is documented (counters in `phase-1-results.md`).
-* [ ] `make build` (without `insights_bpf` tag) still compiles on macOS / Linux.
+* [ ] `make build` (without `insights_bpf` tag) compiles on macOS / Linux.
 * [ ] `make build-ebpf` builds in the dev container.
 * [ ] `make test` passes (CI does this on every push).
-* [ ] CRI / cgroup-namespace path is documented (the trick in
-      `ebpf/discovery/kube_linux.go`).
+* [ ] BPF verifier complexity is documented (counters in `phase-1-results.md`
+      and `phase-5a-results.md`).
 * [ ] `--enable-https-capture` is opt-in and off by default.
-
-For #173:
-* [ ] Same compile / test gates as #174.
-* [ ] `apidump-gotls` and `apidump-javatls` are `Hidden: true` and have
-      help text marking them as spike commands.
+* [ ] CRI / cgroup-namespace path is documented (`ebpf/discovery/kube_linux.go`).
+* [ ] `apidump-{ebpf,gotls,javatls}` spike commands are all `Hidden: true`.
 * [ ] `data_masks` test coverage hasn't regressed.
 * [ ] The three open privacy gaps (6/7/8) are documented in
       `phase-4-results.md` and not silently in-flight.
+* [ ] Java agent's `suppress = Throwable.class` discipline is enforced on
+      every `@Advice.OnMethodExit` (`SSLEngineInst.java`).
 
 ---
 
@@ -210,23 +214,24 @@ For #173:
 
 ---
 
-## "But it's still a huge PR" — alternatives we considered
+## "But it's still a huge PR" — the unified-branch approach
 
-Documented in [`progress.md`](progress.md) "PR strategy" section:
+We explored a multi-PR split (see [`merge-vs-review.md`](merge-vs-review.md)
+for the history) but ultimately consolidated on a single review surface:
+`feat/https-capture-ebpf` (PR #173). Rationale:
 
-* **Single PR for everything (the original plan).** Rejected once the
-  diff crossed ~12k LOC.
-* **One PR per phase.** Rejected because Phases 1+2 are tightly coupled
-  (Phase 2 wires the adapter Phase 1 produces bytes for; splitting them
-  risks Phase 2 guessing at byte formats).
-* **Two stacked PRs (#174 + #173) — chosen.** Phases 1+2 ship
-  independently in #174; everything else stacks behind it. This is
-  where we are.
-* **Three+ PRs (split #173 further).** On the table for Phase 5b/5c
-  but not today — Phase 3 and Phase 4 are entangled enough (Phase 3's
-  Go captures feed Phase 4's redactor) that splitting them now would
-  add merge friction without reducing review surface much.
+* An external eBPF consultant joins the review — they want one branch,
+  not two stacked PRs.
+* Per-phase results docs in `docs/phases/` already give reviewers a way
+  to consume the work incrementally without needing GitHub PR splits.
+* `main` stays untouched until Phase 5c is ready. Engineers and the
+  consultant build + test off this branch directly; no merge pressure.
 
-If after a first pass you still feel #173 is too large to review with
-confidence, see [`merge-vs-review.md`](merge-vs-review.md) for the
-"land on a long-lived branch and let folks test the binary" option.
+If you want to build and run the agent now:
+```bash
+git fetch origin
+git checkout feat/https-capture-ebpf
+make build-ebpf
+# Optional: java-agent build (in the dev container)
+cd java-agent && make -C src/main/c && gradle --no-daemon shadowJar
+```
