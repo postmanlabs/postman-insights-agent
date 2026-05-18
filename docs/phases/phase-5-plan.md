@@ -206,7 +206,10 @@ harness.
 **Deferred to 5b.2:** ByteBuddy, `Agent.premain`, `SSLEngineInst`, off-
 heap thread-local pool, native-lib unpack-from-JAR, real HTTPS workload.
 
-### Session 5b.2 — ByteBuddy + `SSLEngineInst` (~1-2 sessions)
+### Session 5b.2 — ByteBuddy + `SSLEngineInst` (~1-2 sessions) ✅
+
+**Outcome:** completed in one session. All four exit criteria green.
+See [`phase-5b2-results.md`](phase-5b2-results.md).
 
 **Goal:** `java -javaagent:postman-java-agent.jar HelloHttps` captures
 one REQ + RESP per HTTPS transaction on JDK 17.
