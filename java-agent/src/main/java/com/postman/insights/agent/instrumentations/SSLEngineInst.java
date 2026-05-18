@@ -141,8 +141,25 @@ public final class SSLEngineInst {
     public static final class Hooks {
         private Hooks() {}
 
+        /**
+         * 5b.3 crash-resilience knob. When the system property
+         * {@code postman.agent.crash.injection} is set (any non-empty
+         * value), every Hooks call throws a {@link RuntimeException}.
+         * Used to verify that the {@code suppress = Throwable.class}
+         * discipline on the advice catches every failure path and the
+         * host HTTPS request still completes successfully.
+         *
+         * <p>Read once and cached — we don't want to hit
+         * {@code System.getProperty} on every wrap/unwrap.</p>
+         */
+        private static final boolean CRASH_INJECTION =
+                System.getProperty("postman.agent.crash.injection") != null;
+
         public static void afterWrap(SSLEngine engine, ByteBuffer src,
                                      SSLEngineResult result, int entryPos) {
+            if (CRASH_INJECTION) {
+                throw new RuntimeException("postman-agent: synthetic crash from afterWrap");
+            }
             if (result == null || src == null) return;
             int consumed = result.bytesConsumed();
             if (consumed <= 0 || entryPos < 0) return;
@@ -160,6 +177,9 @@ public final class SSLEngineInst {
 
         public static void afterUnwrap(SSLEngine engine, ByteBuffer dst,
                                        SSLEngineResult result) {
+            if (CRASH_INJECTION) {
+                throw new RuntimeException("postman-agent: synthetic crash from afterUnwrap");
+            }
             if (result == null || dst == null) return;
             int produced = result.bytesProduced();
             if (produced <= 0) return;
