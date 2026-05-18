@@ -239,7 +239,13 @@ one REQ + RESP per HTTPS transaction on JDK 17.
 3. 1000-request load: no crashes, no leaks (RSS stable).
 4. JDK 17 only; 8 / 11 / 21 deferred to 5c.
 
-### Session 5b.3 — hardening (~half a session, before 5c)
+### Session 5b.3 — hardening (~half a session, before 5c) ✅
+
+**Outcome:** completed in the same session as 5b.2. All four 5b.3
+exit criteria + the original 5b hard-exit criteria are green. See
+[`phase-5b3-results.md`](phase-5b3-results.md).
+
+**Phase 5b is now fully closed.**
 
 **Goal:** close the 5b exit criteria from the original brief.
 

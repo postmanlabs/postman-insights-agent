@@ -56,22 +56,24 @@ Current Phase 5 status:
   [`phase-5a-results.md`](phase-5a-results.md). All five exit criteria
   green; wire format frozen at the 41-byte packed header; verifier
   budget healthy (xlated 2464B).
-* **5b — Java agent MVP** — split into 5b.1 / 5b.2 / 5b.3 mid-session;
-  see [`phase-5-plan.md`](phase-5-plan.md) for the updated brief.
+* **5b — Java agent MVP** — ✅ **fully closed** (5b.1 + 5b.2 + 5b.3).
+  See [`phase-5-plan.md`](phase-5-plan.md) for the sub-session split.
   * **5b.1 — Java→ioctl bridge spike:** ✅ done. See
-    [`phase-5b1-results.md`](phase-5b1-results.md). Real JVM via JNI
-    delivers REQ + RESP end-to-end; burst 1000 pairs = 2000 events,
-    zero ringbuf drops. `java-agent/` Gradle project skeleton in
-    place; JDK 17 + Gradle 8.7 baked into `Dockerfile.dev`.
+    [`phase-5b1-results.md`](phase-5b1-results.md).
   * **5b.2 — ByteBuddy + `SSLEngineInst`:** ✅ done. See
     [`phase-5b2-results.md`](phase-5b2-results.md). Real JDK
-    `HttpsServer` driven by `curl` captured end-to-end through
-    ByteBuddy-inlined advice on `SSLEngineImpl.wrap`/`unwrap`. 1000
-    parallel requests → 1000/1000 REQ + RESP parsed, zero ringbuf drops,
-    JVM stable. Agent attach 178 ms (target ≤ 500 ms).
-  * **5b.3 — hardening:** ❌ not started. Needs 10k soak, FD-leak
-    audit, crash-resilience test, per-request latency measurement.
-* **5c — Framework matrix + webhook:** ❌ not started.
+    `HttpsServer` + curl captured end-to-end. 1000 parallel → 1000/1000
+    parsed, zero drops, attach 178 ms.
+  * **5b.3 — hardening:** ✅ done. See
+    [`phase-5b3-results.md`](phase-5b3-results.md). 10k soak (no leak),
+    crash-resilience (100/100 HTTP 200 under synthetic crash injection),
+    latency within noise of baseline.
+* **5c — Framework matrix + webhook:** ❌ not started. Adds
+  Netty / Spring Boot / gRPC-Java / Tomcat / Jetty instrumentation, the
+  JDK 8/11/21 compatibility matrix, JMH benchmarks, and the K8s
+  mutating admission webhook for auto-injection. See
+  [`phase-5-plan.md`](phase-5-plan.md) §"Session 5c" and the original
+  [`phase-5.md`](phase-5.md) for the full brief.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
 now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the
