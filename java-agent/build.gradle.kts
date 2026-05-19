@@ -29,9 +29,16 @@ group = "com.postman.insights"
 version = "0.5b2-SNAPSHOT"
 
 java {
+    // Compile with JDK 17 toolchain but emit Java-11-compatible bytecode
+    // so the agent runs on JDK 11, 17, 21. JDK 8 is a deferred target — it
+    // would require gutting our Module API usage (redefineModule, etc.).
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
     }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(11)
 }
 
 repositories {

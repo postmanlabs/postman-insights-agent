@@ -300,7 +300,19 @@ without writing `NettySSLHandlerInst`.
 **Validation:** Spring Boot 3.2 webflux + agent + 10000 parallel
 curls → 10001/10001 REQ + RESP parsed, zero ringbuf drops, JVM stable.
 
-### Session 5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java (~1 session)
+### Session 5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java (~1 session) ✅
+
+**Outcome:** completed with mixed results. See
+[`phase-5c2-results.md`](phase-5c2-results.md) for the full tally.
+
+* **Frameworks:** Spring Boot ✅ + Tomcat ✅ (full REQ+RESP);
+  Jetty 12 🟡 REQ only; gRPC-Java 🟡 RESP only.
+* **JDK matrix:** JDK 11 / 17 / 21 ✅ all green (HelloHttps + 3
+  curls). JDK 8 ❌ deferred (agent uses `Module.redefineModule`).
+* **JMH:** deferred — 5b.3 curl-level latency already shows agent
+  overhead below noise floor; JMH gives microsecond precision but
+  doesn't change the conclusion.
+* **Three follow-up items documented**, none blocking 5c.3.
 
 **Open empirical question to answer FIRST** (same approach as 5c.1):
 does the JDK's `SSLSocketImpl` internally use `SSLEngine` such that

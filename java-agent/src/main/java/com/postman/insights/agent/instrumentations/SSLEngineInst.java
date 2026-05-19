@@ -102,8 +102,8 @@ public final class SSLEngineInst {
                 @Advice.Return          SSLEngineResult result,
                 @Advice.Enter           int entryPos) {
             try {
-                if (length != 1 || entryPos < 0 || result == null) return;
-                Hooks.afterWrap(engine, srcs[offset], result, entryPos);
+                if (result == null || entryPos < 0 || srcs == null) return;
+                Hooks.afterWrap(engine, srcs, offset, length, result, entryPos);
             } catch (Throwable t) {
                 // Swallow — never propagate into user code.
             }
@@ -124,8 +124,8 @@ public final class SSLEngineInst {
                 @Advice.Argument(3) int length,
                 @Advice.Return      SSLEngineResult result) {
             try {
-                if (length != 1 || result == null) return;
-                Hooks.afterUnwrap(engine, dsts[offset], result);
+                if (result == null || dsts == null) return;
+                Hooks.afterUnwrap(engine, dsts, offset, length, result);
             } catch (Throwable t) {
                 // Swallow.
             }
@@ -155,48 +155,136 @@ public final class SSLEngineInst {
         private static final boolean CRASH_INJECTION =
                 System.getProperty("postman.agent.crash.injection") != null;
 
-        public static void afterWrap(SSLEngine engine, ByteBuffer src,
-                                     SSLEngineResult result, int entryPos) {
+        /** One-shot diagnostic: when -Dpostman.agent.trace.first=1 is set,
+         *  the FIRST entry into each Hooks method prints a stderr line with
+         *  the engine class, buffer state, and result. Used to discover
+         *  whether advice is reaching specific frameworks like Jetty. */
+        private static final boolean TRACE_FIRST =
+                System.getProperty("postman.agent.trace.first") != null;
+        private static final java.util.concurrent.atomic.AtomicBoolean WRAP_TRACED   = new java.util.concurrent.atomic.AtomicBoolean();
+        private static final java.util.concurrent.atomic.AtomicBoolean UNWRAP_TRACED = new java.util.concurrent.atomic.AtomicBoolean();
+        private static final java.util.concurrent.atomic.AtomicLong WRAP_CALLS   = new java.util.concurrent.atomic.AtomicLong();
+        private static final java.util.concurrent.atomic.AtomicLong WRAP_EMITS   = new java.util.concurrent.atomic.AtomicLong();
+        private static final java.util.concurrent.atomic.AtomicLong UNWRAP_CALLS = new java.util.concurrent.atomic.AtomicLong();
+        private static final java.util.concurrent.atomic.AtomicLong UNWRAP_EMITS = new java.util.concurrent.atomic.AtomicLong();
+
+        public static long wrapCalls()    { return WRAP_CALLS.get(); }
+        public static long wrapEmits()    { return WRAP_EMITS.get(); }
+        public static long unwrapCalls()  { return UNWRAP_CALLS.get(); }
+        public static long unwrapEmits()  { return UNWRAP_EMITS.get(); }
+
+        // wrap() scatter-gather: plaintext lives in srcs[offset..offset+length-1].
+        // result.bytesConsumed() is the TOTAL across all matched buffers.
+        // 5c.2 generalisation — the 5b.2 version skipped length != 1,
+        // which silently lost Jetty (which uses multi-buffer writes).
+        public static void afterWrap(SSLEngine engine, ByteBuffer[] srcs,
+                                     int offset, int length,
+                                     SSLEngineResult result, int entryFirstPos) {
             if (CRASH_INJECTION) {
                 throw new RuntimeException("postman-agent: synthetic crash from afterWrap");
             }
-            if (result == null || src == null) return;
+            WRAP_CALLS.incrementAndGet();
+            if (TRACE_FIRST && WRAP_TRACED.compareAndSet(false, true)) {
+                System.err.println("[postman-insights] afterWrap FIRED  engine=" + engine.getClass().getName()
+                        + " srcs.length=" + (srcs == null ? "null" : srcs.length)
+                        + " offset=" + offset + " length=" + length
+                        + " consumed=" + (result == null ? "null" : result.bytesConsumed())
+                        + " produced=" + (result == null ? "null" : result.bytesProduced())
+                        + " entryFirstPos=" + entryFirstPos);
+            }
+            if (result == null || srcs == null || length <= 0) return;
             int consumed = result.bytesConsumed();
-            if (consumed <= 0 || entryPos < 0) return;
-
-            byte[] copy = readBytes(src, entryPos, consumed);
-            if (copy == null || copy.length == 0) return;
+            if (consumed <= 0) return;
 
             int id = System.identityHashCode(engine);
-            IoctlPacket.sendThreadLocal(
-                    IoctlPacket.OP_SEND,
-                    id, 0,
-                    0,  0,
-                    copy, 0, copy.length);
+
+            // Fast path: single buffer (the common Spring Boot / Tomcat / HelloHttps case).
+            if (length == 1) {
+                if (entryFirstPos < 0) return;
+                ByteBuffer src = srcs[offset];
+                if (src == null) return;
+                int n = Math.min(consumed, src.position() - entryFirstPos);
+                if (n <= 0) return;
+                byte[] copy = readBytes(src, entryFirstPos, n);
+                if (copy == null || copy.length == 0) return;
+                IoctlPacket.sendThreadLocal(IoctlPacket.OP_SEND,
+                        id, 0, 0, 0, copy, 0, copy.length);
+                WRAP_EMITS.incrementAndGet();
+                return;
+            }
+
+            // Slow path: scatter-gather. We don't have per-buffer entry
+            // positions for length>1; walk buffers in order and read the
+            // trailing `remaining` bytes ending at each buffer's current
+            // position, splitting `consumed` across them. Emit one ioctl
+            // per source buffer — the kernel adapter is stream-oriented.
+            int remaining = consumed;
+            for (int i = offset; i < offset + length && remaining > 0; i++) {
+                ByteBuffer src = srcs[i];
+                if (src == null) continue;
+                int endPos = src.position();
+                int take = Math.min(remaining, endPos);
+                int startPos = endPos - take;
+                if (startPos < 0 || take <= 0) continue;
+                byte[] copy = readBytes(src, startPos, take);
+                if (copy == null || copy.length == 0) continue;
+                IoctlPacket.sendThreadLocal(IoctlPacket.OP_SEND,
+                        id, 0, 0, 0, copy, 0, copy.length);
+                remaining -= take;
+            }
         }
 
-        public static void afterUnwrap(SSLEngine engine, ByteBuffer dst,
+        // unwrap() scatter-gather: result.bytesProduced() lands in
+        // dsts[offset..offset+length-1].
+        public static void afterUnwrap(SSLEngine engine, ByteBuffer[] dsts,
+                                       int offset, int length,
                                        SSLEngineResult result) {
             if (CRASH_INJECTION) {
                 throw new RuntimeException("postman-agent: synthetic crash from afterUnwrap");
             }
-            if (result == null || dst == null) return;
+            UNWRAP_CALLS.incrementAndGet();
+            if (TRACE_FIRST && UNWRAP_TRACED.compareAndSet(false, true)) {
+                System.err.println("[postman-insights] afterUnwrap FIRED engine=" + engine.getClass().getName()
+                        + " dsts.length=" + (dsts == null ? "null" : dsts.length)
+                        + " offset=" + offset + " length=" + length
+                        + " produced=" + (result == null ? "null" : result.bytesProduced()));
+            }
+            if (result == null || dsts == null || length <= 0) return;
             int produced = result.bytesProduced();
             if (produced <= 0) return;
 
-            int endPos = dst.position();
-            int startPos = endPos - produced;
-            if (startPos < 0) return;
-
-            byte[] copy = readBytes(dst, startPos, produced);
-            if (copy == null || copy.length == 0) return;
-
             int id = System.identityHashCode(engine);
-            IoctlPacket.sendThreadLocal(
-                    IoctlPacket.OP_RECV,
-                    id, 0,
-                    0,  0,
-                    copy, 0, copy.length);
+
+            // Fast path: single dst.
+            if (length == 1) {
+                ByteBuffer dst = dsts[offset];
+                if (dst == null) return;
+                int endPos = dst.position();
+                int startPos = endPos - produced;
+                if (startPos < 0) return;
+                byte[] copy = readBytes(dst, startPos, produced);
+                if (copy == null || copy.length == 0) return;
+                IoctlPacket.sendThreadLocal(IoctlPacket.OP_RECV,
+                        id, 0, 0, 0, copy, 0, copy.length);
+                UNWRAP_EMITS.incrementAndGet();
+                return;
+            }
+
+            // Slow path: walk dsts in order, reading trailing bytes from each.
+            int remaining = produced;
+            for (int i = offset; i < offset + length && remaining > 0; i++) {
+                ByteBuffer dst = dsts[i];
+                if (dst == null) continue;
+                int endPos = dst.position();
+                int take = Math.min(remaining, endPos);
+                int startPos = endPos - take;
+                if (startPos < 0 || take <= 0) continue;
+                byte[] copy = readBytes(dst, startPos, take);
+                if (copy == null || copy.length == 0) continue;
+                IoctlPacket.sendThreadLocal(IoctlPacket.OP_RECV,
+                        id, 0, 0, 0, copy, 0, copy.length);
+                remaining -= take;
+            }
         }
 
         private static byte[] readBytes(ByteBuffer buf, int start, int len) {
