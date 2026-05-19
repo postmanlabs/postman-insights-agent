@@ -29,9 +29,22 @@ group = "com.postman.insights"
 version = "0.5b2-SNAPSHOT"
 
 java {
+    // Compile with JDK 17 toolchain but emit Java-8-compatible bytecode so
+    // the agent runs on the full JDK 8/11/17/21 matrix. We use
+    // reflection-gated Module API calls (see Agent.premain) so no
+    // Java-9+ class is loaded at runtime on JDK 8.
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
     }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    // -source/-target 1.8 (not --release 8) so we keep access to sun.misc.Unsafe,
+    // which isn't in the documented JDK 8 API surface but is what we need for
+    // off-heap memory. Suppress the -bootclasspath warning that goes with this.
+    sourceCompatibility = "1.8"
+    targetCompatibility = "1.8"
+    options.compilerArgs.addAll(listOf("-Xlint:-options"))
 }
 
 repositories {

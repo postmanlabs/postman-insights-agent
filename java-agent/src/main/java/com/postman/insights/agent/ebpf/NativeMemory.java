@@ -2,12 +2,12 @@
 
 package com.postman.insights.agent.ebpf;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 
 import sun.misc.Unsafe;
 
@@ -165,12 +165,12 @@ public final class NativeMemory {
         // 1. Explicit absolute path (5b.1 spike compat).
         String explicit = System.getProperty("postman.agent.native.lib");
         if (explicit != null && !explicit.isEmpty()) {
-            Path p = Path.of(explicit);
-            if (!Files.exists(p)) {
+            File p = new File(explicit);
+            if (!p.exists()) {
                 throw new ExceptionInInitializerError(
                         "postman-java-agent: -Dpostman.agent.native.lib=" + p + " does not exist");
             }
-            loadSafely(p.toAbsolutePath().toString());
+            loadSafely(p.getAbsolutePath());
             return;
         }
 
@@ -220,11 +220,17 @@ public final class NativeMemory {
             if (in == null) {
                 return false;
             }
-            Path tmp = Files.createTempFile("postman-jni-", ".so");
-            tmp.toFile().deleteOnExit();
-            Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+            File tmp = File.createTempFile("postman-jni-", ".so");
+            tmp.deleteOnExit();
+            try (OutputStream out = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+            }
             try {
-                System.load(tmp.toAbsolutePath().toString());
+                System.load(tmp.getAbsolutePath());
             } catch (UnsatisfiedLinkError e) {
                 if (!isAlreadyLoadedError(e)) throw e;
             }

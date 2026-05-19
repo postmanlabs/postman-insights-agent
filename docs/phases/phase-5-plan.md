@@ -278,10 +278,91 @@ exit criteria + the original 5b hard-exit criteria are green. See
 
 ---
 
-## Session 5c — Framework matrix + webhook (~2 weeks)
+## Session 5c — Framework matrix + webhook (~2 weeks, split into 5c.1 / 5c.2 / 5c.3)
 
-**Goal:** at least 8 of 16 (JDK × framework) matrix combos green;
-webhook auto-injects `JAVA_TOOL_OPTIONS` in a kind cluster.
+**Why split:** same rationale as 5b. The original 5c bundles three
+independent workstreams (Java framework instrumentation, JDK matrix
+plumbing, K8s admission webhook). The webhook in particular has
+**high blast radius** — a misconfigured `MutatingWebhookConfiguration`
+can break ALL pod creation in a cluster. Isolating it lets us focus
+entirely on safety + rollback rehearsal in its own session.
+
+### Session 5c.1 — Spring Boot + Netty (~1 session) ✅
+
+**Outcome:** ✅ all 5c.1 exit criteria green with **zero new agent
+code**. See [`phase-5c1-results.md`](phase-5c1-results.md).
+
+**Key finding:** 5b.2's `ElementMatchers.isSubTypeOf(SSLEngine.class)`
+matcher already catches Netty's `JdkSslEngine`, `OpenSslEngine`, and
+`ReferenceCountedOpenSslEngine` for free. The framework gap closed
+without writing `NettySSLHandlerInst`.
+
+**Validation:** Spring Boot 3.2 webflux + agent + 10000 parallel
+curls → 10001/10001 REQ + RESP parsed, zero ringbuf drops, JVM stable.
+
+### Session 5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java (~1 session) ✅
+
+**Outcome:** **all four frameworks captured fully, all four JDKs
+working, both diagnosed gaps fixed in-session.** See
+[`phase-5c2-results.md`](phase-5c2-results.md) for the full tally.
+
+* **Frameworks:** Spring Boot ✅ + Tomcat ✅ + Jetty 12 ✅ + gRPC-Java
+  ✅. All capture REQ + RESP under 1000-parallel stress with zero
+  ringbuf drops.
+* **JDK matrix:** JDK 8 / 11 / 17 / 21 ✅ all green.
+* **The two diagnosed gaps were fixed in-session:**
+  * Jetty 12 RESP → `JettySslEndPointInst` (OBI/Datadog pattern: hook
+    the framework I/O endpoint directly when the JDK SSLEngine path
+    bypasses application data).
+  * gRPC-Java REQ (Netty + OpenSSL/BoringSSL) → expanded
+    `SSLEngineInst` to match the 2-arg and array-array unwrap variants
+    that `ReferenceCountedOpenSslEngine` declares directly.
+  * JDK 8 → reflection-gated `Module.redefineModule` + dropped Java 9+
+    APIs in helper classes + `-source/-target 1.8`.
+* **JMH:** deferred — 5b.3 curl-level latency already shows agent
+  overhead below noise floor; JMH gives microsecond precision but
+  doesn't change the conclusion.
+
+**Open empirical question to answer FIRST** (same approach as 5c.1):
+does the JDK's `SSLSocketImpl` internally use `SSLEngine` such that
+our existing advice already covers Tomcat? Build a Tomcat workload,
+attach the existing agent, see what happens. **Possible outcome:**
+5c.2 also lands with zero new instrumentation.
+
+If new advice IS needed:
+* `SSLSocketInst` — Tomcat default connector (blocking I/O).
+* `SSLSocketStreamInst` — Jetty (specialised buffer pool path).
+
+Regardless:
+* gRPC-Java workload (unary + streaming) — validate via existing advice.
+* JDK 8 / 11 / 21 container matrix — re-run the 5b/5c.1 validation
+  suite against each JDK. `Unsafe` already works on all four; the
+  work is container plumbing.
+* JMH benchmark harness — `SSLEngine.wrap`/`unwrap` overhead in
+  microseconds. Target: ≤ 50 µs added per call.
+
+### Session 5c.3 — Mutating admission webhook (~1 session)
+
+**Goal:** auto-inject `JAVA_TOOL_OPTIONS=-javaagent:/postman/postman-java-agent.jar`
+into pods in `decrypt: true` namespaces with Java workloads.
+
+**High-risk piece. Done in isolation with explicit safety story:**
+* `failurePolicy: Ignore` from line 1 of the
+  `MutatingWebhookConfiguration` — a broken webhook fails open,
+  doesn't break the cluster.
+* Rehearsed rollback procedure documented BEFORE any real cluster
+  deploys.
+* Kind-cluster end-to-end test as the only validation surface for
+  this session.
+* Workload heuristic: check container images / env vars / commands to
+  identify Java workloads.
+* Init container copies the agent JAR + native libs into a shared
+  `emptyDir` volume; mutates the main container's env to add
+  `JAVA_TOOL_OPTIONS`.
+* TLS bootstrap via `cert-manager` (preferred) or self-generate.
+
+**Goal (original):** at least 8 of 16 (JDK × framework) matrix combos
+green; webhook auto-injects `JAVA_TOOL_OPTIONS` in a kind cluster.
 
 ### Scope
 

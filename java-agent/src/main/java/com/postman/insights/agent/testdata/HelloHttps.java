@@ -7,8 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.File;
 import java.security.KeyStore;
 import java.util.concurrent.Executors;
 
@@ -53,8 +52,9 @@ public final class HelloHttps {
         int port = Integer.parseInt(System.getProperty(PORT_PROP, "8443"));
         String ksPath = System.getProperty("hello.keystore", DEFAULT_KEYSTORE);
 
-        ensureKeystore(Path.of(ksPath));
-        SSLContext sslCtx = buildSslContext(Path.of(ksPath));
+        File ks = new File(ksPath);
+        ensureKeystore(ks);
+        SSLContext sslCtx = buildSslContext(ks);
 
         HttpsServer server = HttpsServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(sslCtx));
@@ -98,9 +98,9 @@ public final class HelloHttps {
         }
     }
 
-    private static SSLContext buildSslContext(Path keystorePath) throws Exception {
+    private static SSLContext buildSslContext(File keystorePath) throws Exception {
         KeyStore ks = KeyStore.getInstance("PKCS12");
-        try (FileInputStream in = new FileInputStream(keystorePath.toFile())) {
+        try (FileInputStream in = new FileInputStream(keystorePath)) {
             ks.load(in, KEYSTORE_PASS.toCharArray());
         }
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(
@@ -118,8 +118,8 @@ public final class HelloHttps {
 
     /** If the keystore doesn't exist, shell out to {@code keytool} (which
      *  ships with the JDK) to create a fresh self-signed RSA cert. */
-    private static void ensureKeystore(Path keystorePath) throws Exception {
-        if (Files.exists(keystorePath)) {
+    private static void ensureKeystore(File keystorePath) throws Exception {
+        if (keystorePath.exists()) {
             return;
         }
         System.err.println("HelloHttps: generating self-signed cert at " + keystorePath);
@@ -144,7 +144,7 @@ public final class HelloHttps {
             in.transferTo(System.err);
         }
         int rc = p.waitFor();
-        if (rc != 0 || !Files.exists(keystorePath)) {
+        if (rc != 0 || !keystorePath.exists()) {
             throw new IOException("keytool exited rc=" + rc +
                     " — make sure 'keytool' is on PATH (ships with the JDK)");
         }
