@@ -68,12 +68,20 @@ Current Phase 5 status:
     [`phase-5b3-results.md`](phase-5b3-results.md). 10k soak (no leak),
     crash-resilience (100/100 HTTP 200 under synthetic crash injection),
     latency within noise of baseline.
-* **5c — Framework matrix + webhook:** ❌ not started. Adds
-  Netty / Spring Boot / gRPC-Java / Tomcat / Jetty instrumentation, the
-  JDK 8/11/21 compatibility matrix, JMH benchmarks, and the K8s
-  mutating admission webhook for auto-injection. See
-  [`phase-5-plan.md`](phase-5-plan.md) §"Session 5c" and the original
-  [`phase-5.md`](phase-5.md) for the full brief.
+* **5c — Framework matrix + webhook:** 🟡 in progress (split into
+  5c.1 / 5c.2 / 5c.3, same pattern as 5b).
+  * **5c.1 — Spring Boot + Netty:** ✅ done with zero new agent code.
+    See [`phase-5c1-results.md`](phase-5c1-results.md). Architectural
+    insight: 5b.2's `isSubTypeOf(SSLEngine.class)` matcher already
+    catches Netty's `JdkSslEngine`, `OpenSslEngine`, etc. Validated
+    against Spring Boot 3.2 webflux → 10000/10000 captured.
+  * **5c.2 — Tomcat + Jetty + JDK 8/11/21 matrix + gRPC-Java + JMH:**
+    ❌ not started. First action: empirical test of whether existing
+    advice already covers Tomcat (likely yes — `SSLSocketImpl`
+    internally uses `SSLEngine`).
+  * **5c.3 — Mutating admission webhook:** ❌ not started. High-risk
+    piece, deliberately isolated to its own session for safety +
+    rollback rehearsal.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
 now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the
