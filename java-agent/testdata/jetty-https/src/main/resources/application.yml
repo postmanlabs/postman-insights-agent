@@ -2,11 +2,12 @@ server:
   address: 127.0.0.1
   port:    8445
   ssl:
-    enabled:        true
-    key-store-type: PKCS12
-    key-store:      file:/tmp/spring-boot-https-keystore.p12
+    enabled:           true
+    enabled-protocols: TLSv1.2
+    key-store-type:    PKCS12
+    key-store:         file:/tmp/spring-boot-https-keystore.p12
     key-store-password: changeit
-    key-alias:      hello
+    key-alias:         hello
 
 logging:
   level:

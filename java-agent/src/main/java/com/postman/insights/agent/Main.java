@@ -139,6 +139,15 @@ public final class Main {
 
     private static void summarise(String mode) {
         System.err.printf("postman-java-agent spike: pid=%d mode=%s done%n",
-                ProcessHandle.current().pid(), mode);
+                javaPid(), mode);
+    }
+
+    /** JDK-8-compatible process pid lookup (avoids ProcessHandle which is JDK 9+). */
+    private static long javaPid() {
+        // RuntimeMXBean.getName() returns "pid@host"
+        String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+        int at = name.indexOf('@');
+        try { return Long.parseLong(at > 0 ? name.substring(0, at) : name); }
+        catch (Exception e) { return -1L; }
     }
 }

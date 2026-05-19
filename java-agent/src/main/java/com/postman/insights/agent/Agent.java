@@ -3,19 +3,18 @@
 package com.postman.insights.agent;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.instrument.Instrumentation;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.jar.JarFile;
-import javax.net.ssl.SSLEngine;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.matcher.ElementMatchers;
 
 import com.postman.insights.agent.ebpf.NativeMemory;
+import com.postman.insights.agent.instrumentations.JettySslEndPointInst;
 import com.postman.insights.agent.instrumentations.SSLEngineInst;
 
 /**
@@ -60,8 +59,8 @@ public final class Agent {
         // ByteBuddy methods whose signatures reference bootstrap-resolved
         // types.
         try {
-            Path bootJar = extractBundledBootstrapJar();
-            inst.appendToBootstrapClassLoaderSearch(new JarFile(bootJar.toFile()));
+            File bootJar = extractBundledBootstrapJar();
+            inst.appendToBootstrapClassLoaderSearch(new JarFile(bootJar));
             System.err.println("[postman-insights] appended to bootstrap CL: " + bootJar);
         } catch (Throwable t) {
             System.err.println("[postman-insights] agent attach FAILED at bootstrap step: " + t);
@@ -69,25 +68,45 @@ public final class Agent {
             return;
         }
 
-        // (2) Open java.base read access to our module. Required when our
-        // classes are in the unnamed module (default for -javaagent jars
-        // without an explicit module-info). Belt-and-braces alongside the
-        // bootstrap append.
+        // (2) Open java.base read access to our module. Required on JDK 9+
+        // when our classes are in the unnamed module (default for
+        // -javaagent jars without an explicit module-info). On JDK 8 there
+        // is no module system, so this step is skipped via reflection-based
+        // invocation. Belt-and-braces alongside the bootstrap append.
         try {
-            Module ourModule    = Agent.class.getModule();
-            Module javaBase     = SSLEngine.class.getModule();
-            if (javaBase != null && ourModule != null && javaBase != ourModule) {
-                inst.redefineModule(
-                        javaBase,
-                        /*extraReads=*/ java.util.Set.of(ourModule),
-                        /*extraExports=*/ java.util.Map.of(),
-                        /*extraOpens=*/ java.util.Map.of(),
-                        /*extraUses=*/ java.util.Set.of(),
-                        /*extraProvides=*/ java.util.Map.of());
+            // Use reflection so this code compiles & loads on JDK 8 (which
+            // doesn't have java.lang.Module or Instrumentation.redefineModule).
+            Class<?> moduleClass = tryLoad("java.lang.Module");
+            if (moduleClass != null) {
+                Object ourModule = Agent.class.getClass()
+                        .getMethod("getModule").invoke(Agent.class);
+                // Look up the SSLEngine class without an import (would force
+                // a load on classes we want to ignore on JDK 8 too).
+                Class<?> sslEngineClass = Class.forName("javax.net.ssl.SSLEngine");
+                Object javaBase = sslEngineClass.getClass()
+                        .getMethod("getModule").invoke(sslEngineClass);
+                if (javaBase != null && ourModule != null && javaBase != ourModule) {
+                    java.lang.reflect.Method redefineModule = Instrumentation.class.getMethod(
+                            "redefineModule", moduleClass,
+                            java.util.Set.class, java.util.Map.class,
+                            java.util.Map.class, java.util.Set.class,
+                            java.util.Map.class);
+                    redefineModule.invoke(inst,
+                            javaBase,
+                            java.util.Collections.singleton(ourModule),
+                            java.util.Collections.emptyMap(),
+                            java.util.Collections.emptyMap(),
+                            java.util.Collections.emptySet(),
+                            java.util.Collections.emptyMap());
+                }
             }
         } catch (Throwable t) {
-            System.err.println("[postman-insights] WARNING: redefineModule failed: " + t);
-            // continue — bootstrap-classpath append alone is usually enough
+            // JDK 8 path (no module system) or transient failure — not
+            // critical because the bootstrap-classpath append on its own
+            // is sufficient for advice to find the helper classes.
+            if (System.getProperty("postman.agent.debug") != null) {
+                System.err.println("[postman-insights] redefineModule skipped/failed: " + t);
+            }
         }
 
         // (3) Force NativeMemory's static init early so any failure surfaces
@@ -128,6 +147,7 @@ public final class Agent {
         }
 
         builder = SSLEngineInst.install(builder);
+        builder = JettySslEndPointInst.install(builder);
 
         builder.installOn(inst);
 
@@ -154,25 +174,36 @@ public final class Agent {
         }
     }
 
-    /** Extract {@code META-INF/postman-agent-bootstrap.jar} from our own
+    /** Extract {@code META-INF/postman-agent-bootstrap.jarblob} from our own
      *  JAR to a process-private temp file. The JVM's
      *  {@code appendToBootstrapClassLoaderSearch} needs a real on-disk
-     *  JarFile, so we materialise it. */
-    private static Path extractBundledBootstrapJar() throws IOException {
+     *  JarFile, so we materialise it. JDK-8-compatible — uses
+     *  {@link File#createTempFile} and {@link FileOutputStream} rather than
+     *  {@code java.nio.file.Files} APIs. */
+    private static File extractBundledBootstrapJar() throws IOException {
         ClassLoader cl = Agent.class.getClassLoader();
         if (cl == null) cl = ClassLoader.getSystemClassLoader();
-        // We embed the bootstrap JAR with a .jarblob extension so the
-        // shadow Gradle plugin doesn't try to merge its contents into the
-        // main JAR. Identical bytes; just a different filename.
         try (InputStream in = cl.getResourceAsStream("META-INF/postman-agent-bootstrap.jarblob")) {
             if (in == null) {
                 throw new IOException("postman-agent-bootstrap.jarblob not found inside agent JAR " +
                         "(was the agent built with the bootstrap-jar Gradle task?)");
             }
-            Path tmp = Files.createTempFile("postman-agent-bootstrap-", ".jar");
-            tmp.toFile().deleteOnExit();
-            Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+            File tmp = File.createTempFile("postman-agent-bootstrap-", ".jar");
+            tmp.deleteOnExit();
+            try (OutputStream out = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+            }
             return tmp;
         }
+    }
+
+    /** Class.forName that returns null on ClassNotFoundException (used for
+     *  JDK-version-conditional reflection). */
+    private static Class<?> tryLoad(String name) {
+        try { return Class.forName(name); } catch (Throwable t) { return null; }
     }
 }
