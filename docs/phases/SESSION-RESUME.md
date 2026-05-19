@@ -75,10 +75,14 @@ Current Phase 5 status:
     insight: 5b.2's `isSubTypeOf(SSLEngine.class)` matcher already
     catches Netty's `JdkSslEngine`, `OpenSslEngine`, etc. Validated
     against Spring Boot 3.2 webflux → 10000/10000 captured.
-  * **5c.2 — Tomcat + Jetty + JDK 8/11/21 matrix + gRPC-Java + JMH:**
-    ❌ not started. First action: empirical test of whether existing
-    advice already covers Tomcat (likely yes — `SSLSocketImpl`
-    internally uses `SSLEngine`).
+  * **5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java + JMH:** ✅ done
+    with mixed results. See [`phase-5c2-results.md`](phase-5c2-results.md).
+    * Tomcat ✅ full; Jetty 12 🟡 REQ-only (wrap path quirk — see
+      follow-up); gRPC-Java 🟡 RESP-only (h2 decoder follow-up).
+    * JDK 11/17/21 ✅ green; JDK 8 ❌ deferred (Module API).
+    * JMH deferred; 5b.3 curl-level latency is the per-call evidence.
+    * Four permanent test workloads landed in `java-agent/testdata/`.
+    * Three documented follow-ups, none blocking 5c.3.
   * **5c.3 — Mutating admission webhook:** ❌ not started. High-risk
     piece, deliberately isolated to its own session for safety +
     rollback rehearsal.

@@ -268,6 +268,24 @@ public final class Agent {
         long dtMs = (System.nanoTime() - t0) / 1_000_000;
         System.err.println("[postman-insights] agent attached via " + entry +
                            " in " + dtMs + " ms (args=" + (agentArgs == null ? "" : agentArgs) + ")");
+
+        // Optional shutdown-time counter dump for diagnostic runs.
+        if (System.getProperty("postman.agent.trace.first") != null) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try {
+                    Class<?> hooks = Class.forName(
+                            "com.postman.insights.agent.instrumentations.SSLEngineInst$Hooks");
+                    long wc = (long) hooks.getMethod("wrapCalls").invoke(null);
+                    long we = (long) hooks.getMethod("wrapEmits").invoke(null);
+                    long uc = (long) hooks.getMethod("unwrapCalls").invoke(null);
+                    long ue = (long) hooks.getMethod("unwrapEmits").invoke(null);
+                    System.err.println("[postman-insights] FINAL counters: wrap calls=" + wc +
+                            " emits=" + we + " | unwrap calls=" + uc + " emits=" + ue);
+                } catch (Throwable t) {
+                    System.err.println("[postman-insights] counter dump failed: " + t);
+                }
+            }, "postman-insights-counter-dump"));
+        }
     }
 
     /** Extract {@code META-INF/postman-agent-bootstrap.jarblob} from our own
