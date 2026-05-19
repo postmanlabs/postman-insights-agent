@@ -1,0 +1,16 @@
+server:
+  address: 127.0.0.1
+  port:    8443
+  ssl:
+    enabled:        true
+    key-store-type: PKCS12
+    key-store:      file:/tmp/spring-boot-https-keystore.p12
+    key-store-password: changeit
+    key-alias:      hello
+
+# Quieter startup logs — fewer lines to scroll past in tests.
+logging:
+  level:
+    root: WARN
+    org.springframework: WARN
+    reactor.netty: WARN

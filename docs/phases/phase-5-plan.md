@@ -300,28 +300,7 @@ without writing `NettySSLHandlerInst`.
 **Validation:** Spring Boot 3.2 webflux + agent + 10000 parallel
 curls → 10001/10001 REQ + RESP parsed, zero ringbuf drops, JVM stable.
 
-### Session 5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java (~1 session) ✅
-
-**Outcome:** **all four frameworks captured fully, all four JDKs
-working, both diagnosed gaps fixed in-session.** See
-[`phase-5c2-results.md`](phase-5c2-results.md) for the full tally.
-
-* **Frameworks:** Spring Boot ✅ + Tomcat ✅ + Jetty 12 ✅ + gRPC-Java
-  ✅. All capture REQ + RESP under 1000-parallel stress with zero
-  ringbuf drops.
-* **JDK matrix:** JDK 8 / 11 / 17 / 21 ✅ all green.
-* **The two diagnosed gaps were fixed in-session:**
-  * Jetty 12 RESP → `JettySslEndPointInst` (OBI/Datadog pattern: hook
-    the framework I/O endpoint directly when the JDK SSLEngine path
-    bypasses application data).
-  * gRPC-Java REQ (Netty + OpenSSL/BoringSSL) → expanded
-    `SSLEngineInst` to match the 2-arg and array-array unwrap variants
-    that `ReferenceCountedOpenSslEngine` declares directly.
-  * JDK 8 → reflection-gated `Module.redefineModule` + dropped Java 9+
-    APIs in helper classes + `-source/-target 1.8`.
-* **JMH:** deferred — 5b.3 curl-level latency already shows agent
-  overhead below noise floor; JMH gives microsecond precision but
-  doesn't change the conclusion.
+### Session 5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java (~1 session)
 
 **Open empirical question to answer FIRST** (same approach as 5c.1):
 does the JDK's `SSLSocketImpl` internally use `SSLEngine` such that
