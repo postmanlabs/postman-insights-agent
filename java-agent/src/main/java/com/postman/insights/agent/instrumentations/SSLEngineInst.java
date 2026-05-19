@@ -2,6 +2,7 @@
 
 package com.postman.insights.agent.instrumentations;
 
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
@@ -253,6 +254,7 @@ public final class SSLEngineInst {
                 System.getProperty("postman.agent.trace.all") != null;
         private static final java.util.concurrent.atomic.AtomicBoolean WRAP_TRACED   = new java.util.concurrent.atomic.AtomicBoolean();
         private static final java.util.concurrent.atomic.AtomicBoolean UNWRAP_TRACED = new java.util.concurrent.atomic.AtomicBoolean();
+        private static final java.util.concurrent.atomic.AtomicBoolean FIRST_EMIT_ERR = new java.util.concurrent.atomic.AtomicBoolean();
         private static final java.util.concurrent.atomic.AtomicLong WRAP_CALLS   = new java.util.concurrent.atomic.AtomicLong();
         private static final java.util.concurrent.atomic.AtomicLong WRAP_EMITS   = new java.util.concurrent.atomic.AtomicLong();
         private static final java.util.concurrent.atomic.AtomicLong UNWRAP_CALLS = new java.util.concurrent.atomic.AtomicLong();
@@ -306,9 +308,20 @@ public final class SSLEngineInst {
                 if (n <= 0) return;
                 byte[] copy = readBytes(src, entryFirstPos, n);
                 if (copy == null || copy.length == 0) return;
-                IoctlPacket.sendThreadLocal(IoctlPacket.OP_SEND,
-                        id, 0, 0, 0, copy, 0, copy.length);
-                WRAP_EMITS.incrementAndGet();
+                try {
+                    IoctlPacket.sendThreadLocal(IoctlPacket.OP_SEND,
+                            id, 0, 0, 0, copy, 0, copy.length);
+                    WRAP_EMITS.incrementAndGet();
+                } catch (Throwable t) {
+                    // Print the FIRST emit failure for diagnostics; subsequent
+                    // failures are silent. Without this, JDK 8 JNI link errors
+                    // get swallowed by the advice's suppress=Throwable and we
+                    // wonder why nothing is being captured.
+                    if (FIRST_EMIT_ERR.compareAndSet(false, true)) {
+                        System.err.println("[postman-insights] FIRST EMIT FAILURE in afterWrap: " + t);
+                        t.printStackTrace(System.err);
+                    }
+                }
                 return;
             }
 
@@ -435,8 +448,17 @@ public final class SSLEngineInst {
                 ByteBuffer view = buf.duplicate();
                 int cap = view.capacity();
                 if (start < 0 || start + len > cap) return null;
-                view.position(start);
-                view.limit(start + len);
+                // CRITICAL JDK 8 compatibility cast: javac with JDK 17 toolchain
+                // emits `invokevirtual ByteBuffer.position(I)Ljava/nio/ByteBuffer;`
+                // which is the JDK 9+ covariant-return signature. On JDK 8 only
+                // the inherited `Buffer.position(I)Ljava/nio/Buffer;` exists —
+                // calling the JDK-17 signature throws NoSuchMethodError at
+                // runtime on JDK 8 (silently swallowed by our outer try-catch,
+                // resulting in zero captured events on JDK 8). Casting to the
+                // base type Buffer forces javac to resolve against the older
+                // signature that exists on every JDK from 1.4 onwards.
+                ((Buffer) view).position(start);
+                ((Buffer) view).limit(start + len);
                 byte[] out = new byte[len];
                 view.get(out);
                 return out;

@@ -13,7 +13,6 @@ import java.util.jar.JarFile;
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.matcher.ElementMatchers;
 
-import com.postman.insights.agent.ebpf.NativeMemory;
 import com.postman.insights.agent.instrumentations.JettySslEndPointInst;
 import com.postman.insights.agent.instrumentations.SSLEngineInst;
 
@@ -109,11 +108,37 @@ public final class Agent {
             }
         }
 
-        // (3) Force NativeMemory's static init early so any failure surfaces
-        // at agent-attach time, not on the first HTTPS request.
+        // (3) Force the BOOTSTRAP copy of NativeMemory to <clinit> first,
+        // which makes IT the one that calls System.load on libpostman_jni.so.
+        //
+        // Why this matters on JDK 8: JNI's name-based symbol lookup is
+        // per-classloader on JDK 8. If we instead initialised the app-CL
+        // copy of NativeMemory here (via a direct call like
+        // NativeMemory.allocateMemory(8)), the JNI lib would be registered
+        // with the app classloader. Then the ByteBuddy advice (inlined into
+        // bootstrap-loaded SSLEngineImpl) calls NativeMemory.doIoctlNative
+        // resolving through the BOOTSTRAP copy of NativeMemory, whose
+        // <clinit> would see 'already loaded' and skip the System.load —
+        // and JDK 8 cannot resolve the native symbol from the bootstrap-CL's
+        // view of the lib. Result: UnsatisfiedLinkError swallowed by
+        // advice's suppress=Throwable, ZERO captured events on JDK 8.
+        //
+        // JDK 9+ relaxed this and looks up JNI symbols process-wide, which
+        // is why the same code worked on JDK 11/17/21 but silently failed
+        // on JDK 8. Diagnosed in phase-5c2-results.md.
+        //
+        // Class.forName(..., true, null) loads via the BOOTSTRAP CL and
+        // triggers <clinit>. Reflection on the loaded class invokes static
+        // methods through the bootstrap-CL copy.
         try {
-            long probe = NativeMemory.allocateMemory(8);
-            NativeMemory.freeMemory(probe);
+            Class<?> bootNativeMemory = Class.forName(
+                    "com.postman.insights.agent.ebpf.NativeMemory", true, null);
+            // allocateMemory(8) + freeMemory ensure the JNI lib is loaded
+            // AND that the native doIoctlNative symbol has been resolved
+            // for this classloader's view of the class.
+            long probe = (long) bootNativeMemory.getMethod("allocateMemory", long.class)
+                    .invoke(null, 8L);
+            bootNativeMemory.getMethod("freeMemory", long.class).invoke(null, probe);
         } catch (Throwable t) {
             System.err.println("[postman-insights] agent attach FAILED at native step: " + t);
             t.printStackTrace(System.err);

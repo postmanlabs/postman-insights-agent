@@ -103,28 +103,77 @@ javap -p -c grpc-java.jar:.../SslHandler.class | grep SSLEngine.unwrap
   → SSLEngine.unwrap:(Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;)
 ```
 
-### 3. JDK 8 support — drop direct Module API usage
+### 3. JDK 8 support — three separate bugs found
 
-`Agent.java` no longer imports `javax.net.ssl.SSLEngine` or directly
-references `Module.redefineModule`. Both are now invoked via
-reflection (`Class.forName("java.lang.Module")` + `Method.invoke`) so
-the agent class file itself is fully Java 8 compatible.
+An honest revisit of this gap (after the user asked "did you test
+these fixes") surfaced TWO real bugs that the first attempt missed:
 
-`build.gradle.kts` switched from `--release 11` to
+**3a. The agent class file was compiled to Java 17 bytecode.** Fixed
+by switching `build.gradle.kts` from `--release 11` to
 `-source 1.8 -target 1.8` (we need `sun.misc.Unsafe`, which is not in
 the `--release 8` documented API surface, but IS available with the
-older source/target flags).
-
+older source/target flags). `Agent.java` no longer directly imports
+`javax.net.ssl.SSLEngine` or directly references `Module.redefineModule`
+— both are invoked via reflection (`Class.forName("java.lang.Module")` +
+`Method.invoke`) so the agent class file is fully Java 8 compatible.
 `NativeMemory.java`, `HelloHttps.java`, `Main.java` all converted from
 `java.nio.file.Path` / `Files` to plain `java.io.File` /
 `FileInputStream` / `FileOutputStream`. `ProcessHandle.current().pid()`
-in `Main.java` replaced with the JDK-8-compatible
-`RuntimeMXBean.getName()` parse.
+replaced with the JDK-8-compatible `RuntimeMXBean.getName()` parse.
 
-The reflection-gated `redefineModule` block runs on JDK 9+ (where the
-Module class exists) and silently skips on JDK 8 (where there's no
-module system). Bootstrap-classpath append (the primary mechanism) is
-unchanged.
+After (3a) the agent attached cleanly on JDK 8 but **captured zero
+events** despite the advice firing (`wrap calls=32 emits=0`). Two
+more bugs:
+
+**3b. JNI lib was registered with the wrong classloader.**
+`Agent.premain` initialised the **app-classloader** copy of
+`NativeMemory` (via `NativeMemory.allocateMemory(8)` probe), which
+`System.load`'d libpostman_jni.so for the app-CL. The ByteBuddy advice
+(inlined into bootstrap-loaded `SSLEngineImpl`) then called
+`IoctlPacket → NativeMemory.doIoctlNative` resolving through the
+**bootstrap copy** of NativeMemory. **JDK 8's JNI symbol lookup is
+strict per-classloader** — the bootstrap copy couldn't find the
+native symbol. JDK 9+ relaxed this lookup, which is why the same code
+worked on JDK 11/17/21. Fix: load `NativeMemory` via
+`Class.forName("com.postman.insights.agent.ebpf.NativeMemory", true, null)`
+and initialise via reflection, so the bootstrap copy is the one that
+calls `System.load`.
+
+**3c. ByteBuffer covariant-return-type compile trap.** Even after
+(3a) + (3b), JDK 8 still captured zero events. Diagnosis:
+`Hooks.readBytes()` had:
+
+```java
+((ByteBuffer) view).position(start);
+((ByteBuffer) view).limit(start + len);
+```
+
+When compiled with the JDK 17 toolchain (even targeting Java 8
+bytecode), javac emits `invokevirtual ByteBuffer.position(I)Ljava/nio/ByteBuffer;`
+— the JDK-9-introduced covariant-return signature. On JDK 8 only the
+inherited `Buffer.position(I)Ljava/nio/Buffer;` exists. So the call
+throws `NoSuchMethodError` at runtime, gets caught by `readBytes`'s
+own try-catch, returns null, advice skips emit silently. Fix: cast
+to the base `Buffer` type before calling the setters:
+
+```java
+((Buffer) view).position(start);  // resolves to Buffer.position(int), exists on every JDK
+((Buffer) view).limit(start + len);
+```
+
+This is the **classic Java ByteBuffer trap** — cross-version Java
+libraries commonly hit it. Documented in detail in the comment in
+`SSLEngineInst$Hooks.readBytes()` so future contributors don't
+re-discover it.
+
+**Verification after all three fixes:**
+
+```
+JDK  8   attach=1  REQ=4  RESP=4
+JDK 11   attach=1  REQ=4  RESP=4
+JDK 17   attach=1  REQ=4  RESP=4
+JDK 21   attach=1  REQ=4  RESP=4
+```
 
 ### 4. Diagnostic counters + multi-call trace (kept in)
 
