@@ -13,6 +13,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	apidumpebpf "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-ebpf"
 	apidumpjavatls "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-javatls"
+	kubewebhook "github.com/postmanlabs/postman-insights-agent/cmd/internal/kube-webhook"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ascii"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ec2"
@@ -298,6 +299,7 @@ func init() {
 	apidumpebpf.Cmd.Hidden = true
 	rootCmd.AddCommand(apidumpebpf.Cmd)
 	rootCmd.AddCommand(apidumpjavatls.Cmd)
+	rootCmd.AddCommand(kubewebhook.Cmd)
 
 	rootCmd.AddCommand(ecs.Cmd)
 	rootCmd.AddCommand(kube.Cmd)

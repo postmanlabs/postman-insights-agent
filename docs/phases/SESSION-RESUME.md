@@ -75,17 +75,31 @@ Current Phase 5 status:
     insight: 5b.2's `isSubTypeOf(SSLEngine.class)` matcher already
     catches Netty's `JdkSslEngine`, `OpenSslEngine`, etc. Validated
     against Spring Boot 3.2 webflux → 10000/10000 captured.
-  * **5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java + JMH:** ✅ done
-    with mixed results. See [`phase-5c2-results.md`](phase-5c2-results.md).
-    * Tomcat ✅ full; Jetty 12 🟡 REQ-only (wrap path quirk — see
-      follow-up); gRPC-Java 🟡 RESP-only (h2 decoder follow-up).
-    * JDK 11/17/21 ✅ green; JDK 8 ❌ deferred (Module API).
-    * JMH deferred; 5b.3 curl-level latency is the per-call evidence.
-    * Four permanent test workloads landed in `java-agent/testdata/`.
-    * Three documented follow-ups, none blocking 5c.3.
-  * **5c.3 — Mutating admission webhook:** ❌ not started. High-risk
-    piece, deliberately isolated to its own session for safety +
-    rollback rehearsal.
+  * **5c.2 — Tomcat + Jetty + JDK matrix + gRPC-Java + JMH:** ✅ done,
+    **all gaps closed in-session**. See
+    [`phase-5c2-results.md`](phase-5c2-results.md).
+    * Spring Boot + Tomcat + Jetty 12 + gRPC-Java all capture REQ +
+      RESP under 1000-parallel stress.
+    * JDK 8 / 11 / 17 / 21 all green.
+    * `JettySslEndPointInst` added (Jetty-specific endpoint hook).
+    * `SSLEngineInst` extended to 5 method signatures (covers Netty's
+      OpenSslEngine 2-arg overrides + array-array variants).
+    * Agent now compiles to Java 8 bytecode; `Module.redefineModule`
+      via reflection.
+    * JMH-precise per-call benchmark still deferred; 5b.3 curl-level
+      evidence is sufficient for now.
+  * **5c.3 — Mutating admission webhook:** 🟡 in progress (split into
+    5c.3a/b/c, same pattern as 5b and 5c.2).
+    * **5c.3a — Go webhook code:** ✅ done. See
+      [`phase-5c3a-results.md`](phase-5c3a-results.md). New package
+      `cmd/internal/kube-webhook/` with HTTPS server + AdmissionReview
+      handler + Java-workload detection + JSON Patch construction.
+      25 tests pass in 1 s, zero cluster risk. Includes a property-style
+      test proving the webhook NEVER returns `Allowed: false`.
+    * **5c.3b — Kind cluster e2e:** ❌ not started. Needs container
+      image build, K8s manifests, `failurePolicy: Ignore` verification,
+      rehearsed rollback.
+    * **5c.3c — Helm + production docs:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
 now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the

@@ -21,6 +21,7 @@ require (
 	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
 	github.com/cilium/ebpf v0.18.0
 	github.com/containernetworking/plugins v1.5.1
+	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/golang/gddo v0.0.0-20210115222349-20d68f94ee1f
 	github.com/golang/mock v1.4.4
 	github.com/golang/protobuf v1.5.4
