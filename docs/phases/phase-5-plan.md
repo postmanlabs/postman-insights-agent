@@ -341,7 +341,40 @@ Regardless:
 * JMH benchmark harness — `SSLEngine.wrap`/`unwrap` overhead in
   microseconds. Target: ≤ 50 µs added per call.
 
-### Session 5c.3 — Mutating admission webhook (~1 session)
+### Session 5c.3 — Mutating admission webhook (~1-2 sessions, split into 5c.3a/b/c)
+
+**Why split:** 5c.3 has the highest blast radius of any session in the
+whole program — a misconfigured `MutatingWebhookConfiguration` with
+`failurePolicy: Fail` can break ALL pod creation cluster-wide. Splitting
+lets us land the Go code (zero cluster risk) separately from kubeapi
+deployment.
+
+#### Session 5c.3a — Go webhook code + unit tests ✅
+
+**Outcome:** ✅ completed in this session. Zero cluster risk. See
+[`phase-5c3a-results.md`](phase-5c3a-results.md).
+
+* New package `cmd/internal/kube-webhook/` with HTTP server + AdmissionReview
+  handler + Java-workload detection + JSON Patch construction.
+* Hidden CLI subcommand `postman-insights-agent kube-webhook`.
+* **25 tests pass in 1.06 s** (18 detection + 4 admission + 6 patch + 3
+  real HTTP server). Includes a `NeverGates` property test that proves
+  the webhook returns `Allowed: true` even on garbage input.
+* Smoke-verified by curl-POSTing a real AdmissionReview to a running
+  webhook and decoding the resulting JSON Patch.
+
+#### Session 5c.3b — Kind cluster e2e (next session)
+
+Goal: deploy the webhook to the existing kind cluster, verify a Java
+pod gets mutated, verify `failurePolicy: Ignore` actually fails open
+when the webhook is down.
+
+#### Session 5c.3c — Helm + production docs (after 5c.3b)
+
+Helm chart, cert-manager bootstrap pattern, production deployment
+docs, rehearsed rollback runbook.
+
+#### Original 5c.3 brief (kept for reference)
 
 **Goal:** auto-inject `JAVA_TOOL_OPTIONS=-javaagent:/postman/postman-java-agent.jar`
 into pods in `decrypt: true` namespaces with Java workloads.

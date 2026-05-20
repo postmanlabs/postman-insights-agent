@@ -14,6 +14,7 @@ import (
 	apidumpebpf "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-ebpf"
 	apidumpgotls "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-gotls"
 	apidumpjavatls "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-javatls"
+	kubewebhook "github.com/postmanlabs/postman-insights-agent/cmd/internal/kube-webhook"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ascii"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ec2"
@@ -300,6 +301,7 @@ func init() {
 	rootCmd.AddCommand(apidumpebpf.Cmd)
 	rootCmd.AddCommand(apidumpgotls.Cmd)
 	rootCmd.AddCommand(apidumpjavatls.Cmd)
+	rootCmd.AddCommand(kubewebhook.Cmd)
 
 	rootCmd.AddCommand(ecs.Cmd)
 	rootCmd.AddCommand(kube.Cmd)

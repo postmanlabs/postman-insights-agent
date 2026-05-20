@@ -88,9 +88,18 @@ Current Phase 5 status:
       via reflection.
     * JMH-precise per-call benchmark still deferred; 5b.3 curl-level
       evidence is sufficient for now.
-  * **5c.3 — Mutating admission webhook:** ❌ not started. High-risk
-    piece, deliberately isolated to its own session for safety +
-    rollback rehearsal.
+  * **5c.3 — Mutating admission webhook:** 🟡 in progress (split into
+    5c.3a/b/c, same pattern as 5b and 5c.2).
+    * **5c.3a — Go webhook code:** ✅ done. See
+      [`phase-5c3a-results.md`](phase-5c3a-results.md). New package
+      `cmd/internal/kube-webhook/` with HTTPS server + AdmissionReview
+      handler + Java-workload detection + JSON Patch construction.
+      25 tests pass in 1 s, zero cluster risk. Includes a property-style
+      test proving the webhook NEVER returns `Allowed: false`.
+    * **5c.3b — Kind cluster e2e:** ❌ not started. Needs container
+      image build, K8s manifests, `failurePolicy: Ignore` verification,
+      rehearsed rollback.
+    * **5c.3c — Helm + production docs:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
 now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the
