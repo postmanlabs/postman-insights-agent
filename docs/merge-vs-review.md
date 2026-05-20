@@ -1,5 +1,17 @@
 # Path forward — review vs. land-and-test
 
+> **⚠️ HISTORICAL.** This doc captures the trade-off analysis from
+> when there were two open PRs (#173 + #174). **PR #174 was closed** as
+> a strict subset of PR #173, so the "choose one of (a)(b)(c)" decision
+> below is no longer live. The active mode is **single unified branch +
+> external eBPF consultant review on PR #173**, per the recommendation
+> in this doc's Option B.
+>
+> Kept for historical traceability. See
+> [`reviewer-guide.md`](reviewer-guide.md) for the up-to-date review
+> instructions.
+
+
 **Question on the table:** PR #174 and PR #173 together are ~22k LOC of
 diff. Do we (a) put them through full code review before anything
 lands, or (b) merge to a long-lived branch / `main` and let people

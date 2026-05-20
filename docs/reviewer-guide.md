@@ -19,27 +19,23 @@ this once; you won't need it again per-PR).
 
 Five phases were planned. As of today the state is:
 
-| Phase | What it does | Status | Lives in |
+| Phase | What it does | Status | Results doc |
 | --- | --- | :---: | --- |
-| 1 | libssl spike — decrypted bytes reach `trace.Collector` | ✅ | PR #174 |
-| 2 | Production integration into `apidump` + kind e2e | ✅ | PR #174 |
-| 3 | Go support via DWARF + `crypto/tls` uprobes + HTTP/2 + gRPC | ✅ ~95% | PR #173 |
-| 4 | Privacy & redaction (the 8 design-doc gaps) | ✅ 5/8 + dry-run | PR #173 |
-| 5a | Java eBPF foundation — `sys_ioctl` kprobe + C harness | ✅ | PR #173 (local — not yet pushed at time of writing) |
-| 5b/5c | Java agent + framework matrix + admission webhook | ❌ next sessions | future PRs |
+| 1 | libssl spike — decrypted bytes reach `trace.Collector` | ✅ | [`phase-1-results.md`](phases/phase-1-results.md) |
+| 2 | Production integration into `apidump` + kind e2e | ✅ | [`phase-2-results.md`](phases/phase-2-results.md) |
+| 3 | Go support via DWARF + `crypto/tls` uprobes + HTTP/2 + gRPC | ✅ ~95% | [`phase-3-results.md`](phases/phase-3-results.md) |
+| 4 | Privacy & redaction (the 8 design-doc gaps) | ✅ 5/8 + dry-run + regression corpus | [`phase-4-results.md`](phases/phase-4-results.md) |
+| 5a | Java eBPF foundation — `sys_ioctl` kprobe + C harness | ✅ | [`phase-5a-results.md`](phases/phase-5a-results.md) |
+| 5b.1 | Java→ioctl bridge spike (JNI + off-heap) | ✅ | [`phase-5b1-results.md`](phases/phase-5b1-results.md) |
+| 5b.2 | ByteBuddy + `SSLEngineInst` on JDK 17 | ✅ | [`phase-5b2-results.md`](phases/phase-5b2-results.md) |
+| 5b.3 | Hardening — 10k soak, crash-resilience, latency | ✅ | [`phase-5b3-results.md`](phases/phase-5b3-results.md) |
+| 5c.1 | Spring Boot webflux (Netty) | ✅ | [`phase-5c1-results.md`](phases/phase-5c1-results.md) |
+| 5c.2 | Tomcat + Jetty 12 + gRPC-Java + JDK 8/11/17/21 matrix | ✅ | [`phase-5c2-results.md`](phases/phase-5c2-results.md) |
+| 5c.3 | Mutating admission webhook | ❌ next session | [`phase-5-plan.md`](phases/phase-5-plan.md) §5c.3 |
 
-Per-phase results docs exist for each green row above — they are the
-**single most useful thing to read** before reviewing the code:
-
-```
-docs/phases/phase-1-results.md
-docs/phases/phase-2-results.md
-docs/phases/phase-3-results.md
-docs/phases/phase-4-results.md
-docs/phases/phase-5a-results.md
-```
-
-Each lists exit criteria, what passed, what didn't, and the evidence.
+Per-phase results docs are the **single most useful thing to read**
+before reviewing code. Each lists exit criteria, what passed, what
+didn't, and the evidence.
 
 ---
 
@@ -48,21 +44,15 @@ Each lists exit criteria, what passed, what didn't, and the evidence.
 ```
 main
   │
-  ├─ PR #174 ─ feat/https-capture-ebpf-libssl  (17 commits, +8013/-33, 70 files)
-  │            "the libssl path — Phases 1+2"
-  │            STATUS: open, but strict subset of PR #173. Can be closed.
+  ├─ (PR #174 was closed as a strict subset of PR #173 — historical reference only)
   │
-  └─ PR #173 ─ feat/https-capture-ebpf         (35+ commits, ~+18k/-54, ~140 files)
-               "Phases 1–5b complete"
+  └─ PR #173 ─ feat/https-capture-ebpf         (~40 commits, ~+19k LOC across ~150 files)
+               "Phases 1–5c.2 complete (5c.3 webhook deferred to a separate session)"
                ← REVIEW HERE. Single integration surface.
 ```
 
-The branches are content-equivalent for everything in PR #174 — PR #173's
-branch is a strict superset (it contains every Phase 1+2 change plus all the
-later phases). There's nothing in PR #174 that isn't already in PR #173.
-
-Reviewers don't need to context-switch between PRs. **All review activity
-happens on PR #173 / the `feat/https-capture-ebpf` branch.**
+Reviewers don't need to look at any other PR. **All review activity happens
+on PR #173 / the `feat/https-capture-ebpf` branch.**
 
 ---
 
