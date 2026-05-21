@@ -41,8 +41,10 @@ Paused mid-item-2 to step away. **Latest pushed commit:** `dede34c`
 | 1 | ByteBuddy 1.14.13 → 1.17.5 + Shadow plugin bump (closes runbook LIMIT-1) | ✅ committed `dede34c`, pushed |
 | 2 | `keytool`/`jar`/`javac` subprocess agent-attach skip (closes LIMIT-2) | ✅ committed `bac822a`, pushed |
 | 3 | JMH per-call microsecond benchmark | ✅ committed `17337a8`, pushed |
-| 4 | Per-namespace `privacyMode` override (full enforcement) | ✅ this commit |
-| 5 | CI smoke test for kind e2e flow | ⏭️ **NEXT** |
+| 4 | Per-namespace `privacyMode` override (full enforcement) | ✅ committed `5fe23be`, pushed |
+| 5 | CI smoke test for Helm chart (lint + render + safety-property checks) | ✅ this commit |
+
+**Follow-up backlog: complete. The program is at steady state.**
 
 #### Resume checklist for item 2
 
