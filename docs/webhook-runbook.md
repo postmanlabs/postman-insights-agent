@@ -265,6 +265,7 @@ helm upgrade postman-insights-webhook ./deployment/helm/postman-insights-webhook
 
 ## Known limitations
 
+<<<<<<< HEAD
 ### LIMIT-1: ByteBuddy can't parse JDK 25 class files (RESOLVED)
 
 **Status:** Resolved in commit `dede34c`. The shaded ByteBuddy was bumped
@@ -277,6 +278,9 @@ and HTTPS-from-inside-container curls return 200.
 The historical entry is kept below for context.
 
 #### Historical: ByteBuddy can't parse JDK 25 class files
+=======
+### LIMIT-1: ByteBuddy can't parse JDK 25 class files
+>>>>>>> 0014e33 (feat(kube-webhook): phase 5c.3c — Helm chart + SRE runbook)
 
 Surfaced in phase 5c.3b. The shaded `byte-buddy` in the agent JAR
 officially supports up to JDK 22 (class file version 66). JDK 25 (class
@@ -299,6 +303,7 @@ installed — instrumentation produces no events for that pod.
 **Permanent fix:** bump `byte-buddy` and `byte-buddy-agent` versions in
 the Java agent build. Tracked for a future agent release.
 
+<<<<<<< HEAD
 ### LIMIT-2: `keytool` and `jar` subprocesses fail agent attach (RESOLVED)
 
 **Status:** Resolved. `Agent.attach` now has an early-exit guard
@@ -320,6 +325,9 @@ path normalisation).
 The historical entry is kept below for context.
 
 #### Historical: `keytool` / `jar` / `javac` subprocesses fail agent attach
+=======
+### LIMIT-2: `keytool` and `jar` subprocesses fail agent attach
+>>>>>>> 0014e33 (feat(kube-webhook): phase 5c.3c — Helm chart + SRE runbook)
 
 Surfaced in phase 5c.3b. When an instrumented JVM shells out to
 `keytool` (or `jar` / `javac`), the subprocess inherits

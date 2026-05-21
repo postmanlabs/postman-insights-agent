@@ -23,8 +23,10 @@ and pick up where the last working session left off.
 | 5c.1 (Spring Boot) | ✅ done | |
 | 5c.2 (Tomcat / Jetty / gRPC / JDK 8/11/17/21) | ✅ done | All 4 frameworks + all 4 JDKs verified |
 | 5c.3a (Go webhook code + 25 tests) | ✅ done | Prior session. 25 PASS / 0 FAIL in 1 s. Zero cluster risk. |
-| **5c.3b (kind cluster e2e)** | ✅ **done** | This session. Webhook deployed, Java pod mutated, **5 REQ + 5 RESP captured end-to-end in cluster**, `failurePolicy: Ignore` proven by scale-to-zero test. See [`phase-5c3b-results.md`](phase-5c3b-results.md). |
-| **5c.3c (Helm + production docs)** | ⏭️ **NEXT** | Convert hand-rolled YAML → Helm chart; cert-manager bootstrap; SRE rollback runbook. |
+| 5c.3b (kind cluster e2e) | ✅ done | Prior session. Webhook deployed, Java pod mutated, 5 REQ + 5 RESP captured end-to-end in cluster, `failurePolicy: Ignore` proven by scale-to-zero test. See [`phase-5c3b-results.md`](phase-5c3b-results.md). |
+| **5c.3c (Helm + production docs)** | ✅ **done** | This session. Helm chart at `deployment/helm/postman-insights-webhook/` with `secret` and `cert-manager` modes. Validated end-to-end against kind: same 5 REQ + 5 RESP captured via the Helm-deployed webhook. SRE runbook at `docs/webhook-runbook.md`. See [`phase-5c3c-results.md`](phase-5c3c-results.md). |
+
+**5c.3 is feature-complete. The HTTPS-capture-via-eBPF Java + webhook track is done.**
 
 ### Verification rules carried forward (LEARNED THE HARD WAY — do not relearn)
 
@@ -63,33 +65,35 @@ and pick up where the last working session left off.
 * **nginx HTTPS on 8443** was started + killed during the audit. Should
   be gone, but ALWAYS verify with `ss -tlnp | grep 8443` before binding.
 
-### Concrete next action for 5c.3c (Helm + production docs)
+### Remaining work (none on the Java + webhook track)
 
-1. Convert `test/kind/webhook/*.yaml` → a Helm chart at
-   `deployment/helm/postman-insights-webhook/` with values for:
-   image tag, namespace, init image, namespaceSelector label key/value,
-   cert source (cert-manager Issuer vs hand-rolled Secret).
-2. Bootstrap pattern via cert-manager `Certificate` + `Issuer` so production
-   doesn't ship dev certs. Document the alternative (existing Secret) for
-   air-gapped clusters.
-3. SRE runbook: install, upgrade (Deployment image pin → rolling restart),
-   rollback (single `kubectl delete mutatingwebhookconfiguration`),
-   troubleshooting (check `/healthz`, check kube-apiserver logs for
-   webhook timeouts).
-4. Document the two bugs surfaced in 5c.3b:
-   * ByteBuddy can't parse JDK 25 class files (workaround: pin to JDK 21
-     base images until ByteBuddy bump).
-   * `keytool` subprocess fails agent attach (workaround: no impact —
-     primary JVM still attaches; real fix is to scope `JAVA_TOOL_OPTIONS`).
-5. Add a CI smoke test that runs the kind e2e flow in a docker-in-docker
-   pipeline (deferred if too expensive).
+The whole Java + webhook story is shipped. What's left in the program
+belongs to other tracks, all tracked separately:
+
+* **Privacy gaps 2 and 4** — partial; production-readiness gated on these.
+  Not blocking the existing capture story; see
+  `docs/https-capture-design.md` §7.3.
+* **JMH per-call microsecond benchmark** — deferred. The 5b.3 curl-level
+  evidence is sufficient until a customer-visible perf complaint forces
+  tighter measurement.
+* **ByteBuddy JDK 25 bump** — surfaced in 5c.3b, documented in
+  `docs/webhook-runbook.md` LIMIT-1. Workaround: pin to JDK ≤ 21 base
+  images. Permanent fix is a future Java agent release.
+* **`keytool` subprocess agent-attach skip** — surfaced in 5c.3b,
+  documented in `docs/webhook-runbook.md` LIMIT-2. No end-user impact;
+  permanent fix is a future Java agent release.
+* **CI smoke test for the kind e2e flow** — docker-in-docker pipeline.
+  Deferred if too expensive; the manual reproduction steps in
+  `phase-5c3c-results.md` are the fallback.
 
 ### Things I should NOT redo post-compaction
 
-* Re-verify phases 1–5c.3b. They're done and verified.
+* Re-verify phases 1–5c.3c. They're done and verified.
 * Re-derive the Dockerfile.agent JAR-bundling line. Already in `test/kind/Dockerfile.agent`.
 * Re-generate the dev CA / webhook cert. They're in `test/kind/webhook/`.
 * Re-prove `failurePolicy: Ignore` works. Phase 5c.3b proved it with a real scale-to-zero test.
+* Re-design the Helm chart. It's at `deployment/helm/postman-insights-webhook/` and lint-clean.
+* Re-prove Helm and hand-rolled YAMLs produce equivalent results. Phase 5c.3c verified with identical capture stats (5 REQ + 5 RESP, `emitted=15 bytes=1105`).
 * Re-test all four frameworks. We have phase-5c2-results.md.
 * Re-test JDK 8/11/17/21. Same.
 * Revisit the SSLEngineInst's 5-signature matcher. It's correct.

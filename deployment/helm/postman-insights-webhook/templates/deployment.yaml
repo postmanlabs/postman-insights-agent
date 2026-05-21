@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postman-insights-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "postman-insights-webhook.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "postman-insights-webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "postman-insights-webhook.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "postman-insights-webhook.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: webhook
+        image: {{ include "postman-insights-webhook.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args:
+        - kube-webhook
+        - --addr=:8443
+        - --tls-cert=/etc/webhook-tls/tls.crt
+        - --tls-key=/etc/webhook-tls/tls.key
+        - --init-image={{ include "postman-insights-webhook.initImage" . }}
+        - --java-image-regex={{ .Values.mutation.javaImageRegex }}
+        ports:
+        - name: https
+          containerPort: 8443
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /healthz
+            port: https
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /healthz
+            port: https
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          {{- toYaml .Values.containerSecurityContext | nindent 10 }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        volumeMounts:
+        - name: tls
+          mountPath: /etc/webhook-tls
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tls
+        secret:
+          {{- if eq .Values.tls.mode "secret" }}
+          secretName: {{ required ".Values.tls.secret.name is required when tls.mode=secret" .Values.tls.secret.name }}
+          {{- else if eq .Values.tls.mode "cert-manager" }}
+          # cert-manager-managed Secret. The Certificate resource creates
+          # and rotates it; we just point at its name here.
+          secretName: {{ include "postman-insights-webhook.fullname" . }}-tls
+          {{- else }}
+          {{- fail (printf "Unknown tls.mode %q (expected: secret | cert-manager)" .Values.tls.mode) }}
+          {{- end }}
+      # /tmp emptyDir lets us keep readOnlyRootFilesystem: true while
+      # letting the agent write its own temp files.
+      - name: tmp
+        emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
