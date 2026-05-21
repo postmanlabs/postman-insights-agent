@@ -1,0 +1,40 @@
+# Apply AFTER webhook-deployment.yaml AND after the webhook pod is Ready.
+#
+# CRITICAL SAFETY: failurePolicy: Ignore from line 1. If the webhook is
+# unreachable for any reason, pod creation proceeds without mutation
+# rather than being blocked. This is the only acceptable failure mode
+# for a first-version webhook.
+#
+# ROLLBACK (THE ONLY ONE THAT MATTERS — type before applying):
+#   kubectl delete mutatingwebhookconfiguration postman-insights-webhook
+#
+# This single command removes ALL admission-webhook involvement in pod
+# creation in the cluster, restoring the pre-5c.3b state.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: postman-insights-webhook
+webhooks:
+- name: postman-insights-webhook.postman.dev
+  clientConfig:
+    service:
+      name: postman-insights-webhook
+      namespace: postman-insights
+      path: /mutate
+      port: 443
+    caBundle: __CA_BUNDLE_B64__
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+    scope: "Namespaced"
+  failurePolicy: Ignore
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  timeoutSeconds: 5
+  reinvocationPolicy: Never
+  namespaceSelector:
+    matchLabels:
+      postman.dev/insights: enabled

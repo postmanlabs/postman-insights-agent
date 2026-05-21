@@ -10,7 +10,8 @@ and pick up where the last working session left off.
 
 **Branch:** `feat/https-capture-ebpf` (rolling PR #173). PR #174 is
 **closed** (was a subset of #173).
-**Last commit:** `5a30fa8` — phase 5c.3a (Go webhook code + 25 tests).
+**Last commit:** see git log; phase 5c.3b (kind cluster e2e) shipped this session.
+**Prior commit:** `5a30fa8` — phase 5c.3a (Go webhook code + 25 tests).
 **Everything is pushed to `origin`.**
 
 ### Phase status (true as of compaction)
@@ -21,9 +22,9 @@ and pick up where the last working session left off.
 | 5a, 5b.1, 5b.2, 5b.3 | ✅ done | Verified live with HelloHttps |
 | 5c.1 (Spring Boot) | ✅ done | |
 | 5c.2 (Tomcat / Jetty / gRPC / JDK 8/11/17/21) | ✅ done | All 4 frameworks + all 4 JDKs verified |
-| **5c.3a (Go webhook code + 25 tests)** | ✅ done | This session. 25 PASS / 0 FAIL in 1 s. Zero cluster risk. |
-| **5c.3b (kind cluster e2e)** | ⏭️ **NEXT** | Deploy webhook to existing kind cluster + verify Java pod mutation + verify `failurePolicy: Ignore` actually fails open. Highest-blast-radius work in the program. |
-| 5c.3c (Helm + production docs) | ❌ | After 5c.3b. |
+| 5c.3a (Go webhook code + 25 tests) | ✅ done | Prior session. 25 PASS / 0 FAIL in 1 s. Zero cluster risk. |
+| **5c.3b (kind cluster e2e)** | ✅ **done** | This session. Webhook deployed, Java pod mutated, **5 REQ + 5 RESP captured end-to-end in cluster**, `failurePolicy: Ignore` proven by scale-to-zero test. See [`phase-5c3b-results.md`](phase-5c3b-results.md). |
+| **5c.3c (Helm + production docs)** | ⏭️ **NEXT** | Convert hand-rolled YAML → Helm chart; cert-manager bootstrap; SRE rollback runbook. |
 
 ### Verification rules carried forward (LEARNED THE HARD WAY — do not relearn)
 
@@ -62,29 +63,33 @@ and pick up where the last working session left off.
 * **nginx HTTPS on 8443** was started + killed during the audit. Should
   be gone, but ALWAYS verify with `ss -tlnp | grep 8443` before binding.
 
-### Concrete next action for 5c.3b
+### Concrete next action for 5c.3c (Helm + production docs)
 
-1. Survey: `find . -name 'Dockerfile*'`, check `test/kind/` for existing
-   manifests, look at `cmd/internal/kube/daemonset/templates/` patterns.
-2. Build a container image bundling the Go agent binary + the Java agent
-   JAR (`/opt/postman-java-agent.jar`).
-3. Generate a self-signed TLS cert for the webhook (kind-only; cert-manager
-   pattern documented for 5c.3c).
-4. Write YAML: Deployment + Service + RBAC + MutatingWebhookConfiguration
-   with **`failurePolicy: Ignore` from line 1** (critical safety net).
-5. Apply to existing kind cluster.
-6. Create a Java test pod in a labeled namespace.
-7. `kubectl describe pod` → verify `JAVA_TOOL_OPTIONS` env, init container,
-   volume mount all present.
-8. **Critical test:** take the webhook down (`kubectl scale deploy --replicas=0`)
-   and confirm new pod creation STILL WORKS (proves `failurePolicy: Ignore`).
-9. **Have rollback command typed out before applying anything:**
-   `kubectl delete mutatingwebhookconfiguration postman-insights-agent`
-10. Results doc → commit → push.
+1. Convert `test/kind/webhook/*.yaml` → a Helm chart at
+   `deployment/helm/postman-insights-webhook/` with values for:
+   image tag, namespace, init image, namespaceSelector label key/value,
+   cert source (cert-manager Issuer vs hand-rolled Secret).
+2. Bootstrap pattern via cert-manager `Certificate` + `Issuer` so production
+   doesn't ship dev certs. Document the alternative (existing Secret) for
+   air-gapped clusters.
+3. SRE runbook: install, upgrade (Deployment image pin → rolling restart),
+   rollback (single `kubectl delete mutatingwebhookconfiguration`),
+   troubleshooting (check `/healthz`, check kube-apiserver logs for
+   webhook timeouts).
+4. Document the two bugs surfaced in 5c.3b:
+   * ByteBuddy can't parse JDK 25 class files (workaround: pin to JDK 21
+     base images until ByteBuddy bump).
+   * `keytool` subprocess fails agent attach (workaround: no impact —
+     primary JVM still attaches; real fix is to scope `JAVA_TOOL_OPTIONS`).
+5. Add a CI smoke test that runs the kind e2e flow in a docker-in-docker
+   pipeline (deferred if too expensive).
 
 ### Things I should NOT redo post-compaction
 
-* Re-verify phases 1–5c.3a. They're done and verified.
+* Re-verify phases 1–5c.3b. They're done and verified.
+* Re-derive the Dockerfile.agent JAR-bundling line. Already in `test/kind/Dockerfile.agent`.
+* Re-generate the dev CA / webhook cert. They're in `test/kind/webhook/`.
+* Re-prove `failurePolicy: Ignore` works. Phase 5c.3b proved it with a real scale-to-zero test.
 * Re-test all four frameworks. We have phase-5c2-results.md.
 * Re-test JDK 8/11/17/21. Same.
 * Revisit the SSLEngineInst's 5-signature matcher. It's correct.
