@@ -33,4 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap0.8 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
+# Java agent JAR — used by the kube-webhook init container to seed the
+# shared volume for instrumented pods. Built on the host via
+# `cd java-agent && gradle shadowJar`; if missing the docker build fails fast.
+COPY java-agent/build/libs/postman-java-agent.jar /opt/postman-java-agent.jar
 ENTRYPOINT ["/usr/local/bin/postman-insights-agent"]

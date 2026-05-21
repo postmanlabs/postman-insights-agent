@@ -4,30 +4,120 @@
 should be able to read just this file + the three doc references below
 and pick up where the last working session left off.
 
-**Last updated:** end of session that delivered Phase 3 tasks #1 (HTTP/2)
-and #2 (Read via RET probing).
+---
+
+## 🔴 PRE-COMPACTION HANDOFF (read this first post-compaction)
+
+**Branch:** `feat/https-capture-ebpf` (rolling PR #173). PR #174 is
+**closed** (was a subset of #173).
+**Last commit:** see git log; phase 5c.3b (kind cluster e2e) shipped this session.
+**Prior commit:** `5a30fa8` — phase 5c.3a (Go webhook code + 25 tests).
+**Everything is pushed to `origin`.**
+
+### Phase status (true as of compaction)
+
+| Phase | State | Notes |
+|---|:---:|---|
+| 1, 2, 3, 4 | ✅ done | All re-verified live this session against nginx + /tmp/gohttps + unit tests |
+| 5a, 5b.1, 5b.2, 5b.3 | ✅ done | Verified live with HelloHttps |
+| 5c.1 (Spring Boot) | ✅ done | |
+| 5c.2 (Tomcat / Jetty / gRPC / JDK 8/11/17/21) | ✅ done | All 4 frameworks + all 4 JDKs verified |
+| 5c.3a (Go webhook code + 25 tests) | ✅ done | Prior session. 25 PASS / 0 FAIL in 1 s. Zero cluster risk. |
+| **5c.3b (kind cluster e2e)** | ✅ **done** | This session. Webhook deployed, Java pod mutated, **5 REQ + 5 RESP captured end-to-end in cluster**, `failurePolicy: Ignore` proven by scale-to-zero test. See [`phase-5c3b-results.md`](phase-5c3b-results.md). |
+| **5c.3c (Helm + production docs)** | ⏭️ **NEXT** | Convert hand-rolled YAML → Helm chart; cert-manager bootstrap; SRE rollback runbook. |
+
+### Verification rules carried forward (LEARNED THE HARD WAY — do not relearn)
+
+1. **HTTP 200 from curl ≠ agent captured.** Always check the actual
+   capture events in `apidump-*` output. (Cost: 30 min of
+   "why is JDK 8 broken?" when nginx was responding instead of HelloHttps.)
+2. **`pkill -f <pattern>` matches your own shell.** It killed the docker-exec
+   bash session twice in one session. Use `pgrep -x <name>` + `xargs kill -9`
+   instead.
+3. **Every `apidump-*` command MUST have `--duration`.** Otherwise it runs as
+   a daemon waiting for SIGINT and the test hangs. User aborted a runaway
+   command at 2552s mid-session because of this.
+4. **Check `ss -tlnp` BEFORE assuming a workload bound its port.** Multiple
+   tests this session were contaminated by leftover nginx / kind-cluster
+   processes on 8443.
+5. **Between JVM tests, always:** `for p in $(pgrep -x java); do kill -9 $p; done; sleep 2`.
+6. **`kind-pia-https-test` cluster is alive and emitting traffic.** It will
+   show up in any libssl-path capture. Not a bug.
+7. **Don't claim a phase is done unless you actually verified events flowed.**
+   The JDK 8 episode: I'd claimed "✅ attach=1 REQ=3 RESP=3" but the REQ/RESP
+   was a leftover Spring Boot JVM responding, while our JDK 8 HelloHttps had
+   `BindException`'d silently. User caught it.
+
+### Dev environment state
+
+* **Docker container `pia-bpf-dev`** has: JDK 17 (default) at
+  `/usr/lib/jvm/default-java`; JDK 8/11/21 at `/opt/jdks/jdk-{8,11,21}/`;
+  Gradle 8.7; clang/libbpf/bpftool; mockgen at `/go/bin/mockgen` (export
+  `PATH=/usr/local/go/bin:/go/bin:$PATH` in any docker-exec bash).
+* **Kind cluster `pia-https-test`** has been running for days. Pods in
+  `team-py` / `team-node` / `team-srv` namespaces; agent DaemonSet in
+  `postman-insights` namespace. `kubectl` is NOT installed in the dev
+  container yet — 5c.3b will need to install it.
+* **/tmp test fixtures** already exist: `gohttps`, `goclient`,
+  `spring-boot-https-keystore.p12`, `grpc-cert.pem`, `grpc-key.pem`.
+* **nginx HTTPS on 8443** was started + killed during the audit. Should
+  be gone, but ALWAYS verify with `ss -tlnp | grep 8443` before binding.
+
+### Concrete next action for 5c.3c (Helm + production docs)
+
+1. Convert `test/kind/webhook/*.yaml` → a Helm chart at
+   `deployment/helm/postman-insights-webhook/` with values for:
+   image tag, namespace, init image, namespaceSelector label key/value,
+   cert source (cert-manager Issuer vs hand-rolled Secret).
+2. Bootstrap pattern via cert-manager `Certificate` + `Issuer` so production
+   doesn't ship dev certs. Document the alternative (existing Secret) for
+   air-gapped clusters.
+3. SRE runbook: install, upgrade (Deployment image pin → rolling restart),
+   rollback (single `kubectl delete mutatingwebhookconfiguration`),
+   troubleshooting (check `/healthz`, check kube-apiserver logs for
+   webhook timeouts).
+4. Document the two bugs surfaced in 5c.3b:
+   * ByteBuddy can't parse JDK 25 class files (workaround: pin to JDK 21
+     base images until ByteBuddy bump).
+   * `keytool` subprocess fails agent attach (workaround: no impact —
+     primary JVM still attaches; real fix is to scope `JAVA_TOOL_OPTIONS`).
+5. Add a CI smoke test that runs the kind e2e flow in a docker-in-docker
+   pipeline (deferred if too expensive).
+
+### Things I should NOT redo post-compaction
+
+* Re-verify phases 1–5c.3b. They're done and verified.
+* Re-derive the Dockerfile.agent JAR-bundling line. Already in `test/kind/Dockerfile.agent`.
+* Re-generate the dev CA / webhook cert. They're in `test/kind/webhook/`.
+* Re-prove `failurePolicy: Ignore` works. Phase 5c.3b proved it with a real scale-to-zero test.
+* Re-test all four frameworks. We have phase-5c2-results.md.
+* Re-test JDK 8/11/17/21. Same.
+* Revisit the SSLEngineInst's 5-signature matcher. It's correct.
+* Reverse the JettySslEndPointInst. It's necessary (Jetty 12's `wrap` path
+  has `consumed=0` for data; the framework-direct hook is the right fix).
+* Touch `Hooks.readBytes` without preserving the `((Buffer) view).position(start)`
+  cast — the cast is critical for JDK 8 (covariant return type trap).
+
+### Outstanding documented deferrals (intentional, not bugs)
+
+* gRPC h2 produces 2 REQ events per RPC — downstream dedup by stream-id.
+* JMH per-call microsecond benchmark — 5b.3 curl-level evidence is
+  sufficient until we have a customer-visible reason for tighter bounds.
+* Privacy gaps 2 and 4 still partial (5/8 + dry-run + corpus is the
+  current production-readiness bar).
 
 ---
 
-## Mandatory reading before resuming
-
-1. [`https-capture-design.md`](../https-capture-design.md) — the full
-   architecture. 30 min read.
-2. [`phase-2-results.md`](phase-2-results.md) — what Phase 2 actually
-   shipped (5 of 6 exit criteria via the kind-cluster demo; the CRI+
-   cgroup-ns inode pattern for namespace filtering).
-3. [`phase-3-results.md`](phase-3-results.md) — what Phase 3 has so far
-   and the seven remaining tasks in priority order.
-
-## Where we are
+## Where we are (legacy status table — see PRE-COMPACTION HANDOFF above for live state)
 
 | Phase | Status |
 |---|---|
 | 1 — Spike OpenSSL → pipeline | ✅ Done |
-| 2 — Production integration into `apidump` | ✅ Done (all 6 exit criteria) |
-| 3 — Go via DWARF inspector + crypto/tls uprobes | 🟡 ~65% (foundation + HTTP/2 + Read RET probing done) |
-| 4 — Privacy hardening (8 gaps from design §7.3) | ❌ Not started — gates production |
-| 5 — Java agent + ioctl bridge + webhook | ❌ Not started |
+| 2 — Production integration into `apidump` | ✅ Done |
+| 3 — Go via DWARF inspector + crypto/tls uprobes | ✅ ~95% |
+| 4 — Privacy hardening | ✅ 5/8 + dry-run + corpus |
+| 5a + 5b + 5c.1 + 5c.2 + 5c.3a | ✅ Done |
+| 5c.3b (kind e2e) + 5c.3c (Helm) | ⏭️ Next |
 
 Branch: `feat/https-capture-ebpf` (all work) — rolling PR is **#173**.
 **Do not create sub-branches**; the user wants a single rolling PR.
