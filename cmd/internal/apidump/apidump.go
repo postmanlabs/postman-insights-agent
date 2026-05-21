@@ -57,6 +57,7 @@ var (
 	enableHTTPSCapture    bool
 	httpsLibraries        []string
 	httpsTargetNamespaces []string
+	httpsDiscoveryConfig  string
 	httpsBodySizeCap      uint32
 	httpsCaptureMode      string
 	httpsCBPFExcludePort  uint16
@@ -342,7 +343,7 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		// HTTPS-via-eBPF.
 		EnableHTTPSCapture:    enableHTTPSCapture,
 		HTTPSLibraries:        httpsLibraries,
-		HTTPSTargetNamespaces: httpsTargetNamespaces,
+		HTTPSTargetNamespaces: mergeHTTPSTargetNamespaces(httpsTargetNamespaces, httpsDiscoveryConfig),
 		HTTPSBodySizeCap:      httpsBodySizeCap,
 		HTTPSCaptureMode:      httpsCaptureMode,
 		HTTPSCBPFExcludePort:  httpsCBPFExcludePort,
@@ -554,7 +555,16 @@ func init() {
 		&httpsTargetNamespaces,
 		"https-target-namespaces",
 		nil,
-		"Kubernetes namespaces to attach HTTPS uprobes in. Empty = all namespaces in scope.",
+		"Kubernetes namespaces to attach HTTPS uprobes in. Empty = all namespaces in scope. "+
+			"For per-namespace opt-in/out via YAML, use --https-discovery-config.",
+	)
+	Cmd.Flags().StringVar(
+		&httpsDiscoveryConfig,
+		"https-discovery-config",
+		"",
+		"Optional path to a YAML file with per-namespace decrypt:true|false entries. "+
+			"See docs/discovery-mode.md for the schema. Merges with --https-target-namespaces; "+
+			"decrypt:false entries veto CLI inclusions.",
 	)
 	Cmd.Flags().Uint32Var(
 		&httpsBodySizeCap,
@@ -602,4 +612,32 @@ func init() {
 	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)
+}
+
+// mergeHTTPSTargetNamespaces folds the --https-discovery-config YAML
+// (if any) into the --https-target-namespaces CLI list, applying the
+// `decrypt: false` veto semantics documented in apidump.DiscoveryConfig.
+//
+// On YAML load failure we print a warning and fall back to the CLI list
+// rather than aborting startup — a syntax error in the config is a less
+// severe failure than refusing to capture at all. The warning surfaces
+// the problem so operators notice.
+func mergeHTTPSTargetNamespaces(cliList []string, configPath string) []string {
+	if configPath == "" {
+		return cliList
+	}
+	cfg, err := apidump.LoadDiscoveryConfig(configPath)
+	if err != nil {
+		printer.Stderr.Warningf(
+			"--https-discovery-config: %v \u2014 falling back to --https-target-namespaces only.\n",
+			err)
+		return cliList
+	}
+	merged := cfg.MergeTargetNamespaces(cliList)
+	if len(merged) != len(cliList) {
+		printer.Stderr.Infof(
+			"--https-discovery-config: merged %d CLI namespace(s) + %d YAML entries \u2192 %d effective allow-list entries.\n",
+			len(cliList), len(cfg.Discovery.Namespaces), len(merged))
+	}
+	return merged
 }

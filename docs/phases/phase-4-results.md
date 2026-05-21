@@ -5,15 +5,24 @@ Branch: `feat/https-capture-ebpf`, PR #173.
 
 ## Scope delivered
 
+**Update (post-5c.3):** 8 of 8 design-doc §7.3 gaps now closed. Gaps 2
+and 4 were initially deferred (see history below); they were finished in
+a follow-up session. See [`phase-4b-results.md`](phase-4b-results.md)
+for the close-out evidence.
+
+---
+
+**Original Phase 4 outcome:**
+
 5 of 8 design-doc §7.3 gaps closed, in priority order from the Phase 4
 brief:
 
 | Task | Status | Where it lives |
 |---|:---:|---|
 | 1. Expanded default sensitive-keys list | ✅ | `data_masks/redaction_config.yaml` (40+ defaults; +12 keys including `authorization`, `cookie`, `www-authenticate`, `proxy-authenticate`, `grpc-authorization`, `x-forwarded-client-cert`, `x-amz-content-sha256`, `x-api-secret`, `x-shared-secret`, `x-internal-token`) |
-| 2. Body-size cap as redaction concern | 🟡 | BPF-layer truncation is live (`--https-body-size-cap`). The redactor-side metadata enrichment (`{_truncated: true, _original_length: N}`) is deferred. |
+| 2. Body-size cap as redaction concern | ✅ (post-5c.3) | BPF-layer truncation lives in Phase 4. Redactor-side metadata (synthetic `X-Postman-Insights-Body-Truncated` + `X-Postman-Insights-Body-Dropped-Bytes` headers) added in the gap-2 follow-up. |
 | 3. Privacy mode presets | ✅ | `data_masks/privacy_mode.go`; `PrivacyStandard`, `PrivacyStrict`, `PrivacyDryRun`; wired into `apidump.Args.PrivacyMode` and `Redactor.SetPrivacyMode`. |
-| 4. Per-namespace opt-out | 🟡 | `--target-namespaces` whitelist works at the discovery layer. Discovery-config-YAML `decrypt: false` is the design-doc form; deferred. |
+| 4. Per-namespace opt-out | ✅ (post-5c.3) | `--target-namespaces` CLI form was always in place. The YAML form (`--https-discovery-config` with `decrypt: true|false` per namespace) was added in the gap-4 follow-up. |
 | 5. Tokenization mode (hash replacement) | ✅ | `data_masks/tokenization.go`; `--redaction-style=hash`; centralised replacement via `Redactor.styledReplacement`. |
 | 6. Redaction-coverage telemetry | ✅ | `data_masks/coverage.go`; atomic per-rule counters; thread-safe `Snapshot()`. |
 | 7. Dry-run reporter | ✅ | `data_masks/dry_run.go`; spawned automatically when `--privacy-mode=dry-run`; writes per-window JSON to `--dry-run-dir` (default `/var/log/postman-insights/`). |

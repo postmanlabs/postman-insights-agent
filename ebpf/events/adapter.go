@@ -83,6 +83,26 @@ type flowState struct {
 	dropped   bool // permanent: malformed or oversized
 	ifaceTag  string
 
+	// Body-truncation accounting (Phase 4 / design §7.3 gap #2).
+	//
+	// When the BPF layer caps a single event (LenTotal > LenCaptured), we
+	// note it here so the message currently being assembled in `pending`
+	// can be tagged with synthetic headers when emitted. We track:
+	//
+	//   - pendingTruncated  = at least one event contributing to the
+	//                         in-flight message was truncated.
+	//   - pendingDroppedBytes = sum of (LenTotal - LenCaptured) across
+	//                         those events. This is the closest we can
+	//                         honestly state about the original size; the
+	//                         full request body may also have a non-truncated
+	//                         tail, so the synthetic header is documented as
+	//                         "bytes dropped" rather than "original length"
+	//                         to avoid misleading downstream consumers.
+	//
+	// Reset to zero whenever a complete message is emitted from `pending`.
+	pendingTruncated    bool
+	pendingDroppedBytes uint64
+
 	// HTTP/2 path: if h2 != nil, all bytes for this flow are routed to
 	// the stateful HTTP/2 decoder instead of the akinet single-use parser.
 	// Detection happens on the first bytes via IsHTTP2Preface.
@@ -211,6 +231,14 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 		return
 	}
 
+	// Body-truncation accounting (gap #2). If this event was truncated by
+	// the BPF layer (LenTotal > LenCaptured), remember it so the next
+	// emitted message carries synthetic headers.
+	if ev.Truncated() {
+		st.pendingTruncated = true
+		st.pendingDroppedBytes += uint64(ev.LenTotal) - uint64(ev.LenCaptured)
+	}
+
 	// Copy bytes — the underlying ringbuf record is reused once Feed returns.
 	chunk := append([]byte(nil), ev.Bytes()...)
 	st.pending.Append(memview.New(chunk))
@@ -258,7 +286,16 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 			return
 		}
 
-		// Got a complete message. Emit it and continue with unused tail.
+		// Got a complete message. Tag with truncation metadata BEFORE the
+		// envelope is built (so the synthetic headers ride along to the
+		// witness + redactor + backend), then reset the per-message
+		// counters for the next assembly cycle.
+		if st.pendingTruncated {
+			annotateTruncation(result, st.pendingDroppedBytes)
+		}
+		st.pendingTruncated = false
+		st.pendingDroppedBytes = 0
+
 		a.Out <- a.toPNT(st, key, result, now)
 		a.MessagesEmitted++
 		st.msgSeq++

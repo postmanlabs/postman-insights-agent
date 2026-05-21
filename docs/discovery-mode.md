@@ -466,6 +466,84 @@ flowchart TD
 
 ---
 
+## HTTPS capture: per-namespace opt-in (eBPF path)
+
+When `--enable-https-capture` is set, the agent additionally uses eBPF
+uprobes to read plaintext HTTPS bytes. This is a more invasive capture
+mechanism than libpcap and supports a finer opt-in/opt-out story.
+
+Two equivalent controls exist; pick whichever fits your deployment:
+
+### CLI form: `--https-target-namespaces`
+
+```sh
+postman-insights-agent apidump \
+    --enable-https-capture \
+    --https-target-namespaces=team-api,team-checkout
+```
+
+Only pods in `team-api` and `team-checkout` have HTTPS uprobes attached.
+All other namespaces stay opaque. The list is comma-separated and can be
+repeated via the flag.
+
+### YAML form: `--https-discovery-config`
+
+For GitOps / Helm / DaemonSet manifests where flag values are awkward,
+the same control can be expressed in a YAML file:
+
+```yaml
+# /etc/postman-insights/discovery.yaml
+discovery:
+  namespaces:
+    - name: app-prod
+      decrypt: true       # eBPF probes attach here
+    - name: payments-prod
+      decrypt: false      # eBPF probes do NOT attach; HTTPS stays opaque
+    - name: legacy
+      decrypt: true
+```
+
+```sh
+postman-insights-agent apidump \
+    --enable-https-capture \
+    --https-discovery-config=/etc/postman-insights/discovery.yaml
+```
+
+### Merge semantics when BOTH are set
+
+* Namespaces with `decrypt: true` in the YAML are **added** to the
+  allow-list.
+* Namespaces with `decrypt: false` in the YAML **veto** any CLI
+  inclusion of the same namespace — the YAML is the source of truth
+  when both are set.
+* Duplicates across the two sources are collapsed.
+
+Example: `--https-target-namespaces=team-a,team-b` plus a YAML with
+`team-b: decrypt: false` and `team-c: decrypt: true` produces an
+effective allow-list of `team-a, team-c`.
+
+### When neither is set
+
+The HTTPS-eBPF capture attaches to **all** namespaces in scope (modulo
+the existing Layer 1 / Layer 2 / Layer 3 pod filtering described above).
+This is intentional: if a user explicitly enabled HTTPS capture, the
+least-surprising default is to actually capture.
+
+### YAML schema (v1)
+
+Fully strict. Unknown fields cause a fail-fast parse error so typos in
+`decrpyt:` (misspelled) don't silently leave HTTPS off:
+
+| Field | Type | Required | Notes |
+| --- | --- | :---: | --- |
+| `discovery.namespaces[].name` | string | ✅ | Kubernetes namespace name. Must be unique across entries. |
+| `discovery.namespaces[].decrypt` | bool | ✅ | `true` adds to allow-list; `false` adds to veto set. |
+
+Future additions (not v1): per-namespace `privacyMode`, per-workload
+selectors, label-based matching. The shape stays forward-compatible.
+
+---
+
 ## Service Name Derivation (Discovery Mode)
 
 When a pod passes all filters, the agent derives a service name in the format:

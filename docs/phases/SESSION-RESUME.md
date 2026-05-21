@@ -28,6 +28,17 @@ and pick up where the last working session left off.
 
 **5c.3 is feature-complete. The HTTPS-capture-via-eBPF Java + webhook track is done.**
 
+### Phase 4b — close-out of design §7.3 gaps 2 and 4 ✅
+
+Follow-up session that closed the two remaining gaps left partial after
+Phase 4. **All 8 §7.3 privacy gaps are now closed**, so the "must close
+before HTTPS launch" criteria are met. See [`phase-4b-results.md`](phase-4b-results.md).
+
+* Gap 2: adapter injects `X-Postman-Insights-Body-Truncated` + `X-Postman-Insights-Body-Dropped-Bytes` synthetic headers when at least one contributing BPF event was truncated. 10 tests.
+* Gap 4: `--https-discovery-config=path.yaml` accepts `discovery.namespaces[].decrypt: true|false` schema; merges with the existing `--https-target-namespaces` CLI list with `decrypt: false` veto semantics. 13 tests.
+* No BPF / kernel-side changes. Pure user-space additions.
+* Linux full-suite regression: 14 ok / 0 fails.
+
 ### Verification rules carried forward (LEARNED THE HARD WAY — do not relearn)
 
 1. **HTTP 200 from curl ≠ agent captured.** Always check the actual
@@ -65,14 +76,14 @@ and pick up where the last working session left off.
 * **nginx HTTPS on 8443** was started + killed during the audit. Should
   be gone, but ALWAYS verify with `ss -tlnp | grep 8443` before binding.
 
-### Remaining work (none on the Java + webhook track)
+### Remaining work (none on the launch-blocking path)
 
-The whole Java + webhook story is shipped. What's left in the program
-belongs to other tracks, all tracked separately:
+The original plan's "must close before HTTPS launch" gates are all met:
+* All 8 privacy gaps from `docs/https-capture-design.md` §7.3 are closed.
+* All Java + webhook track milestones are shipped.
 
-* **Privacy gaps 2 and 4** — partial; production-readiness gated on these.
-  Not blocking the existing capture story; see
-  `docs/https-capture-design.md` §7.3.
+What's left is in adjacent tracks or polish, none blocking launch:
+
 * **JMH per-call microsecond benchmark** — deferred. The 5b.3 curl-level
   evidence is sufficient until a customer-visible perf complaint forces
   tighter measurement.
