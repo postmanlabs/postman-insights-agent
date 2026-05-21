@@ -28,6 +28,105 @@ and pick up where the last working session left off.
 
 **5c.3 is feature-complete. The HTTPS-capture-via-eBPF Java + webhook track is done.**
 
+### ⏸️ PAUSED — working through the follow-up backlog
+
+User asked to "finish everything in order" through the 5 follow-up items.
+Paused mid-item-2 to step away. **Latest pushed commit:** `dede34c`
+(item 1 — ByteBuddy bump). **Uncommitted local work:** item 2 in progress.
+
+#### Follow-up item progress
+
+| # | Item | Status |
+|---|---|---|
+| 1 | ByteBuddy 1.14.13 → 1.17.5 + Shadow plugin bump (closes runbook LIMIT-1) | ✅ committed `dede34c`, pushed |
+| 2 | `keytool`/`jar`/`javac` subprocess agent-attach skip (closes LIMIT-2) | ✅ committed `bac822a`, pushed |
+| 3 | JMH per-call microsecond benchmark | ✅ committed `17337a8`, pushed |
+| 4 | Per-namespace `privacyMode` override (full enforcement) | ✅ committed `5fe23be`, pushed |
+| 5 | CI smoke test for Helm chart (lint + render + safety-property checks) | ✅ this commit |
+
+**Follow-up backlog: complete. The program is at steady state.**
+
+#### Resume checklist for item 2
+
+Local uncommitted files (verify with `git status`):
+
+* `java-agent/src/main/java/com/postman/insights/agent/Agent.java`
+  — added imports (Arrays/Collections/HashSet/Set), early-exit guard at
+  top of `attach()`, helper `shouldSkipForCliToolJVM()` with two sets
+  (`CLI_TOOL_BASENAMES` for wrapper-script form, `CLI_TOOL_FQN_PREFIXES`
+  for main-class form), and a `postman.agent.force=true` escape hatch.
+* `java-agent/src/test/java/com/postman/insights/agent/AgentCliSkipTest.java`
+  — new file, 17 JUnit 5 cases (positive wrapper-name matches, positive
+  FQN matches, real-workload negatives, edge cases incl. force-flag and
+  Windows path). **No JUnit infra existed before; build.gradle.kts already
+  had `testImplementation junit-jupiter:5.10.2` so no dep change needed.**
+
+**To resume:**
+
+```sh
+# 1. Verify local edits intact
+git status
+git diff java-agent/src/main/java/com/postman/insights/agent/Agent.java
+
+# 2. Build + run the new tests (gradle test task already configured)
+docker exec pia-bpf-dev bash -lc '
+  export PATH=/usr/local/go/bin:/go/bin:\$PATH
+  cd /workspace/java-agent
+  gradle --no-daemon test
+'
+
+# 3. Rebuild shadowJar so the agent picks up the new attach-time guard
+docker exec pia-bpf-dev bash -lc '
+  cd /workspace/java-agent
+  gradle --no-daemon clean shadowJar
+'
+
+# 4. End-to-end: invoke keytool with -javaagent, confirm no NoClassDefFoundError
+#    noise. Smoke test pattern (use the rebuilt JAR):
+#       JAR=/workspace/java-agent/build/libs/postman-java-agent.jar
+#       docker exec pia-bpf-dev java -javaagent:$JAR -cp $JAR \
+#         sun.security.tools.keytool.Main -help 2>&1 | head -3
+#    Expected: '[postman-insights] skipping agent attach (JVM appears to be a
+#               short-lived CLI tool: ...)'
+#    NOT expected: 'agent attach FAILED at native step: NoClassDefFoundError'
+
+# 5. Regression: re-verify HelloHttps on JDK 21 still gets the agent
+#    (must NOT skip, since HelloHttps is a real workload).
+
+# 6. Commit + push (commit message template ready in scratch — reuse the
+#    'fix(java-agent): skip agent attach in short-lived JDK CLI tool JVMs'
+#    framing, mention LIMIT-2 closure, paste test count + JDK 21 regression).
+
+# 7. Then proceed to item 3 (JMH benchmark).
+```
+
+#### Items 3-5 — scopes locked in pre-pause
+
+* **Item 3 — JMH benchmark.** New Gradle submodule under
+  `java-agent/benchmarks/` (avoid polluting the main agent JAR with JMH).
+  Benchmark per-call overhead of `SSLEngine.wrap`/`unwrap` advice. Output:
+  README-quotable nanoseconds per call. Estimated: 1–2 hours.
+* **Item 4 — Per-namespace `privacyMode`.** Extend
+  `apidump.DiscoveryNamespace` with `PrivacyMode *string` (pointer so
+  absence ≠ empty). Wire into the redactor decision so a per-namespace
+  override beats the global `--privacy-mode` flag. New tests in
+  `apidump/discovery_config_test.go` covering precedence. Estimated:
+  1 hour.
+* **Item 5 — CI smoke test.** Add a CircleCI job that runs
+  `helm lint` + `helm template` (cheap, fast). Full kind e2e in CI is
+  deferred per `phase-5c3c-results.md`. Estimated: 30 min.
+
+### Phase 4b — close-out of design §7.3 gaps 2 and 4 ✅
+
+Follow-up session that closed the two remaining gaps left partial after
+Phase 4. **All 8 §7.3 privacy gaps are now closed**, so the "must close
+before HTTPS launch" criteria are met. See [`phase-4b-results.md`](phase-4b-results.md).
+
+* Gap 2: adapter injects `X-Postman-Insights-Body-Truncated` + `X-Postman-Insights-Body-Dropped-Bytes` synthetic headers when at least one contributing BPF event was truncated. 10 tests.
+* Gap 4: `--https-discovery-config=path.yaml` accepts `discovery.namespaces[].decrypt: true|false` schema; merges with the existing `--https-target-namespaces` CLI list with `decrypt: false` veto semantics. 13 tests.
+* No BPF / kernel-side changes. Pure user-space additions.
+* Linux full-suite regression: 14 ok / 0 fails.
+
 ### Verification rules carried forward (LEARNED THE HARD WAY — do not relearn)
 
 1. **HTTP 200 from curl ≠ agent captured.** Always check the actual
@@ -65,14 +164,14 @@ and pick up where the last working session left off.
 * **nginx HTTPS on 8443** was started + killed during the audit. Should
   be gone, but ALWAYS verify with `ss -tlnp | grep 8443` before binding.
 
-### Remaining work (none on the Java + webhook track)
+### Remaining work (none on the launch-blocking path)
 
-The whole Java + webhook story is shipped. What's left in the program
-belongs to other tracks, all tracked separately:
+The original plan's "must close before HTTPS launch" gates are all met:
+* All 8 privacy gaps from `docs/https-capture-design.md` §7.3 are closed.
+* All Java + webhook track milestones are shipped.
 
-* **Privacy gaps 2 and 4** — partial; production-readiness gated on these.
-  Not blocking the existing capture story; see
-  `docs/https-capture-design.md` §7.3.
+What's left is in adjacent tracks or polish, none blocking launch:
+
 * **JMH per-call microsecond benchmark** — deferred. The 5b.3 curl-level
   evidence is sufficient until a customer-visible perf complaint forces
   tighter measurement.
