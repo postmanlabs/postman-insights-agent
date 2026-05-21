@@ -22,7 +22,11 @@
 plugins {
     java
     application
-    id("com.github.johnrengelman.shadow") version "8.1.1"
+    // The original com.github.johnrengelman.shadow plugin was renamed to
+    // com.gradleup.shadow when the previous maintainer stepped down. 8.1.1
+    // pre-dates JDK 23+ multi-release JARs and crashes with 'Unsupported
+    // class file major version 68' when ByteBuddy 1.17.x is shaded in.
+    id("com.gradleup.shadow") version "8.3.6"
 }
 
 group = "com.postman.insights"
@@ -54,8 +58,11 @@ repositories {
 dependencies {
     // ByteBuddy for the agent's class-transformation work. Shaded so it
     // can't conflict with whatever ByteBuddy version the host app uses.
-    implementation("net.bytebuddy:byte-buddy:1.14.13")
-    implementation("net.bytebuddy:byte-buddy-agent:1.14.13")
+    // ByteBuddy 1.17.x supports class file version 69 (JDK 25). 1.14.x
+    // capped at JDK 22 and choked on tomcat:10 once it switched to JDK 25
+    // — see docs/webhook-runbook.md LIMIT-1 (Phase 5c.3b).
+    implementation("net.bytebuddy:byte-buddy:1.17.5")
+    implementation("net.bytebuddy:byte-buddy-agent:1.17.5")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
 }
@@ -140,6 +147,9 @@ tasks.named<Jar>("jar") {
     enabled = false  // we ship the shadowJar instead
 }
 
+// The gradleup.shadow plugin keeps the original Java package name
+// (com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) for
+// drop-in compatibility — only the plugin id changed.
 tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
     dependsOn(stageBootstrapAsBlob)
     archiveBaseName.set("postman-java-agent")
