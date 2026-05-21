@@ -1,0 +1,29 @@
+{{- if eq .Values.tls.mode "cert-manager" }}
+# cert-manager Certificate resource. Requires cert-manager v1.5+ in the
+# cluster. The resulting Secret will be named
+# `<release>-postman-insights-webhook-tls` (matches the Deployment's
+# volume reference).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "postman-insights-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "postman-insights-webhook.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "postman-insights-webhook.fullname" . }}-tls
+  duration: 8760h   # 1 year
+  renewBefore: 720h # 30 days before expiry
+  subject:
+    organizations:
+      - postman-insights
+  commonName: {{ include "postman-insights-webhook.fullname" . }}.{{ .Release.Namespace }}.svc
+  dnsNames:
+    - {{ include "postman-insights-webhook.fullname" . }}
+    - {{ include "postman-insights-webhook.fullname" . }}.{{ .Release.Namespace }}
+    - {{ include "postman-insights-webhook.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "postman-insights-webhook.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: {{ required ".Values.tls.certManager.issuerRef.kind is required" .Values.tls.certManager.issuerRef.kind }}
+    name: {{ required ".Values.tls.certManager.issuerRef.name is required" .Values.tls.certManager.issuerRef.name }}
+{{- end }}

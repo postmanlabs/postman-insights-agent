@@ -1,0 +1,24 @@
+apiVersion: v2
+name: postman-insights-webhook
+description: |
+  Postman Insights mutating admission webhook. Auto-injects the Java agent
+  (-javaagent + init container + emptyDir volume) into pods in namespaces
+  labeled `postman.dev/insights=enabled`, so the existing libssl + Java TLS
+  capture pipelines can collect HTTPS traffic without per-workload changes.
+type: application
+version: 0.1.0           # Chart version; bump on chart-shape changes.
+appVersion: "0.0.0"      # Postman Insights Agent version; matches binary.
+keywords:
+  - postman
+  - insights
+  - observability
+  - admission-webhook
+  - java
+home: https://github.com/postmanlabs/postman-insights-agent
+sources:
+  - https://github.com/postmanlabs/postman-insights-agent
+kubeVersion: ">=1.22.0-0"
+annotations:
+  # Helm's "annotations" appears in `helm search` output but does NOT
+  # propagate to deployed resources.
+  category: Observability
