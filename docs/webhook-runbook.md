@@ -265,7 +265,18 @@ helm upgrade postman-insights-webhook ./deployment/helm/postman-insights-webhook
 
 ## Known limitations
 
-### LIMIT-1: ByteBuddy can't parse JDK 25 class files
+### LIMIT-1: ByteBuddy can't parse JDK 25 class files (RESOLVED)
+
+**Status:** Resolved in commit `dede34c`. The shaded ByteBuddy was bumped
+from 1.14.13 to 1.17.5 (which supports class file version 69 = JDK 25)
+alongside a Shadow plugin migration (`johnrengelman.shadow` 8.1.1 →
+`gradleup.shadow` 8.3.6). Verified end-to-end against `tomcat:10`
+(JDK 25.0.3 LTS): agent attaches in ~230 ms with no ByteBuddy errors
+and HTTPS-from-inside-container curls return 200.
+
+The historical entry is kept below for context.
+
+#### Historical: ByteBuddy can't parse JDK 25 class files
 
 Surfaced in phase 5c.3b. The shaded `byte-buddy` in the agent JAR
 officially supports up to JDK 22 (class file version 66). JDK 25 (class
@@ -288,7 +299,27 @@ installed — instrumentation produces no events for that pod.
 **Permanent fix:** bump `byte-buddy` and `byte-buddy-agent` versions in
 the Java agent build. Tracked for a future agent release.
 
-### LIMIT-2: `keytool` and `jar` subprocesses fail agent attach
+### LIMIT-2: `keytool` and `jar` subprocesses fail agent attach (RESOLVED)
+
+**Status:** Resolved. `Agent.attach` now has an early-exit guard
+`shouldSkipForCliToolJVM()` that detects short-lived JDK CLI tools
+(`keytool`, `jarsigner`, `jar`, `javac`, `javadoc`, `jshell`, `jcmd`,
+`jstack`, `jmap`, `jps`, `jstat`, `jinfo`, `jhsdb`, `jlink`, `jmod`,
+`jdeps`, `jdeprscan`, `jpackage`, `jconsole`, `jdb`, `jrunscript`,
+`jwebserver`) via `sun.java.command` and skips the agent attach
+with a single-line note. The primary (long-running) JVM is unaffected.
+
+Escape hatch: setting `-Dpostman.agent.force=true` bypasses the guard,
+in case a caller really does want the agent in (say) `jshell`.
+
+20 JUnit cases cover positive matches (wrapper-script + FQN forms),
+real-workload negatives (Spring Boot, Tomcat, Kafka, generic JAR), and
+edge cases (missing/empty `sun.java.command`, force-flag override,
+path normalisation).
+
+The historical entry is kept below for context.
+
+#### Historical: `keytool` / `jar` / `javac` subprocesses fail agent attach
 
 Surfaced in phase 5c.3b. When an instrumented JVM shells out to
 `keytool` (or `jar` / `javac`), the subprocess inherits

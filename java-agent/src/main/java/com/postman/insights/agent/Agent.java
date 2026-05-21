@@ -8,6 +8,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.instrument.Instrumentation;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.jar.JarFile;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
@@ -43,7 +47,117 @@ public final class Agent {
         attach("agentmain", agentArgs, inst);
     }
 
+    // -- CLI-tool detection -----------------------------------------------
+
+    /**
+     * Bare-name basenames of JDK CLI tools whose wrapper scripts pass their
+     * own name as the first token of {@code sun.java.command}. Match
+     * verbatim against the basename.
+     */
+    private static final Set<String> CLI_TOOL_BASENAMES =
+            Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+                    "keytool", "jarsigner", "jar", "javac", "javadoc", "jshell",
+                    "jcmd", "jstack", "jmap", "jps", "jstat", "jinfo", "jhsdb",
+                    "jlink", "jmod", "jdeps", "jdeprscan", "jpackage", "jconsole",
+                    "jdb", "jrunscript", "jwebserver")));
+
+    /**
+     * Fully-qualified main-class prefixes for the same tools when launched
+     * via {@code java -cp ... <main-class>}. Match as a String startsWith
+     * against the first token of {@code sun.java.command}.
+     */
+    private static final String[] CLI_TOOL_FQN_PREFIXES = {
+            "sun.security.tools.keytool.",
+            "sun.security.tools.jarsigner.",
+            "sun.tools.jar.",                // JDK 8 jar tool
+            "com.sun.tools.javac.",          // JDK 8 javac
+            "jdk.jartool.",                  // JDK 9+ jar tool
+            "jdk.compiler.",                 // JDK 9+ javac
+            "com.sun.tools.javadoc.",
+            "jdk.javadoc.",
+            "jdk.jshell.",
+            "sun.tools.attach.",
+            "sun.tools.jcmd.",
+            "sun.tools.jstack.",
+            "sun.tools.jmap.",
+            "sun.tools.jps.",
+            "sun.tools.jstat.",
+            "sun.tools.jinfo.",
+    };
+
+    /**
+     * Returns true if this JVM looks like a short-lived JDK CLI tool that
+     * we should NOT instrument. Detection is conservative — false negatives
+     * (failing to detect a tool) are harmless (cosmetic noise), false
+     * positives (skipping a real workload) would silently drop
+     * instrumentation. The only way a real workload matches is if its main
+     * class name happens to start with {@code sun.security.tools.keytool.}
+     * (etc.), which the JLS effectively prohibits for non-JDK code.
+     *
+     * <p>The detection respects an escape hatch: setting
+     * {@code -Dpostman.agent.force=true} bypasses this check, in case a
+     * caller really does want the agent in (say) {@code jshell}.
+     */
+    static boolean shouldSkipForCliToolJVM() {
+        if (Boolean.getBoolean("postman.agent.force")) {
+            return false;
+        }
+        String cmd = System.getProperty("sun.java.command", "");
+        if (cmd.isEmpty()) {
+            return false;
+        }
+        // First whitespace-delimited token: main class FQN OR wrapper name.
+        int sp = cmd.indexOf(' ');
+        String first = (sp >= 0) ? cmd.substring(0, sp) : cmd;
+
+        // Path form: "/usr/lib/jvm/.../bin/keytool" or just "keytool".
+        // Strip any directory prefix to get the basename.
+        int slash = first.lastIndexOf('/');
+        if (slash >= 0) {
+            first = first.substring(slash + 1);
+        }
+        int bslash = first.lastIndexOf('\\');
+        if (bslash >= 0) {
+            first = first.substring(bslash + 1);
+        }
+
+        // Strip a trailing .jar suffix — 'java -jar /path/keytool.jar' would
+        // set sun.java.command to '/path/keytool.jar args...'.
+        if (first.endsWith(".jar")) {
+            first = first.substring(0, first.length() - 4);
+        }
+
+        if (CLI_TOOL_BASENAMES.contains(first)) {
+            return true;
+        }
+        for (String prefix : CLI_TOOL_FQN_PREFIXES) {
+            if (first.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void attach(String entry, String agentArgs, Instrumentation inst) {
+        // (0) Early-exit guard for short-lived CLI tools (keytool, jar, jcmd,
+        // javac, etc.). These JVMs typically inherit JAVA_TOOL_OPTIONS from
+        // their parent process, get our -javaagent appended, and try to
+        // initialise the agent. On JDK 25 with the `jdk.unsupported` module
+        // visibility tightening, that initialisation often fails with
+        // 'NoClassDefFoundError: sun/misc/Unsafe' — a real error stack
+        // printed to stderr that confuses operators (see
+        // docs/webhook-runbook.md LIMIT-2).
+        //
+        // These tools are short-lived and serve no instrumentation value;
+        // skipping attach is purely a cosmetic + correctness improvement.
+        // The PRIMARY JVM (the one the user actually ran) keeps the agent.
+        if (shouldSkipForCliToolJVM()) {
+            System.err.println("[postman-insights] skipping agent attach "
+                    + "(JVM appears to be a short-lived CLI tool: "
+                    + System.getProperty("sun.java.command", "<unknown>") + ")");
+            return;
+        }
+
         long t0 = System.nanoTime();
 
         // (1) Extract the bundled bootstrap JAR and put it on the JVM's
