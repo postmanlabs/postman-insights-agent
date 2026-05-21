@@ -4,30 +4,221 @@
 should be able to read just this file + the three doc references below
 and pick up where the last working session left off.
 
-**Last updated:** end of session that delivered Phase 3 tasks #1 (HTTP/2)
-and #2 (Read via RET probing).
+---
+
+## 🔴 PRE-COMPACTION HANDOFF (read this first post-compaction)
+
+**Branch:** `feat/https-capture-ebpf` (rolling PR #173). PR #174 is
+**closed** (was a subset of #173).
+**Last commit:** see git log; phase 5c.3b (kind cluster e2e) shipped this session.
+**Prior commit:** `5a30fa8` — phase 5c.3a (Go webhook code + 25 tests).
+**Everything is pushed to `origin`.**
+
+### Phase status (true as of compaction)
+
+| Phase | State | Notes |
+|---|:---:|---|
+| 1, 2, 3, 4 | ✅ done | All re-verified live this session against nginx + /tmp/gohttps + unit tests |
+| 5a, 5b.1, 5b.2, 5b.3 | ✅ done | Verified live with HelloHttps |
+| 5c.1 (Spring Boot) | ✅ done | |
+| 5c.2 (Tomcat / Jetty / gRPC / JDK 8/11/17/21) | ✅ done | All 4 frameworks + all 4 JDKs verified |
+| 5c.3a (Go webhook code + 25 tests) | ✅ done | Prior session. 25 PASS / 0 FAIL in 1 s. Zero cluster risk. |
+| 5c.3b (kind cluster e2e) | ✅ done | Prior session. Webhook deployed, Java pod mutated, 5 REQ + 5 RESP captured end-to-end in cluster, `failurePolicy: Ignore` proven by scale-to-zero test. See [`phase-5c3b-results.md`](phase-5c3b-results.md). |
+| **5c.3c (Helm + production docs)** | ✅ **done** | This session. Helm chart at `deployment/helm/postman-insights-webhook/` with `secret` and `cert-manager` modes. Validated end-to-end against kind: same 5 REQ + 5 RESP captured via the Helm-deployed webhook. SRE runbook at `docs/webhook-runbook.md`. See [`phase-5c3c-results.md`](phase-5c3c-results.md). |
+
+**5c.3 is feature-complete. The HTTPS-capture-via-eBPF Java + webhook track is done.**
+
+### ⏸️ PAUSED — working through the follow-up backlog
+
+User asked to "finish everything in order" through the 5 follow-up items.
+Paused mid-item-2 to step away. **Latest pushed commit:** `dede34c`
+(item 1 — ByteBuddy bump). **Uncommitted local work:** item 2 in progress.
+
+#### Follow-up item progress
+
+| # | Item | Status |
+|---|---|---|
+| 1 | ByteBuddy 1.14.13 → 1.17.5 + Shadow plugin bump (closes runbook LIMIT-1) | ✅ committed `dede34c`, pushed |
+| 2 | `keytool`/`jar`/`javac` subprocess agent-attach skip (closes LIMIT-2) | 🟡 **PAUSED HERE** — code written, tests written, NOT yet built/run/committed |
+| 3 | JMH per-call microsecond benchmark | ⏭️ not started |
+| 4 | Per-namespace `privacyMode` override (extends gap-4 YAML schema) | ⏭️ not started |
+| 5 | CI smoke test for kind e2e flow | ⏭️ not started |
+
+#### Resume checklist for item 2
+
+Local uncommitted files (verify with `git status`):
+
+* `java-agent/src/main/java/com/postman/insights/agent/Agent.java`
+  — added imports (Arrays/Collections/HashSet/Set), early-exit guard at
+  top of `attach()`, helper `shouldSkipForCliToolJVM()` with two sets
+  (`CLI_TOOL_BASENAMES` for wrapper-script form, `CLI_TOOL_FQN_PREFIXES`
+  for main-class form), and a `postman.agent.force=true` escape hatch.
+* `java-agent/src/test/java/com/postman/insights/agent/AgentCliSkipTest.java`
+  — new file, 17 JUnit 5 cases (positive wrapper-name matches, positive
+  FQN matches, real-workload negatives, edge cases incl. force-flag and
+  Windows path). **No JUnit infra existed before; build.gradle.kts already
+  had `testImplementation junit-jupiter:5.10.2` so no dep change needed.**
+
+**To resume:**
+
+```sh
+# 1. Verify local edits intact
+git status
+git diff java-agent/src/main/java/com/postman/insights/agent/Agent.java
+
+# 2. Build + run the new tests (gradle test task already configured)
+docker exec pia-bpf-dev bash -lc '
+  export PATH=/usr/local/go/bin:/go/bin:\$PATH
+  cd /workspace/java-agent
+  gradle --no-daemon test
+'
+
+# 3. Rebuild shadowJar so the agent picks up the new attach-time guard
+docker exec pia-bpf-dev bash -lc '
+  cd /workspace/java-agent
+  gradle --no-daemon clean shadowJar
+'
+
+# 4. End-to-end: invoke keytool with -javaagent, confirm no NoClassDefFoundError
+#    noise. Smoke test pattern (use the rebuilt JAR):
+#       JAR=/workspace/java-agent/build/libs/postman-java-agent.jar
+#       docker exec pia-bpf-dev java -javaagent:$JAR -cp $JAR \
+#         sun.security.tools.keytool.Main -help 2>&1 | head -3
+#    Expected: '[postman-insights] skipping agent attach (JVM appears to be a
+#               short-lived CLI tool: ...)'
+#    NOT expected: 'agent attach FAILED at native step: NoClassDefFoundError'
+
+# 5. Regression: re-verify HelloHttps on JDK 21 still gets the agent
+#    (must NOT skip, since HelloHttps is a real workload).
+
+# 6. Commit + push (commit message template ready in scratch — reuse the
+#    'fix(java-agent): skip agent attach in short-lived JDK CLI tool JVMs'
+#    framing, mention LIMIT-2 closure, paste test count + JDK 21 regression).
+
+# 7. Then proceed to item 3 (JMH benchmark).
+```
+
+#### Items 3-5 — scopes locked in pre-pause
+
+* **Item 3 — JMH benchmark.** New Gradle submodule under
+  `java-agent/benchmarks/` (avoid polluting the main agent JAR with JMH).
+  Benchmark per-call overhead of `SSLEngine.wrap`/`unwrap` advice. Output:
+  README-quotable nanoseconds per call. Estimated: 1–2 hours.
+* **Item 4 — Per-namespace `privacyMode`.** Extend
+  `apidump.DiscoveryNamespace` with `PrivacyMode *string` (pointer so
+  absence ≠ empty). Wire into the redactor decision so a per-namespace
+  override beats the global `--privacy-mode` flag. New tests in
+  `apidump/discovery_config_test.go` covering precedence. Estimated:
+  1 hour.
+* **Item 5 — CI smoke test.** Add a CircleCI job that runs
+  `helm lint` + `helm template` (cheap, fast). Full kind e2e in CI is
+  deferred per `phase-5c3c-results.md`. Estimated: 30 min.
+
+### Phase 4b — close-out of design §7.3 gaps 2 and 4 ✅
+
+Follow-up session that closed the two remaining gaps left partial after
+Phase 4. **All 8 §7.3 privacy gaps are now closed**, so the "must close
+before HTTPS launch" criteria are met. See [`phase-4b-results.md`](phase-4b-results.md).
+
+* Gap 2: adapter injects `X-Postman-Insights-Body-Truncated` + `X-Postman-Insights-Body-Dropped-Bytes` synthetic headers when at least one contributing BPF event was truncated. 10 tests.
+* Gap 4: `--https-discovery-config=path.yaml` accepts `discovery.namespaces[].decrypt: true|false` schema; merges with the existing `--https-target-namespaces` CLI list with `decrypt: false` veto semantics. 13 tests.
+* No BPF / kernel-side changes. Pure user-space additions.
+* Linux full-suite regression: 14 ok / 0 fails.
+
+### Verification rules carried forward (LEARNED THE HARD WAY — do not relearn)
+
+1. **HTTP 200 from curl ≠ agent captured.** Always check the actual
+   capture events in `apidump-*` output. (Cost: 30 min of
+   "why is JDK 8 broken?" when nginx was responding instead of HelloHttps.)
+2. **`pkill -f <pattern>` matches your own shell.** It killed the docker-exec
+   bash session twice in one session. Use `pgrep -x <name>` + `xargs kill -9`
+   instead.
+3. **Every `apidump-*` command MUST have `--duration`.** Otherwise it runs as
+   a daemon waiting for SIGINT and the test hangs. User aborted a runaway
+   command at 2552s mid-session because of this.
+4. **Check `ss -tlnp` BEFORE assuming a workload bound its port.** Multiple
+   tests this session were contaminated by leftover nginx / kind-cluster
+   processes on 8443.
+5. **Between JVM tests, always:** `for p in $(pgrep -x java); do kill -9 $p; done; sleep 2`.
+6. **`kind-pia-https-test` cluster is alive and emitting traffic.** It will
+   show up in any libssl-path capture. Not a bug.
+7. **Don't claim a phase is done unless you actually verified events flowed.**
+   The JDK 8 episode: I'd claimed "✅ attach=1 REQ=3 RESP=3" but the REQ/RESP
+   was a leftover Spring Boot JVM responding, while our JDK 8 HelloHttps had
+   `BindException`'d silently. User caught it.
+
+### Dev environment state
+
+* **Docker container `pia-bpf-dev`** has: JDK 17 (default) at
+  `/usr/lib/jvm/default-java`; JDK 8/11/21 at `/opt/jdks/jdk-{8,11,21}/`;
+  Gradle 8.7; clang/libbpf/bpftool; mockgen at `/go/bin/mockgen` (export
+  `PATH=/usr/local/go/bin:/go/bin:$PATH` in any docker-exec bash).
+* **Kind cluster `pia-https-test`** has been running for days. Pods in
+  `team-py` / `team-node` / `team-srv` namespaces; agent DaemonSet in
+  `postman-insights` namespace. `kubectl` is NOT installed in the dev
+  container yet — 5c.3b will need to install it.
+* **/tmp test fixtures** already exist: `gohttps`, `goclient`,
+  `spring-boot-https-keystore.p12`, `grpc-cert.pem`, `grpc-key.pem`.
+* **nginx HTTPS on 8443** was started + killed during the audit. Should
+  be gone, but ALWAYS verify with `ss -tlnp | grep 8443` before binding.
+
+### Remaining work (none on the launch-blocking path)
+
+The original plan's "must close before HTTPS launch" gates are all met:
+* All 8 privacy gaps from `docs/https-capture-design.md` §7.3 are closed.
+* All Java + webhook track milestones are shipped.
+
+What's left is in adjacent tracks or polish, none blocking launch:
+
+* **JMH per-call microsecond benchmark** — deferred. The 5b.3 curl-level
+  evidence is sufficient until a customer-visible perf complaint forces
+  tighter measurement.
+* **ByteBuddy JDK 25 bump** — surfaced in 5c.3b, documented in
+  `docs/webhook-runbook.md` LIMIT-1. Workaround: pin to JDK ≤ 21 base
+  images. Permanent fix is a future Java agent release.
+* **`keytool` subprocess agent-attach skip** — surfaced in 5c.3b,
+  documented in `docs/webhook-runbook.md` LIMIT-2. No end-user impact;
+  permanent fix is a future Java agent release.
+* **CI smoke test for the kind e2e flow** — docker-in-docker pipeline.
+  Deferred if too expensive; the manual reproduction steps in
+  `phase-5c3c-results.md` are the fallback.
+
+### Things I should NOT redo post-compaction
+
+* Re-verify phases 1–5c.3c. They're done and verified.
+* Re-derive the Dockerfile.agent JAR-bundling line. Already in `test/kind/Dockerfile.agent`.
+* Re-generate the dev CA / webhook cert. They're in `test/kind/webhook/`.
+* Re-prove `failurePolicy: Ignore` works. Phase 5c.3b proved it with a real scale-to-zero test.
+* Re-design the Helm chart. It's at `deployment/helm/postman-insights-webhook/` and lint-clean.
+* Re-prove Helm and hand-rolled YAMLs produce equivalent results. Phase 5c.3c verified with identical capture stats (5 REQ + 5 RESP, `emitted=15 bytes=1105`).
+* Re-test all four frameworks. We have phase-5c2-results.md.
+* Re-test JDK 8/11/17/21. Same.
+* Revisit the SSLEngineInst's 5-signature matcher. It's correct.
+* Reverse the JettySslEndPointInst. It's necessary (Jetty 12's `wrap` path
+  has `consumed=0` for data; the framework-direct hook is the right fix).
+* Touch `Hooks.readBytes` without preserving the `((Buffer) view).position(start)`
+  cast — the cast is critical for JDK 8 (covariant return type trap).
+
+### Outstanding documented deferrals (intentional, not bugs)
+
+* gRPC h2 produces 2 REQ events per RPC — downstream dedup by stream-id.
+* JMH per-call microsecond benchmark — 5b.3 curl-level evidence is
+  sufficient until we have a customer-visible reason for tighter bounds.
+* Privacy gaps 2 and 4 still partial (5/8 + dry-run + corpus is the
+  current production-readiness bar).
 
 ---
 
-## Mandatory reading before resuming
-
-1. [`https-capture-design.md`](../https-capture-design.md) — the full
-   architecture. 30 min read.
-2. [`phase-2-results.md`](phase-2-results.md) — what Phase 2 actually
-   shipped (5 of 6 exit criteria via the kind-cluster demo; the CRI+
-   cgroup-ns inode pattern for namespace filtering).
-3. [`phase-3-results.md`](phase-3-results.md) — what Phase 3 has so far
-   and the seven remaining tasks in priority order.
-
-## Where we are
+## Where we are (legacy status table — see PRE-COMPACTION HANDOFF above for live state)
 
 | Phase | Status |
 |---|---|
 | 1 — Spike OpenSSL → pipeline | ✅ Done |
-| 2 — Production integration into `apidump` | ✅ Done (all 6 exit criteria) |
-| 3 — Go via DWARF inspector + crypto/tls uprobes | 🟡 ~65% (foundation + HTTP/2 + Read RET probing done) |
-| 4 — Privacy hardening (8 gaps from design §7.3) | ❌ Not started — gates production |
-| 5 — Java agent + ioctl bridge + webhook | ❌ Not started |
+| 2 — Production integration into `apidump` | ✅ Done |
+| 3 — Go via DWARF inspector + crypto/tls uprobes | ✅ ~95% |
+| 4 — Privacy hardening | ✅ 5/8 + dry-run + corpus |
+| 5a + 5b + 5c.1 + 5c.2 + 5c.3a | ✅ Done |
+| 5c.3b (kind e2e) + 5c.3c (Helm) | ⏭️ Next |
 
 Branch: `feat/https-capture-ebpf` (all work) — rolling PR is **#173**.
 **Do not create sub-branches**; the user wants a single rolling PR.
@@ -88,9 +279,18 @@ Current Phase 5 status:
       via reflection.
     * JMH-precise per-call benchmark still deferred; 5b.3 curl-level
       evidence is sufficient for now.
-  * **5c.3 — Mutating admission webhook:** ❌ not started. High-risk
-    piece, deliberately isolated to its own session for safety +
-    rollback rehearsal.
+  * **5c.3 — Mutating admission webhook:** 🟡 in progress (split into
+    5c.3a/b/c, same pattern as 5b and 5c.2).
+    * **5c.3a — Go webhook code:** ✅ done. See
+      [`phase-5c3a-results.md`](phase-5c3a-results.md). New package
+      `cmd/internal/kube-webhook/` with HTTPS server + AdmissionReview
+      handler + Java-workload detection + JSON Patch construction.
+      25 tests pass in 1 s, zero cluster risk. Includes a property-style
+      test proving the webhook NEVER returns `Allowed: false`.
+    * **5c.3b — Kind cluster e2e:** ❌ not started. Needs container
+      image build, K8s manifests, `failurePolicy: Ignore` verification,
+      rehearsed rollback.
+    * **5c.3c — Helm + production docs:** ❌ not started.
 
 Alternative: take the **PR-split** path before Phase 5. PR #173 is
 now at ~30 commits / ~+13k LOC; splitting into stacked PRs lets the
