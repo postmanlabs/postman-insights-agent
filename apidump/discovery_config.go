@@ -5,9 +5,22 @@ package apidump
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v2"
 )
+
+// ValidPrivacyModes is the set of strings accepted in
+// `discovery.namespaces[].privacyMode`. Kept here (not in data_masks) so
+// the YAML loader has zero dependency on the redactor package — we
+// validate by string match, then the data_masks layer parses for real
+// when the override is consumed.
+var ValidPrivacyModes = map[string]struct{}{
+	"standard": {},
+	"strict":   {},
+	"dry-run":  {},
+	"dryrun":   {}, // accepted alias; matches data_masks.ParsePrivacyMode
+}
 
 // DiscoveryConfig is the YAML form of HTTPS-capture opt-in controls,
 // closing design doc §7.3 gap #4 (per-namespace `decrypt: true|false`).
@@ -54,9 +67,30 @@ type DiscoverySection struct {
 }
 
 // DiscoveryNamespace is one entry in `discovery.namespaces`.
+//
+// PrivacyMode is a POINTER so we can distinguish three distinct states:
+//
+//   nil   → not specified — fall back to the global --privacy-mode flag
+//   ""   → specified-but-empty — rejected at parse time (likely a typo)
+//   "std" → specified — override the global flag for THIS namespace
+//
+// Without the pointer we couldn't tell "user omitted the field" from "user
+// wrote `privacyMode: \"\"` thinking it would reset to default" — the
+// latter is almost certainly a mistake we should catch.
 type DiscoveryNamespace struct {
-	Name    string `yaml:"name"`
-	Decrypt bool   `yaml:"decrypt"`
+	Name        string  `yaml:"name"`
+	Decrypt     bool    `yaml:"decrypt"`
+	PrivacyMode *string `yaml:"privacyMode,omitempty"`
+}
+
+// PrivacyModeOverride returns (mode, ok) where ok=false means "no override;
+// caller should use its global default". Use this instead of touching
+// PrivacyMode directly so the pointer-vs-empty discipline stays in one place.
+func (n DiscoveryNamespace) PrivacyModeOverride() (string, bool) {
+	if n.PrivacyMode == nil {
+		return "", false
+	}
+	return *n.PrivacyMode, true
 }
 
 // LoadDiscoveryConfig reads and validates a YAML config file. It returns
@@ -88,6 +122,25 @@ func LoadDiscoveryConfig(path string) (*DiscoveryConfig, error) {
 			return nil, fmt.Errorf("discovery config %q: duplicate namespace %q", path, ns.Name)
 		}
 		seen[ns.Name] = struct{}{}
+
+		// Validate privacyMode if specified. Empty-string-but-present is a
+		// likely typo (user typed `privacyMode: ` then nothing); refuse
+		// rather than silently treat as "no override".
+		if mode, ok := ns.PrivacyModeOverride(); ok {
+			normalised := strings.ToLower(strings.TrimSpace(mode))
+			if normalised == "" {
+				return nil, fmt.Errorf(
+					"discovery config %q: namespace %q has empty privacyMode; "+
+						"omit the field entirely to inherit the global --privacy-mode flag",
+					path, ns.Name)
+			}
+			if _, ok := ValidPrivacyModes[normalised]; !ok {
+				return nil, fmt.Errorf(
+					"discovery config %q: namespace %q has unknown privacyMode %q "+
+						"(want one of: standard, strict, dry-run)",
+					path, ns.Name, mode)
+			}
+		}
 	}
 
 	return &cfg, nil
@@ -147,5 +200,32 @@ func (c *DiscoveryConfig) MergeTargetNamespaces(cliList []string) []string {
 		added[ns] = struct{}{}
 	}
 
+	return out
+}
+
+// PerNamespacePrivacyOverrides returns a {namespace → privacyMode-string}
+// map for namespaces whose YAML entry specified `privacyMode`. Namespaces
+// without an override are absent from the map; the caller is expected to
+// fall back to its global default for those.
+//
+// The returned strings are NOT normalised — the caller (typically
+// data_masks.ParsePrivacyMode) is the source of truth for canonicalising
+// "dryrun" → "dry-run", uppercase, etc. We deliberately don't import
+// data_masks here to avoid a package cycle (apidump → data_masks → … →
+// apidump would be created via the redactor's eventual config-reload
+// pathways).
+func (c *DiscoveryConfig) PerNamespacePrivacyOverrides() map[string]string {
+	if c == nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, ns := range c.Discovery.Namespaces {
+		if mode, ok := ns.PrivacyModeOverride(); ok {
+			out[ns.Name] = mode
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }

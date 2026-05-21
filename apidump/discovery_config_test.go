@@ -202,3 +202,159 @@ func TestMergeTargetNamespaces_VetoOnlyConfig(t *testing.T) {
 		t.Errorf("veto-only = %v, want %v", got, want)
 	}
 }
+
+// -- privacyMode field tests (Phase 4c) ------------------------------------
+
+func TestLoadDiscoveryConfig_PrivacyMode_Valid(t *testing.T) {
+	yaml := `
+discovery:
+  namespaces:
+    - name: app-prod
+      decrypt: true
+      privacyMode: strict
+    - name: payments
+      decrypt: true
+      privacyMode: standard
+    - name: experimental
+      decrypt: true
+      privacyMode: dry-run
+    - name: no-override
+      decrypt: true
+`
+	cfg, err := LoadDiscoveryConfig(writeYAML(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := cfg.PerNamespacePrivacyOverrides()
+	want := map[string]string{
+		"app-prod":     "strict",
+		"payments":     "standard",
+		"experimental": "dry-run",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overrides = %v, want %v", got, want)
+	}
+
+	// no-override should be absent — caller falls back to global default.
+	if _, present := got["no-override"]; present {
+		t.Errorf("namespace without privacyMode should NOT appear in overrides")
+	}
+}
+
+func TestLoadDiscoveryConfig_PrivacyMode_EmptyStringRejected(t *testing.T) {
+	// `privacyMode: ` (no value) is almost certainly a typo. Reject.
+	yaml := `
+discovery:
+  namespaces:
+    - name: app-prod
+      decrypt: true
+      privacyMode: ""
+`
+	_, err := LoadDiscoveryConfig(writeYAML(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for empty privacyMode")
+	}
+	if !strings.Contains(err.Error(), "empty privacyMode") {
+		t.Errorf("error message = %q, want contains 'empty privacyMode'", err)
+	}
+}
+
+func TestLoadDiscoveryConfig_PrivacyMode_UnknownRejected(t *testing.T) {
+	yaml := `
+discovery:
+  namespaces:
+    - name: app-prod
+      decrypt: true
+      privacyMode: paranoid
+`
+	_, err := LoadDiscoveryConfig(writeYAML(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for unknown privacyMode")
+	}
+	if !strings.Contains(err.Error(), "unknown privacyMode") {
+		t.Errorf("error message = %q, want contains 'unknown privacyMode'", err)
+	}
+}
+
+func TestLoadDiscoveryConfig_PrivacyMode_DryrunAliasAccepted(t *testing.T) {
+	// The data_masks layer normalises "dryrun" → "dry-run"; we accept both
+	// at the YAML layer for parity. This test guards against accidentally
+	// tightening one and not the other.
+	yaml := `
+discovery:
+  namespaces:
+    - name: foo
+      decrypt: true
+      privacyMode: dryrun
+`
+	cfg, err := LoadDiscoveryConfig(writeYAML(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PerNamespacePrivacyOverrides()["foo"] != "dryrun" {
+		t.Errorf("dryrun alias was not preserved")
+	}
+}
+
+func TestLoadDiscoveryConfig_PrivacyMode_CaseInsensitive(t *testing.T) {
+	// User accidentally types "Strict" instead of "strict" — accept it.
+	yaml := `
+discovery:
+  namespaces:
+    - name: foo
+      decrypt: true
+      privacyMode: Strict
+`
+	cfg, err := LoadDiscoveryConfig(writeYAML(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The override string is returned verbatim; canonicalisation happens
+	// at data_masks.ParsePrivacyMode time.
+	if cfg.PerNamespacePrivacyOverrides()["foo"] != "Strict" {
+		t.Errorf("PrivacyMode value not preserved verbatim")
+	}
+}
+
+func TestPerNamespacePrivacyOverrides_NilConfig(t *testing.T) {
+	var c *DiscoveryConfig
+	got := c.PerNamespacePrivacyOverrides()
+	if got != nil {
+		t.Errorf("nil config should return nil map, got %v", got)
+	}
+}
+
+func TestPerNamespacePrivacyOverrides_NoOverrides(t *testing.T) {
+	c := &DiscoveryConfig{
+		Discovery: DiscoverySection{Namespaces: []DiscoveryNamespace{
+			{Name: "foo", Decrypt: true}, // no PrivacyMode field
+			{Name: "bar", Decrypt: false},
+		}},
+	}
+	got := c.PerNamespacePrivacyOverrides()
+	if got != nil {
+		t.Errorf("config without overrides should return nil, got %v", got)
+	}
+}
+
+func TestDiscoveryNamespace_PrivacyModeOverride(t *testing.T) {
+	strict := "strict"
+	cases := []struct {
+		name   string
+		ns     DiscoveryNamespace
+		wantOK bool
+		wantS  string
+	}{
+		{"absent", DiscoveryNamespace{Name: "a"}, false, ""},
+		{"present", DiscoveryNamespace{Name: "a", PrivacyMode: &strict}, true, "strict"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, ok := c.ns.PrivacyModeOverride()
+			if ok != c.wantOK || s != c.wantS {
+				t.Errorf("got (%q, %v), want (%q, %v)", s, ok, c.wantS, c.wantOK)
+			}
+		})
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,6 +132,7 @@ func startHTTPSeBPFCapture(
 	args *Args,
 	pool buffer_pool.BufferPool,
 	collector trace.Collector,
+	backendCollectorForResolver *trace.BackendCollector,
 	wg *sync.WaitGroup,
 	tracker telemetry.Tracker,
 ) (stop context.CancelFunc) {
@@ -183,17 +186,10 @@ func startHTTPSeBPFCapture(
 		resolver, err := discovery.NewKubeNamespaceResolver(procRoot, "/proc")
 		if err != nil {
 			printer.Stderr.Warningf(
-				"ebpf: --https-target-namespaces set but kube client init failed (%v); "+
-					"falling back to no namespace filtering.\n", err)
+				"ebpf: --https-target-namespaces / --https-discovery-config set "+
+					"but kube client init failed (%v); falling back to no "+
+					"namespace filtering or per-namespace PrivacyMode.\n", err)
 		} else {
-			allowed := make(map[string]struct{}, len(args.HTTPSTargetNamespaces))
-			for _, ns := range args.HTTPSTargetNamespaces {
-				allowed[ns] = struct{}{}
-			}
-			printer.Stderr.Infof(
-				"ebpf: namespace filtering enabled — allowed namespaces: %v\n",
-				args.HTTPSTargetNamespaces)
-
 			// Drive a 30s refresh in the background so new pods become
 			// visible without restarting the agent.
 			stop := make(chan struct{})
@@ -204,11 +200,33 @@ func startHTTPSeBPFCapture(
 			}()
 			go resolver.RunRefresh(stop, 30*time.Second)
 
-			ebpfArgs.Discovery = discovery.WatchWith(captureCtx, discovery.WatchOpts{
-				Interval:          2 * time.Second,
-				NamespaceResolver: resolver,
-				AllowedNamespaces: allowed,
-			})
+			// Allowlist filtering (Phase 2) — only wire if the user
+			// explicitly set --https-target-namespaces. Empty list →
+			// capture everywhere.
+			if len(args.HTTPSTargetNamespaces) > 0 {
+				allowed := make(map[string]struct{}, len(args.HTTPSTargetNamespaces))
+				for _, ns := range args.HTTPSTargetNamespaces {
+					allowed[ns] = struct{}{}
+				}
+				printer.Stderr.Infof(
+					"ebpf: namespace filtering enabled — allowed namespaces: %v\n",
+					args.HTTPSTargetNamespaces)
+				ebpfArgs.Discovery = discovery.WatchWith(captureCtx, discovery.WatchOpts{
+					Interval:          2 * time.Second,
+					NamespaceResolver: resolver,
+					AllowedNamespaces: allowed,
+				})
+			}
+
+			// Per-namespace PrivacyMode resolver (Phase 4c). Hooks the
+			// resolver into the BackendCollector so witnesses get redacted
+			// against the right config based on the source pod's namespace.
+			if backendCollectorForResolver != nil {
+				backendCollectorForResolver.SetNamespaceResolver(
+					newNamespaceResolverForCollector(resolver))
+				printer.Stderr.Infof(
+					"ebpf: per-namespace PrivacyMode resolver wired into redactor.\n")
+			}
 		}
 	}
 
@@ -255,4 +273,46 @@ func startHTTPSeBPFCapture(
 	}()
 
 	return cancel
+}
+
+// ifaceTagPrefix is what events.Adapter sets on every eBPF-captured
+// witness's Interface field (see ebpf/events/adapter.go). The trailing
+// digits are the host-namespace PID we issued the kprobe under.
+const ifaceTagPrefix = "ebpf-pid-"
+
+// pidNamespaceLookup is the minimal abstraction over
+// *discovery.KubeNamespaceResolver that newNamespaceResolverForCollector
+// depends on. Defining it as a Go interface here (rather than reaching
+// for the concrete type) keeps the function unit-testable on any OS —
+// the discovery package's real implementation is Linux-only.
+type pidNamespaceLookup interface {
+	Namespace(pid uint32) string
+}
+
+// newNamespaceResolverForCollector returns a function that the
+// BackendCollector calls with a witness's netInterface tag. It extracts
+// the PID from the "ebpf-pid-<N>" tag and looks the namespace up via the
+// pre-built resolver. Non-eBPF witnesses (pcap-sourced, where
+// netInterface is "eth0" etc.) return "" so the redactor falls back to
+// its global default.
+//
+// Empty / unresolvable PIDs also return "" rather than panicking — at
+// startup, before the resolver has caught up with new pods, lookups
+// will miss; that's acceptable (the global default applies) and
+// becomes consistent within ~30 s as RunRefresh sweeps.
+func newNamespaceResolverForCollector(r pidNamespaceLookup) func(string) string {
+	if r == nil {
+		return nil
+	}
+	return func(ifaceTag string) string {
+		if !strings.HasPrefix(ifaceTag, ifaceTagPrefix) {
+			return ""
+		}
+		pidStr := ifaceTag[len(ifaceTagPrefix):]
+		pid64, err := strconv.ParseUint(pidStr, 10, 32)
+		if err != nil {
+			return ""
+		}
+		return r.Namespace(uint32(pid64))
+	}
 }

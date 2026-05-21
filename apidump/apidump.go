@@ -187,6 +187,14 @@ type Args struct {
 	// Phase 3 adds "gotls" and "boringssl".
 	HTTPSLibraries []string
 
+	// HTTPSDiscoveryConfigPath, when non-empty, points to the YAML file
+	// parsed by LoadDiscoveryConfig. The path is propagated through to
+	// the runtime so per-namespace PrivacyMode overrides can be applied
+	// at redaction time. Note: --https-target-namespaces is already
+	// merged with this config at CLI-parse time — see
+	// cmd/internal/apidump.mergeHTTPSTargetNamespaces.
+	HTTPSDiscoveryConfigPath string
+
 	// HTTPSTargetNamespaces, when non-empty, restricts uprobe attachment to
 	// processes whose Kubernetes namespace is in the list. Empty = all
 	// namespaces in scope of normal apidump discovery.
@@ -939,6 +947,41 @@ func (a *apidump) Run() error {
 	printer.Infof("data masks: privacy-mode=%s redaction-style=%s upload=%t\n",
 		privMode, style, redactor.PrivacyConfig.UploadEnabled)
 
+	// Per-namespace PrivacyMode overrides (design §7.3 gap #4 extension,
+	// Phase 4c). When --https-discovery-config supplies a YAML with
+	// `privacyMode: strict|standard|dry-run` per namespace, those
+	// override the global --privacy-mode flag for matching workloads.
+	//
+	// We parse the YAML AGAIN here (the CLI layer already validated it
+	// once) rather than threading the parsed struct through Args. Cost
+	// of a second parse at startup is negligible; the alternative is a
+	// new typed Args field that callers other than apidump-ebpf would
+	// need to populate too.
+	if a.HTTPSDiscoveryConfigPath != "" {
+		dcfg, derr := LoadDiscoveryConfig(a.HTTPSDiscoveryConfigPath)
+		if derr != nil {
+			// CLI layer already warned. Don't fatal here either —
+			// per-namespace overrides are an enhancement, not a launch gate.
+			printer.Warningf("per-namespace PrivacyMode: re-parse failed (%v) \u2014 "+
+				"all namespaces will use global --privacy-mode=%s.\n", derr, privMode)
+		} else if overrides := dcfg.PerNamespacePrivacyOverrides(); len(overrides) > 0 {
+			perNS := make(map[string]data_masks.PrivacyModeConfig, len(overrides))
+			for ns, modeStr := range overrides {
+				m, err := data_masks.ParsePrivacyMode(modeStr)
+				if err != nil {
+					// Shouldn't happen — LoadDiscoveryConfig validated; defend anyway.
+					printer.Warningf("per-namespace PrivacyMode: ns=%s mode=%s parse failed (%v); "+
+						"falling back to global default.\n", ns, modeStr, err)
+					continue
+				}
+				perNS[ns] = m.Config()
+			}
+			redactor.PerNamespacePrivacyConfig = perNS
+			printer.Infof("per-namespace PrivacyMode overrides active for %d namespace(s)\n",
+				len(perNS))
+		}
+	}
+
 	// In dry-run mode, start the redaction reporter. It writes redacted
 	// samples + per-rule hit counts to DryRunDir every minute. The
 	// backend collector still receives PNTs but the dry-run reporter
@@ -1117,7 +1160,8 @@ func (a *apidump) Run() error {
 	// and the backend sink are all reused unchanged.
 	if args.EnableHTTPSCapture && args.Out.AkitaURI != nil {
 		httpsSummary := trace.NewPacketCounter()
-		var httpsCollector trace.Collector = trace.NewBackendCollector(
+		httpsBackendCollector := trace.NewBackendCollector(
+
 			a.backendSvc,
 			traceTags,
 			backendLrn,
@@ -1131,6 +1175,11 @@ func (a *apidump) Run() error {
 			args.MaxWitnessUploadBuffers,
 			apidumpTelemetry,
 		)
+		// Concrete-typed reference for SetNamespaceResolver (Phase 4c).
+		// The variable below is the interface-typed reference used by the
+		// rest of the collector-chain wiring.
+		httpsBackendCollectorTyped, _ := httpsBackendCollector.(*trace.BackendCollector)
+		var httpsCollector trace.Collector = httpsBackendCollector
 		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 			toRotate = append(toRotate, lsc)
 		}
@@ -1161,7 +1210,7 @@ func (a *apidump) Run() error {
 			<-stop
 			httpsCancel()
 		}()
-		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpTelemetry)
+		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, httpsBackendCollectorTyped, &doneWG, apidumpTelemetry)
 		printer.Stderr.Infof("HTTPS capture (eBPF) started with body-cap=%d, mode=%q.\n",
 			args.HTTPSBodySizeCap, args.HTTPSCaptureMode)
 	} else if args.EnableHTTPSCapture {

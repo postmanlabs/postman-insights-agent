@@ -341,9 +341,10 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		Labels:        labels,
 
 		// HTTPS-via-eBPF.
-		EnableHTTPSCapture:    enableHTTPSCapture,
-		HTTPSLibraries:        httpsLibraries,
-		HTTPSTargetNamespaces: mergeHTTPSTargetNamespaces(httpsTargetNamespaces, httpsDiscoveryConfig),
+		EnableHTTPSCapture:       enableHTTPSCapture,
+		HTTPSLibraries:           httpsLibraries,
+		HTTPSDiscoveryConfigPath: httpsDiscoveryConfig,
+		HTTPSTargetNamespaces:    mergeHTTPSTargetNamespaces(httpsTargetNamespaces, httpsDiscoveryConfig),
 		HTTPSBodySizeCap:      httpsBodySizeCap,
 		HTTPSCaptureMode:      httpsCaptureMode,
 		HTTPSCBPFExcludePort:  httpsCBPFExcludePort,

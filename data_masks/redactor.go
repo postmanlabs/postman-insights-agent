@@ -45,9 +45,24 @@ type Redactor struct {
 	// StyleRedact (zero value of RedactionStyle is "" which parses to redact).
 	Style RedactionStyle
 
-	// PrivacyConfig is the resolved privacy-mode config. Empty struct = the
-	// historical PrivacyStandard behaviour.
+	// PrivacyConfig is the resolved DEFAULT privacy-mode config used when
+	// no per-namespace override applies. Empty struct = the historical
+	// PrivacyStandard behaviour.
 	PrivacyConfig PrivacyModeConfig
+
+	// PerNamespacePrivacyConfig overrides PrivacyConfig per namespace.
+	//
+	// Lookup order at redact time:
+	//   RedactSensitiveDataForNamespace(method, ns):
+	//     1. If PerNamespacePrivacyConfig[ns] exists → use that config.
+	//     2. Otherwise → use PrivacyConfig (the global default).
+	//
+	// Backwards-compat: RedactSensitiveData(method) without a namespace
+	// argument continues to use PrivacyConfig only. New callers that have
+	// namespace context should prefer the *ForNamespace variant.
+	//
+	// nil map = no overrides; behaviour identical to historic Redactor.
+	PerNamespacePrivacyConfig map[string]PrivacyModeConfig
 
 	// Coverage tracks per-rule redaction counts for telemetry. nil is safe
 	// (the Inc* helpers no-op on nil).
@@ -159,6 +174,23 @@ func (o *Redactor) StopPeriodicUpdates() {
 }
 
 func (o *Redactor) RedactSensitiveData(m *pb.Method) {
+	// Empty namespace → lookupConfigForNamespace falls through to the
+	// default PrivacyConfig, preserving the historical signature behaviour.
+	o.redactSensitiveDataInternal(m, "")
+}
+
+// RedactSensitiveDataForNamespace is the namespace-aware variant. The
+// namespace string is matched against PerNamespacePrivacyConfig; an empty
+// or unmatched namespace falls back to the global PrivacyConfig.
+//
+// Callers that have a Kubernetes namespace for the source pod (the
+// BackendCollector resolves this from the BPF-event ifaceTag) should call
+// this method; everyone else should keep using RedactSensitiveData.
+func (o *Redactor) RedactSensitiveDataForNamespace(m *pb.Method, namespace string) {
+	o.redactSensitiveDataInternal(m, namespace)
+}
+
+func (o *Redactor) redactSensitiveDataInternal(m *pb.Method, namespace string) {
 	o.userConfig.RLock()
 	defer o.userConfig.RUnlock()
 
@@ -169,17 +201,30 @@ func (o *Redactor) RedactSensitiveData(m *pb.Method) {
 	}
 	vis.Apply(&pov, m)
 
+	cfg := o.lookupConfigForNamespace(namespace)
+
 	// Apply privacy-mode body/header dropping AFTER the standard
 	// redaction pass. ZeroAllPrimitives produces a zero-typed value for
 	// each primitive, which is what downstream type inference wants.
-	if o.PrivacyConfig.DropBodies || len(o.PrivacyConfig.HeaderAllowlist) > 0 {
+	if cfg.DropBodies || len(cfg.HeaderAllowlist) > 0 {
 		pmv := privacyModeVisitor{
-			redactor: o,
-			dropBodies: o.PrivacyConfig.DropBodies,
-			headerAllowed: o.PrivacyConfig.HeaderAllowed,
+			redactor:      o,
+			dropBodies:    cfg.DropBodies,
+			headerAllowed: cfg.HeaderAllowed,
 		}
 		vis.Apply(&pmv, m)
 	}
+}
+
+// lookupConfigForNamespace returns the effective PrivacyModeConfig for a
+// namespace. Empty / unmatched namespace returns the default PrivacyConfig.
+func (o *Redactor) lookupConfigForNamespace(namespace string) PrivacyModeConfig {
+	if namespace != "" {
+		if cfg, ok := o.PerNamespacePrivacyConfig[namespace]; ok {
+			return cfg
+		}
+	}
+	return o.PrivacyConfig
 }
 
 func (o *Redactor) ZeroAllPrimitives(m *pb.Method) {

@@ -501,6 +501,9 @@ discovery:
       decrypt: false      # eBPF probes do NOT attach; HTTPS stays opaque
     - name: legacy
       decrypt: true
+    - name: pii-handling
+      decrypt: true
+      privacyMode: strict # override the global --privacy-mode for THIS namespace only
 ```
 
 ```sh
@@ -538,9 +541,32 @@ Fully strict. Unknown fields cause a fail-fast parse error so typos in
 | --- | --- | :---: | --- |
 | `discovery.namespaces[].name` | string | ✅ | Kubernetes namespace name. Must be unique across entries. |
 | `discovery.namespaces[].decrypt` | bool | ✅ | `true` adds to allow-list; `false` adds to veto set. |
+| `discovery.namespaces[].privacyMode` | string | optional | Override the global `--privacy-mode` flag for this namespace only. One of: `standard`, `strict`, `dry-run`. Empty-but-present is rejected (likely a typo). Absent = inherit the global default. |
 
-Future additions (not v1): per-namespace `privacyMode`, per-workload
-selectors, label-based matching. The shape stays forward-compatible.
+### Per-namespace `privacyMode` override (added Phase 4c)
+
+When `privacyMode` is set on a namespace, witnesses captured from pods
+in that namespace are redacted against the override config instead of
+the global default. The agent matches the source pod's namespace via
+the existing `KubeNamespaceResolver` (the same one that powers the
+`--https-target-namespaces` allow-list), so no extra cluster-side
+setup is needed.
+
+Precedence:
+
+1. If a witness's source pod is in a namespace with `privacyMode` set,
+   use that mode.
+2. Otherwise, use the global `--privacy-mode` flag.
+3. For pcap-captured witnesses (no PID-encoded namespace), always use
+   the global default.
+
+If the kube-API client fails to initialise (running outside a cluster),
+the agent warns and falls back to the global default for **all**
+namespaces — per-namespace overrides degrade open rather than
+blocking startup.
+
+Future additions (not v1): per-workload selectors, label-based
+matching. The shape stays forward-compatible.
 
 ---
 

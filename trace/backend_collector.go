@@ -166,7 +166,24 @@ type BackendCollector struct {
 
 	redactor *data_masks.Redactor
 
+	// namespaceResolver, when non-nil, is called with the witness's
+	// netInterface tag ("ebpf-pid-<N>" for eBPF-captured witnesses) and
+	// returns the Kubernetes namespace of that PID, or empty string if
+	// unknown. Used to route witnesses to the right per-namespace
+	// PrivacyMode override. Pcap-captured witnesses (netInterface like
+	// "eth0") have no PID-encoded namespace so the resolver returns "".
+	namespaceResolver func(ifaceTag string) string
+
 	telemetry telemetry.Tracker
+}
+
+// SetNamespaceResolver installs a resolver used to look up the Kubernetes
+// namespace of each witness at redact time. Used to apply per-namespace
+// PrivacyMode overrides (design doc §7.3 gap #4, Phase 4c). Safe to call
+// at most once before the collector starts processing witnesses; the
+// field is read-only from the collector goroutine after that.
+func (c *BackendCollector) SetNamespaceResolver(r func(ifaceTag string) string) {
+	c.namespaceResolver = r
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -371,7 +388,13 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		// backend without revealing the actual value.
 		c.redactor.ZeroAllPrimitives(w.witness.GetMethod())
 	} else {
-		c.redactor.RedactSensitiveData(w.witness.GetMethod())
+		// Per-namespace PrivacyMode lookup. Empty namespace falls back to
+		// the global default in the redactor.
+		namespace := ""
+		if c.namespaceResolver != nil {
+			namespace = c.namespaceResolver(w.netInterface)
+		}
+		c.redactor.RedactSensitiveDataForNamespace(w.witness.GetMethod(), namespace)
 	}
 
 	c.uploadReportBatch.Add(rawReport{
