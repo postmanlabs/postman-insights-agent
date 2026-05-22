@@ -1,5 +1,10 @@
 # Welcome! 👋
 
+> **🛠️ Working on the HTTPS-capture-via-eBPF track?** Start at
+> [`docs/HANDOFF.md`](docs/HANDOFF.md) — it's the single onboarding doc for
+> that work stream. Branch: `feat/https-capture-ebpf`; PR: [#173](https://github.com/postmanlabs/postman-insights-agent/pull/173).
+
+
 Postman Insights is designed to let you optimize your API performance in real
 time. Using the drop-in Postman Insights Agent, you can bring your API
 endpoints into Postman and assess your API traffic. Postman Insights allows you

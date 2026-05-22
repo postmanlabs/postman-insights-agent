@@ -2,16 +2,30 @@
 
 **Single source of truth for "where are we" on the HTTPS-capture program.**
 
-Last updated: end of session that delivered Phase 3 tasks #1 (HTTP/2 frame
-decoder) and #2 (`crypto/tls.(*Conn).Read` via RET-instruction probing).
+**Last updated:** end of follow-up backlog closure session (commit `ad177b3`).
+
+## TL;DR — program status
+
+The HTTPS-capture-via-eBPF program is **feature-complete at the original
+design-doc spec** and at **steady state**. Every track is closed:
+
+* All 8 privacy gaps from `https-capture-design.md` §7.3 are closed.
+* All Phase 5 (Java + webhook) milestones are shipped.
+* All five post-launch follow-ups (ByteBuddy bump, CLI-tool skip, JMH
+  benchmark, per-namespace `privacyMode`, CI smoke) are closed.
+
+**For the next engineer**, start with [`HANDOFF.md`](HANDOFF.md) — it has
+the full onboarding map.
 
 ## PR structure (current)
 
-| PR | Branch | Scope | Status | Base |
-|---|---|---|---|---|
-| **[#174](https://github.com/postmanlabs/postman-insights-agent/pull/174)** | `feat/https-capture-ebpf-libssl` | **Phases 1+2** — libssl path, kind e2e, namespace filter, sampling stack, telemetry | DRAFT | `main` |
-| **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/173)** | `feat/https-capture-ebpf` | **Phases 3+4** — Go support + privacy hardening | DRAFT | `main` (will auto-narrow after #174 merges) |
-| (future) | `feat/https-capture-ebpf-java` | Phase 5 — Java agent + ioctl bridge + webhook | not started | TBD |
+| PR | Branch | Scope | Status |
+|---|---|---|---|
+| **[#173](https://github.com/postmanlabs/postman-insights-agent/pull/173)** | `feat/https-capture-ebpf` | **Phases 1–5 + 4b + 4c + follow-ups** — the entire program | DRAFT |
+| ~~[#174](https://github.com/postmanlabs/postman-insights-agent/pull/174)~~ | ~~`feat/https-capture-ebpf-libssl`~~ | Closed as a subset of #173 |
+
+#173 is the **single review surface** for an external eBPF consultant.
+Do not create sub-branches; everything lives on `feat/https-capture-ebpf`.
 
 ---
 
