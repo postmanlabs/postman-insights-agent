@@ -2,23 +2,35 @@
 
 This package adds **HTTPS traffic capture** to the Postman Insights Agent via eBPF uprobes on userspace TLS libraries. The full design lives in [`docs/https-capture-design.md`](../docs/https-capture-design.md).
 
-## Current status (Phase 1 scaffold)
+## Current status (after Phases 1 + 2)
 
-This is **Phase 1 scaffolding** committed on branch `feat/https-capture-ebpf`. The code structurally implements end-to-end libssl uprobe → ringbuf → adapter → akinet pipeline, but:
+The libssl uprobe → ringbuf → adapter → akinet pipeline is end-to-end
+functional on Linux 5.8+. The `apidump --enable-https-capture` flag turns
+it on in production.
 
 | Component | Status |
 |---|---|
-| BPF C source (`programs/libssl.bpf.c`) | ✅ Written |
-| Go loader (`loader/`) | ✅ Written; requires bpf2go-generated bindings |
-| Ringbuf reader (`events/reader_linux.go`) | ✅ Written |
-| Decoder (`events/decode.go`) | ✅ Written |
-| Adapter to akinet (`events/adapter.go`) | 🟡 Scaffold — Phase 2 wires the `Parse()` call |
-| Process discovery (`discovery/`) | 🟡 Polling /proc, Phase 2 adds CRI/Kube |
-| Uprobe attachment (`uprobes/`) | ✅ Written (dynamic libssl); static libssl deferred |
-| Top-level `Collect()` | ✅ Written |
-| Spike command (`cmd/internal/apidump-ebpf/`) | ✅ Written |
-| `bpf2go` integration | ⏳ Not run yet (requires clang + vmlinux.h on host) |
-| End-to-end test | ⏳ Phase 1 exit criterion |
+| BPF C source (`programs/libssl.bpf.c`) | ✅ Compiles, loads past verifier on kernel 6.12 first try |
+| Go loader (`loader/`) | ✅ bpf2go bindings generated and committed (arm64; amd64 deferred to CI runner) |
+| Ringbuf reader (`events/reader_linux.go`) | ✅ |
+| Decoder (`events/decode.go`) | ✅ |
+| Adapter to akinet (`events/adapter.go`) | ✅ Real `Parse()` loop with pipelining, chunked delivery, 64 KiB cap, 6 unit tests |
+| Process discovery (`discovery/`) | 🟡 Polling `/proc` works; CRI/Kube integration deferred to follow-up |
+| Uprobe attachment (`uprobes/`) | ✅ Dynamic libssl (OpenSSL 1.1 & 3.x); static BoringSSL in `node` exe (official Node 20+) |
+| Top-level `Collect()` | ✅ |
+| Spike command (`cmd/internal/apidump-ebpf/`) | ✅ Validated against curl, Python `requests`, Node `https.get` |
+| `apidump --enable-https-capture` integration | ✅ Wired into the production `apidump` command (dedicated collector chain reusing data_masks / rate_limit / backend_collector) |
+| cBPF port-443 exclusion | ✅ `--https-cbpf-exclude-port` (default 443) |
+| DaemonSet privileges | 🟡 Helper code present (`SidecarOpts.EnableHTTPSCapture`, `HTTPSCaptureVolumes`); not yet wired into `kube inject` / `helm-fragment` / `tf-fragment` |
+| Sampling layer 1 (body truncation) | ✅ |
+| Sampling layers 2 & 5 (rate cap, CPU thermostat) | ❌ Deferred |
+| Telemetry counters | 🟡 Counters exist on adapter; not yet wired into `telemetry/` |
+| fd → 4-tuple resolution | ❌ Deferred — IPs zero, PID in Interface field |
+| End-to-end on a kind cluster | ❌ Deferred (requires Docker-in-Docker or real Linux host) |
+
+See `docs/phases/phase-1-results.md` and `docs/phases/phase-2-results.md` for
+actual measurement numbers, deviations from the design doc, and the
+recommended follow-up sequence.
 
 ## Build tags
 
@@ -33,22 +45,27 @@ The eBPF code paths are gated behind two conditions:
 | `-tags insights_bpf` on Linux | Real eBPF code. Requires `bpf2go` artifacts to be present. |
 | `-tags insights_bpf` on macOS | Build fails (loader_linux.go won't match). Use Linux dev VM or container. |
 
-## How to actually build & run the spike
+## How to actually build & run
 
-On a Linux 5.8+ host (or VM) with `clang ≥ 14`, `llvm-strip`, `bpftool`:
+### On macOS (Apple Silicon or Intel) via Docker Desktop
 
 ```bash
-# 1. Generate vmlinux.h from the running kernel's BTF.
+make dev-build          # one-time: build the dev container image
+make dev-shell          # open a shell inside it (repo bind-mounted, --pid=host)
+
+# Inside the shell:
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
+make build-ebpf         # generates bpf2go bindings + builds insights_bpf binary
+./bin/postman-insights-agent apidump-ebpf --duration 60s          # spike
+# or for the production path:
+./bin/postman-insights-agent apidump --enable-https-capture --project ...
+```
+
+### On a Linux host with `clang ≥ 14`, `llvm-strip`, `bpftool`, `libbpf-dev`
+
+```bash
 sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
-
-# 2. Generate Go bindings from the BPF C sources.
-go install github.com/cilium/ebpf/cmd/bpf2go@latest
-cd ebpf/loader && go generate ./... && cd ../..
-
-# 3. Build the spike binary with the insights_bpf tag.
-go build -tags insights_bpf -o bin/postman-insights-agent .
-
-# 4. Run as root (or with CAP_BPF + CAP_PERFMON).
+make build-ebpf
 sudo ./bin/postman-insights-agent apidump-ebpf --duration 60s
 ```
 
@@ -97,13 +114,20 @@ ebpf/
     └── proc.go                  scan + watch /proc; Phase 2 adds CRI integration
 ```
 
-## What Phase 2 will add to this package
+## What's left after Phases 1 + 2
 
-See `docs/https-capture-design.md §9 (Phase 2)`. In summary:
-
-1. Wire `events/adapter.go` to call `parser.Parse()` with proper memview / TCPBidiID.
-2. Replace `discovery/proc.go` polling with inotify + CRI events.
-3. Integrate `ebpf.Collect` into the main `apidump` command behind `--enable-https-capture`.
-4. Exclude port 443 from the cBPF filter when eBPF is active.
-5. Add CLI flags, telemetry, K8s manifest updates.
-6. Sampling layers 1, 2, 5 (truncation, per-PID rate cap, CPU thermostat).
+1. **fd → 4-tuple resolution.** Largest functional gap; the
+   `origin/feature/capture-https` branch has a working
+   `socketResolver` worth porting.
+2. **CRI/Kube discovery.** Replace `/proc` polling with inotify + a kube
+   watch+cache.
+3. **Sampling layers 2 & 5.** Per-PID rate-cap in BPF; CPU thermostat in Go.
+4. **Telemetry wiring.** Counters exist on the adapter; need a 30-second
+   emit loop hooked into the existing `telemetry/` pipeline.
+5. **Kube subcommand integration.** `--enable-https-capture` on
+   `kube inject`, `helm-fragment`, `tf-fragment`.
+6. **CI.** amd64 cross-compile of BPF objects; `make build-ebpf` in
+   `.circleci/config.yml`; release `Dockerfile` updated to embed bpf2go
+   output.
+7. **End-to-end kind-cluster test.** Once (1)–(5) land, walk a kind
+   cluster through the namespace-filtering exit criterion.

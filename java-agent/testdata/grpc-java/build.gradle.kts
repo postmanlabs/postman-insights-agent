@@ -31,6 +31,7 @@ dependencies {
     implementation("io.grpc:grpc-netty-shaded:$grpcVersion")
     implementation("io.grpc:grpc-protobuf:$grpcVersion")
     implementation("io.grpc:grpc-stub:$grpcVersion")
+    implementation("io.grpc:grpc-services:$grpcVersion") // ProtoReflectionService for grpcurl
     implementation("com.google.protobuf:protobuf-java:$protobufVersion")
     implementation("javax.annotation:javax.annotation-api:1.3.2")
 }

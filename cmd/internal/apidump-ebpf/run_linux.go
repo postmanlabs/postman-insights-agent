@@ -31,6 +31,7 @@ var (
 	flagRateCap          uint32
 	flagStatsEvery       time.Duration
 	flagTargetNamespaces []string
+	flagNoThermostat     bool
 )
 
 func init() {
@@ -39,6 +40,7 @@ func init() {
 	Cmd.Flags().Uint32Var(&flagRateCap, "rate-cap-per-sec", 0, "Per-PID rate cap (events/sec). 0 disables rate limiting.")
 	Cmd.Flags().DurationVar(&flagStatsEvery, "stats-every", 0, "If >0, log BPF counter stats every interval.")
 	Cmd.Flags().StringSliceVar(&flagTargetNamespaces, "target-namespaces", nil, "Restrict capture to PIDs whose K8s namespace is in this list. Requires running in a kube cluster.")
+	Cmd.Flags().BoolVar(&flagNoThermostat, "no-thermostat", false, "Disable CPU thermostat that lowers max-capture-bytes under load (recommended for Kind e2e demo).")
 }
 
 func runE(cmd *cobra.Command, _ []string) error {
@@ -81,6 +83,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 	args.FactorySelector = selector
 	args.Out = out
 	args.RateCapPerSec = flagRateCap
+	args.DisableThermostat = flagNoThermostat
 	// Auto-detect /host/proc for DaemonSet deployments.
 	if _, err := os.Stat("/host/proc/self"); err == nil {
 		args.ProcRoot = "/host/proc"
@@ -106,6 +109,10 @@ func runE(cmd *cobra.Command, _ []string) error {
 			// NOTE: Discovery scans the agent's own /proc (not args.ProcRoot)
 			// so the PIDs it returns are usable for perf_event_open which uses
 			// the agent's PID namespace.
+			// Discovery must scan the agent's /proc (kind-node PIDs) so
+			// perf_event_open uprobe attach uses PIDs the kernel accepts.
+			// args.ProcRoot (/host/proc) is only for the resolver, which
+			// maps BPF-emitted LinuxKit root PIDs — see collect_linux.go.
 			args.Discovery = discovery.WatchWith(ctx, discovery.WatchOpts{
 				Interval:          2 * time.Second,
 				NamespaceResolver: resolver,

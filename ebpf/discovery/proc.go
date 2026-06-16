@@ -101,7 +101,7 @@ func ScanProcAt(procRoot string) ([]Target, error) {
 			continue
 		}
 
-		lib, err := uprobes.FindLibSSLAt(procRoot, pid)
+		lib, err := uprobes.FindLibSSLAnyAt(procRoot, pid)
 		if err != nil {
 			continue
 		}

@@ -93,20 +93,5 @@ func FindLibSSLAt(procRoot string, pid uint32) (*LibSSLPath, error) {
 	return nil, ErrNotFound
 }
 
-// FindStaticLibSSL handles the case where SSL_* symbols are statically linked
-// into the process's main binary (common for Node.js statically built against
-// BoringSSL, and for Go binaries that use cgo+OpenSSL).
-//
-// Implementation deferred to Phase 2 — requires opening /proc/<pid>/exe,
-// parsing the ELF symbol table for SSL_read/SSL_write, and confirming they
-// resolve to a non-zero offset. See ../../insights-ebpf-research/ecapture/
-// for a reference implementation (`lib/openssl/`).
-func FindStaticLibSSL(pid uint32) (*LibSSLPath, error) {
-	return nil, ErrNotImplemented
-}
-
 // ErrNotFound is returned when no libssl mapping is found in a process.
 var ErrNotFound = fmt.Errorf("uprobes: libssl not found")
-
-// ErrNotImplemented is a placeholder for Phase-1-deferred functionality.
-var ErrNotImplemented = fmt.Errorf("uprobes: not implemented yet")

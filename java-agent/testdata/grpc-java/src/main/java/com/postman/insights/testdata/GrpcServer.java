@@ -5,6 +5,7 @@ package com.postman.insights.testdata;
 import java.io.File;
 
 import io.grpc.Server;
+import io.grpc.protobuf.services.ProtoReflectionService;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
 
@@ -35,6 +36,7 @@ public final class GrpcServer {
                 .forPort(8446)
                 .useTransportSecurity(cert, key)
                 .addService(new GreeterImpl())
+                .addService(ProtoReflectionService.newInstance())
                 .build()
                 .start();
 
