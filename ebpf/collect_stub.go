@@ -36,6 +36,7 @@ type Args struct {
 	HookLoader          func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
 	RateCapPerSec       uint32
 	ProcRoot            string
+	DisableThermostat   bool
 }
 
 func Defaults() Args {

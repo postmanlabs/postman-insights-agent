@@ -16,7 +16,7 @@ it on in production.
 | Decoder (`events/decode.go`) | ✅ |
 | Adapter to akinet (`events/adapter.go`) | ✅ Real `Parse()` loop with pipelining, chunked delivery, 64 KiB cap, 6 unit tests |
 | Process discovery (`discovery/`) | 🟡 Polling `/proc` works; CRI/Kube integration deferred to follow-up |
-| Uprobe attachment (`uprobes/`) | ✅ Dynamic libssl (OpenSSL 1.1 & 3.x); static-libssl Node/Envoy deferred |
+| Uprobe attachment (`uprobes/`) | ✅ Dynamic libssl (OpenSSL 1.1 & 3.x); static BoringSSL in `node` exe (official Node 20+) |
 | Top-level `Collect()` | ✅ |
 | Spike command (`cmd/internal/apidump-ebpf/`) | ✅ Validated against curl, Python `requests`, Node `https.get` |
 | `apidump --enable-https-capture` integration | ✅ Wired into the production `apidump` command (dedicated collector chain reusing data_masks / rate_limit / backend_collector) |

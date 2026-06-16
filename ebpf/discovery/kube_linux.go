@@ -180,6 +180,12 @@ func (r *KubeNamespaceResolver) refresh() error {
 			if err != nil || pid <= 0 {
 				continue
 			}
+			// Skip stale CRI entries (e.g. after pod restart) so we don't map
+			// a dead init PID's cgroup inode while the live server runs under
+			// a new PID/inode.
+			if _, err := os.Stat(filepath.Join(r.agentProc, strconv.Itoa(pid))); err != nil {
+				continue
+			}
 			ino, err := readCgroupNsInode(r.agentProc, uint32(pid))
 			if err != nil {
 				continue

@@ -9,6 +9,8 @@ import javax.net.ssl.SSLEngineResult;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.matcher.ElementMatchers;
 
 import com.postman.insights.agent.ebpf.IoctlPacket;
@@ -65,6 +67,14 @@ public final class SSLEngineInst {
      *       was the gRPC-Java gap before 5c.2.</li>
      * </ul>
      *
+     * <p>Type matching uses an explicit allow-list of known {@code SSLEngine}
+     * implementation classes rather than {@code isSubTypeOf(SSLEngine.class)}.
+     * The subtype matcher runs on every class load and resolves supertype
+     * chains via ByteBuddy's type pool; gRPC-Netty's optional
+     * {@code Log4J2Logger} references {@code log4j-api} types that are not on
+     * the classpath, which breaks {@code NettyServerBuilder} static init when
+     * the agent is attached (kind CombinedServer regression, 2026-06).</p>
+     *
      * <p>Note that ByteBuddy's {@code on(matcher)} only applies to methods
      * DECLARED by the type, not inherited. So a class that inherits the
      * default 2-arg from SSLEngine but doesn't override it won't get the
@@ -73,8 +83,7 @@ public final class SSLEngineInst {
      */
     public static AgentBuilder install(AgentBuilder builder) {
         return builder
-                .type(ElementMatchers.isSubTypeOf(SSLEngine.class)
-                        .and(ElementMatchers.not(ElementMatchers.isAbstract())))
+                .type(sslEngineImplementations())
                 .transform((b, type, classLoader, module, protectionDomain) -> b
                         // wrap(ByteBuffer[], int, int, ByteBuffer)
                         .visit(Advice.to(WrapAdvice.class).on(
@@ -111,6 +120,25 @@ public final class SSLEngineInst {
                                         .and(ElementMatchers.takesArguments(2))
                                         .and(ElementMatchers.takesArgument(0, ByteBuffer[].class))
                                         .and(ElementMatchers.takesArgument(1, ByteBuffer[].class)))));
+    }
+
+    /** Known concrete {@link SSLEngine} implementations — see class javadoc. */
+    static ElementMatcher.Junction<TypeDescription> sslEngineImplementations() {
+        return ElementMatchers.named("sun.security.ssl.SSLEngineImpl")
+                // gRPC-Netty shaded (CombinedServer / kind e2e)
+                .or(ElementMatchers.named(
+                        "io.grpc.netty.shaded.io.netty.handler.ssl.JdkSslEngine"))
+                .or(ElementMatchers.named(
+                        "io.grpc.netty.shaded.io.netty.handler.ssl.JdkAlpnSslEngine"))
+                .or(ElementMatchers.named(
+                        "io.grpc.netty.shaded.io.netty.handler.ssl.ReferenceCountedOpenSslEngine"))
+                .or(ElementMatchers.named(
+                        "io.grpc.netty.shaded.io.netty.handler.ssl.ConscryptAlpnSslEngine"))
+                // Unshaded Netty (Spring WebFlux, standalone Netty apps)
+                .or(ElementMatchers.named("io.netty.handler.ssl.JdkSslEngine"))
+                .or(ElementMatchers.named("io.netty.handler.ssl.JdkAlpnSslEngine"))
+                .or(ElementMatchers.named("io.netty.handler.ssl.ReferenceCountedOpenSslEngine"))
+                .or(ElementMatchers.named("io.netty.handler.ssl.ConscryptAlpnSslEngine"));
     }
 
     // ----------------------------------------------------------------------

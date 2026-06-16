@@ -211,6 +211,8 @@ func startHTTPSeBPFCapture(
 				printer.Stderr.Infof(
 					"ebpf: namespace filtering enabled — allowed namespaces: %v\n",
 					args.HTTPSTargetNamespaces)
+				// Discovery scans /proc (agent PID namespace) for uprobe
+				// attach; procRoot (/host/proc) is only for the resolver.
 				ebpfArgs.Discovery = discovery.WatchWith(captureCtx, discovery.WatchOpts{
 					Interval:          2 * time.Second,
 					NamespaceResolver: resolver,

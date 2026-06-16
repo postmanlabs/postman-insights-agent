@@ -49,6 +49,11 @@ type Args struct {
 	// userspace refiller resets buckets every second.
 	RateCapPerSec uint32
 
+	// DisableThermostat skips the CPU thermostat (§6.2 layer 5). Useful for
+	// Kind e2e demos where background workloads would otherwise throttle
+	// max_capture_bytes down to 64 and break HTTP parsing.
+	DisableThermostat bool
+
 	// ProcRoot is the path the resolver should treat as /proc. Default ""
 	// resolves to /proc. DaemonSet deployments that bind-mount the kernel's
 	// root /proc into the agent pod (typically at /host/proc) pass that here
@@ -124,7 +129,9 @@ func Collect(ctx context.Context, args Args) error {
 	// lifetime of Collect and lowers max_capture_bytes if the agent itself
 	// exceeds the CPU budget.
 	therm := NewThermostat(l, args.MaxCaptureBytes)
-	go therm.Run(ctx)
+	if !args.DisableThermostat {
+		go therm.Run(ctx)
+	}
 
 	// 4c. Per-PID rate cap — sampling layer 2.
 	go rateCapRefiller(ctx, l, mgr, args.RateCapPerSec)
@@ -191,13 +198,14 @@ func Collect(ctx context.Context, args Args) error {
 				}
 				continue
 			}
-			if err := mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath); err != nil {
+			if err := mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {
 				printer.Debugf("ebpf: attach pid=%d path=%s failed: %v\n",
 					tgt.PID, tgt.Lib.HostPath, err)
 				continue
 			}
-			printer.Debugf("ebpf: attached libssl uprobes pid=%d path=%s\n",
-				tgt.PID, tgt.Lib.HostPath)
+			nProbes := mgr.ProbeCount(tgt.PID)
+			printer.Stderr.Infof("ebpf: attached libssl uprobes pid=%d path=%s static=%v probes=%d\n",
+				tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static, nProbes)
 
 		case ev, ok := <-reader.Out:
 			if !ok {

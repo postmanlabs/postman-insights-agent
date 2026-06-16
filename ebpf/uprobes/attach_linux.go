@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -43,25 +46,102 @@ func NewManager(l *loader.Loader) *Manager {
 // (read, read_ex, write, write_ex) for the given PID. If a probe symbol is
 // missing (e.g. older OpenSSL without *_ex variants), it is silently skipped.
 //
-// Subsequent calls for the same PID are no-ops.
-func (m *Manager) AttachLibSSL(pid uint32, path string) error {
+// Subsequent calls for the same PID are no-ops. Static targets use per-PID
+// attach; when path is /proc/<pid>/exe and probes fail to bind, rootPath is
+// tried as a fallback inside container mount namespaces.
+func (m *Manager) AttachLibSSL(pid uint32, path string, static bool) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, ok := m.attached[pid]; ok {
-		return nil
+	if att, ok := m.attached[pid]; ok {
+		// Process exited and the PID was recycled, or the target switched
+		// libssl paths — drop stale links so discovery can re-attach.
+		if procAlive(pid) && att.path == path {
+			m.mu.Unlock()
+			return nil
+		}
+		m.mu.Unlock()
+		_ = m.Detach(pid)
+		m.mu.Lock()
 	}
 
+	tryPaths := []string{path}
+	if static {
+		if alt := staticAlternatePath(path, pid); alt != "" && alt != path {
+			tryPaths = append(tryPaths, alt)
+		}
+	}
+
+	var lastErr error
+	for _, p := range tryPaths {
+		att, err := m.tryAttachLocked(pid, p, static)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(att.links) == 0 {
+			lastErr = fmt.Errorf("uprobes: no SSL probes bound at %s", p)
+			continue
+		}
+		m.attached[pid] = att
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("uprobes: attach pid=%d: no probes bound", pid)
+}
+
+func procAlive(pid uint32) bool {
+	_, err := os.Stat(filepath.Join("/proc", fmt.Sprintf("%d", pid)))
+	return err == nil
+}
+
+func staticRootFallbackPath(exePath string, pid uint32) string {
+	if !strings.HasPrefix(exePath, "/proc/") || !strings.HasSuffix(exePath, "/exe") {
+		return ""
+	}
+	target, err := os.Readlink(exePath)
+	if err != nil || !strings.HasPrefix(target, "/") {
+		return ""
+	}
+	rootPath := filepath.Join("/proc", fmt.Sprintf("%d", pid), "root", target)
+	if st, err := os.Stat(rootPath); err == nil && !st.IsDir() {
+		return rootPath
+	}
+	return ""
+}
+
+func staticAlternatePath(path string, pid uint32) string {
+	if strings.Contains(path, "/root/") {
+		return filepath.Join("/proc", fmt.Sprintf("%d", pid), "exe")
+	}
+	return staticRootFallbackPath(path, pid)
+}
+
+func (m *Manager) tryAttachLocked(pid uint32, path string, static bool) (*pidAttachment, error) {
 	exe, err := link.OpenExecutable(path)
 	if err != nil {
-		return fmt.Errorf("uprobes: open %s: %w", path, err)
+		return nil, fmt.Errorf("uprobes: open %s: %w", path, err)
 	}
 
 	att := &pidAttachment{path: path}
+	opts := &link.UprobeOptions{PID: int(pid)}
+	if err := m.attachProbesLocked(exe, opts, att, static); err != nil {
+		for _, c := range att.links {
+			_ = c.Close()
+		}
+		return nil, err
+	}
+	return att, nil
+}
+
+func (m *Manager) attachProbesLocked(exe *link.Executable, opts *link.UprobeOptions, att *pidAttachment, static bool) error {
 	cleanup := func() {
 		for _, c := range att.links {
 			_ = c.Close()
 		}
+		att.links = nil
 	}
 
 	type probePair struct {
@@ -83,10 +163,14 @@ func (m *Manager) AttachLibSSL(pid uint32, path string) error {
 		{"SSL_write", wEnt, wExt},
 		{"SSL_write_ex", wxEnt, wxExt},
 	}
+	if static {
+		// Node's static BoringSSL build also exposes internal entrypoints.
+		pairs = append(pairs,
+			probePair{"ssl_read", rEnt, rExt},
+			probePair{"ssl_write", wEnt, wExt},
+		)
+	}
 
-	opts := &link.UprobeOptions{PID: int(pid)}
-
-	// Single-shot uprobes (no exit probe) for fd-tracking helpers.
 	singles := []struct {
 		symbol string
 		prog   *ebpf.Program
@@ -101,7 +185,7 @@ func (m *Manager) AttachLibSSL(pid uint32, path string) error {
 				continue
 			}
 			cleanup()
-			return fmt.Errorf("uprobes: attach %s pid=%d: %w", s.symbol, pid, err)
+			return fmt.Errorf("uprobes: attach %s: %w", s.symbol, err)
 		}
 		att.links = append(att.links, up)
 	}
@@ -109,24 +193,22 @@ func (m *Manager) AttachLibSSL(pid uint32, path string) error {
 	for _, p := range pairs {
 		up, err := exe.Uprobe(p.symbol, p.entry, opts)
 		if err != nil {
-			// Missing symbol is non-fatal — older OpenSSL didn't have *_ex.
 			if errors.Is(err, link.ErrNoSymbol) {
 				continue
 			}
 			cleanup()
-			return fmt.Errorf("uprobes: attach uprobe %s pid=%d: %w", p.symbol, pid, err)
+			return fmt.Errorf("uprobes: attach uprobe %s: %w", p.symbol, err)
 		}
 		att.links = append(att.links, up)
 
 		ret, err := exe.Uretprobe(p.symbol, p.exit, opts)
 		if err != nil {
 			cleanup()
-			return fmt.Errorf("uprobes: attach uretprobe %s pid=%d: %w", p.symbol, pid, err)
+			return fmt.Errorf("uprobes: attach uretprobe %s: %w", p.symbol, err)
 		}
 		att.links = append(att.links, ret)
 	}
 
-	m.attached[pid] = att
 	return nil
 }
 
@@ -141,8 +223,12 @@ func (m *Manager) Detach(pid uint32) error {
 	if !ok {
 		return nil
 	}
+	return closeLinks(att.links)
+}
+
+func closeLinks(links []io.Closer) error {
 	var firstErr error
-	for _, c := range att.links {
+	for _, c := range links {
 		if err := c.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -177,4 +263,14 @@ func (m *Manager) AttachedPIDs() []uint32 {
 		out = append(out, pid)
 	}
 	return out
+}
+
+// ProbeCount returns the number of uprobe links attached to pid.
+func (m *Manager) ProbeCount(pid uint32) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if att, ok := m.attached[pid]; ok {
+		return len(att.links)
+	}
+	return 0
 }

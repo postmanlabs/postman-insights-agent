@@ -124,9 +124,9 @@ public final class HelloHttps {
         }
         System.err.println("HelloHttps: generating self-signed cert at " + keystorePath);
 
-        // keytool -genkeypair -alias hello -keyalg RSA -keysize 2048
-        //   -storetype PKCS12 -keystore <ks> -storepass changeit
-        //   -dname CN=localhost -validity 365
+        // keytool -genkeypair ... -dname CN=localhost
+        //   -ext SAN=DNS:localhost,IP:127.0.0.1
+        // SAN is required for curl --cacert to verify https://127.0.0.1 (not just -k).
         ProcessBuilder pb = new ProcessBuilder(
                 "keytool",
                 "-genkeypair",
@@ -137,6 +137,7 @@ public final class HelloHttps {
                 "-keystore",  keystorePath.toString(),
                 "-storepass", KEYSTORE_PASS,
                 "-dname",     "CN=localhost",
+                "-ext",       "SAN=DNS:localhost,IP:127.0.0.1",
                 "-validity",  "365");
         pb.redirectErrorStream(true);
         Process p = pb.start();

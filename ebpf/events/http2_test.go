@@ -254,6 +254,31 @@ func TestIsHTTP2Frame(t *testing.T) {
 	}
 }
 
+// TestH2_AuthorityFromHostHeader — when :authority is omitted but a plain
+// Host header is present (common for gRPC over HTTP/2), the emitted URL must
+// not be "https:///path".
+func TestH2_AuthorityFromHostHeader(t *testing.T) {
+	s := newH2State("iface-1")
+	frame := buildHeadersFrame(t, 5, true, []hpack.HeaderField{
+		{Name: ":method", Value: "POST"},
+		{Name: ":path", Value: "/phase5c2.Greeter/SayHello"},
+		{Name: ":scheme", Value: "https"},
+		{Name: "host", Value: "localhost:8446"},
+		{Name: "content-type", Value: "application/grpc+proto"},
+	})
+	out := s.feed(frame, time.Now(), "iface-1")
+	if len(out) != 1 {
+		t.Fatalf("expected 1 PNT, got %d", len(out))
+	}
+	req := out[0].Content.(akinet.HTTPRequest)
+	if req.URL.Host != "localhost:8446" {
+		t.Errorf("URL.Host = %q, want localhost:8446", req.URL.Host)
+	}
+	if got := req.URL.String(); got != "https://localhost:8446/phase5c2.Greeter/SayHello" {
+		t.Errorf("URL = %q, want https://localhost:8446/phase5c2.Greeter/SayHello", got)
+	}
+}
+
 // TestH2_GRPCFraming: a gRPC stream (content-type: application/grpc) with
 // a length-prefixed message inside DATA should be decoded and the message
 // body should equal the protobuf payload (framing stripped).

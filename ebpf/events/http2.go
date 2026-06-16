@@ -486,13 +486,16 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 
 	if st.method != "" {
 		// Request.
+		st.finalizeRequestMeta()
 		u := &url.URL{Path: st.path}
 		if st.scheme != "" {
 			u.Scheme = st.scheme
 		}
 		if st.authority != "" {
 			u.Host = st.authority
-			st.header.Set("Host", st.authority)
+			if st.header.Get("Host") == "" {
+				st.header.Set("Host", st.authority)
+			}
 		}
 		pnt.Content = akinet.HTTPRequest{
 			StreamID:   uuid.UUID(s.bidiID),
@@ -520,6 +523,20 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 		return pnt, true
 	}
 	return akinet.ParsedNetworkTraffic{}, false
+}
+
+// finalizeRequestMeta backfills pseudo-headers gRPC clients sometimes omit
+// from literal HPACK fields (relying on the dynamic table or a plain Host
+// header instead).
+func (st *h2Stream) finalizeRequestMeta() {
+	if st.authority == "" {
+		if h := st.header.Get("Host"); h != "" {
+			st.authority = h
+		}
+	}
+	if st.scheme == "" && st.isGRPC {
+		st.scheme = "https"
+	}
 }
 
 func isPseudoHeader(name string) bool {

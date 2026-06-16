@@ -191,19 +191,7 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	// If we've already committed this flow to the HTTP/2 path, stay there.
 	if st.h2 != nil {
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
-			// Backfill source/dest IPs from the resolver cache, mirroring
-			// the HTTP/1 toPNT path.
-			if st.socketResolved {
-				if key.Direction == DirEgress {
-					pnt.SrcIP, pnt.SrcPort = st.localIP, st.localPort
-					pnt.DstIP, pnt.DstPort = st.remoteIP, st.remotePort
-				} else {
-					pnt.SrcIP, pnt.SrcPort = st.remoteIP, st.remotePort
-					pnt.DstIP, pnt.DstPort = st.localIP, st.localPort
-				}
-			}
-			a.Out <- pnt
-			a.MessagesEmitted++
+			a.emitH2PNT(key, st, pnt)
 		}
 		return
 	}
@@ -216,17 +204,7 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	if st.pending.Len() == 0 && (IsHTTP2Preface(ev.Bytes()) || IsHTTP2Frame(ev.Bytes())) {
 		st.h2 = newH2State(st.ifaceTag)
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
-			if st.socketResolved {
-				if key.Direction == DirEgress {
-					pnt.SrcIP, pnt.SrcPort = st.localIP, st.localPort
-					pnt.DstIP, pnt.DstPort = st.remoteIP, st.remotePort
-				} else {
-					pnt.SrcIP, pnt.SrcPort = st.remoteIP, st.remotePort
-					pnt.DstIP, pnt.DstPort = st.localIP, st.localPort
-				}
-			}
-			a.Out <- pnt
-			a.MessagesEmitted++
+			a.emitH2PNT(key, st, pnt)
 		}
 		return
 	}
@@ -302,6 +280,24 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 		st.parser = nil
 		st.pending = unused
 	}
+}
+
+func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetworkTraffic) {
+	if st.socketResolved {
+		if key.Direction == DirEgress {
+			pnt.SrcIP, pnt.SrcPort = st.localIP, st.localPort
+			pnt.DstIP, pnt.DstPort = st.remoteIP, st.remotePort
+		} else {
+			pnt.SrcIP, pnt.SrcPort = st.remoteIP, st.remotePort
+			pnt.DstIP, pnt.DstPort = st.localIP, st.localPort
+		}
+	}
+	if req, ok := pnt.Content.(akinet.HTTPRequest); ok {
+		enrichHTTPRequestURL(&req, key.Direction, st.localIP, st.localPort, st.remoteIP, st.remotePort)
+		pnt.Content = req
+	}
+	a.Out <- pnt
+	a.MessagesEmitted++
 }
 
 // dropFlow marks a flow as permanently un-parseable and releases its buffer.
