@@ -34,7 +34,8 @@ case "$cmd" in
     ;;
 
   up)
-    if docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" >/dev/null 2>&1; then
+    running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)"
+    if [ "$running" = "true" ]; then
       echo "$CONTAINER_NAME already running"
       exit 0
     fi

@@ -133,6 +133,76 @@ loop:
 	}
 }
 
+// GET requests with query strings must preserve RawQuery through the adapter.
+func TestAdapter_RequestWithQueryParams(t *testing.T) {
+	a, out := newTestAdapter(t)
+	cases := []struct {
+		name     string
+		reqLine  string
+		wantPath string
+		wantRaw  string
+	}{
+		{
+			name:     "single param",
+			reqLine:  "GET /phase5b2?q=hello HTTP/1.1\r\nHost: svc:8443\r\n\r\n",
+			wantPath: "/phase5b2",
+			wantRaw:  "q=hello",
+		},
+		{
+			name:     "multiple params",
+			reqLine:  "GET /phase5b2?foo=bar&baz=1 HTTP/1.1\r\nHost: svc:8443\r\n\r\n",
+			wantPath: "/phase5b2",
+			wantRaw:  "foo=bar&baz=1",
+		},
+		{
+			name:     "encoded",
+			reqLine:  "GET /phase5b2?name=John%20Doe&filter=a%26b HTTP/1.1\r\nHost: svc:8443\r\n\r\n",
+			wantPath: "/phase5b2",
+			wantRaw:  "name=John%20Doe&filter=a%26b",
+		},
+		{
+			name:     "empty value",
+			reqLine:  "GET /phase5b2?key=&other=x HTTP/1.1\r\nHost: svc:8443\r\n\r\n",
+			wantPath: "/phase5b2",
+			wantRaw:  "key=&other=x",
+		},
+		{
+			name:     "repeated keys",
+			reqLine:  "GET /phase5b2?tag=a&tag=b HTTP/1.1\r\nHost: svc:8443\r\n\r\n",
+			wantPath: "/phase5b2",
+			wantRaw:  "tag=a&tag=b",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			feed(t, a, 800, 0x8000+uint64(len(tc.name)), DirEgress, []byte(tc.reqLine))
+
+			select {
+			case pnt := <-out:
+				r, ok := pnt.Content.(akinet.HTTPRequest)
+				if !ok {
+					t.Fatalf("expected HTTPRequest, got %T", pnt.Content)
+				}
+				if r.Method != "GET" {
+					t.Errorf("Method = %q, want GET", r.Method)
+				}
+				if r.URL == nil {
+					t.Fatal("URL is nil")
+				}
+				if r.URL.Path != tc.wantPath {
+					t.Errorf("Path = %q, want %q", r.URL.Path, tc.wantPath)
+				}
+				if r.URL.RawQuery != tc.wantRaw {
+					t.Errorf("RawQuery = %q, want %q", r.URL.RawQuery, tc.wantRaw)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for HTTPRequest")
+			}
+		})
+	}
+}
+
 // A single request split across multiple eBPF events (one byte per event)
 // is still parsed correctly. This simulates the worst case of TLS records
 // arriving as many small SSL_read return values.

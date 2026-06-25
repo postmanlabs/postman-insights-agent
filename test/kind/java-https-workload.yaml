@@ -1,0 +1,87 @@
+# Java HTTPS-only test workload (legacy — prefer java-service-workload.yaml
+# which runs REST HTTPS + gRPC in one JVM).
+#
+# See: test/kind/java-service-workload.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-apps
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: java-https
+  namespace: test-apps
+  labels:
+    app: java-https
+spec:
+  initContainers:
+  - name: seed-certs
+    image: eclipse-temurin:21-jdk
+    command:
+    - sh
+    - -c
+    - |
+      set -e
+      KS=/tls/hello-https-keystore.p12
+      PEM=/tls/hello-https-trust.pem
+      if [ ! -f "$KS" ]; then
+        keytool -genkeypair \
+          -alias hello \
+          -keyalg RSA \
+          -keysize 2048 \
+          -storetype PKCS12 \
+          -keystore "$KS" \
+          -storepass changeit \
+          -dname "CN=localhost" \
+          -ext "SAN=DNS:localhost,IP:127.0.0.1" \
+          -validity 365
+      fi
+      keytool -exportcert \
+        -alias hello \
+        -keystore "$KS" \
+        -storepass changeit \
+        -rfc \
+        -file "$PEM"
+      echo "certs ready under /tls"
+      ls -la /tls
+    volumeMounts:
+    - name: tls
+      mountPath: /tls
+  - name: seed-agent-jar
+    image: pia-agent-ebpf:test
+    imagePullPolicy: Never
+    command:
+    - sh
+    - -c
+    - cp /opt/postman-java-agent.jar /postman/postman-java-agent.jar
+    volumeMounts:
+    - name: postman-agent
+      mountPath: /postman
+  containers:
+  - name: app
+    image: eclipse-temurin:21-jdk
+    command:
+    - sh
+    - -c
+    - |
+      exec java \
+        -javaagent:/postman/postman-java-agent.jar \
+        -Dhello.keystore=/tls/hello-https-keystore.p12 \
+        -cp /postman/postman-java-agent.jar \
+        com.postman.insights.agent.testdata.HelloHttps
+    ports:
+    - containerPort: 8443
+    volumeMounts:
+    - name: tls
+      mountPath: /tls
+      readOnly: true
+    - name: postman-agent
+      mountPath: /postman
+      readOnly: true
+  volumes:
+  - name: tls
+    emptyDir: {}
+  - name: postman-agent
+    emptyDir: {}

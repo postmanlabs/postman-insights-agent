@@ -68,11 +68,12 @@ spec:
           - "apidump-ebpf"
           - "--stats-every=10s"
           - "--max-capture-bytes=512"
+          - "--no-thermostat"
           # Namespace filtering via CRI + cgroup-namespace-inode matching.
           # Works on both kind and real K8s clusters (it bridges PID
           # namespaces via cgroup_ns_inode, which is stable across them).
           # See ebpf/discovery/kube_linux.go for the algorithm.
-          - "--target-namespaces=team-py,team-srv"
+          - "--target-namespaces=team-py,team-srv,test-apps"
         env:
         - name: POSTMAN_K8S_NODE
           valueFrom: { fieldRef: { fieldPath: spec.nodeName } }

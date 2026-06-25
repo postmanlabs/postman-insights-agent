@@ -18,6 +18,12 @@ RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0
 ENV PATH="/root/go/bin:${PATH}"
 
 WORKDIR /src
+
+# Download modules in a separate layer so Docker caches them and a flaky
+# proxy.golang.org fetch can be retried without redoing apt/bpf2go setup.
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
 
 # vmlinux.h must come from the *runtime* kernel's BTF, not the build host's.
@@ -37,4 +43,7 @@ COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-
 # shared volume for instrumented pods. Built on the host via
 # `cd java-agent && gradle shadowJar`; if missing the docker build fails fast.
 COPY java-agent/build/libs/postman-java-agent.jar /opt/postman-java-agent.jar
+# gRPC + combined REST/gRPC test workload (build:
+#   cd java-agent/testdata/grpc-java && gradle shadowJar)
+COPY java-agent/testdata/grpc-java/build/libs/grpc-java.jar /opt/grpc-java.jar
 ENTRYPOINT ["/usr/local/bin/postman-insights-agent"]
