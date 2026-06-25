@@ -1,7 +1,7 @@
 # Dev container for HTTPS-capture-via-eBPF work.
 # Provides the toolchain Phase 1 / Phase 2 need on a Linux kernel.
 # Used from macOS + Docker Desktop; runs against the host kernel's BTF.
-FROM golang:1.24-bookworm
+FROM golang:1.25-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
@@ -53,4 +53,8 @@ RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0
 RUN go install github.com/golang/mock/mockgen@v1.5.0
 
 ENV PATH="/root/go/bin:${PATH}"
+# Dev container — interactive root for bpf2go, bpftool, and kernel headers.
+# Not deployed to customer clusters; Wiz policy exception recommended.
+USER root
+
 WORKDIR /workspace

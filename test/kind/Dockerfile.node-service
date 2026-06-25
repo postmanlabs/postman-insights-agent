@@ -12,6 +12,9 @@ RUN npm install --omit=dev
 COPY test/kind/node-service/server.js test/kind/node-service/client.js ./
 COPY test/kind/node-service/proto ./proto
 
+RUN chown -R node:node /app
+USER node
+
 ENV TLS_DIR=/tls \
     BIND_HOST=0.0.0.0 \
     HTTPS_PORT=8443 \

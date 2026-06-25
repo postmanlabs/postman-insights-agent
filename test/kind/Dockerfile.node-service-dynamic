@@ -21,6 +21,10 @@ RUN npm install --omit=dev
 COPY test/kind/node-service/server.js test/kind/node-service/client.js ./
 COPY test/kind/node-service/proto ./proto
 
+RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 ENV TLS_DIR=/tls \
     BIND_HOST=0.0.0.0 \
     HTTPS_PORT=8443 \

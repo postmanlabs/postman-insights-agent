@@ -8,7 +8,7 @@
 # something that boots quickly inside kind for the e2e demo, not the
 # production release image.
 
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang llvm bpftool libbpf-dev libpcap-dev make git ca-certificates \
@@ -46,4 +46,9 @@ COPY java-agent/build/libs/postman-java-agent.jar /opt/postman-java-agent.jar
 # gRPC + combined REST/gRPC test workload (build:
 #   cd java-agent/testdata/grpc-java && gradle shadowJar)
 COPY java-agent/testdata/grpc-java/build/libs/grpc-java.jar /opt/grpc-java.jar
+# Kind eBPF agent image: requires privileged + CAP_BPF at runtime (see
+# agent-daemonset.yaml). Non-root USER is not viable for this spike image;
+# production hardening is tracked separately from test/kind/.
+USER root
+
 ENTRYPOINT ["/usr/local/bin/postman-insights-agent"]

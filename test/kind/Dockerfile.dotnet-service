@@ -23,6 +23,10 @@ WORKDIR /app
 COPY --from=build /app/publish ./
 COPY --from=build /app/client ./client
 
+RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 ENV ASPNETCORE_URLS= \
     TLS_DIR=/tls \
     BIND_HOST=0.0.0.0 \

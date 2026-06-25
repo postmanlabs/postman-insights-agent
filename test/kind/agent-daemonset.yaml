@@ -57,7 +57,7 @@ spec:
     spec:
       serviceAccountName: postman-insights-agent
       hostPID: true
-      hostNetwork: true
+      hostAliases: []
       containers:
       - name: agent
         image: pia-agent-ebpf:test
