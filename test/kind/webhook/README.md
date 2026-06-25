@@ -12,7 +12,7 @@ webhook. Verified working on `kind-pia-https-test` in
 | `gen-tls-and-manifests.sh`       | Reproduces ALL TLS material + renders YAMLs from templates |
 | `webhook-deployment.yaml.tmpl`   | Secret + Deployment + Service template (cert/key inlined at render) |
 | `webhook-config.yaml.tmpl`       | `MutatingWebhookConfiguration` template (CA bundle inlined at render) |
-| `capture-deployment.yaml`        | Deployment running `apidump-javatls` for in-cluster capture verification |
+| `capture-deployment.yaml`        | **Deprecated** — Java capture is on `postman-insights-agent` DaemonSet (`--enable-javatls`) |
 | `README.md`                      | This file |
 
 ## Files generated locally (gitignored — never commit)
@@ -43,7 +43,10 @@ kubectl apply -f webhook-deployment.yaml
 kubectl wait --for=condition=available --timeout=60s \
     deploy/postman-insights-webhook -n postman-insights
 kubectl apply -f webhook-config.yaml
-kubectl apply -f capture-deployment.yaml
+
+# Java capture: use the main DaemonSet (not a separate javatls-capture Deployment)
+kubectl apply -f ../agent-daemonset.yaml
+kubectl rollout restart -n postman-insights daemonset/postman-insights-agent
 
 # 4. Create opted-in namespace + a Java test pod
 kubectl create ns test-webhook
@@ -65,7 +68,7 @@ kubectl delete mutatingwebhookconfiguration postman-insights-webhook
 # Full cleanup
 kubectl delete -n postman-insights deploy/postman-insights-webhook \
     svc/postman-insights-webhook secret/postman-insights-webhook-tls
-kubectl delete -n postman-insights deploy/javatls-capture
+kubectl delete -n postman-insights deploy/javatls-capture --ignore-not-found
 kubectl delete ns test-webhook
 ```
 

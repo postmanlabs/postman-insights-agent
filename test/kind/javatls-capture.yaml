@@ -6,4 +6,4 @@
 #   kubectl logs -n postman-insights daemonset/postman-insights-agent
 #
 # This file is kept for historical reference and webhook spike tests only
-# (see test/kind/webhook/capture-deployment.yaml).
+# Historical webhook spike only (see test/kind/webhook/capture-deployment.yaml).
