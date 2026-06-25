@@ -58,6 +58,7 @@ metadata:
   namespace: team-srv
   labels: { app: server }
 spec:
+  hostAliases: []
   initContainers:
   - name: gencert
     image: alpine/openssl:latest
@@ -106,6 +107,7 @@ metadata:
   namespace: team-py
   labels: { app: client-py }
 spec:
+  hostAliases: []
   containers:
   - name: py
     image: python:3.12-slim
@@ -133,6 +135,7 @@ metadata:
   namespace: team-node
   labels: { app: client-node }
 spec:
+  hostAliases: []
   containers:
   - name: node
     image: node:20-slim

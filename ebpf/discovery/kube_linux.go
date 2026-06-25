@@ -207,7 +207,7 @@ func (r *KubeNamespaceResolver) refresh() error {
 // readCgroupNsInode reads procRoot/<pid>/ns/cgroup as a symlink and parses
 // the inode number from the target "cgroup:[N]".
 func readCgroupNsInode(procRoot string, pid uint32) (uint64, error) {
-	link := filepath.Join(procRoot, strconv.Itoa(int(pid)), "ns", "cgroup")
+	link := filepath.Join(procRoot, strconv.FormatUint(uint64(pid), 10), "ns", "cgroup")
 	target, err := os.Readlink(link)
 	if err != nil {
 		return 0, err
