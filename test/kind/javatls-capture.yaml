@@ -1,51 +1,9 @@
-# Java TLS capture for the kind e2e demo.
+# DEPRECATED — do not deploy for Kind e2e or production.
 #
-# Runs apidump-javatls alongside the libssl DaemonSet. Java workloads use the
-# java-agent + ioctl → eBPF path; Node/Python/nginx use libssl uprobes on the
-# DaemonSet.
+# Java TLS capture now runs inside the postman-insights-agent DaemonSet via
+#   apidump-ebpf --enable-javatls
+# so Java, Node, and dotnet REQ/RESP all appear in one log stream:
+#   kubectl logs -n postman-insights daemonset/postman-insights-agent
 #
-# Logs: kubectl logs -n postman-insights deploy/javatls-capture -f
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: javatls-capture
-  namespace: postman-insights
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: javatls-capture
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: javatls-capture
-    spec:
-      hostPID: true
-      containers:
-      - name: capture
-        image: pia-agent-ebpf:test
-        imagePullPolicy: Never
-        args:
-        - apidump-javatls
-        securityContext:
-          privileged: true
-          capabilities:
-            add: ["SYS_ADMIN", "NET_ADMIN", "BPF", "PERFMON", "SYS_RESOURCE", "SYS_PTRACE"]
-        volumeMounts:
-        - name: sys
-          mountPath: /sys
-        - name: proc
-          mountPath: /host/proc
-          readOnly: true
-        - name: debugfs
-          mountPath: /sys/kernel/debug
-      volumes:
-      - name: sys
-        hostPath: { path: /sys }
-      - name: proc
-        hostPath: { path: /linuxkit-proc, type: Directory }
-      - name: debugfs
-        hostPath: { path: /sys/kernel/debug }
-      tolerations:
-      - operator: Exists
+# This file is kept for historical reference and webhook spike tests only
+# (see test/kind/webhook/capture-deployment.yaml).

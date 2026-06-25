@@ -41,5 +41,5 @@ echo "  grpcurl -cacert $CERT_DIR/hello-https-trust.pem \\"
 echo "    -import-path $REPO_ROOT/java-agent/testdata/grpc-java/src/main/proto -proto greeter.proto \\"
 echo "    -d '{\"name\":\"mac\"}' localhost:8446 phase5c2.Greeter/SayHello"
 echo
-echo "Capture:"
-echo "  kubectl logs -n postman-insights deploy/javatls-capture --tail=20 -f"
+echo "Capture (DaemonSet — Java + libssl in one log stream):"
+echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent --tail=20 -f"

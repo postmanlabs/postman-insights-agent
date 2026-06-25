@@ -22,14 +22,12 @@ import "github.com/spf13/cobra"
 // informative error.
 var Cmd = &cobra.Command{
 	Use:   "apidump-ebpf",
-	Short: "Phase 1 spike: capture HTTPS traffic via eBPF uprobes on libssl",
-	Long: `Standalone HTTPS capture spike. Attaches libssl uprobes to every
-process on the host that has libssl mapped, dumps decrypted bytes to stdout,
-and emits per-PID counters.
+	Short: "Spike: HTTPS capture via eBPF (libssl uprobes + optional Java TLS)",
+	Long: `Standalone HTTPS capture spike for Kind/dev. Attaches libssl uprobes
+for OpenSSL-based runtimes and, with --enable-javatls, the java_tls kprobe
+for JVM traffic. All REQ/RESP lines go to stdout (one log stream per pod).
 
-This command exists ONLY for Phase 1 validation. The production path is
-'postman-insights-agent apidump --enable-https-capture'.
-
-See docs/https-capture-design.md for the full design.`,
+Production path: postman-insights-agent apidump --enable-https-capture on
+the node DaemonSet. See docs/https-capture-design.md.`,
 	RunE: runE,
 }

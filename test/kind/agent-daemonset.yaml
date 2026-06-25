@@ -62,10 +62,11 @@ spec:
       - name: agent
         image: pia-agent-ebpf:test
         imagePullPolicy: Never
-        # apidump-ebpf is the spike command — captures HTTPS, prints to stdout.
-        # Stats every 10s so `kubectl logs` shows liveness.
+        # apidump-ebpf spike: libssl uprobes (Node, dotnet, …) + java_tls kprobe
+        # (JVM ioctl path) in one process — same log stream as production DaemonSet.
         args:
           - "apidump-ebpf"
+          - "--enable-javatls"
           - "--stats-every=10s"
           - "--max-capture-bytes=512"
           - "--no-thermostat"

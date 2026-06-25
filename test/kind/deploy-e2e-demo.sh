@@ -64,10 +64,8 @@ kubectl apply -f "$REPO_ROOT/test/kind/agent-daemonset.yaml"
 kubectl rollout restart -n postman-insights daemonset/postman-insights-agent 2>/dev/null || true
 kubectl rollout status -n postman-insights daemonset/postman-insights-agent --timeout=180s
 
-echo "==> Java TLS capture Deployment"
-kubectl apply -f "$REPO_ROOT/test/kind/javatls-capture.yaml"
-kubectl rollout restart -n postman-insights deploy/javatls-capture 2>/dev/null || true
-kubectl rollout status -n postman-insights deploy/javatls-capture --timeout=120s
+echo "==> Remove legacy javatls-capture (Java now on DaemonSet --enable-javatls)"
+kubectl delete deployment javatls-capture -n postman-insights --ignore-not-found
 
 echo "==> test-apps namespace + TLS ConfigMap"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
@@ -128,8 +126,8 @@ echo
 echo "Trust PEM (Mac curl/grpcurl):"
 echo "  $CERT_DIR/hello-https-trust.pem"
 echo
-echo "Check capture:"
-echo "  Java:  kubectl logs -n postman-insights deploy/javatls-capture --since=2m | grep -E 'phase5|Greeter'"
-echo "  Node:  kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m | grep phase5b2"
+echo "Check capture (all runtimes — one DaemonSet):"
+echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m | grep -E 'phase5|Greeter|REQ |RESP '"
 echo
 echo "Full demo script: docs/kind-e2e-demo-presentation.md"
+echo "Per-service HTTPS + gRPC tests: test/kind/SERVICE-TEST-GUIDE.md"

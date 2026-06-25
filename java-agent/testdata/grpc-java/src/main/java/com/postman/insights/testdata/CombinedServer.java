@@ -42,8 +42,6 @@ import com.postman.insights.testdata.proto.HelloRequest;
  */
 public final class CombinedServer {
 
-    private static final String KEYSTORE_PASS = "changeit";
-
     public static void main(String[] args) throws Exception {
         int httpsPort = Integer.parseInt(System.getProperty("https.port", "8443"));
         int grpcPort  = Integer.parseInt(System.getProperty("grpc.port", "8446"));
@@ -60,7 +58,8 @@ public final class CombinedServer {
                     + " — need hello-https-keystore.p12, grpc-cert.pem, grpc-key.pem");
         }
 
-        HttpsServer https = startHttps(bind, httpsPort, keystore);
+        String keystorePass = System.getProperty("tls.keystore.pass", "");
+        HttpsServer https = startHttps(bind, httpsPort, keystore, keystorePass);
         Server grpc = startGrpc(bind, grpcPort, grpcCert, grpcKey);
 
         System.err.printf(
@@ -75,8 +74,9 @@ public final class CombinedServer {
         grpc.awaitTermination();
     }
 
-    private static HttpsServer startHttps(String bind, int port, File keystore) throws Exception {
-        SSLContext sslCtx = buildSslContext(keystore);
+    private static HttpsServer startHttps(String bind, int port, File keystore, String keystorePass)
+            throws Exception {
+        SSLContext sslCtx = buildSslContext(keystore, keystorePass);
         HttpsServer server = HttpsServer.create(new InetSocketAddress(bind, port), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(sslCtx));
         server.createContext("/phase5b2", new HelloHandler());
@@ -97,14 +97,16 @@ public final class CombinedServer {
         return server;
     }
 
-    private static SSLContext buildSslContext(File keystorePath) throws Exception {
+    private static SSLContext buildSslContext(File keystorePath, String keystorePass)
+            throws Exception {
+        char[] pass = keystorePass.toCharArray();
         KeyStore ks = KeyStore.getInstance("PKCS12");
         try (FileInputStream in = new FileInputStream(keystorePath)) {
-            ks.load(in, KEYSTORE_PASS.toCharArray());
+            ks.load(in, pass);
         }
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(
                 KeyManagerFactory.getDefaultAlgorithm());
-        kmf.init(ks, KEYSTORE_PASS.toCharArray());
+        kmf.init(ks, pass);
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(
                 TrustManagerFactory.getDefaultAlgorithm());
         tmf.init(ks);
