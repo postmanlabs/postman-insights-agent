@@ -29,7 +29,6 @@ metadata:
   labels:
     app: java-service
 spec:
-  hostAliases: []
   initContainers:
   - name: seed-agent-jar
     image: pia-agent-ebpf:test

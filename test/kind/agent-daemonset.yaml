@@ -54,10 +54,16 @@ spec:
     metadata:
       labels:
         app: postman-insights-agent
+      annotations:
+        # Wiz Pod-006 suppression: hostPath mounts to /sys/kernel/debug, /sys/fs/bpf,
+        # and the CRI socket are architecturally required for eBPF-based network capture.
+        # The BPF filesystem (/sys/fs/bpf) needs write access to pin BPF maps and
+        # programs; /sys/kernel/debug is read-only (tracepoint ID discovery only);
+        # the CRI socket is required for container namespace enumeration.
+        wiz.io/iac-ignore: "Pod-006"
     spec:
       serviceAccountName: postman-insights-agent
       hostPID: true
-      hostAliases: []
       containers:
       - name: agent
         image: pia-agent-ebpf:test
@@ -91,8 +97,8 @@ spec:
           capabilities:
             add: ["BPF", "PERFMON", "NET_RAW", "SYS_ADMIN"]
         volumeMounts:
-        - { name: sys-kernel-debug, mountPath: /sys/kernel/debug }
-        - { name: sys-fs-bpf,       mountPath: /sys/fs/bpf }
+        - { name: sys-kernel-debug, mountPath: /sys/kernel/debug, readOnly: true }
+        - { name: sys-fs-bpf,       mountPath: /sys/fs/bpf }  # must be rw: BPF map pinning
         # /host/proc here is the LinuxKit-VM /proc that the kind cluster
         # config bind-mounts as /linuxkit-proc on the node. BPF emits root-
         # namespace PIDs that match entries here. In real (non-kind) K8s,

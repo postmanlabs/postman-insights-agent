@@ -22,7 +22,6 @@ spec:
       labels:
         app: dotnet-service
     spec:
-      hostAliases: []
       containers:
       - name: app
         image: pia-dotnet-service:test

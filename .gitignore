@@ -30,3 +30,8 @@ mock/
 
 # OSX
 *.DS_Store
+
+# Generated TLS certs for local kind testing (see test/kind/webhook/gen-certs.sh)
+test/kind/webhook/tls.crt
+test/kind/webhook/tls.key
+test/kind/webhook/webhook-deployment-with-certs.yaml

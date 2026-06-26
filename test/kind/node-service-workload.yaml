@@ -13,7 +13,6 @@ metadata:
   labels:
     app: node-service
 spec:
-  hostAliases: []
   containers:
   - name: app
     image: pia-node-service:test

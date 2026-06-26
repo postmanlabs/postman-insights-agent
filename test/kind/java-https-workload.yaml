@@ -16,7 +16,6 @@ metadata:
   labels:
     app: java-https
 spec:
-  hostAliases: []
   initContainers:
   - name: seed-certs
     image: eclipse-temurin:21-jdk
