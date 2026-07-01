@@ -1,17 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package apidumpjavatls is the Phase 5a spike command: attach the java_tls
-// sys_ioctl kprobe and dump captured plaintext to stdout. Driven for now by
-// the C-program harness under test/java-tls-harness/. Phase 5b will replace
-// the harness with a real Java agent without changing this command.
+// Package apidumpjavatls was the Phase 5a spike command for the Java TLS kprobe.
+// It has been removed. Java TLS capture is now part of the production path:
+//
+//	postman-insights-agent apidump --enable-https-capture --enable-java-tls
+//
+// This package is kept as a stub so in-flight forks can update their import
+// paths. It will be deleted in the next release.
 package apidumpjavatls
-
-import "github.com/spf13/cobra"
-
-var Cmd = &cobra.Command{
-	Use:    "apidump-javatls",
-	Short:  "Phase 5a spike: capture decrypted bytes via the Java ioctl bridge",
-	Long:   "Phase 5a validation command. NOT for production use. Attaches a kprobe to sys_ioctl gated on fd=0 + cmd=0x0b10b1.",
-	Hidden: true,
-	RunE:   runE,
-}

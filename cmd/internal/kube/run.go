@@ -14,17 +14,27 @@ var (
 	excludeNamespaces []string
 	includeLabels     map[string]string
 	excludeLabels     map[string]string
+
+	// HTTPS capture via eBPF uprobes on libssl.
+	enableHTTPSCapture bool
+	httpsRateCapPerSec uint32
+	httpsBodySizeCap   uint32
+	enableJavaTLS      bool
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
-		ReproMode:         reproMode,
-		RateLimit:         rateLimit,
-		DiscoveryMode:     discoveryMode,
-		IncludeNamespaces: includeNamespaces,
-		ExcludeNamespaces: excludeNamespaces,
-		IncludeLabels:     includeLabels,
-		ExcludeLabels:     excludeLabels,
+		ReproMode:           reproMode,
+		RateLimit:           rateLimit,
+		DiscoveryMode:       discoveryMode,
+		IncludeNamespaces:   includeNamespaces,
+		ExcludeNamespaces:   excludeNamespaces,
+		IncludeLabels:       includeLabels,
+		ExcludeLabels:       excludeLabels,
+		EnableHTTPSCapture:  enableHTTPSCapture,
+		HTTPSRateCapPerSec:  httpsRateCapPerSec,
+		HTTPSBodySizeCap:    httpsBodySizeCap,
+		EnableJavaTLS:       enableJavaTLS,
 	})
 	if err == nil {
 		return nil
@@ -89,5 +99,36 @@ func init() {
 		nil,
 		"Labels that exclude pods from capture (key=value pairs).",
 	)
+
+	// HTTPS capture flags — require the agent pod to have hostPID:true,
+	// CAP_BPF + CAP_PERFMON, and /host/proc + /sys/fs/bpf volume mounts.
+	// See docs/https-capture-design.md §8.1 for the required pod spec.
+	runCmd.PersistentFlags().BoolVar(
+		&enableHTTPSCapture,
+		"enable-https-capture",
+		false,
+		"Capture HTTPS traffic using eBPF uprobes on libssl (requires hostPID:true, CAP_BPF + CAP_PERFMON).",
+	)
+	runCmd.PersistentFlags().Uint32Var(
+		&httpsRateCapPerSec,
+		"https-rate-cap-per-sec",
+		0,
+		"Per-PID eBPF event rate cap (events/sec). 0 = unlimited.",
+	)
+	runCmd.PersistentFlags().Uint32Var(
+		&httpsBodySizeCap,
+		"https-body-size-cap",
+		0,
+		"Maximum bytes captured per HTTPS payload (0 = default 1024).",
+	)
+	runCmd.PersistentFlags().BoolVar(
+		&enableJavaTLS,
+		"enable-java-tls",
+		false,
+		"Also capture JVM TLS traffic via the java_tls kprobe (postman-java-agent ioctl bridge). "+
+			"Requires --enable-https-capture and postman-java-agent.jar injected into target JVMs "+
+			"(via the kube-webhook or JAVA_TOOL_OPTIONS manually).",
+	)
+
 	Cmd.AddCommand(runCmd)
 }

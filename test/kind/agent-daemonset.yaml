@@ -1,12 +1,17 @@
-# DaemonSet that runs the Postman Insights Agent with HTTPS capture enabled.
+# DEPRECATED spike e2e DaemonSet — kept for credential-free local testing only.
+#
+# This manifest uses the `apidump-ebpf` spike command which logs REQ/RESP to
+# stdout without requiring any backend credentials. It is useful for confirming
+# that eBPF capture works end-to-end in a Kind cluster, but it does NOT ship
+# data to Postman and does NOT exercise the full production code path.
+#
+# For production use (or e2e with real credentials), use agent-daemonset-prod.yaml
+# which runs `kube run --enable-https-capture --enable-java-tls --discovery-mode`.
+#
 # Privileges follow docs/https-capture-design.md §8.1:
 #   - hostPID: true (so PIDs in /host/proc match the kernel's view)
 #   - CAP_BPF + CAP_PERFMON + NET_RAW
 #   - /sys/kernel/debug, /sys/fs/bpf, /proc bind-mounts
-#
-# The agent runs in apidump-ebpf "spike" mode for this e2e (no backend creds).
-# The production path is `apidump --enable-https-capture --discovery-mode ...`.
-# We log captures to stdout where they can be inspected via `kubectl logs`.
 ---
 apiVersion: v1
 kind: Namespace

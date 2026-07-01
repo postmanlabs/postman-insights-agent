@@ -129,12 +129,6 @@ jobs:
             grep -q "tls.secret.caBundle is required" /tmp/helm-noca.err \
               || (echo "missing-required error message changed:" && cat /tmp/helm-noca.err && exit 1)
             echo "→ fail-fast confirmed: missing caBundle is a clear template-time error"
-      - store_artifacts:
-          path: /tmp/helm-secret.yaml
-          destination: helm-rendered-secret-mode.yaml
-      - store_artifacts:
-          path: /tmp/helm-cm.yaml
-          destination: helm-rendered-cert-manager-mode.yaml
 
 workflows:
   ci:

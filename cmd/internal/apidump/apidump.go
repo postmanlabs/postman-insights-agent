@@ -61,6 +61,7 @@ var (
 	httpsCaptureMode      string
 	httpsCBPFExcludePort  uint16
 	httpsRateCapPerSec    uint32
+	enableJavaTLS         bool
 	privacyMode           string
 
 	commonApidumpFlags *CommonApidumpFlags
@@ -338,13 +339,16 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		Labels:        labels,
 
 		// HTTPS-via-eBPF.
-		EnableHTTPSCapture:    enableHTTPSCapture,
-		HTTPSLibraries:        httpsLibraries,
-		HTTPSTargetNamespaces: httpsTargetNamespaces,
-		HTTPSBodySizeCap:      httpsBodySizeCap,
-		HTTPSCaptureMode:      httpsCaptureMode,
-		HTTPSCBPFExcludePort:  httpsCBPFExcludePort,
-		HTTPSRateCapPerSec:    httpsRateCapPerSec,
+		HTTPS: apidump.HTTPSCaptureArgs{
+			Enabled:          enableHTTPSCapture,
+			Libraries:        httpsLibraries,
+			TargetNamespaces: httpsTargetNamespaces,
+			BodySizeCap:      httpsBodySizeCap,
+			CaptureMode:      httpsCaptureMode,
+			CBPFExcludePort:  httpsCBPFExcludePort,
+			RateCapPerSec:    httpsRateCapPerSec,
+			EnableJavaTLS:    enableJavaTLS,
+		},
 		PrivacyMode:           privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
@@ -577,6 +581,14 @@ func init() {
 		0,
 		"Per-PID rate cap (events/sec) for HTTPS capture (sampling layer 2). 0 disables. "+
 			"Recommended: 1000 for production workloads. Kernel-enforced via a token bucket.",
+	)
+	Cmd.Flags().BoolVar(
+		&enableJavaTLS,
+		"enable-java-tls",
+		false,
+		"Also capture JVM TLS traffic via the java_tls kprobe (postman-java-agent ioctl bridge). "+
+			"Requires --enable-https-capture and postman-java-agent.jar injected into target JVMs "+
+			"(via the kube-webhook or JAVA_TOOL_OPTIONS manually).",
 	)
 	Cmd.Flags().StringVar(
 		&privacyMode,

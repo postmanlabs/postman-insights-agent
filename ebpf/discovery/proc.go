@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
@@ -64,6 +65,16 @@ type WatchOpts struct {
 	// ProcRoot defaults to /proc. DaemonSet deployments pass /host/proc so
 	// the PIDs we discover match BPF-emitted root-namespace PIDs.
 	ProcRoot string
+
+	// NetnsInodeFilter, when non-zero, restricts discovery to PIDs whose
+	// /proc/<pid>/ns/net inode matches this value. This provides pod-level
+	// precision: only processes inside the target container's network namespace
+	// are emitted, regardless of what Kubernetes namespace they belong to.
+	//
+	// Takes priority over NamespaceResolver/AllowedNamespaces when non-zero.
+	// Use this in the DaemonSet per-pod path to avoid N× duplicate captures
+	// when a namespace has multiple pod replicas (horizontal scaling).
+	NetnsInodeFilter uint64
 }
 
 // ScanProc walks /proc once and returns every PID that has a libssl mapping.
@@ -128,6 +139,20 @@ func Watch(ctx context.Context, interval time.Duration) <-chan Target {
 	return WatchWith(ctx, WatchOpts{Interval: interval})
 }
 
+// pidNetnsInode returns the network-namespace inode for pid by stat-ing
+// <procRoot>/<pid>/ns/net. Returns 0 on any error (treated as "no match").
+func pidNetnsInode(procRoot string, pid uint32) uint64 {
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
+	path := fmt.Sprintf("%s/%d/ns/net", procRoot, pid)
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0
+	}
+	return st.Ino
+}
+
 // WatchWith is the Phase 2 entry point. See Watch above for behaviour.
 func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 	if opts.Interval <= 0 {
@@ -139,6 +164,11 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 	seen := make(map[uint32]Target)
 
 	allowed := func(pid uint32) bool {
+		// Pod-level filter: inode match takes priority over namespace resolver.
+		// Eliminates N× duplicate captures for scaled (multi-replica) pods.
+		if opts.NetnsInodeFilter != 0 {
+			return pidNetnsInode(opts.ProcRoot, pid) == opts.NetnsInodeFilter
+		}
 		if opts.NamespaceResolver == nil {
 			return true
 		}

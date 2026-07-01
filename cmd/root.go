@@ -12,7 +12,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
 	apidumpebpf "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-ebpf"
-	apidumpjavatls "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-javatls"
 	kubewebhook "github.com/postmanlabs/postman-insights-agent/cmd/internal/kube-webhook"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ascii"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
@@ -293,12 +292,12 @@ func init() {
 
 	rootCmd.AddCommand(apidump.Cmd)
 
-	// Phase 1 spike command for HTTPS capture via eBPF. Stub on non-Linux
-	// / non-insights_bpf builds returns a friendly error.
-	// See docs/https-capture-design.md.
+	// apidump-ebpf: credential-free stdout capture for local dev/debugging.
+	// Not for production (use apidump --enable-https-capture instead).
+	// apidump-javatls was removed: its functionality is now in
+	// apidump --enable-https-capture --enable-java-tls.
 	apidumpebpf.Cmd.Hidden = true
 	rootCmd.AddCommand(apidumpebpf.Cmd)
-	rootCmd.AddCommand(apidumpjavatls.Cmd)
 	rootCmd.AddCommand(kubewebhook.Cmd)
 
 	rootCmd.AddCommand(ecs.Cmd)

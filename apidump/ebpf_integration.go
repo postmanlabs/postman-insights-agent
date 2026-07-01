@@ -114,17 +114,22 @@ func httpsTelemetryWorker(
 
 // startHTTPSeBPFCapture launches the eBPF HTTPS capture pipeline in its own
 // goroutine and returns a stop function. The pipeline pushes
-// akinet.ParsedNetworkTraffic into the *same* trace.Collector chain that
-// pcap.Collect feeds, so downstream redaction / rate limit / backend ship
-// logic is unchanged.
+// akinet.ParsedNetworkTraffic into a dedicated collector chain built in
+// apidump.go — NOT the same collector instance as the pcap path, but one that
+// shares the same backend learn session (backendLrn) so all traffic lands in
+// the same trace on Postman. There is no second parallel learn session.
+//
+// The eBPF collector chain mirrors the pcap chain (redaction, rate limiting,
+// path/host filters, backend sink) but intentionally omits tls_conn_tracker
+// and tcp_conn_tracker: eBPF delivers already-decrypted plaintext HTTP, not
+// raw TLS records or TCP segments.
 //
 // On builds without `insights_bpf` (or non-Linux), ebpf.Collect returns
 // ebpf.ErrUnsupported immediately; this function logs a warning and returns
 // a no-op stop.
 //
 // `pool` is shared with the pcap pipeline so memview buffers are pooled
-// consistently. `collector` is the same chain returned by the per-interface
-// collector wiring in apidump.go (rate-limited, redacted, backend-bound).
+// consistently across both capture paths.
 func startHTTPSeBPFCapture(
 	ctx context.Context,
 	args *Args,
@@ -136,7 +141,11 @@ func startHTTPSeBPFCapture(
 	captureCtx, cancel := context.WithCancel(ctx)
 
 	// Channel between the ebpf adapter and the channel→collector pump.
-	out := make(chan akinet.ParsedNetworkTraffic, 1024)
+	// Sized larger than the pcap equivalent (100) because the eBPF ringbuf can
+	// burst many events back-to-back when a high-throughput SSL session drains;
+	// a shallow channel would block the ringbuf reader and cause event drops.
+	const ebpfParsedTrafficChanSize = 1024
+	out := make(chan akinet.ParsedNetworkTraffic, ebpfParsedTrafficChanSize)
 
 	// Same parser factories the pcap path uses. Note: TLS handshake parser
 	// is intentionally NOT here \u2014 the eBPF path delivers post-decryption
@@ -147,7 +156,7 @@ func startHTTPSeBPFCapture(
 	}
 	selector := akinet.TCPParserFactorySelector(factories)
 
-	bodyCap := args.HTTPSBodySizeCap
+	bodyCap := args.HTTPS.BodySizeCap
 	if bodyCap == 0 {
 		bodyCap = 1024
 	}
@@ -157,7 +166,7 @@ func startHTTPSeBPFCapture(
 	ebpfArgs.EnforcePIDAllowlist = false
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
-	ebpfArgs.RateCapPerSec = args.HTTPSRateCapPerSec
+	ebpfArgs.RateCapPerSec = args.HTTPS.RateCapPerSec
 
 	// DaemonSet deployments bind-mount the kernel's root /proc to /host/proc.
 	// When present, use it for resolver lookups so BPF-emitted root-ns PIDs
@@ -166,19 +175,36 @@ func startHTTPSeBPFCapture(
 		ebpfArgs.ProcRoot = "/host/proc"
 	}
 
-	// Namespace filtering. When --https-target-namespaces is set, build a
-	// KubeNamespaceResolver and wire it into discovery.Watch via Args.Discovery.
-	// If kube client init fails (e.g. running outside a cluster), warn and
-	// fall back to no filtering — the user explicitly opted in to capture,
-	// and silently dropping everything would be more surprising than the
-	// fallback.
-	if len(args.HTTPSTargetNamespaces) > 0 {
+	// eBPF uprobes are NOT network-namespace confined (unlike libpcap), so
+	// explicit filtering is required. Two mechanisms, priority order:
+	//
+	//  1. ContainerNetnsInode (pod-level, preferred in DaemonSet path)
+	//     Filters by /proc/<pid>/ns/net inode — exactly the processes inside
+	//     one container's network namespace. Eliminates N× duplicate captures
+	//     for scaled (multi-replica) pods.
+	//
+	//  2. TargetNamespaces (namespace-level, standalone apidump / fallback)
+	//     Restricts discovery to named Kubernetes namespaces via
+	//     KubeNamespaceResolver. May cause duplicate captures when a namespace
+	//     has multiple replicas. Used when ContainerNetnsInode is unavailable.
+	switch {
+	case args.HTTPS.ContainerNetnsInode != 0:
+		printer.Stderr.Infof(
+			"ebpf: pod-level netns filtering enabled (inode=%d)\n",
+			args.HTTPS.ContainerNetnsInode)
+		ebpfArgs.Discovery = discovery.WatchWith(captureCtx, discovery.WatchOpts{
+			Interval:         2 * time.Second,
+			ProcRoot:         ebpfArgs.ProcRoot,
+			NetnsInodeFilter: args.HTTPS.ContainerNetnsInode,
+		})
+
+	case len(args.HTTPS.TargetNamespaces) > 0:
 		procRoot := "/proc"
 		if _, err := os.Stat("/host/proc/self"); err == nil {
 			procRoot = "/host/proc"
 		}
 		// agentProcRoot is always /proc — that's the agent's own PID-namespace
-		// view, which is where CRI-returned container init PIDs live.
+		// view, where CRI-returned container init PIDs live.
 		// procRoot is /host/proc on a DaemonSet (root-ns PIDs that BPF emits).
 		resolver, err := discovery.NewKubeNamespaceResolver(procRoot, "/proc")
 		if err != nil {
@@ -186,13 +212,13 @@ func startHTTPSeBPFCapture(
 				"ebpf: --https-target-namespaces set but kube client init failed (%v); "+
 					"falling back to no namespace filtering.\n", err)
 		} else {
-			allowed := make(map[string]struct{}, len(args.HTTPSTargetNamespaces))
-			for _, ns := range args.HTTPSTargetNamespaces {
+			allowed := make(map[string]struct{}, len(args.HTTPS.TargetNamespaces))
+			for _, ns := range args.HTTPS.TargetNamespaces {
 				allowed[ns] = struct{}{}
 			}
 			printer.Stderr.Infof(
-				"ebpf: namespace filtering enabled — allowed namespaces: %v\n",
-				args.HTTPSTargetNamespaces)
+				"ebpf: namespace-level filtering enabled — allowed namespaces: %v\n",
+				args.HTTPS.TargetNamespaces)
 
 			// Drive a 30s refresh in the background so new pods become
 			// visible without restarting the agent.
@@ -244,7 +270,7 @@ func startHTTPSeBPFCapture(
 		}
 	}()
 
-	// Actual eBPF collect loop.
+	// Actual eBPF collect loop (libssl uprobes).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -253,6 +279,34 @@ func startHTTPSeBPFCapture(
 			printer.Stderr.Warningf("ebpf: capture stopped: %v\n", err)
 		}
 	}()
+
+	// Java TLS capture — attaches the java_tls kprobe that intercepts the
+	// postman-java-agent ioctl bridge (SSLEngine.wrap/unwrap → ioctl(0,
+	// 0x0b10b1, …) → kernel kprobe → ringbuf). Feeds the same `out` channel
+	// and therefore the same collector chain as the libssl path above.
+	// Requires postman-java-agent.jar injected into target JVMs via the
+	// kube-webhook or manually via JAVA_TOOL_OPTIONS.
+	if args.HTTPS.EnableJavaTLS {
+		javaAdapter := events.NewAdapter(selector, out)
+		javaCollector, err := ebpf.NewJavaTLSCollector(bodyCap, false, javaAdapter)
+		if err != nil {
+			printer.Stderr.Warningf(
+				"ebpf: java_tls kprobe unavailable (build without insights_bpf tag?): %v\n", err)
+		} else {
+			if err := javaCollector.Attach(); err != nil {
+				printer.Stderr.Warningf("ebpf: java_tls attach failed: %v\n", err)
+				_ = javaCollector.Close()
+			} else {
+				printer.Stderr.Infof("ebpf: attached java_tls kprobe (JVM ioctl bridge)\n")
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer func() { _ = javaCollector.Close() }()
+					javaCollector.Run(captureCtx, time.Now())
+				}()
+			}
+		}
+	}
 
 	return cancel
 }
