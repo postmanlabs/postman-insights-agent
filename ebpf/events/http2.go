@@ -11,7 +11,7 @@
 // pipeline for HTTP/1, but for HTTP/2 we maintain stateful per-flow
 // decoders here and emit ParsedNetworkTraffic directly.
 //
-// Scope (minimum viable, Phase 3):
+// Scope (minimum viable implementation):
 //   - Preface detection (RFC 7540 §3.5).
 //   - Frame header decoding (9-byte frame header per §4.1).
 //   - HEADERS + CONTINUATION frame handling with HPACK decoding to recover

@@ -251,9 +251,11 @@ int BPF_KPROBE(java_kprobe_sys_ioctl) {
     if (to_copy > java_max_capture_bytes) {
         to_copy = java_max_capture_bytes;
     }
-    to_copy &= (MAX_EVENT_PAYLOAD - 1);
-    if (to_copy == 0 && reported_len > 0) {
-        to_copy = 1;
+    // Clamp to compile-time array bound (verifier proof via conditional).
+    // The old mask (&= MAX_EVENT_PAYLOAD-1) was a bug: 1024 & 1023 == 0,
+    // causing payloads of exactly MAX_EVENT_PAYLOAD bytes to be emitted as 1 byte.
+    if (to_copy > MAX_EVENT_PAYLOAD) {
+        to_copy = MAX_EVENT_PAYLOAD;
     }
 
     e->ts_ns        = bpf_ktime_get_ns();

@@ -19,7 +19,7 @@ auto-instrumented `eclipse-temurin:21-jdk` Java pod. Evidence in
 ## Quick start
 
 ```sh
-helm install postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm install postman-insights-webhook ./charts/postman-insights-webhook \
   --namespace postman-insights --create-namespace \
   --set image.tag=<your-tag> \
   --set tls.secret.name=<your-existing-tls-secret> \
@@ -29,7 +29,7 @@ helm install postman-insights-webhook ./deployment/helm/postman-insights-webhook
 After install, opt-in any namespace:
 
 ```sh
-kubectl label namespace <your-ns> postman.dev/insights=enabled
+kubectl label namespace <your-ns> postman.com/insights=enabled
 ```
 
 Any new pod created in that namespace whose container image matches the
@@ -60,7 +60,7 @@ kubectl -n postman-insights create secret tls postman-insights-webhook-tls \
 
 # Install with the Secret's name and the CA bundle inlined
 CA_B64=$(base64 < webhook.crt | tr -d '\n')   # self-signed CA = own cert
-helm install postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm install postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights \
     --set image.tag=<...> \
     --set tls.mode=secret \
@@ -89,7 +89,7 @@ spec:
 EOF
 
 # Install
-helm install postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm install postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights \
     --set image.tag=<...> \
     --set tls.mode=cert-manager \
@@ -109,7 +109,7 @@ The most important ones:
 | `tls.mode` | `secret` | One of `secret` or `cert-manager`. |
 | `webhook.failurePolicy` | `Ignore` | **Do not change to `Fail`** without rehearsed rollback. |
 | `webhook.timeoutSeconds` | `5` | Bounded blast radius if the webhook is slow. |
-| `webhook.namespaceSelector` | `{matchLabels: {postman.dev/insights: enabled}}` | Opt-in only. |
+| `webhook.namespaceSelector` | `{matchLabels: {postman.com/insights: enabled}}` | Opt-in only. |
 | `mutation.initImage` | `""` (inherits `image`) | Image containing `/opt/postman-java-agent.jar`. |
 | `mutation.javaImageRegex` | (see values.yaml) | Override to widen/narrow Java workload detection. |
 
@@ -129,7 +129,7 @@ helm uninstall <release-name> -n <namespace>
 
 `helm uninstall` does NOT remove:
 * Pre-existing Secrets you supplied via `tls.secret.name`.
-* The `postman.dev/insights=enabled` namespace labels.
+* The `postman.com/insights=enabled` namespace labels.
 
 ## Operations
 
@@ -150,13 +150,13 @@ Documented in detail in `docs/webhook-runbook.md`:
 
 ```sh
 # Render
-docker run --rm -v "$PWD/deployment/helm:/charts" alpine/helm:3.14.0 \
+docker run --rm -v "$PWD/charts:/charts" alpine/helm:3.14.0 \
     template postman-insights-webhook /charts/postman-insights-webhook \
     --namespace postman-insights \
     --set image.tag=5c3b \
     --set tls.secret.caBundle=$(base64 < test/kind/webhook/ca.crt | tr -d '\n')
 
 # Lint
-docker run --rm -v "$PWD/deployment/helm:/charts" alpine/helm:3.14.0 \
+docker run --rm -v "$PWD/charts:/charts" alpine/helm:3.14.0 \
     lint /charts/postman-insights-webhook
 ```

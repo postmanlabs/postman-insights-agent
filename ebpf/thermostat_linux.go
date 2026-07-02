@@ -19,7 +19,6 @@ import (
 
 // Thermostat is a closed-loop controller that watches the agent's own CPU
 // usage and adjusts the BPF-side max_capture_bytes knob to keep cost bounded.
-// This is Phase 2 §6.2 sampling layer 5 (CPU thermostat).
 //
 // Algorithm (matches OBI/Pixie heuristics):
 //

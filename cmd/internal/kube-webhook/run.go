@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 package kubewebhook
 
 import (
@@ -25,13 +23,17 @@ func init() {
 	Cmd.Flags().StringVar(&flagAddr,      "addr",       ":8443", "Listen address (host:port). Use :0 for an OS-assigned port (tests only).")
 	Cmd.Flags().StringVar(&flagCertFile,  "tls-cert",   "",      "Path to the TLS certificate file (PEM). Required in production.")
 	Cmd.Flags().StringVar(&flagKeyFile,   "tls-key",    "",      "Path to the TLS private key file (PEM). Required in production.")
-	Cmd.Flags().StringVar(&flagInitImage, "init-image", DefaultMutationConfig().InitImage,
-		"Container image containing /opt/postman-java-agent.jar that the init container will copy into the shared volume.")
+	Cmd.Flags().StringVar(&flagInitImage, "init-image", "",
+		"Container image containing /opt/postman-java-agent.jar that the init container will copy into the shared volume. Required.")
 	Cmd.Flags().StringVar(&flagImageRe,   "java-image-regex", DefaultJavaImagePattern,
 		"Regex matching container images that should be treated as Java workloads. Empty disables image-based detection (env/command heuristics still apply).")
 }
 
 func runE(cmd *cobra.Command, _ []string) error {
+	if flagInitImage == "" {
+		return fmt.Errorf("--init-image is required: set it to the postman-insights-agent image (e.g. ghcr.io/postmanlabs/postman-insights-agent:<tag>)")
+	}
+
 	var imgRe *regexp.Regexp
 	if flagImageRe != "" {
 		re, err := regexp.Compile(flagImageRe)

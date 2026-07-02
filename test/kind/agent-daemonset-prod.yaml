@@ -71,9 +71,13 @@ spec:
       labels:
         app: postman-insights-agent
       annotations:
-        # Wiz Pod-006 suppression: hostPath mounts to /sys/kernel/debug, /sys/fs/bpf,
-        # and the CRI socket are architecturally required for eBPF-based network capture.
-        wiz.io/iac-ignore: "Pod-006"
+        # Wiz rule 154c69a0-5907-4f3a-9108-6bd66f42c88b suppression:
+        # /sys/kernel/debug is required for eBPF uprobe/tracepoint attachment (read-only).
+        # /sys/fs/bpf is required for BPF map pinning.
+        # These are architecturally necessary for eBPF-based HTTPS capture — every
+        # eBPF agent (Cilium, Falco, Datadog) requires the same mounts. The finding
+        # is also documented in .wiz at the repo root.
+        wiz.io/iac-ignore: "154c69a0-5907-4f3a-9108-6bd66f42c88b"
     spec:
       serviceAccountName: postman-insights-agent
       hostPID: true
@@ -122,8 +126,13 @@ spec:
         - { name: host-proc,        mountPath: /host/proc, readOnly: true }
         - { name: cri-sock,         mountPath: /run/containerd/containerd.sock }
       volumes:
+      # /sys/kernel/debug — required for eBPF uprobe/tracepoint attachment.
+      # Mounted read-only. Flagged by Wiz rule 154c69a0-5907-4f3a-9108-6bd66f42c88b;
+      # suppressed via annotation above and .wiz at repo root — this is intentional
+      # and consistent with Cilium, Falco, and Datadog agent deployments.
       - name: sys-kernel-debug
         hostPath: { path: /sys/kernel/debug, type: Directory }
+      # /sys/fs/bpf — required for BPF map pinning across program reloads.
       - name: sys-fs-bpf
         hostPath: { path: /sys/fs/bpf,       type: Directory }
       - name: host-proc

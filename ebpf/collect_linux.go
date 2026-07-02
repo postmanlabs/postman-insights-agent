@@ -23,13 +23,14 @@ type Args struct {
 	// MaxCaptureBytes is the per-event plaintext byte cap (forwarded to BPF).
 	MaxCaptureBytes uint32
 
-	// EnforcePIDAllowlist gates whether the BPF probe ignores PIDs that
-	// aren't in the target_pids map. Phase 1 spike defaults to false; Phase 2
-	// production defaults to true.
+	// EnforcePIDAllowlist gates whether the BPF probe ignores PIDs not in the
+	// target_pids map. When true, only PIDs discovered by the discovery
+	// subsystem (auto-populated via /proc scanning) are captured; when false,
+	// all TLS traffic is captured regardless of PID.
 	EnforcePIDAllowlist bool
 
-	// DiscoveryInterval controls how often we re-scan /proc for new PIDs
-	// that have libssl loaded. Phase 2 will replace polling with events.
+	// DiscoveryInterval controls how often the agent re-scans /proc for new
+	// PIDs that have libssl loaded.
 	DiscoveryInterval time.Duration
 
 	// FlowIdleTimeout governs how long we keep per-flow parser state after
@@ -61,8 +62,8 @@ type Args struct {
 	ProcRoot string
 
 	// Discovery is an optional pre-built discovery channel. When nil,
-	// Collect builds its own via discovery.Watch (spike behaviour). Set this
-	// to use WatchWith with namespace filtering or a custom CRI integration.
+	// Collect builds its own via discovery.WatchWith. Set this to use a
+	// custom discovery source or pre-scoped namespace/netns filtering.
 	Discovery DiscoveryChan
 
 	// Loader observability: Thermostat / counter access is via the returned
@@ -71,7 +72,7 @@ type Args struct {
 	HookLoader func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
 }
 
-// Defaults returns the default Args for Phase 1 spike mode.
+// Defaults returns sensible default Args for production use.
 func Defaults() Args {
 	return Args{
 		MaxCaptureBytes:     1024,

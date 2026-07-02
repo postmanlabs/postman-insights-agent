@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package com.postman.insights.agent.testdata;
+package com.postman.insights.testdata;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -38,8 +38,8 @@ import com.sun.net.httpserver.HttpsServer;
  * <p>Run as a workload:</p>
  * <pre>
  *   java -javaagent:postman-java-agent.jar \
- *        -cp postman-java-agent.jar \
- *        com.postman.insights.agent.testdata.HelloHttps
+ *        -cp hello-https.jar \
+ *        com.postman.insights.testdata.HelloHttps
  * </pre>
  */
 public final class HelloHttps {
@@ -124,9 +124,6 @@ public final class HelloHttps {
         }
         System.err.println("HelloHttps: generating self-signed cert at " + keystorePath);
 
-        // keytool -genkeypair ... -dname CN=localhost
-        //   -ext SAN=DNS:localhost,IP:127.0.0.1
-        // SAN is required for curl --cacert to verify https://127.0.0.1 (not just -k).
         ProcessBuilder pb = new ProcessBuilder(
                 "keytool",
                 "-genkeypair",

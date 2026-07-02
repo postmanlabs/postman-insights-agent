@@ -15,8 +15,7 @@
 //	                                    ↓
 //	                          trace.Collector.Process(...)
 //
-// See docs/https-capture-design.md §5.2 for the architecture diagram and
-// §9 (Phase 2) for the production integration plan.
+// See docs/https-capture-design.md §5.2 for the architecture diagram.
 
 package ebpf
 

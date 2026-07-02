@@ -298,10 +298,11 @@ func init() {
 	// apidump --enable-https-capture --enable-java-tls.
 	apidumpebpf.Cmd.Hidden = true
 	rootCmd.AddCommand(apidumpebpf.Cmd)
-	rootCmd.AddCommand(kubewebhook.Cmd)
-
 	rootCmd.AddCommand(ecs.Cmd)
 	rootCmd.AddCommand(kube.Cmd)
+	// webhook runs inside the cluster as a Deployment; it belongs under `kube`
+	// alongside `kube run` (DaemonSet entrypoint) and `kube inject`.
+	kube.Cmd.AddCommand(kubewebhook.Cmd)
 	rootCmd.AddCommand(ec2.Cmd)
 
 	// Easter egg.

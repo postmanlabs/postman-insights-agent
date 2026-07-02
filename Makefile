@@ -1,18 +1,31 @@
-.PHONY: clean build build-ebpf test mock dev-shell dev-build dev-down
+.PHONY: clean build test mock dev-shell dev-build dev-down
 
 export GO111MODULE = on
 
-build: clean
-	go build -o bin/postman-insights-agent .
+# Detect whether the eBPF toolchain is available on this host.
+# On Linux with clang + bpftool installed, the binary is built with the
+# insights_bpf tag so HTTPS capture via eBPF is included.
+# On macOS or Linux without the toolchain the plain binary is built — all
+# eBPF paths compile to no-ops via their stub files, preserving the
+# existing behaviour on non-Linux platforms.
+UNAME_S := $(shell uname -s)
+HAS_CLANG := $(shell command -v clang > /dev/null 2>&1 && echo yes)
+HAS_BPFTOOL := $(shell command -v bpftool > /dev/null 2>&1 && echo yes)
 
-# build-ebpf produces a Linux binary with the eBPF HTTPS-capture pipeline
-# compiled in. It requires:
-#   * clang >= 14, llvm-strip, bpftool, libbpf-dev installed locally
-#   * vmlinux.h dumped from /sys/kernel/btf/vmlinux into ebpf/programs/
-# Use `make dev-shell` on macOS to get a container with all of the above.
-build-ebpf: clean
+ifeq ($(UNAME_S),Linux)
+  ifeq ($(HAS_CLANG)$(HAS_BPFTOOL),yesyes)
+    BUILD_TAGS := insights_bpf
+  endif
+endif
+
+build: clean
+ifeq ($(BUILD_TAGS),insights_bpf)
+	@echo "==> eBPF toolchain detected — building with insights_bpf tag"
 	cd ebpf/loader && go generate -tags insights_bpf ./...
-	go build -tags insights_bpf -o bin/postman-insights-agent .
+else
+	@echo "==> No eBPF toolchain (or non-Linux) — building without insights_bpf tag"
+endif
+	go build -tags "$(BUILD_TAGS)" -o bin/postman-insights-agent .
 
 docker-build:
 	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile .

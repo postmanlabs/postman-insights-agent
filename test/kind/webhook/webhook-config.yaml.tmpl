@@ -16,7 +16,7 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: postman-insights-webhook
 webhooks:
-- name: postman-insights-webhook.postman.dev
+- name: postman-insights-webhook.postman.com
   clientConfig:
     service:
       name: postman-insights-webhook
@@ -37,4 +37,4 @@ webhooks:
   reinvocationPolicy: Never
   namespaceSelector:
     matchLabels:
-      postman.dev/insights: enabled
+      postman.com/insights: enabled

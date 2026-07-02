@@ -12,5 +12,5 @@ spec:
   ports:
   - name: https
     port: {{ .Values.service.port }}
-    targetPort: 8443
+    targetPort: {{ .Values.service.containerPort }}
     protocol: TCP

@@ -31,6 +31,13 @@ docker run --rm \
   "$GRADLE_IMAGE" \
   gradle --no-daemon shadowJar
 
+docker run --rm \
+  -v "$REPO_ROOT/java-agent/testdata/hello-https:/work" \
+  -w /work \
+  "$GRADLE_IMAGE" \
+  gradle --no-daemon shadowJar
+
 echo "==> Built:"
 ls -lh "$REPO_ROOT/java-agent/build/libs/postman-java-agent.jar"
 ls -lh "$REPO_ROOT/java-agent/testdata/grpc-java/build/libs/grpc-java.jar"
+ls -lh "$REPO_ROOT/java-agent/testdata/hello-https/build/libs/hello-https.jar"

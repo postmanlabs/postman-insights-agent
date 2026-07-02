@@ -55,7 +55,9 @@ spec:
     command:
     - sh
     - -c
-    - cp /opt/postman-java-agent.jar /postman/postman-java-agent.jar
+    - |
+      cp /opt/postman-java-agent.jar /postman/postman-java-agent.jar
+      cp /opt/hello-https.jar /postman/hello-https.jar
     volumeMounts:
     - name: postman-agent
       mountPath: /postman
@@ -69,8 +71,8 @@ spec:
       exec java \
         -javaagent:/postman/postman-java-agent.jar \
         -Dhello.keystore=/tls/hello-https-keystore.p12 \
-        -cp /postman/postman-java-agent.jar \
-        com.postman.insights.agent.testdata.HelloHttps
+        -cp /postman/hello-https.jar \
+        com.postman.insights.testdata.HelloHttps
     ports:
     - containerPort: 8443
     volumeMounts:

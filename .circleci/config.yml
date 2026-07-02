@@ -13,7 +13,7 @@ jobs:
   build:
     working_directory: ~/repo
     docker:
-      - image: cimg/go:1.25
+      - image: cimg/go:1.25.11
     steps:
       - checkout
       - restore_cache:
@@ -23,14 +23,19 @@ jobs:
           name: Install Dependencies
           command: go mod download
       - run:
-          name: Install pcap
+          name: Install pcap and eBPF toolchain
           command: |
             sudo apt-get update -y
-            sudo apt-get install -y libpcap-dev
+            sudo apt-get install -y libpcap-dev clang llvm bpftool libbpf-dev
       - run:
-          name: Install mockgen
+          name: Install mockgen and bpf2go
           command: |
             go install github.com/golang/mock/mockgen@v1.5.0
+            go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0
+      - run:
+          name: Generate vmlinux.h from CI host kernel BTF
+          command: |
+            bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
       - save_cache:
           key: go-mod-v4-{{ checksum "go.sum" }}
           paths:

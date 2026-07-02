@@ -73,7 +73,7 @@ webhook:
   # are sent to the webhook. Default = opt-in by label.
   namespaceSelector:
     matchLabels:
-      postman.dev/insights: enabled
+      postman.com/insights: enabled
 
   # objectSelector: further filter at the pod level. Empty = no filter.
   objectSelector: {}
@@ -133,8 +133,10 @@ tls:
 service:
   type: ClusterIP
   port: 443        # webhook clients always hit :443
-  # targetPort is the container port (8443 by default — keep in sync with
-  # the --addr flag built into the Deployment template).
+  # containerPort is the port the webhook binary listens on inside the pod.
+  # It must match the --addr flag passed to kube-webhook and the Service's
+  # targetPort. Change it here and both will stay in sync.
+  containerPort: 8443
 
 # -----------------------------------------------------------------------------
 # ServiceAccount

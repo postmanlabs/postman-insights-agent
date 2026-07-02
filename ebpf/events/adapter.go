@@ -39,12 +39,12 @@ const MaxPendingPerFlow = 64 * 1024
 //       N back-to-back requests or responses).
 //
 // The flow is forgotten after a configurable idle timeout (default 30s) or
-// when an SSL_shutdown event arrives (Phase 2+).
+// when an SSL_shutdown event arrives.
 //
-// IP/port synthesis: Phase 1 (this code) leaves SrcIP/DstIP zero and stashes
-// "ebpf-pid-<N>" in the Interface field for traceability. Phase 2 task 1's
-// follow-up will read /proc/<pid>/net/tcp via the SSL*→fd map and synthesise
-// the real 4-tuple. See docs/https-capture-design.md §5.4.
+// IP/port synthesis: when a Resolver is set, SrcIP/DstIP/ports are filled from
+// /proc/<pid>/net/tcp via the SSL*→fd map. When Resolver is nil, IPs are left
+// zero and "ebpf-pid-<N>" is stored in the Interface field for traceability.
+// See docs/https-capture-design.md §5.4.
 type Adapter struct {
 	// FactorySelector picks the right parser for a new flow. Pass the same
 	// selector the pcap path uses.
@@ -55,7 +55,7 @@ type Adapter struct {
 
 	// Resolver, when non-nil, is consulted to fill SrcIP/DstIP/SrcPort/DstPort
 	// on emitted ParsedNetworkTraffic from the (pid, fd) carried in each
-	// SSLEvent. When nil, IPs are left zero (the Phase 1 spike behaviour).
+	// SSLEvent. When nil, IPs are left zero.
 	Resolver *Resolver
 
 	mu    sync.Mutex

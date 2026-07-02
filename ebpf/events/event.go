@@ -17,7 +17,7 @@ const MaxEventPayload = 1024
 // SSLEvent is the Go form of `struct ssl_event` emitted by libssl.bpf.c.
 //
 // Field order, sizes, and padding MUST match the C struct exactly. The
-// alignment is verified by an init() check in event_decode.go.
+// size is verified at compile time via unsafe.Sizeof in decode.go.
 type SSLEvent struct {
 	TimestampNS uint64 // bpf_ktime_get_ns() — boot-time-relative
 	PID         uint32 // tgid (Linux "process id")

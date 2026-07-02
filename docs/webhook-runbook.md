@@ -31,7 +31,7 @@ The defaults in our Helm chart are designed around that risk:
 | --- | --- | --- |
 | `failurePolicy` | `Ignore` | Webhook outage CANNOT block pod creation |
 | `timeoutSeconds` | `5` | Bounded latency contribution to pod creation |
-| `namespaceSelector` | `postman.dev/insights=enabled` | Opt-in only — existing namespaces are unaffected |
+| `namespaceSelector` | `postman.com/insights=enabled` | Opt-in only — existing namespaces are unaffected |
 | `objectSelector` | empty | Can be tightened further per deployment |
 | `sideEffects` | `None` | Required for non-dry-run admission |
 
@@ -73,7 +73,7 @@ kubectl -n postman-insights create secret tls postman-insights-webhook-tls \
 # Compute the CA bundle (base64-encoded PEM)
 CA_B64=$(base64 < path/to/ca-bundle.pem | tr -d '\n')
 
-helm install postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm install postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights \
     --set image.tag=v0.X.Y \
     --set tls.mode=secret \
@@ -94,7 +94,7 @@ spec:
   selfSigned: {}
 EOF
 
-helm install postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm install postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights \
     --set image.tag=v0.X.Y \
     --set tls.mode=cert-manager \
@@ -126,12 +126,12 @@ kubectl get pod sanity -n default -o jsonpath='{.spec.containers[0].env}'
 kubectl delete pod sanity -n default
 
 # 5. Labeled namespaces ARE mutated
-kubectl label namespace default postman.dev/insights=enabled --overwrite
+kubectl label namespace default postman.com/insights=enabled --overwrite
 kubectl run java-test --image=tomcat:10-jdk21 --restart=Never -n default
 kubectl get pod java-test -n default -o jsonpath='{.spec.containers[0].env}'
 # Expected: [{"name":"JAVA_TOOL_OPTIONS","value":"-javaagent:/postman/postman-java-agent.jar"}]
 kubectl delete pod java-test -n default
-kubectl label namespace default postman.dev/insights-  # remove label
+kubectl label namespace default postman.com/insights-  # remove label
 ```
 
 ## Rollback
@@ -168,7 +168,7 @@ supplied or namespace labels you set.
 ### Image rebuild only (most common)
 
 ```sh
-helm upgrade postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm upgrade postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights \
     --reuse-values \
     --set image.tag=v0.X.Z
@@ -183,7 +183,7 @@ Always run `helm diff upgrade --dry-run` first if you have the helm-diff
 plugin:
 
 ```sh
-helm diff upgrade postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm diff upgrade postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights \
     --reuse-values \
     -f new-values.yaml
@@ -224,7 +224,7 @@ Walk the chain:
 
 ```sh
 # 1. Is the namespace opted in?
-kubectl get ns <ns> --show-labels | grep postman.dev/insights=enabled
+kubectl get ns <ns> --show-labels | grep postman.com/insights=enabled
 
 # 2. Does the pod's container image match the Java workload regex?
 kubectl get pod <pod> -n <ns> -o jsonpath='{.spec.containers[*].image}'
@@ -258,7 +258,7 @@ failed calling webhook: Post "https://...": x509: certificate signed by unknown 
 Re-render the chart with the correct CA bundle:
 
 ```sh
-helm upgrade postman-insights-webhook ./deployment/helm/postman-insights-webhook \
+helm upgrade postman-insights-webhook ./charts/postman-insights-webhook \
     --namespace postman-insights --reuse-values \
     --set tls.secret.caBundle=<new-b64>
 ```

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 package kubewebhook
 
 import (
@@ -50,12 +48,13 @@ type MutationConfig struct {
 	InitImagePullPolicy corev1.PullPolicy
 }
 
-// DefaultMutationConfig returns sensible defaults. The init image name is
-// deliberately a placeholder — operators MUST override via CLI flag or
-// Helm values to point at their actual agent image build.
+// DefaultMutationConfig returns sensible defaults.
+// InitImage is intentionally empty — callers MUST set it via the
+// --init-image CLI flag (or equivalent). RunE enforces this at startup
+// so misconfiguration is caught immediately rather than at pod-admission time.
 func DefaultMutationConfig() MutationConfig {
 	return MutationConfig{
-		InitImage:           "ghcr.io/postmanlabs/postman-insights-agent:latest",
+		InitImage:           "",
 		InitImagePullPolicy: corev1.PullIfNotPresent,
 	}
 }

@@ -127,7 +127,7 @@ func init() {
 		false,
 		"Also capture JVM TLS traffic via the java_tls kprobe (postman-java-agent ioctl bridge). "+
 			"Requires --enable-https-capture and postman-java-agent.jar injected into target JVMs "+
-			"(via the kube-webhook or JAVA_TOOL_OPTIONS manually).",
+			"(via `kube webhook` or JAVA_TOOL_OPTIONS manually).",
 	)
 
 	Cmd.AddCommand(runCmd)

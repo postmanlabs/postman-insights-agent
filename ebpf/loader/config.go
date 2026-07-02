@@ -7,7 +7,7 @@ package loader
 type Config struct {
 	// EnforcePIDAllowlist, when true, restricts uprobes to PIDs explicitly
 	// added to the target_pids map. When false, all PIDs that hit the probe
-	// are traced (used by the Phase 1 spike).
+	// are traced.
 	EnforcePIDAllowlist bool
 
 	// MaxCaptureBytes is the maximum number of plaintext bytes copied per
@@ -16,8 +16,8 @@ type Config struct {
 	MaxCaptureBytes uint32
 }
 
-// Default returns the default load config: no PID allowlist enforcement
-// (spike mode), 1 KiB capture per event.
+// Default returns the default load config: no PID allowlist enforcement,
+// 1 KiB capture per event.
 func Default() Config {
 	return Config{
 		EnforcePIDAllowlist: false,

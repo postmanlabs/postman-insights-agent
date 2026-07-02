@@ -43,7 +43,7 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   "$REPO_ROOT/test/kind/build-java-artifacts.sh"
 
   echo "==> Building agent image ${AGENT_IMAGE}"
-  docker build -f "$REPO_ROOT/test/kind/Dockerfile.agent" -t "$AGENT_IMAGE" "$REPO_ROOT"
+  docker build -f "$REPO_ROOT/build-scripts/Dockerfile.ebpf" -t "$AGENT_IMAGE" "$REPO_ROOT"
 
   if [[ "$STATIC_NODE" == "true" ]]; then
     echo "==> Building Node image (static BoringSSL — Kind capture WIP)"

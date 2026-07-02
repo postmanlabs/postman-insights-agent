@@ -47,7 +47,7 @@ kubectl config use-context "kind-${CLUSTER}" 2>/dev/null || {
 
 if [[ "$SKIP_BUILD" == "false" ]]; then
   echo "==> Building agent image ${AGENT_IMAGE} (with insights_bpf tag)"
-  docker build -f "$REPO_ROOT/test/kind/Dockerfile.agent" -t "$AGENT_IMAGE" "$REPO_ROOT"
+  docker build -f "$REPO_ROOT/build-scripts/Dockerfile.ebpf" -t "$AGENT_IMAGE" "$REPO_ROOT"
 
   echo "==> Building Node service image (dynamic libssl)"
   docker build -f "$REPO_ROOT/test/kind/Dockerfile.node-service-dynamic" -t "$NODE_IMAGE" "$REPO_ROOT"

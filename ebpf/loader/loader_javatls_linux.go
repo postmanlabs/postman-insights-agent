@@ -21,16 +21,14 @@ import (
 // `sys_ioctl` kprobe — shared across all JVMs on the host. The kprobe gates
 // per-PID via the same allowlist map shape used by libssl.
 //
-// Phase 5a uses this collector with a C-program harness driving the ioctl.
-// Phase 5b will replace the harness with a real Java agent without changing
-// any code on the kernel side.
+// The kprobe fires on sys_ioctl; the Java agent (postman-java-agent.jar)
+// drives the ioctl from the JVM side to pass decrypted TLS bytes to the kernel.
 type JavaTLSLoader struct {
 	javatls *javatlsObjects
 }
 
-// LoadJavaTLS instantiates the java_tls BPF collection. enforce_pid_allowlist
-// gates whether non-allowlisted PIDs trigger emission (false for the spike,
-// will be true once we wire kube-discovery into 5b).
+// LoadJavaTLS instantiates the java_tls BPF collection. enforceAllowlist
+// gates whether non-allowlisted PIDs trigger emission.
 func LoadJavaTLS(maxCaptureBytes uint32, enforceAllowlist bool) (*JavaTLSLoader, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("ebpf: remove memlock: %w", err)

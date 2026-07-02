@@ -27,15 +27,16 @@ spec:
         image: {{ include "postman-insights-webhook.image" . }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         args:
-        - kube-webhook
-        - --addr=:8443
+        - kube
+        - webhook
+        - --addr=:{{ .Values.service.containerPort }}
         - --tls-cert=/etc/webhook-tls/tls.crt
         - --tls-key=/etc/webhook-tls/tls.key
         - --init-image={{ include "postman-insights-webhook.initImage" . }}
         - --java-image-regex={{ .Values.mutation.javaImageRegex }}
         ports:
         - name: https
-          containerPort: 8443
+          containerPort: {{ .Values.service.containerPort }}
           protocol: TCP
         readinessProbe:
           httpGet:

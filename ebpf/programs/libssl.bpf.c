@@ -211,8 +211,12 @@ static __always_inline int pid_allowed(__u32 tgid) {
 // Copy up to `len` bytes from `user_buf` into a freshly-reserved ringbuf
 // event and submit it. Returns 0 on success, -1 on failure.
 //
-// NOTE on the verifier: we must mask `to_copy` so the verifier can prove
-// the bounded read. The mask is MAX_EVENT_PAYLOAD - 1 (power of two).
+// NOTE on the verifier: we clamp `to_copy` to the compile-time array bound
+// so the BPF verifier can prove the bounded read. Modern verifiers (kernel
+// 5.2+) track conditional bounds. The old mask trick (&= MAX_EVENT_PAYLOAD-1)
+// was incorrect: when to_copy == MAX_EVENT_PAYLOAD after the runtime cap,
+// 1024 & 1023 == 0, causing every ≥ MAX_EVENT_PAYLOAD-byte payload to be
+// captured as 1 byte. Plain conditional has no such edge case.
 static __always_inline int emit_event(
         __u64 pid_tgid,
         __u64 ssl_ctx,
@@ -240,12 +244,9 @@ static __always_inline int emit_event(
     if (to_copy > max_capture_bytes) {
         to_copy = max_capture_bytes;
     }
-    // Verifier-friendly bound — power-of-two mask.
-    to_copy &= (MAX_EVENT_PAYLOAD - 1);
-    // Guarantee at least 1 byte if reported_len > 0, so the verifier is happy
-    // with the bpf_probe_read_user below.
-    if (to_copy == 0 && reported_len > 0) {
-        to_copy = 1;
+    // Clamp to the compile-time array bound (verifier proof via conditional).
+    if (to_copy > MAX_EVENT_PAYLOAD) {
+        to_copy = MAX_EVENT_PAYLOAD;
     }
 
     e->ts_ns        = bpf_ktime_get_ns();

@@ -1,19 +1,13 @@
 // Package discovery enumerates the processes that the eBPF subsystem should
 // attach uprobes to.
 //
-// In Phase 1 spike mode this was just "all PIDs that have libssl mapped". In
-// Phase 2 we additionally track PID liveness and emit Target events for
-// processes that have *gone* so the uprobes Manager can detach cleanly within
-// the SLA (Phase 2 exit criterion 5: detach within 10s of pod exit).
+// The discovery loop polls /proc, tracks PID liveness, and emits Target events
+// for both newly-seen and exited processes so the uprobes Manager can attach
+// and detach cleanly.
 //
-// In Phase 2 the namespace filter applied here is a strict allow-list backed
-// by the optional KubeNamespaceResolver. When that resolver is nil (e.g. when
-// running outside a kube cluster), namespace filtering is a no-op and all
-// libssl-loaded PIDs are emitted.
-//
-// Production-grade inotify-driven discovery (the OBI watcher_proc_linux.go
-// pattern) remains a follow-up; for the kind-cluster e2e and customer demo
-// the polling discovery here is sufficient.
+// Namespace filtering is applied via the optional KubeNamespaceResolver. When
+// that resolver is nil (e.g. when running outside a kube cluster), namespace
+// filtering is a no-op and all libssl-loaded PIDs are emitted.
 
 package discovery
 
@@ -47,8 +41,7 @@ type NamespaceResolver interface {
 
 // WatchOpts customises the discovery loop.
 type WatchOpts struct {
-	// Interval between /proc scans. 5s in Phase 1 spike; 2s in Phase 2 so
-	// that pod-exit detection fits inside the 10s SLA.
+	// Interval between /proc scans. Default 2s when unset.
 	Interval time.Duration
 
 	// NamespaceResolver, when non-nil, is consulted for every candidate PID;
@@ -133,8 +126,8 @@ func ScanProcAt(procRoot string) ([]Target, error) {
 //
 // Callers consume the channel and attach/detach uprobes accordingly.
 //
-// Deprecated wrapper Watch(ctx, interval) without opts is kept for the spike
-// command; it disables namespace filtering and uses the given interval.
+// Watch is a convenience wrapper around WatchWith that disables namespace
+// filtering. Prefer WatchWith for production use with namespace scoping.
 func Watch(ctx context.Context, interval time.Duration) <-chan Target {
 	return WatchWith(ctx, WatchOpts{Interval: interval})
 }
@@ -153,7 +146,8 @@ func pidNetnsInode(procRoot string, pid uint32) uint64 {
 	return st.Ino
 }
 
-// WatchWith is the Phase 2 entry point. See Watch above for behaviour.
+// WatchWith starts the discovery loop with full options. See Watch for a
+// simpler variant without namespace filtering.
 func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 	if opts.Interval <= 0 {
 		opts.Interval = 2 * time.Second
@@ -176,7 +170,7 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 		if ns == "" {
 			// PID is not a kube pod (e.g. host process). Default to NOT
 			// probing — production discovery only wants kube workloads in
-			// scope. The spike command uses Watch (no resolver) instead.
+			// scope. Use Watch (no resolver) to capture all PIDs.
 			return false
 		}
 		_, ok := opts.AllowedNamespaces[ns]

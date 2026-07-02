@@ -16,7 +16,7 @@ metadata:
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "postman-insights-webhook.fullname" . }}
   {{- end }}
 webhooks:
-- name: {{ include "postman-insights-webhook.fullname" . }}.postman.dev
+- name: {{ include "postman-insights-webhook.fullname" . }}.postman.com
   clientConfig:
     service:
       name: {{ include "postman-insights-webhook.fullname" . }}
