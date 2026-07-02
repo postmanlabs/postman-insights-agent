@@ -26,7 +26,14 @@ jobs:
           name: Install pcap and eBPF toolchain
           command: |
             sudo apt-get update -y
-            sudo apt-get install -y libpcap-dev clang llvm bpftool libbpf-dev
+            sudo apt-get install -y libpcap-dev clang llvm libbpf-dev linux-tools-common
+            # On Ubuntu 24.04 (Noble), bpftool is not a standalone package — it lives in
+            # linux-tools-<kernel-version>. Install that, then symlink to a stable PATH location.
+            sudo apt-get install -y linux-tools-$(uname -r) 2>/dev/null \
+              || sudo apt-get install -y linux-tools-generic
+            BPFTOOL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+            [ -n "$BPFTOOL" ] && sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+            bpftool version
       - run:
           name: Install mockgen and bpf2go
           command: |
@@ -71,11 +78,11 @@ jobs:
       - run:
           name: helm lint
           command: |
-            helm lint deployment/helm/postman-insights-webhook
+            helm lint charts/postman-insights-webhook
       - run:
           name: helm template (tls.mode=secret — the default production path)
           command: |
-            helm template release-test deployment/helm/postman-insights-webhook \
+            helm template release-test charts/postman-insights-webhook \
                 --namespace postman-insights \
                 --set image.tag=ci-smoke \
                 --set tls.secret.caBundle=BASE64CAHERE \
@@ -99,7 +106,7 @@ jobs:
       - run:
           name: helm template (tls.mode=cert-manager — the production-recommended path)
           command: |
-            helm template release-test deployment/helm/postman-insights-webhook \
+            helm template release-test charts/postman-insights-webhook \
                 --namespace postman-insights \
                 --set image.tag=ci-smoke \
                 --set tls.mode=cert-manager \
@@ -123,7 +130,7 @@ jobs:
           command: |
             # In secret mode with NO caBundle override, helm template must
             # FAIL with our 'required' message. This is the schema-typo guard.
-            if helm template release-test deployment/helm/postman-insights-webhook \
+            if helm template release-test charts/postman-insights-webhook \
                   --namespace postman-insights \
                   --set image.tag=ci-smoke \
                   > /tmp/helm-noca.yaml 2>/tmp/helm-noca.err ; then
