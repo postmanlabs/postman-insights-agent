@@ -1,0 +1,20 @@
+# ClusterIP for in-cluster HTTPS egress demos (dotnet-service → node-service).
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-service
+  namespace: test-apps
+  labels:
+    app: node-service
+spec:
+  selector:
+    app: node-service
+  ports:
+  - name: https
+    port: 8443
+    targetPort: 8443
+    protocol: TCP
+  - name: grpc
+    port: 8446
+    targetPort: 8446
+    protocol: TCP
