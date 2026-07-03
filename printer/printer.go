@@ -112,23 +112,23 @@ func (p impl) Debugln(args ...interface{}) {
 }
 
 func (p impl) Infof(fmtString string, args ...interface{}) {
-	fmt.Fprintf(p.out, Color.Blue("[INFO] ").String())
+	fmt.Fprint(p.out, Color.Blue("[INFO] ").String())
 	fmt.Fprintf(p.out, fmtString, args...)
 }
 
 func (p impl) Warningf(fmtString string, args ...interface{}) {
-	fmt.Fprintf(p.out, Color.Yellow("[WARNING] ").String())
+	fmt.Fprint(p.out, Color.Yellow("[WARNING] ").String())
 	fmt.Fprintf(p.out, fmtString, args...)
 }
 
 func (p impl) Errorf(fmtString string, args ...interface{}) {
-	fmt.Fprintf(p.out, Color.Red("[ERROR] ").String())
+	fmt.Fprint(p.out, Color.Red("[ERROR] ").String())
 	fmt.Fprintf(p.out, fmtString, args...)
 }
 
 func (p impl) Debugf(fmtString string, args ...interface{}) {
 	if viper.GetBool("debug") {
-		fmt.Fprintf(p.out, Color.Magenta("[DEBUG] ").String())
+		fmt.Fprint(p.out, Color.Magenta("[DEBUG] ").String())
 		fmt.Fprintf(p.out, fmtString, args...)
 	}
 }
