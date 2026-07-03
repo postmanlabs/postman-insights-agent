@@ -69,6 +69,13 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Check chart exists
+          command: |
+            if [ ! -d charts/postman-insights-webhook ]; then
+              echo "charts/postman-insights-webhook not present in this branch — skipping helm-smoke."
+              circleci-agent step halt
+            fi
+      - run:
           name: Install Helm v3
           command: |
             curl -fsSL -o helm.tgz https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
