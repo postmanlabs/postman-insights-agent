@@ -1,0 +1,46 @@
+# CRITICAL: failurePolicy is `Ignore` by default. Do NOT change to `Fail`
+# without rehearsing the rollback. A misconfigured webhook with
+# failurePolicy=Fail can block ALL pod creation cluster-wide.
+#
+# Rollback: kubectl delete mutatingwebhookconfiguration {{ include "postman-insights-webhook.fullname" . }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "postman-insights-webhook.fullname" . }}
+  labels:
+    {{- include "postman-insights-webhook.labels" . | nindent 4 }}
+  {{- if eq .Values.tls.mode "cert-manager" }}
+  annotations:
+    # cert-manager injects the CA bundle into webhook configs that have
+    # this annotation. Eliminates the bootstrap chicken-and-egg problem.
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "postman-insights-webhook.fullname" . }}
+  {{- end }}
+webhooks:
+- name: {{ include "postman-insights-webhook.fullname" . }}.postman.com
+  clientConfig:
+    service:
+      name: {{ include "postman-insights-webhook.fullname" . }}
+      namespace: {{ .Release.Namespace }}
+      path: /mutate
+      port: {{ .Values.service.port }}
+    {{- if eq .Values.tls.mode "secret" }}
+    caBundle: {{ required ".Values.tls.secret.caBundle is required when tls.mode=secret" .Values.tls.secret.caBundle | quote }}
+    {{- end }}
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+    scope: "Namespaced"
+  failurePolicy: {{ .Values.webhook.failurePolicy }}
+  sideEffects: {{ .Values.webhook.sideEffects }}
+  admissionReviewVersions:
+    {{- toYaml .Values.webhook.admissionReviewVersions | nindent 4 }}
+  timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+  reinvocationPolicy: {{ .Values.webhook.reinvocationPolicy }}
+  namespaceSelector:
+    {{- toYaml .Values.webhook.namespaceSelector | nindent 4 }}
+  {{- with .Values.webhook.objectSelector }}
+  objectSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}

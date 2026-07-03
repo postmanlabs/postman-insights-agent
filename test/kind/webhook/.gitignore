@@ -1,0 +1,15 @@
+# Generated TLS material — never commit (public repo)
+#
+# All of these are regenerated from scratch by gen-tls-and-manifests.sh.
+# ca.crt and webhook.crt are also gitignored because they are tied to a
+# specific dev CA private key — there's no benefit to committing one half.
+ca.key
+ca.crt
+ca.srl
+webhook.key
+webhook.csr
+webhook.crt
+
+# Manifests with inlined cert/key data — generated from .tmpl files
+webhook-deployment.yaml
+webhook-config.yaml

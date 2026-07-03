@@ -1,0 +1,11 @@
+# Gradle
+.gradle/
+build/
+
+# JNI native build
+src/main/c/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/

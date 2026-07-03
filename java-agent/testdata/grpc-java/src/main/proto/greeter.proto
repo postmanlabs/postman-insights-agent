@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package         = "com.postman.insights.testdata.proto";
+option java_outer_classname = "GreeterProto";
+
+package phase5c2;
+
+service Greeter {
+    rpc SayHello(HelloRequest) returns (HelloReply);
+}
+
+message HelloRequest { string name = 1; }
+message HelloReply   { string message = 1; }

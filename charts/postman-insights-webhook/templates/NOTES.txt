@@ -1,0 +1,44 @@
+Thanks for installing {{ .Chart.Name }} v{{ .Chart.Version }}.
+
+What just happened
+==================
+* A Deployment ({{ .Values.replicaCount }} replicas) is starting in
+  namespace `{{ .Release.Namespace }}`.
+* A Service routes `:443 → :8443` to that Deployment.
+* A MutatingWebhookConfiguration named `{{ include "postman-insights-webhook.fullname" . }}`
+  watches CREATE on pods, with `failurePolicy: {{ .Values.webhook.failurePolicy }}`.
+
+Opt-in is per-namespace
+=======================
+The webhook only mutates pods in namespaces labeled
+`postman.dev/insights=enabled`. Label any namespace you want
+instrumented:
+
+    kubectl label namespace <your-ns> postman.dev/insights=enabled
+
+Verify the webhook is healthy
+=============================
+    kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "postman-insights-webhook.fullname" . }}
+    kubectl -n {{ .Release.Namespace }} get pod -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Verify mutation works
+=====================
+    kubectl label namespace default postman.dev/insights=enabled
+    kubectl run java-test --image=tomcat:10-jdk21 -n default
+    kubectl get pod java-test -n default -o jsonpath='{.spec.containers[0].env}'
+    # → should contain JAVA_TOOL_OPTIONS=-javaagent:/postman/postman-java-agent.jar
+
+Rollback
+========
+ONE command undoes ALL webhook involvement in pod creation:
+
+    kubectl delete mutatingwebhookconfiguration {{ include "postman-insights-webhook.fullname" . }}
+
+Full uninstall:
+
+    helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Troubleshooting
+===============
+See `deployment/helm/postman-insights-webhook/README.md` and
+`docs/webhook-runbook.md` for diagnostic procedures.

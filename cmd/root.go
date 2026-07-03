@@ -11,6 +11,8 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump"
+	apidumpebpf "github.com/postmanlabs/postman-insights-agent/cmd/internal/apidump-ebpf"
+	kubewebhook "github.com/postmanlabs/postman-insights-agent/cmd/internal/kube-webhook"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ascii"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/ec2"
@@ -290,8 +292,17 @@ func init() {
 
 	rootCmd.AddCommand(apidump.Cmd)
 
+	// apidump-ebpf: credential-free stdout capture for local dev/debugging.
+	// Not for production (use apidump --enable-https-capture instead).
+	// apidump-javatls was removed: its functionality is now in
+	// apidump --enable-https-capture --enable-java-tls.
+	apidumpebpf.Cmd.Hidden = true
+	rootCmd.AddCommand(apidumpebpf.Cmd)
 	rootCmd.AddCommand(ecs.Cmd)
 	rootCmd.AddCommand(kube.Cmd)
+	// webhook runs inside the cluster as a Deployment; it belongs under `kube`
+	// alongside `kube run` (DaemonSet entrypoint) and `kube inject`.
+	kube.Cmd.AddCommand(kubewebhook.Cmd)
 	rootCmd.AddCommand(ec2.Cmd)
 
 	// Easter egg.
