@@ -1,0 +1,12 @@
+# DEPRECATED — do not apply for Kind e2e or production.
+#
+# Phase 5c.3b used a standalone javatls-capture Deployment with hostPath
+# mounts (/sys, /proc, /sys/kernel/debug) for apidump-javatls. That pattern
+# is superseded: Java TLS capture runs in postman-insights-agent DaemonSet
+# via apidump-ebpf --enable-javatls (see test/kind/agent-daemonset.yaml).
+#
+# Webhook verification (5c.3b): confirm JAVA_TOOL_OPTIONS injection on pods;
+# confirm capture via:
+#   kubectl logs -n postman-insights daemonset/postman-insights-agent
+#
+# Historical manifest archived in docs/phases/phase-5c3b-results.md.

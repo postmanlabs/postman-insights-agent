@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "postman-insights-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "postman-insights-webhook.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "postman-insights-webhook.selectorLabels" . | nindent 4 }}
+  ports:
+  - name: https
+    port: {{ .Values.service.port }}
+    targetPort: {{ .Values.service.containerPort }}
+    protocol: TCP

@@ -280,8 +280,33 @@ func startHTTPSeBPFCapture(
 		}
 	}()
 
-	// Java TLS capture (--enable-java-tls) is wired in ebpf_integration_javatls_linux.go
-	// which is added in the java-tls PR alongside collect_javatls_linux.go.
+	// Java TLS capture — attaches the java_tls kprobe that intercepts the
+	// postman-java-agent ioctl bridge (SSLEngine.wrap/unwrap → ioctl(0,
+	// 0x0b10b1, …) → kernel kprobe → ringbuf). Feeds the same `out` channel
+	// and therefore the same collector chain as the libssl path above.
+	// Requires postman-java-agent.jar injected into target JVMs via the
+	// kube-webhook or manually via JAVA_TOOL_OPTIONS.
+	if args.HTTPS.EnableJavaTLS {
+		javaAdapter := events.NewAdapter(selector, out)
+		javaCollector, err := ebpf.NewJavaTLSCollector(bodyCap, false, javaAdapter)
+		if err != nil {
+			printer.Stderr.Warningf(
+				"ebpf: java_tls kprobe unavailable (build without insights_bpf tag?): %v\n", err)
+		} else {
+			if err := javaCollector.Attach(); err != nil {
+				printer.Stderr.Warningf("ebpf: java_tls attach failed: %v\n", err)
+				_ = javaCollector.Close()
+			} else {
+				printer.Stderr.Infof("ebpf: attached java_tls kprobe (JVM ioctl bridge)\n")
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer func() { _ = javaCollector.Close() }()
+					javaCollector.Run(captureCtx, time.Now())
+				}()
+			}
+		}
+	}
 
 	return cancel
 }

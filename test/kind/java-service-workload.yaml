@@ -1,0 +1,86 @@
+# Combined Java test workload: REST HTTPS (:8443) + gRPC-TLS (:8446) in one JVM.
+#
+# TLS: stable certs from ConfigMap `java-service-tls` (see deploy-java-service.sh).
+# Mac and pod share test/kind/certs/hello-https-trust.pem — no kubectl cp needed.
+#
+# Deploy:
+#   ./test/kind/deploy-java-service.sh
+#
+# Or manually:
+#   ./test/kind/certs/gen-java-service-certs.sh
+#   kubectl create configmap java-service-tls -n test-apps \
+#     --from-file=test/kind/certs/grpc-cert.pem \
+#     --from-file=test/kind/certs/grpc-key.pem \
+#     --from-file=test/kind/certs/hello-https-keystore.p12 \
+#     --from-file=test/kind/certs/hello-https-trust.pem \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl apply -f test/kind/java-service-workload.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-apps
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: java-service
+  namespace: test-apps
+  labels:
+    app: java-service
+spec:
+  initContainers:
+  - name: seed-agent-jar
+    image: pia-agent-ebpf:test
+    imagePullPolicy: Never
+    command:
+    - sh
+    - -c
+    - cp /opt/postman-java-agent.jar /postman/postman-java-agent.jar
+    volumeMounts:
+    - name: postman-agent
+      mountPath: /postman
+  - name: seed-grpc-jar
+    image: pia-agent-ebpf:test
+    imagePullPolicy: Never
+    command:
+    - sh
+    - -c
+    - |
+      if [ ! -f /opt/grpc-java.jar ]; then
+        echo "missing /opt/grpc-java.jar — rebuild pia-agent-ebpf:test with grpc-java.jar" >&2
+        exit 1
+      fi
+      cp /opt/grpc-java.jar /postman/grpc-java.jar
+    volumeMounts:
+    - name: postman-agent
+      mountPath: /postman
+  containers:
+  - name: app
+    image: eclipse-temurin:21-jdk
+    command:
+    - sh
+    - -c
+    - |
+      exec java \
+        -javaagent:/postman/postman-java-agent.jar \
+        -Dtls.dir=/tls \
+        -Dbind.host=0.0.0.0 \
+        -cp /postman/grpc-java.jar:/postman/postman-java-agent.jar \
+        com.postman.insights.testdata.CombinedServer
+    ports:
+    - containerPort: 8443
+    - containerPort: 8446
+    volumeMounts:
+    - name: tls
+      mountPath: /tls
+      readOnly: true
+    - name: postman-agent
+      mountPath: /postman
+      readOnly: true
+  volumes:
+  - name: tls
+    configMap:
+      name: test-apps-tls
+  - name: postman-agent
+    emptyDir: {}

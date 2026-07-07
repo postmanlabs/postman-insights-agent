@@ -1,0 +1,9 @@
+# DEPRECATED — do not deploy for Kind e2e or production.
+#
+# Java TLS capture now runs inside the postman-insights-agent DaemonSet via
+#   apidump-ebpf --enable-javatls
+# so Java, Node, and dotnet REQ/RESP all appear in one log stream:
+#   kubectl logs -n postman-insights daemonset/postman-insights-agent
+#
+# This file is kept for historical reference and webhook spike tests only
+# Historical webhook spike only (see test/kind/webhook/capture-deployment.yaml).

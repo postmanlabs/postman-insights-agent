@@ -1,0 +1,147 @@
+# Postman Insights mutating admission webhook — Helm values.
+#
+# All values are documented inline. If you only change three things,
+# change these:
+#
+#   1. image.tag        — pin to a specific build, not "latest"
+#   2. tls.mode         — pick one of: secret | cert-manager
+#   3. tls.<secret|certManager>.* — depending on mode
+#
+# Production defaults err on the side of safety: failurePolicy=Ignore,
+# namespaceSelector=opt-in, sideEffects=None, replicas=2 (HA).
+
+# -----------------------------------------------------------------------------
+# Image
+# -----------------------------------------------------------------------------
+image:
+  repository: ghcr.io/postmanlabs/postman-insights-agent
+  # `tag` MUST be set. Use "" or "latest" only for dev. The init container
+  # uses the same image to seed the Java agent JAR, so this value also
+  # determines which JAR ends up in instrumented pods.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Optional list of imagePullSecrets, e.g. for private registries.
+imagePullSecrets: []
+# - name: my-registry-creds
+
+# -----------------------------------------------------------------------------
+# Deployment shape
+# -----------------------------------------------------------------------------
+replicaCount: 2  # HA by default; webhook is on the pod-create hot path.
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pod-level securityContext.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level securityContext.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# -----------------------------------------------------------------------------
+# Webhook config — DO NOT change failurePolicy unless you understand
+# the blast radius. See docs/webhook-runbook.md.
+# -----------------------------------------------------------------------------
+webhook:
+  failurePolicy: Ignore        # Only acceptable choice for a v1 webhook.
+  timeoutSeconds: 5
+  reinvocationPolicy: Never
+  sideEffects: None
+  admissionReviewVersions:
+    - v1
+
+  # namespaceSelector: only pods in namespaces matching this label set
+  # are sent to the webhook. Default = opt-in by label.
+  namespaceSelector:
+    matchLabels:
+      postman.com/insights: enabled
+
+  # objectSelector: further filter at the pod level. Empty = no filter.
+  objectSelector: {}
+
+# -----------------------------------------------------------------------------
+# Mutation config — passed as CLI flags to the webhook binary.
+# -----------------------------------------------------------------------------
+mutation:
+  # Init container image that supplies /opt/postman-java-agent.jar.
+  # Defaults to the same image as the webhook itself (which is built
+  # with the JAR bundled at /opt/postman-java-agent.jar).
+  # Override if you ship the JAR in a separate image.
+  initImage: ""                # "" = inherit from .Values.image
+  initImagePullPolicy: IfNotPresent
+
+  # Regex matching container images that should be treated as Java
+  # workloads. Override to widen/narrow detection.
+  javaImageRegex: "(?i)(eclipse-temurin|adoptopenjdk|amazoncorretto|openjdk|maven|gradle|tomcat|jetty|wildfly|jboss|payara|liberty|liberty-base|spring-boot|springboot|kafka|zookeeper|cassandra|elasticsearch|logstash)"
+
+# -----------------------------------------------------------------------------
+# TLS — pick ONE of: "secret" or "cert-manager".
+#
+#   secret:        you provide a pre-existing Secret containing tls.crt + tls.key.
+#                  Use this for air-gapped clusters or where cert-manager isn't
+#                  available. Cert rotation is your responsibility.
+#
+#   cert-manager:  the chart creates a cert-manager Certificate resource and
+#                  cert-manager populates the Secret. You must have cert-manager
+#                  installed (>= v1.5). Cert rotation is automatic.
+#
+# In either mode the chart also generates the MutatingWebhookConfiguration
+# with the right caBundle (inlined for "secret" mode; cert-manager annotates
+# the webhook config in "cert-manager" mode).
+# -----------------------------------------------------------------------------
+tls:
+  mode: secret    # "secret" or "cert-manager"
+
+  secret:
+    # Name of the existing Secret containing tls.crt + tls.key.
+    # Required when mode=secret.
+    name: postman-insights-webhook-tls
+    # CA bundle (base64-encoded PEM) inlined into the
+    # MutatingWebhookConfiguration. Required when mode=secret.
+    caBundle: ""
+
+  certManager:
+    # Issuer reference for cert-manager. Required when mode=cert-manager.
+    # Kind is one of: Issuer | ClusterIssuer.
+    issuerRef:
+      kind: ClusterIssuer
+      name: ""
+    # Cert renewal happens automatically.
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 443        # webhook clients always hit :443
+  # containerPort is the port the webhook binary listens on inside the pod.
+  # It must match the --addr flag passed to kube-webhook and the Service's
+  # targetPort. Change it here and both will stay in sync.
+  containerPort: 8443
+
+# -----------------------------------------------------------------------------
+# ServiceAccount
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""         # "" = auto-derived from release name
+  annotations: {}
