@@ -258,19 +258,31 @@ static __always_inline int emit_event(
     e->direction = direction;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
-    // Compute to_copy now — no more function calls until bpf_probe_read_user,
-    // so the compiler keeps to_copy in a register and the verifier retains the
-    // bounds proof across the simple struct-field write below.
-    __u32 to_copy = reported_len;
+    // Compute to_copy as an explicitly zero-extended __u64.
+    //
+    // Root cause of "R2 min value is negative":
+    //   'reported_len' traces back to the uretprobe 'ret' (an int), which
+    //   lives in a 64-bit BPF register (R9) whose upper 32 bits are undefined.
+    //   The verifier conservatively assigns smin_value = INT64_MIN to that
+    //   register. Bound checks via `if (to_copy > X)` operate on a temporary
+    //   zero-extended copy (R3 in the trace, var_off=(0x0;0x3ff)), but the
+    //   compiler re-uses the original R9-derived register (R6) when setting
+    //   up R2 for bpf_probe_read_user — one that still has smin = INT64_MIN.
+    //
+    // Fix: mask with 0xffffffff to force a zero-extension instruction that
+    // updates the register the compiler tracks as 'to_copy'. After the mask,
+    // var_off=(0x0; 0xffffffff) → smin_value = 0. The subsequent bound checks
+    // then narrow it to [0, MAX_EVENT_PAYLOAD], satisfying both the "non-negative"
+    // and the "within payload array" verifier requirements.
+    __u64 to_copy = ((__u64)reported_len) & 0xffffffffULL;
     if (to_copy > max_capture_bytes) {
         to_copy = max_capture_bytes;
     }
     if (to_copy > MAX_EVENT_PAYLOAD) {
         to_copy = MAX_EVENT_PAYLOAD;
     }
-    e->len_captured = to_copy;  // plain store, no function call, no spill
+    e->len_captured = (__u32)to_copy;
 
-    // to_copy is still in a register with proven bounds [0, MAX_EVENT_PAYLOAD].
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);
         counter_inc(2, 1);  // probe_read_user failed (target VMA gone, etc.)
