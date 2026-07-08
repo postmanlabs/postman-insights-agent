@@ -61,7 +61,7 @@ type Daemonset struct {
 
 	// Discovery mode
 	DiscoveryMode  bool
-	InsightsAPIKey string // DaemonSet-level API key for discovery mode
+	InsightsAPIKey string // DaemonSet-level API key; required in discovery mode, optional fallback otherwise
 	PodFilter      *PodFilter
 }
 
@@ -202,6 +202,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
+		InsightsAPIKey:           os.Getenv(POSTMAN_INSIGHTS_API_KEY),
 		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
 		InsightsReproModeEnabled: args.ReproMode,
 		InsightsRateLimit:        args.RateLimit,
@@ -213,13 +214,11 @@ func StartDaemonset(args DaemonsetArgs) error {
 		DiscoveryMode:            args.DiscoveryMode,
 	}
 
-	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
+	// In discovery mode, the DaemonSet-level API key is required and the pod filter is initialized.
 	if args.DiscoveryMode {
-		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
-		if apiKey == "" {
+		if daemonsetRun.InsightsAPIKey == "" {
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
-		daemonsetRun.InsightsAPIKey = apiKey
 		podFilter, err := NewPodFilter(
 			daemonsetRun.KubeClient.AgentHost,
 			args.IncludeNamespaces,

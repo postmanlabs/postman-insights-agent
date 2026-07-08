@@ -184,6 +184,8 @@ In workspace mode, each pod that the DaemonSet monitors is associated with a spe
 
 The DaemonSet picks up `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` from each target pod's environment and uses the Postman backend to create or link an application for that pod's service.
 
+When running a non-discovery DaemonSet, you can set `POSTMAN_INSIGHTS_API_KEY` once on the DaemonSet and omit it from individual pods. Pods that do set their own `POSTMAN_INSIGHTS_API_KEY` continue to use that key instead of the DaemonSet fallback. The same fallback behavior also applies to legacy project mode (`POSTMAN_INSIGHTS_PROJECT_ID`).
+
 ---
 
 ### Sidecar (`kube inject`)
@@ -530,7 +532,7 @@ When a service is discovered but not yet onboarded in the Postman app, the backe
 
 | Environment variable | Applies to | Description |
 |---|---|---|
-| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. Also accepts `POSTMAN_API_KEY` as a fallback. |
+| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. On DaemonSet deployments, can be set once on the DaemonSet as a fallback when pods only provide service IDs. Pod-level values take precedence. Also accepts `POSTMAN_API_KEY` as a fallback. |
 | `POSTMAN_INSIGHTS_DISCOVERY_MODE` | DaemonSet, Sidecar, Standalone | Set to `"true"` to enable discovery mode. |
 | `POSTMAN_INSIGHTS_CLUSTER_NAME` | DaemonSet, Sidecar, Standalone | Kubernetes cluster name (**required** in discovery mode). Used to build a unique service slug and prevent data mixing across environments. Set via `--cluster-name` in `kube inject`, or as an env var for `kube run` and standalone. |
 | `POSTMAN_INSIGHTS_SERVICE_NAME` | Sidecar, Standalone | Override the auto-derived service name (discovery mode). |
