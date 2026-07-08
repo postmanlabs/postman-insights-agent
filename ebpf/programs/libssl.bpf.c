@@ -260,6 +260,15 @@ static __always_inline int emit_event(
     e->direction    = direction;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
+    // Re-clamp immediately before bpf_probe_read_user so the verifier has a
+    // fresh, unspilled scalar with proven bounds. The compiler may have spilled
+    // `to_copy` to the BPF stack above (across the struct-field writes), and
+    // reloads from the stack lose the range information the verifier tracked
+    // through the earlier if-conditionals. This fresh clamp re-establishes
+    // the proof: after this branch, to_copy is in [0, MAX_EVENT_PAYLOAD].
+    if (to_copy > MAX_EVENT_PAYLOAD)
+        to_copy = MAX_EVENT_PAYLOAD;
+
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);
         counter_inc(2, 1);  // probe_read_user failed (target VMA gone, etc.)
