@@ -240,35 +240,37 @@ static __always_inline int emit_event(
         return -1;
     }
 
+    // Fill all fields that require function calls BEFORE computing to_copy.
+    // Every BPF function call (bpf_ktime_get_ns, lookup_fd, counter_inc)
+    // clobbers r0-r5, which forces the compiler to spill any live value —
+    // including to_copy — to the BPF stack. A stack reload then loses the
+    // verifier-tracked bounds, causing "R2 min value is negative" at the
+    // bpf_probe_read_user call site. By completing all function calls first,
+    // to_copy can be computed, bounded, and passed directly to
+    // bpf_probe_read_user with no intervening spill.
+    e->ts_ns    = bpf_ktime_get_ns();
+    e->pid      = pid_tgid >> 32;
+    e->tid      = (__u32)pid_tgid;
+    e->ssl_ctx  = ssl_ctx;
+    e->len_total = reported_len;
+    e->fd       = lookup_fd(pid_tgid >> 32, ssl_ctx);
+    if (e->fd >= 0) counter_inc(6, 1);
+    e->direction = direction;
+    __builtin_memset(e->_pad, 0, sizeof(e->_pad));
+
+    // Compute to_copy now — no more function calls until bpf_probe_read_user,
+    // so the compiler keeps to_copy in a register and the verifier retains the
+    // bounds proof across the simple struct-field write below.
     __u32 to_copy = reported_len;
     if (to_copy > max_capture_bytes) {
         to_copy = max_capture_bytes;
     }
-    // Clamp to the compile-time array bound (verifier proof via conditional).
     if (to_copy > MAX_EVENT_PAYLOAD) {
         to_copy = MAX_EVENT_PAYLOAD;
     }
+    e->len_captured = to_copy;  // plain store, no function call, no spill
 
-    e->ts_ns        = bpf_ktime_get_ns();
-    e->pid          = pid_tgid >> 32;
-    e->tid          = (__u32)pid_tgid;
-    e->ssl_ctx      = ssl_ctx;
-    e->len_total    = reported_len;
-    e->len_captured = to_copy;
-    e->fd           = lookup_fd(pid_tgid >> 32, ssl_ctx);
-    if (e->fd >= 0) counter_inc(6, 1);
-    e->direction    = direction;
-    __builtin_memset(e->_pad, 0, sizeof(e->_pad));
-
-    // Re-clamp immediately before bpf_probe_read_user so the verifier has a
-    // fresh, unspilled scalar with proven bounds. The compiler may have spilled
-    // `to_copy` to the BPF stack above (across the struct-field writes), and
-    // reloads from the stack lose the range information the verifier tracked
-    // through the earlier if-conditionals. This fresh clamp re-establishes
-    // the proof: after this branch, to_copy is in [0, MAX_EVENT_PAYLOAD].
-    if (to_copy > MAX_EVENT_PAYLOAD)
-        to_copy = MAX_EVENT_PAYLOAD;
-
+    // to_copy is still in a register with proven bounds [0, MAX_EVENT_PAYLOAD].
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);
         counter_inc(2, 1);  // probe_read_user failed (target VMA gone, etc.)
