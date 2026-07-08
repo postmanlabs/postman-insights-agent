@@ -11,7 +11,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
-	kubeErrs "k8s.io/apimachinery/pkg/api/errors"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -103,11 +102,7 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 			FieldSelector: fieldSelector,
 		})
 		if err != nil {
-			if kubeErrs.IsTimeout(err) {
-				printer.Warningf("request to get agent pod details timeout, retrying...")
-				return false, nil
-			}
-			return false, err
+			return backoffOnKubeAPIErr(err, "get agent pod details")
 		}
 		podsResourceVersion = pods.ResourceVersion
 		return true, nil
@@ -146,10 +141,7 @@ func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
 			FieldSelector: fieldSelector,
 		})
 		if err != nil {
-			if kubeErrs.IsTimeout(err) {
-				printer.Warningf("request to get pods in agent node timeout, retrying...")
-			}
-			return false, err
+			return backoffOnKubeAPIErr(err, "get pods in agent node")
 		}
 		pods = podList.Items
 		return true, nil
