@@ -30,7 +30,7 @@ func baseAuthHandler(req *http.Request) error {
 		}
 
 		if apiKeySecret == "" {
-			return errors.New(`Akita API key secret not found, run "login" or use AKITA_API_KEY_SECRET environment variable. If using with Postman, ensure the POSTMAN_API_KEY or POSTMAN_INSIGHTS_API_KEY environment variable has a valid API key for Postman.`)
+			return errors.New(`Akita API key secret not found, run "login" or use AKITA_API_KEY_SECRET environment variable. If using with Postman, ensure the POSTMAN_INSIGHTS_API_KEY environment variable has a valid API key for Postman.`)
 		}
 
 		req.SetBasicAuth(apiKeyID, apiKeySecret)

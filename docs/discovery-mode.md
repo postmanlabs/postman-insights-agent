@@ -108,6 +108,23 @@ You should see log lines indicating that pods are being discovered and services 
 
 The DaemonSet mode deploys one agent pod per node. It supports both Discovery Mode and Workspace Mode.
 
+#### DaemonSet API key fallback
+
+On DaemonSet deployments, `POSTMAN_INSIGHTS_API_KEY` can be set once on the DaemonSet itself. Individual pods then only need service IDs (`POSTMAN_INSIGHTS_WORKSPACE_ID` + `POSTMAN_INSIGHTS_SYSTEM_ENV`, or `POSTMAN_INSIGHTS_PROJECT_ID`).
+
+| Scope | Precedence |
+|---|---|
+| Pod-level `POSTMAN_INSIGHTS_API_KEY` | Used when set on the monitored pod |
+| DaemonSet-level `POSTMAN_INSIGHTS_API_KEY` | Fallback when the pod has no API key |
+
+This fallback applies in all DaemonSet modes: discovery auto-discovery, discovery hybrid (pods with explicit service IDs), workspace mode, and legacy project mode. In discovery auto-discovery, the DaemonSet key is always used regardless of any pod-level key.
+
+When the DaemonSet fallback key is used for a pod, the agent logs:
+
+> Pod `<name>`: using DaemonSet-level API key (no pod-level `POSTMAN_INSIGHTS_API_KEY` set).
+
+In non-discovery mode, if neither the DaemonSet nor individual pods provide an API key, affected pods fail when processed. Pods with no Insights configuration at all are skipped silently. The agent also emits a startup warning when no DaemonSet-level key is configured in non-discovery mode.
+
 #### Discovery Mode
 
 In discovery mode, a single cluster-level API key is used instead of per-pod credentials. The agent watches for pod events across the cluster and automatically starts capturing traffic for eligible pods.
@@ -176,15 +193,13 @@ In DaemonSet discovery mode, pods that have explicit service IDs set in their en
 | `POSTMAN_INSIGHTS_PROJECT_ID` | Pod uses the legacy project-based flow. |
 | _(neither set)_ | Pod uses auto-discovery via `RegisterDiscoveredService` (default). |
 
-The pod's own `POSTMAN_INSIGHTS_API_KEY` is used if set; otherwise, the DaemonSet-level API key is used as a fallback. Both `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` must be valid UUIDs when set together.
+Both `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` must be valid UUIDs when set together. API key precedence follows [DaemonSet API key fallback](#daemonset-api-key-fallback).
 
 #### Workspace Mode
 
 In workspace mode, each pod that the DaemonSet monitors is associated with a specific workspace and system environment. The workspace and system environment IDs are typically set as environment variables on the pods being monitored, and the DaemonSet reads them automatically.
 
-The DaemonSet picks up `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` from each target pod's environment and uses the Postman backend to create or link an application for that pod's service.
-
-When running a non-discovery DaemonSet, you can set `POSTMAN_INSIGHTS_API_KEY` once on the DaemonSet and omit it from individual pods. Pods that do set their own `POSTMAN_INSIGHTS_API_KEY` continue to use that key instead of the DaemonSet fallback. The same fallback behavior also applies to legacy project mode (`POSTMAN_INSIGHTS_PROJECT_ID`).
+The DaemonSet picks up `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` from each target pod's environment and uses the Postman backend to create or link an application for that pod's service. Per-pod API keys are optional when a DaemonSet-level key is configured; see [DaemonSet API key fallback](#daemonset-api-key-fallback).
 
 ---
 
@@ -532,7 +547,7 @@ When a service is discovered but not yet onboarded in the Postman app, the backe
 
 | Environment variable | Applies to | Description |
 |---|---|---|
-| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. On DaemonSet deployments, can be set once on the DaemonSet as a fallback when pods only provide service IDs. Pod-level values take precedence. Also accepts `POSTMAN_API_KEY` as a fallback. |
+| `POSTMAN_INSIGHTS_API_KEY` | All | The Postman API key used for authentication. On DaemonSet deployments, set once on the DaemonSet as a fallback when pods only provide service IDs; pod-level values take precedence. See [DaemonSet API key fallback](#daemonset-api-key-fallback). |
 | `POSTMAN_INSIGHTS_DISCOVERY_MODE` | DaemonSet, Sidecar, Standalone | Set to `"true"` to enable discovery mode. |
 | `POSTMAN_INSIGHTS_CLUSTER_NAME` | DaemonSet, Sidecar, Standalone | Kubernetes cluster name (**required** in discovery mode). Used to build a unique service slug and prevent data mixing across environments. Set via `--cluster-name` in `kube inject`, or as an env var for `kube run` and standalone. |
 | `POSTMAN_INSIGHTS_SERVICE_NAME` | Sidecar, Standalone | Override the auto-derived service name (discovery mode). |
