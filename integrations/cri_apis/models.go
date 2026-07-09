@@ -29,6 +29,11 @@ type Config struct {
 
 // Only define required info
 type ContainerInfo struct {
+	// Pid is the container's init-process PID, expressed in the CRI runtime's
+	// own PID namespace (usually the node's PID namespace, which is the
+	// agent's view when hostPID:true). Populated by containerd / cri-o in
+	// the verbose ContainerStatus response.
+	Pid         int         `json:"pid"`
 	RuntimeSpec RuntimeSpec `json:"runtimeSpec"`
 	// Ref from pb.ContainerConfig
 	Config Config `json:"config"`
