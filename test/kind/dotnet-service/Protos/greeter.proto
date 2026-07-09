@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package phase5c2;
+
+option csharp_namespace = "Phase5c2";
+
+service Greeter {
+  rpc SayHello (HelloRequest) returns (HelloReply);
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloReply {
+  string message = 1;
+}
