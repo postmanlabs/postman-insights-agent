@@ -158,11 +158,12 @@ func startHTTPSeBPFCapture(
 
 	bodyCap := args.HTTPS.BodySizeCap
 	if bodyCap == 0 {
-		bodyCap = 1024
+		bodyCap = 4096
 	}
 
 	ebpfArgs := ebpf.Defaults()
 	ebpfArgs.MaxCaptureBytes = bodyCap
+	ebpfArgs.DisableThermostat = args.HTTPS.DisableThermostat
 	ebpfArgs.EnforcePIDAllowlist = false
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
