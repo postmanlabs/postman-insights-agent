@@ -1,0 +1,143 @@
+# Production DaemonSet: `kube run --enable-https-capture --discovery-mode`
+#
+# This is the production code path (unlike agent-daemonset.yaml which uses the
+# apidump-ebpf spike command). It captures both HTTP and HTTPS traffic and ships
+# to the Postman Insights backend.
+#
+# Required secrets:
+#   kubectl create secret generic postman-insights-creds \
+#     --namespace postman-insights \
+#     --from-literal=api-key=YOUR_KEY
+#
+# Required env vars (set on the DaemonSet or via the secret above):
+#   POSTMAN_INSIGHTS_API_KEY  — DaemonSet-level key for discovery mode
+#   POSTMAN_INSIGHTS_CLUSTER_NAME — cluster identifier shown in Postman
+#
+# Privileges required for HTTPS capture (eBPF uprobes on libssl):
+#   hostPID: true            — so PIDs in /host/proc match BPF-emitted PIDs
+#   CAP_BPF + CAP_PERFMON   — load and attach eBPF programs
+#   NET_RAW                 — pcap for HTTP
+#   /sys/kernel/debug        — tracepoint ID discovery (read-only)
+#   /sys/fs/bpf              — BPF map pinning (read-write)
+#   /host/proc               — root-namespace /proc for PID resolution
+#   /run/containerd/containerd.sock — CRI socket for namespace resolution
+#
+# See docs/https-capture-design.md §8.1 for rationale.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: postman-insights
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postman-insights-agent
+  namespace: postman-insights
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: postman-insights-agent
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: postman-insights-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: postman-insights-agent
+subjects:
+- kind: ServiceAccount
+  name: postman-insights-agent
+  namespace: postman-insights
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: postman-insights-agent
+  namespace: postman-insights
+spec:
+  selector:
+    matchLabels:
+      app: postman-insights-agent
+  template:
+    metadata:
+      labels:
+        app: postman-insights-agent
+      annotations:
+        # Wiz rule 154c69a0-5907-4f3a-9108-6bd66f42c88b suppression:
+        # /sys/kernel/debug is required for eBPF uprobe/tracepoint attachment (read-only).
+        # /sys/fs/bpf is required for BPF map pinning.
+        # These are architecturally necessary for eBPF-based HTTPS capture — every
+        # eBPF agent (Cilium, Falco, Datadog) requires the same mounts. The finding
+        # is also documented in .wiz at the repo root.
+        wiz.io/iac-ignore: "154c69a0-5907-4f3a-9108-6bd66f42c88b"
+    spec:
+      serviceAccountName: postman-insights-agent
+      hostPID: true
+      containers:
+      - name: agent
+        image: pia-agent-ebpf:test
+        imagePullPolicy: Never
+        # Production DaemonSet path: kube run --enable-https-capture
+        # Captures both HTTP (pcap) and HTTPS (eBPF libssl uprobes) traffic.
+        # --discovery-mode auto-discovers services from pod metadata —
+        # no per-pod POSTMAN_INSIGHTS_PROJECT_ID needed.
+        args:
+          - "kube"
+          - "run"
+          - "--enable-https-capture"
+          - "--enable-java-tls"
+          - "--discovery-mode"
+          # Namespace filtering: only monitor pods in these namespaces.
+          # eBPF discovery is also scoped per-pod to its own namespace.
+          - "--include-namespaces=test-apps"
+        env:
+        - name: POSTMAN_INSIGHTS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: postman-insights-creds
+              key: api-key
+        - name: POSTMAN_INSIGHTS_CLUSTER_NAME
+          value: "pia-kind-test"
+        - name: POSTMAN_K8S_NODE
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: POSTMAN_INSIGHTS_K8S_NODE
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        # CRI socket endpoint — containerd default. Override for CRI-O:
+        #   value: "unix:///var/run/crio/crio.sock"
+        - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
+          value: "unix:///run/containerd/containerd.sock"
+        securityContext:
+          privileged: true   # kind requires this for BPF on the LinuxKit kernel
+          capabilities:
+            add: ["BPF", "PERFMON", "NET_RAW", "SYS_ADMIN"]
+        volumeMounts:
+        - { name: sys-kernel-debug, mountPath: /sys/kernel/debug, readOnly: true }
+        - { name: sys-fs-bpf,       mountPath: /sys/fs/bpf }
+        # /host/proc: LinuxKit-VM /proc bind-mounted for kind (see cluster.yaml).
+        # On a real cluster, change the hostPath below to /proc.
+        - { name: host-proc,        mountPath: /host/proc, readOnly: true }
+        - { name: cri-sock,         mountPath: /run/containerd/containerd.sock }
+      volumes:
+      # /sys/kernel/debug — required for eBPF uprobe/tracepoint attachment.
+      # Mounted read-only. Flagged by Wiz rule 154c69a0-5907-4f3a-9108-6bd66f42c88b;
+      # suppressed via annotation above and .wiz at repo root — this is intentional
+      # and consistent with Cilium, Falco, and Datadog agent deployments.
+      - name: sys-kernel-debug
+        hostPath: { path: /sys/kernel/debug, type: Directory }
+      # /sys/fs/bpf — required for BPF map pinning across program reloads.
+      - name: sys-fs-bpf
+        hostPath: { path: /sys/fs/bpf,       type: Directory }
+      - name: host-proc
+        # kind bind-mounts LinuxKit's /proc here (see cluster.yaml).
+        # On a real cluster: path: /proc
+        hostPath: { path: /linuxkit-proc, type: Directory }
+      - name: cri-sock
+        hostPath: { path: /run/containerd/containerd.sock, type: Socket }

@@ -1,0 +1,3 @@
+# This Dockerfile has moved to build-scripts/Dockerfile.ebpf.
+# Scripts in test/kind/ reference that path directly.
+# See build-scripts/Dockerfile.ebpf for the eBPF-enabled agent build.

@@ -99,6 +99,20 @@ func (cc *CriClient) GetNetworkNamespace(containerID string) (string, error) {
 	return "", errors.New("network namespace not found")
 }
 
+// GetContainerPID returns the init-process PID of the given container as
+// reported by the CRI runtime (containerd / CRI-O). The PID is in the
+// node's PID namespace (which is the agent's view when hostPID:true).
+func (cc *CriClient) GetContainerPID(containerID string) (int, error) {
+	info, err := cc.inspectContainer(containerID)
+	if err != nil {
+		return 0, err
+	}
+	if info.Pid == 0 {
+		return 0, errors.Errorf("CRI returned zero pid for container %s", containerID)
+	}
+	return info.Pid, nil
+}
+
 // GetEnvVars returns the environment variables of a given container
 func (cc *CriClient) GetEnvVars(containerID string) (map[string]string, error) {
 	containerInfo, err := cc.inspectContainer(containerID)

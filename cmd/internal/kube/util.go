@@ -94,6 +94,16 @@ type SidecarOpts struct {
 
 	// Extra apidump CLI args from common flags (e.g. --filter, --rate-limit)
 	ApidumpArgs []string
+
+	// EnableHTTPSCapture, when true, adds the privileges and mounts required
+	// for the eBPF-based HTTPS capture pipeline:
+	//   * hostPID: true
+	//   * caps: BPF, PERFMON (in addition to NET_RAW)
+	//   * mounts: /sys/kernel/debug, /sys/fs/bpf, /proc (read-only)
+	//   * `--enable-https-capture` appended to apidump args
+	// Customers who don't need HTTPS capture get the existing minimal
+	// privilege set. See docs/https-capture-design.md §8.1.
+	EnableHTTPSCapture bool
 }
 
 func createPostmanSidecar(opts SidecarOpts) v1.Container {
@@ -112,6 +122,9 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 
 	if rest.Domain != rest.DefaultDomain() {
 		args = append(args, "--domain", rest.Domain)
+	}
+	if opts.EnableHTTPSCapture {
+		args = append(args, "--enable-https-capture")
 	}
 	args = append(args, opts.ApidumpArgs...)
 
@@ -220,11 +233,23 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 	cpu := resource.MustParse("200m")
 	memory := resource.MustParse("500Mi")
 
+	caps := []v1.Capability{"NET_RAW"}
+	var volumeMounts []v1.VolumeMount
+	if opts.EnableHTTPSCapture {
+		caps = append(caps, "BPF", "PERFMON")
+		volumeMounts = []v1.VolumeMount{
+			{Name: "sys-kernel-debug", MountPath: "/sys/kernel/debug"},
+			{Name: "sys-fs-bpf", MountPath: "/sys/fs/bpf"},
+			{Name: "host-proc", MountPath: "/host/proc", ReadOnly: true},
+		}
+	}
+
 	return v1.Container{
-		Name:  "postman-insights-agent",
-		Image: akitaImage,
-		Env:   envs,
-		Args:  args,
+		Name:         "postman-insights-agent",
+		Image:        akitaImage,
+		Env:          envs,
+		Args:         args,
+		VolumeMounts: volumeMounts,
 		Resources: v1.ResourceRequirements{
 			Limits: v1.ResourceList{
 				v1.ResourceCPU:    cpu,
@@ -236,8 +261,21 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 			},
 		},
 		SecurityContext: &v1.SecurityContext{
-			Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_RAW"}},
+			Capabilities: &v1.Capabilities{Add: caps},
 		},
+	}
+}
+
+// HTTPSCaptureVolumes returns the pod-level volumes that must accompany the
+// sidecar container when EnableHTTPSCapture is true. Pod-spec authors
+// (kube inject, helm-fragment, tf-fragment) append these to .spec.template.spec.volumes
+// and set .spec.template.spec.hostPID = true.
+func HTTPSCaptureVolumes() []v1.Volume {
+	hostPathDir := v1.HostPathDirectory
+	return []v1.Volume{
+		{Name: "sys-kernel-debug", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/sys/kernel/debug", Type: &hostPathDir}}},
+		{Name: "sys-fs-bpf", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/sys/fs/bpf", Type: &hostPathDir}}},
+		{Name: "host-proc", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/proc", Type: &hostPathDir}}},
 	}
 }
 

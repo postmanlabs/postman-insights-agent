@@ -137,17 +137,18 @@ var injectCmd = &cobra.Command{
 
 		apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
 		container := createPostmanSidecar(SidecarOpts{
-			ProjectID:         insightsProjectID,
-			WorkspaceID:       onboardWorkspaceID,
-			SystemEnv:         onboardSystemEnv,
-			DiscoveryMode:     onboardDiscoveryMode,
-			ServiceName:       onboardServiceName,
-			AddAPIKeyAsSecret: secretOpts.ShouldInject,
-			ClusterName:       onboardClusterName,
-			WorkloadName:      meta.Name,
-			WorkloadType:      "Deployment",
-			Labels:            meta.Labels,
-			ApidumpArgs:       apidumpArgs,
+			ProjectID:          insightsProjectID,
+			WorkspaceID:        onboardWorkspaceID,
+			SystemEnv:          onboardSystemEnv,
+			DiscoveryMode:      onboardDiscoveryMode,
+			ServiceName:        onboardServiceName,
+			AddAPIKeyAsSecret:  secretOpts.ShouldInject,
+			ClusterName:        onboardClusterName,
+			WorkloadName:       meta.Name,
+			WorkloadType:       "Deployment",
+			Labels:             meta.Labels,
+			ApidumpArgs:        apidumpArgs,
+			EnableHTTPSCapture: onboardEnableHTTPSCapture,
 		})
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)

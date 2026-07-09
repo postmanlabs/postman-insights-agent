@@ -27,6 +27,11 @@ type Summary struct {
 	FilterSummary    *trace.PacketCounter
 	PrefilterSummary *trace.PacketCounter
 	NegationSummary  *trace.PacketCounter
+
+	// HTTPSCaptureEnabled is true when --enable-https-capture is in effect,
+	// which suppresses the "HTTPS traffic is currently unsupported" warning
+	// at end-of-trace.
+	HTTPSCaptureEnabled bool
 }
 
 func NewSummary(
@@ -293,10 +298,14 @@ func (s *Summary) PrintWarnings() {
 					"This may mean your filter is incorrect, such as the wrong TCP port."
 				printer.Stderr.Infof("%s\n", printer.Color.Yellow(msg))
 			}
-		} else if totalCount.TLSHello > 0 {
+		} else if totalCount.TLSHello > 0 && !s.HTTPSCaptureEnabled {
 			msg := fmt.Sprintf("Captured %d TLS handshake messages out of %d total TCP segments. ", totalCount.TLSHello, totalCount.TCPPackets) +
 				"This may mean you are trying to capture HTTPS traffic, which is currently unsupported."
 			printer.Stderr.Infof("%s\n", msg)
+		} else if totalCount.TLSHello > 0 && s.HTTPSCaptureEnabled {
+			printer.Stderr.Infof(
+				"HTTPS capture (eBPF) is active alongside pcap; %d TLS handshakes observed via libpcap, decrypted bodies were captured via libssl uprobes.\n",
+				totalCount.TLSHello)
 		} else if totalCount.Unparsed > 0 {
 			msg := fmt.Sprintf("Captured %d TCP packets total; %d unparsed TCP segments. ", totalCount.TCPPackets, totalCount.Unparsed) +
 				"No TLS headers were found, so this may represent a network protocol that the agent does not know how to parse."

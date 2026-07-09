@@ -22,6 +22,12 @@ var (
 	onboardClusterName   string
 	onboardWorkspaceID   string
 	onboardSystemEnv     string
+
+	// HTTPS-via-eBPF onboarding flag. When set, the generated container spec
+	// requests CAP_BPF + CAP_PERFMON, mounts /sys/kernel/debug + /sys/fs/bpf
+	// + /host/proc, and the agent runs with --enable-https-capture. Customers
+	// who don't need HTTPS keep the minimal NET_RAW posture.
+	onboardEnableHTTPSCapture bool
 )
 
 // addOnboardingModeFlags registers the onboarding-mode flags as local flags
@@ -33,6 +39,7 @@ func addOnboardingModeFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&onboardDiscoveryMode, "discovery-mode", false, "Enable auto-discovery without requiring a project ID.")
 	cmd.Flags().StringVar(&onboardServiceName, "service-name", "", "Override the auto-derived service name.")
 	cmd.Flags().StringVar(&onboardClusterName, "cluster-name", "", "Kubernetes cluster name (required for --discovery-mode). Used to uniquely identify the cluster and prevent data mixing across environments.")
+	cmd.Flags().BoolVar(&onboardEnableHTTPSCapture, "enable-https-capture", false, "Generate a container spec that enables HTTPS traffic capture via eBPF. Adds CAP_BPF + CAP_PERFMON, hostPID requirement, and required hostPath volume mounts.")
 	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
 	cmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
 	cmd.MarkFlagsRequiredTogether("discovery-mode", "cluster-name")

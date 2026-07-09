@@ -1,0 +1,73 @@
+# eBPF-enabled build of postman-insights-agent.
+#
+# Produces a binary compiled with -tags insights_bpf so all eBPF paths
+# (HTTPS capture via SSL uprobes, Java TLS via kprobes) are included.
+# Use this image for DaemonSet deployments that need --enable-https-capture.
+#
+# The standard build-scripts/Dockerfile builds WITHOUT eBPF (tags osusergo,netgo
+# only) and is used for the non-eBPF release binary.
+
+FROM golang:1.25-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang llvm bpftool libbpf-dev libpcap-dev make git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0
+ENV PATH="/root/go/bin:${PATH}"
+
+WORKDIR /src
+
+# Download modules in a separate layer so Docker caches them and a flaky
+# proxy.golang.org fetch can be retried without redoing apt/bpf2go setup.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# vmlinux.h must come from the TARGET kernel's BTF (the Linux kernel that will
+# actually run the eBPF programs). It cannot be generated from the build host's
+# kernel when cross-compiling (e.g. building linux/amd64 on Apple Silicon).
+#
+# How to generate vmlinux.h for EKS (run once, commit the result):
+#   kubectl run btf-dump --restart=Never --rm -i \
+#     --image=debian:bookworm-slim \
+#     --overrides='{"spec":{"nodeName":"<eks-node>","hostPID":true,
+#       "containers":[{"name":"b","image":"debian:bookworm-slim",
+#       "command":["cat","/sys/kernel/btf/vmlinux"],
+#       "securityContext":{"privileged":true},
+#       "volumeMounts":[{"name":"btf","mountPath":"/sys/kernel/btf","readOnly":true}]}],
+#       "volumes":[{"name":"btf","hostPath":{"path":"/sys/kernel/btf"}}]}}' \
+#     > /tmp/vmlinux-eks
+#   docker run --rm -v /tmp:/tmp ubuntu:22.04 \
+#     sh -c "apt-get update -q && apt-get install -y -q linux-tools-generic 2>/dev/null;
+#            /usr/lib/linux-tools/*/bpftool btf dump file /tmp/vmlinux-eks format c" \
+#     > ebpf/programs/vmlinux.h
+#
+# On a native Linux/amd64 build host (CI, EC2) you can instead generate it at
+# build time by replacing the COPY below with:
+#   RUN bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
+COPY ebpf/programs/vmlinux.h ebpf/programs/vmlinux.h
+RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
+    go build -tags insights_bpf -o /out/postman-insights-agent .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpcap0.8 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
+# Java agent JAR — used by the kube-webhook init container to seed the
+# shared volume for instrumented pods. Built on the host via
+# `cd java-agent && gradle shadowJar`; if missing the docker build fails fast.
+COPY java-agent/build/libs/postman-java-agent.jar /opt/postman-java-agent.jar
+# gRPC + combined REST/gRPC test workload (build:
+#   cd java-agent/testdata/grpc-java && gradle shadowJar)
+COPY java-agent/testdata/grpc-java/build/libs/grpc-java.jar /opt/grpc-java.jar
+# Minimal HTTPS test workload — JDK HttpsServer exercising the SSLEngine path.
+# (build: cd java-agent/testdata/hello-https && gradle --no-daemon shadowJar)
+COPY java-agent/testdata/hello-https/build/libs/hello-https.jar /opt/hello-https.jar
+# Requires privileged + CAP_BPF at runtime.
+# See modules/insights_agent_mns/main.tf for the full capability set.
+USER root
+
+ENTRYPOINT ["/usr/local/bin/postman-insights-agent"]

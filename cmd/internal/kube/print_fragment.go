@@ -68,14 +68,15 @@ func validateFragmentFlags() error {
 
 func buildFragmentSidecarOpts(apidumpArgs []string) SidecarOpts {
 	return SidecarOpts{
-		ProjectID:         insightsProjectID,
-		WorkspaceID:       onboardWorkspaceID,
-		SystemEnv:         onboardSystemEnv,
-		DiscoveryMode:     onboardDiscoveryMode,
-		ServiceName:       onboardServiceName,
-		AddAPIKeyAsSecret: false,
-		ClusterName:       onboardClusterName,
-		ApidumpArgs:       apidumpArgs,
+		ProjectID:          insightsProjectID,
+		WorkspaceID:        onboardWorkspaceID,
+		SystemEnv:          onboardSystemEnv,
+		DiscoveryMode:      onboardDiscoveryMode,
+		ServiceName:        onboardServiceName,
+		AddAPIKeyAsSecret:  false,
+		ClusterName:        onboardClusterName,
+		ApidumpArgs:        apidumpArgs,
+		EnableHTTPSCapture: onboardEnableHTTPSCapture,
 	}
 }
 
@@ -96,6 +97,26 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 	containerYaml := indentCodeFragment(containerYamlBytes, 4)
 
 	fmt.Printf("\n%s\n", containerYaml)
+
+	if opts.EnableHTTPSCapture {
+		fmt.Print(`
+# IMPORTANT: --enable-https-capture also requires hostPID + pod-level
+# volumes on the Pod spec. Add the following to your Helm values (or
+# directly under spec.template.spec in the rendered Deployment):
+#
+#   spec:
+#     template:
+#       spec:
+#         hostPID: true
+#         volumes:
+#           - name: sys-kernel-debug
+#             hostPath: { path: /sys/kernel/debug, type: Directory }
+#           - name: sys-fs-bpf
+#             hostPath: { path: /sys/fs/bpf,       type: Directory }
+#           - name: host-proc
+#             hostPath: { path: /proc,             type: Directory }
+`)
+	}
 	return nil
 }
 
@@ -130,11 +151,13 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 	containerBody.SetAttributeValue("name", cty.StringVal("postman-insights-agent"))
 	containerBody.SetAttributeValue("image", cty.StringVal(akitaImage))
 
+	caps := []cty.Value{cty.StringVal("NET_RAW")}
+	if opts.EnableHTTPSCapture {
+		caps = append(caps, cty.StringVal("BPF"), cty.StringVal("PERFMON"))
+	}
 	containerBody.AppendNewBlock("security_context", []string{}).
 		Body().AppendNewBlock("capabilities", []string{}).
-		Body().SetAttributeValue("add", cty.ListVal([]cty.Value{
-		cty.StringVal("NET_RAW"),
-	}))
+		Body().SetAttributeValue("add", cty.ListVal(caps))
 
 	// Build args based on onboarding mode
 	var argList []cty.Value
@@ -163,7 +186,36 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 	for _, arg := range opts.ApidumpArgs {
 		argList = append(argList, cty.StringVal(arg))
 	}
+	// Append --enable-https-capture to args when requested.
+	if opts.EnableHTTPSCapture {
+		argList = append(argList, cty.StringVal("--enable-https-capture"))
+	}
 	containerBody.SetAttributeValue("args", cty.ListVal(argList))
+
+	// Volume mounts required when HTTPS capture is enabled.
+	if opts.EnableHTTPSCapture {
+		for _, vm := range []struct{ name, path string; ro bool }{
+			{"sys-kernel-debug", "/sys/kernel/debug", false},
+			{"sys-fs-bpf", "/sys/fs/bpf", false},
+			{"host-proc", "/host/proc", true},
+		} {
+			b := containerBody.AppendNewBlock("volume_mount", []string{}).Body()
+			b.SetAttributeValue("name", cty.StringVal(vm.name))
+			b.SetAttributeValue("mount_path", cty.StringVal(vm.path))
+			if vm.ro {
+				b.SetAttributeValue("read_only", cty.True)
+			}
+		}
+		// Reminder comment for the human reading the generated TF.
+		rootBody.AppendUnstructuredTokens(hclwrite.Tokens{{
+			Type:  hclsyntax.TokenComment,
+			Bytes: []byte("\n# When --enable-https-capture is used, also set spec.template.spec.host_pid = true\n" +
+				"# and add these volumes to spec.template.spec:\n" +
+				"#   volume { name = \"sys-kernel-debug\" host_path { path = \"/sys/kernel/debug\" } }\n" +
+				"#   volume { name = \"sys-fs-bpf\"       host_path { path = \"/sys/fs/bpf\" } }\n" +
+				"#   volume { name = \"host-proc\"        host_path { path = \"/proc\" } }\n"),
+		}})
+	}
 
 	// API key env var
 	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()

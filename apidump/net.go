@@ -287,6 +287,31 @@ func getInboundBPFFilter(interfaces map[string]interfaceInfo, bpfFilter string, 
 	return results, nil
 }
 
+// excludePortFromBPF appends a negation clause to every non-empty filter so
+// packets to/from `port` are dropped at the cBPF level. Used when HTTPS
+// capture via eBPF is active: the decrypted plaintext arrives via uprobes,
+// and the encrypted TLS bytes on port 443 would otherwise be double-counted
+// (and waste reassembly buffer).
+//
+// Empty filters (no --port / --bpf-filter set) get the negation as a
+// stand-alone filter instead — equivalent to "capture everything except
+// this port".
+func excludePortFromBPF(filters map[string]string, port uint16) map[string]string {
+	if port == 0 {
+		return filters
+	}
+	portClause := fmt.Sprintf("not (tcp port %d)", port)
+	out := make(map[string]string, len(filters))
+	for n, f := range filters {
+		if f == "" {
+			out[n] = portClause
+		} else {
+			out[n] = fmt.Sprintf("(%s) and %s", f, portClause)
+		}
+	}
+	return out
+}
+
 func createBPFFilters(interfaces map[string]interfaceInfo, bpfFilter string, createOutbound bool, port uint16) (map[string]string, map[string]string, error) {
 	inboundFilters, err := getInboundBPFFilter(interfaces, bpfFilter, port)
 	if err != nil {

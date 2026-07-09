@@ -4,23 +4,13 @@
 #
 # Step 1: Build the Postman Insights Agent binary.
 #
-FROM golang:1.20.5-buster AS build
+FROM golang:1.25-alpine AS build
 
-# XXX HACK Replace with Go 1.21.0.
-#
-# Attempting to update the base image to one that provides 1.21.0 means having
-# to update to at least Debian Bullseye. But on Bullseye, libpcap is built with
-# D-Bus support, which means we'd need to pull in D-Bus too.
-COPY build-scripts/replace-go.sh .
-RUN chmod u+rwx replace-go.sh
-RUN ./replace-go.sh
-
-RUN sed -i -e 's/deb.debian.org/archive.debian.org/g' \
-  -e 's/security.debian.org/archive.debian.org\/debian-security/g' \
-  -e '/buster-updates/d' /etc/apt/sources.list
-
-# Install all dependencies and tools.
-RUN apt-get update && apt-get install -y libpcap-dev
+# Alpine's libpcap does not include D-Bus support, so static linking with
+# -tags osusergo,netgo works cleanly without pulling in D-Bus.
+# Debian-based images (Buster, Bullseye, Bookworm) compile libpcap with
+# D-Bus, which causes unresolved symbol errors when linking statically.
+RUN apk add --no-cache libpcap-dev gcc musl-dev
 
 WORKDIR /src
 

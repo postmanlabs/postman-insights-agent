@@ -1,0 +1,123 @@
+# DEPRECATED spike e2e DaemonSet — kept for credential-free local testing only.
+#
+# This manifest uses the `apidump-ebpf` spike command which logs REQ/RESP to
+# stdout without requiring any backend credentials. It is useful for confirming
+# that eBPF capture works end-to-end in a Kind cluster, but it does NOT ship
+# data to Postman and does NOT exercise the full production code path.
+#
+# For production use (or e2e with real credentials), use agent-daemonset-prod.yaml
+# which runs `kube run --enable-https-capture --enable-java-tls --discovery-mode`.
+#
+# Privileges follow docs/https-capture-design.md §8.1:
+#   - hostPID: true (so PIDs in /host/proc match the kernel's view)
+#   - CAP_BPF + CAP_PERFMON + NET_RAW
+#   - /sys/kernel/debug, /sys/fs/bpf, /proc bind-mounts
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: postman-insights
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postman-insights-agent
+  namespace: postman-insights
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: postman-insights-agent
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: postman-insights-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: postman-insights-agent
+subjects:
+- kind: ServiceAccount
+  name: postman-insights-agent
+  namespace: postman-insights
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: postman-insights-agent
+  namespace: postman-insights
+spec:
+  selector:
+    matchLabels:
+      app: postman-insights-agent
+  template:
+    metadata:
+      labels:
+        app: postman-insights-agent
+      annotations:
+        # Wiz Pod-006 suppression: hostPath mounts to /sys/kernel/debug, /sys/fs/bpf,
+        # and the CRI socket are architecturally required for eBPF-based network capture.
+        # The BPF filesystem (/sys/fs/bpf) needs write access to pin BPF maps and
+        # programs; /sys/kernel/debug is read-only (tracepoint ID discovery only);
+        # the CRI socket is required for container namespace enumeration.
+        wiz.io/iac-ignore: "Pod-006"
+    spec:
+      serviceAccountName: postman-insights-agent
+      hostPID: true
+      containers:
+      - name: agent
+        image: pia-agent-ebpf:test
+        imagePullPolicy: Never
+        # apidump-ebpf spike: libssl uprobes (Node, dotnet, …) + java_tls kprobe
+        # (JVM ioctl path) in one process — same log stream as production DaemonSet.
+        args:
+          - "apidump-ebpf"
+          - "--enable-javatls"
+          - "--stats-every=10s"
+          - "--max-capture-bytes=512"
+          - "--no-thermostat"
+          # Namespace filtering via CRI + cgroup-namespace-inode matching.
+          # Works on both kind and real K8s clusters (it bridges PID
+          # namespaces via cgroup_ns_inode, which is stable across them).
+          # See ebpf/discovery/kube_linux.go for the algorithm.
+          - "--target-namespaces=team-py,team-srv,test-apps"
+        env:
+        - name: POSTMAN_K8S_NODE
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: POSTMAN_INSIGHTS_K8S_NODE
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        # CRI socket on the kind node (containerd default path). On a real
+        # K8s node this is the same path for containerd; cri-o uses
+        # /var/run/crio/crio.sock instead — override via
+        # POSTMAN_INSIGHTS_CRI_ENDPOINT in that case.
+        - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
+          value: "unix:///run/containerd/containerd.sock"
+        securityContext:
+          privileged: true   # kind requires this for BPF on the LinuxKit kernel
+          capabilities:
+            add: ["BPF", "PERFMON", "NET_RAW", "SYS_ADMIN"]
+        volumeMounts:
+        - { name: sys-kernel-debug, mountPath: /sys/kernel/debug, readOnly: true }
+        - { name: sys-fs-bpf,       mountPath: /sys/fs/bpf }  # must be rw: BPF map pinning
+        # /host/proc here is the LinuxKit-VM /proc that the kind cluster
+        # config bind-mounts as /linuxkit-proc on the node. BPF emits root-
+        # namespace PIDs that match entries here. In real (non-kind) K8s,
+        # /host/proc maps directly to the host's /proc.
+        - { name: host-proc,        mountPath: /host/proc, readOnly: true }
+        # CRI socket bind-mount — the cgroup-ns-inode→namespace mapping
+        # requires CRI to enumerate container init PIDs.
+        - { name: cri-sock,         mountPath: /run/containerd/containerd.sock }
+      volumes:
+      - name: sys-kernel-debug
+        hostPath: { path: /sys/kernel/debug, type: Directory }
+      - name: sys-fs-bpf
+        hostPath: { path: /sys/fs/bpf,       type: Directory }
+      - name: host-proc
+        hostPath: { path: /linuxkit-proc,    type: Directory }
+      - name: cri-sock
+        hostPath: { path: /run/containerd/containerd.sock, type: Socket }

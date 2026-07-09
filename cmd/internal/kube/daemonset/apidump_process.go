@@ -1,7 +1,10 @@
 package daemonset
 
 import (
+	"fmt"
+	"os"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
@@ -68,6 +71,29 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
 		networkNamespace = "/host" + networkNamespace
 
+		// Resolve the container's network-namespace inode for pod-level eBPF
+		// scoping. Failures are non-fatal: we fall back to namespace-level
+		// filtering (TargetNamespaces) inside buildHTTPSArgs, which is less
+		// precise but still correct. HTTP/pcap capture is unaffected.
+		var netnsInode uint64
+		if d.EnableHTTPSCapture {
+			containerPID, err := d.CRIClient.GetContainerPID(podArgs.ContainerUUID)
+			if err != nil {
+				printer.Warningf(
+					"ebpf: could not get container PID for pod %s (falling back to namespace-level eBPF scoping): %v\n",
+					podArgs.PodName, err)
+			} else {
+				inode, err := readNetnsInode(containerPID)
+				if err != nil {
+					printer.Warningf(
+						"ebpf: could not read netns inode for pod %s PID %d (falling back to namespace-level eBPF scoping): %v\n",
+						podArgs.PodName, containerPID, err)
+				} else {
+					netnsInode = inode
+				}
+			}
+		}
+
 		apidumpArgs := apidump.Args{
 			ClientID:                akid.GenerateClientID(),
 			Domain:                  rest.Domain,
@@ -93,6 +119,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			WorkloadName:            podArgs.WorkloadName,
 			WorkloadType:            podArgs.WorkloadType,
 			Labels:                  podArgs.Labels,
+			HTTPS: buildHTTPSArgs(d, podArgs, netnsInode),
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
@@ -109,6 +136,62 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	}()
 
 	return nil
+}
+
+// buildHTTPSArgs constructs the apidump.HTTPSCaptureArgs for a per-pod
+// apidump.Run() call from the DaemonSet-level HTTPS config, the pod metadata,
+// and the container's network-namespace inode.
+//
+// Scoping priority (most precise wins):
+//  1. ContainerNetnsInode — pod-level, derived from the container init PID.
+//     Restricts eBPF discovery to exactly the processes inside this pod's
+//     netns. Eliminates duplicate captures when a namespace has N replicas.
+//  2. TargetNamespaces — namespace-level fallback used when the inode lookup
+//     fails (CRI unavailable, container not yet started, etc.) and the pod
+//     namespace is known (discovery mode). Causes N× capture for N replicas;
+//     acceptable only as a degraded fallback.
+//  3. No filter — when HTTPS is disabled or neither of the above is available.
+func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.HTTPSCaptureArgs {
+	if !d.EnableHTTPSCapture {
+		return apidump.HTTPSCaptureArgs{Enabled: false}
+	}
+
+	args := apidump.HTTPSCaptureArgs{
+		Enabled:             true,
+		ContainerNetnsInode: netnsInode,
+		RateCapPerSec:       d.HTTPSRateCapPerSec,
+		BodySizeCap:         d.HTTPSBodySizeCap,
+		EnableJavaTLS:       d.EnableJavaTLS,
+	}
+
+	// Only fall back to namespace-level filtering when the inode is
+	// unavailable. Prefer the inode path: it is pod-level and avoids N×
+	// duplicate captures for scaled deployments.
+	if netnsInode == 0 && podArgs.Namespace != "" {
+		args.TargetNamespaces = []string{podArgs.Namespace}
+	}
+
+	return args
+}
+
+// readNetnsInode returns the network-namespace inode for the given PID by
+// stat-ing /proc/<pid>/ns/net (or /host/proc/<pid>/ns/net when the DaemonSet
+// bind-mounts the root /proc there). Returns 0 and a non-nil error if the
+// inode cannot be determined.
+func readNetnsInode(pid int) (uint64, error) {
+	// On a DaemonSet the agent's /host/proc is the node's root /proc, which
+	// is where BPF-emitted root-namespace PIDs live. Fall back to /proc when
+	// /host/proc/self is absent (running outside a DaemonSet).
+	procRoot := "/proc"
+	if _, err := os.Stat("/host/proc/self"); err == nil {
+		procRoot = "/host/proc"
+	}
+	path := fmt.Sprintf("%s/%d/ns/net", procRoot, pid)
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0, fmt.Errorf("readNetnsInode: stat %s: %w", path, err)
+	}
+	return st.Ino, nil
 }
 
 // SignalApiDumpProcessToStop signals the API dump process to stop for a given pod
