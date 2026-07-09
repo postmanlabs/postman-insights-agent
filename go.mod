@@ -2,6 +2,8 @@ module github.com/postmanlabs/postman-insights-agent
 
 go 1.25.0
 
+toolchain go1.25.11
+
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
 	github.com/OneOfOne/xxhash v1.2.8
@@ -17,7 +19,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.16.7
 	github.com/aws/smithy-go v1.13.4
 	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
+	github.com/cilium/ebpf v0.18.0
 	github.com/containernetworking/plugins v1.5.1
+	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/golang/gddo v0.0.0-20210115222349-20d68f94ee1f
 	github.com/golang/mock v1.4.4
 	github.com/golang/protobuf v1.5.4
@@ -40,6 +44,8 @@ require (
 	github.com/stretchr/testify v1.8.4
 	github.com/zclconf/go-cty v1.15.0
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
+	golang.org/x/net v0.55.0
+	golang.org/x/sys v0.45.0
 	golang.org/x/term v0.43.0
 	golang.org/x/text v0.37.0
 	google.golang.org/grpc v1.79.3

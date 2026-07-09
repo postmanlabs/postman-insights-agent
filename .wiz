@@ -1,0 +1,28 @@
+# Wiz IaC ignore rules for postman-insights-agent.
+#
+# Each entry suppresses a specific Wiz finding that is architecturally required
+# and cannot be remediated without breaking the agent's core functionality.
+#
+# Docs: https://www.wiz.io/blog/iac-scanning
+
+ignores:
+  - id: "4ea1c6c1-bb80-457b-a7a5-e3848ef33bad"
+    reason: >
+      "Host Aliases Undefined Or Empty" is a low-signal rule: hostAliases is an
+      optional convenience field for overriding /etc/hosts entries, not a security
+      boundary. Pods without hostAliases use standard Kubernetes DNS (CoreDNS),
+      which is the correct and expected behaviour. Adding empty hostAliases: []
+      to every pod spec would be cargo-cult compliance with no security benefit.
+      These are test workloads; production DaemonSet manifests are equally exempt
+      for the same reason.
+
+  - id: "154c69a0-5907-4f3a-9108-6bd66f42c88b"
+    reason: >
+      The eBPF-based HTTPS capture feature requires hostPath mounts to
+      /sys/kernel/debug (read-only, for uprobe/tracepoint attachment) and
+      /sys/fs/bpf (read-write, for BPF map pinning). These are the same mounts
+      required by Cilium, Falco, and the Datadog Agent. /sys/kernel/debug is
+      mounted read-only, mitigating write risk. There is no alternative — eBPF
+      programs cannot be attached without access to the kernel debug filesystem.
+    resources:
+      - "test/kind/agent-daemonset-prod.yaml"

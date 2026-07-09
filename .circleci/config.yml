@@ -1,10 +1,19 @@
 # Use the latest 2.1 version of CircleCI pipeline process engine. See: https://circleci.com/docs/2.0/configuration-reference
 version: 2.1
+
+# Job graph
+# ---------
+#   build       — long-running Go build + unit tests (original; ~5 min)
+#   helm-smoke  — fast Helm lint + render validation (~30 s); added Phase 5c.3c
+#                 follow-up. Catches chart breakage BEFORE someone tries to
+#                 deploy a broken release. Scope: lint + render only. Full
+#                 kind cluster e2e remains a manual procedure documented in
+#                 docs/webhook-runbook.md (too expensive for every PR).
 jobs:
   build:
     working_directory: ~/repo
     docker:
-      - image: cimg/go:1.23
+      - image: cimg/go:1.25.11
     steps:
       - checkout
       - restore_cache:
@@ -14,14 +23,26 @@ jobs:
           name: Install Dependencies
           command: go mod download
       - run:
-          name: Install pcap
+          name: Install pcap and eBPF toolchain
           command: |
             sudo apt-get update -y
-            sudo apt-get install -y libpcap-dev
+            sudo apt-get install -y libpcap-dev clang llvm libbpf-dev linux-tools-common
+            # On Ubuntu 24.04 (Noble), bpftool is not a standalone package — it lives in
+            # linux-tools-<kernel-version>. Install that, then symlink to a stable PATH location.
+            sudo apt-get install -y linux-tools-$(uname -r) 2>/dev/null \
+              || sudo apt-get install -y linux-tools-generic
+            BPFTOOL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+            [ -n "$BPFTOOL" ] && sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+            bpftool version
       - run:
-          name: Install mockgen
+          name: Install mockgen and bpf2go
           command: |
             go install github.com/golang/mock/mockgen@v1.5.0
+            go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0
+      - run:
+          name: Generate vmlinux.h from CI host kernel BTF
+          command: |
+            bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
       - save_cache:
           key: go-mod-v4-{{ checksum "go.sum" }}
           paths:
@@ -38,4 +59,98 @@ jobs:
             gotestsum --junitfile /tmp/test-reports/unit-tests.xml
       - store_test_results:
           path: /tmp/test-reports
-          
+
+  helm-smoke:
+    working_directory: ~/repo
+    # Tiny base image — we just need bash + curl. Helm comes from its
+    # official tarball (no apt/brew dependency). Job runs in ~30 s.
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - run:
+          name: Check chart exists
+          command: |
+            if [ ! -d charts/postman-insights-webhook ]; then
+              echo "charts/postman-insights-webhook not present in this branch — skipping helm-smoke."
+              circleci-agent step halt
+            fi
+      - run:
+          name: Install Helm v3
+          command: |
+            curl -fsSL -o helm.tgz https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
+            tar xzf helm.tgz
+            sudo mv linux-amd64/helm /usr/local/bin/helm
+            helm version --short
+      - run:
+          name: helm lint
+          command: |
+            helm lint charts/postman-insights-webhook
+      - run:
+          name: helm template (tls.mode=secret — the default production path)
+          command: |
+            helm template release-test charts/postman-insights-webhook \
+                --namespace postman-insights \
+                --set image.tag=ci-smoke \
+                --set tls.secret.caBundle=BASE64CAHERE \
+                > /tmp/helm-secret.yaml
+            test -s /tmp/helm-secret.yaml
+            echo "→ rendered $(wc -l < /tmp/helm-secret.yaml) lines"
+            # Resource-kind sanity: must produce all four resources.
+            for kind in ServiceAccount Service Deployment MutatingWebhookConfiguration; do
+              grep -q "^kind: $kind\$" /tmp/helm-secret.yaml \
+                || (echo "MISSING $kind in rendered chart" && exit 1)
+            done
+            # Safety properties: failurePolicy MUST be Ignore at the
+            # webhook-config level. A future contributor flipping this
+            # to Fail without rehearsed rollback should be blocked here.
+            grep -q "failurePolicy: Ignore" /tmp/helm-secret.yaml \
+              || (echo "failurePolicy: Ignore is missing or changed!" && exit 1)
+            grep -q "sideEffects: None" /tmp/helm-secret.yaml \
+              || (echo "sideEffects: None is missing or changed!" && exit 1)
+            grep -q "timeoutSeconds: 5" /tmp/helm-secret.yaml \
+              || (echo "timeoutSeconds: 5 is missing or changed!" && exit 1)
+      - run:
+          name: helm template (tls.mode=cert-manager — the production-recommended path)
+          command: |
+            helm template release-test charts/postman-insights-webhook \
+                --namespace postman-insights \
+                --set image.tag=ci-smoke \
+                --set tls.mode=cert-manager \
+                --set tls.certManager.issuerRef.name=ci-issuer \
+                > /tmp/helm-cm.yaml
+            test -s /tmp/helm-cm.yaml
+            # cert-manager mode adds a Certificate resource AND the
+            # cert-manager.io/inject-ca-from annotation on the webhook config.
+            grep -q "^kind: Certificate\$" /tmp/helm-cm.yaml \
+              || (echo "Certificate resource missing in cert-manager mode" && exit 1)
+            grep -q "cert-manager.io/inject-ca-from" /tmp/helm-cm.yaml \
+              || (echo "cert-manager.io/inject-ca-from annotation missing" && exit 1)
+            # In cert-manager mode the caBundle is injected by cert-manager,
+            # so the chart MUST NOT inline a caBundle value.
+            if grep -E "^\s*caBundle:\s+[A-Za-z0-9+/=]+" /tmp/helm-cm.yaml ; then
+              echo "cert-manager mode unexpectedly inlined a caBundle"
+              exit 1
+            fi
+      - run:
+          name: helm template fail-fast (missing required value)
+          command: |
+            # In secret mode with NO caBundle override, helm template must
+            # FAIL with our 'required' message. This is the schema-typo guard.
+            if helm template release-test charts/postman-insights-webhook \
+                  --namespace postman-insights \
+                  --set image.tag=ci-smoke \
+                  > /tmp/helm-noca.yaml 2>/tmp/helm-noca.err ; then
+              echo "expected helm template to FAIL when caBundle is missing"
+              cat /tmp/helm-noca.yaml | head -20
+              exit 1
+            fi
+            grep -q "tls.secret.caBundle is required" /tmp/helm-noca.err \
+              || (echo "missing-required error message changed:" && cat /tmp/helm-noca.err && exit 1)
+            echo "→ fail-fast confirmed: missing caBundle is a clear template-time error"
+
+workflows:
+  ci:
+    jobs:
+      - build
+      - helm-smoke

@@ -37,6 +37,17 @@ type DaemonsetArgs struct {
 	ExcludeNamespaces []string
 	IncludeLabels     map[string]string
 	ExcludeLabels     map[string]string
+
+	// HTTPS capture via eBPF (uprobes on libssl).
+	// When true, each per-pod apidump.Run() starts an eBPF HTTPS capture
+	// pipeline alongside the pcap pipeline, scoped to the pod's namespace.
+	EnableHTTPSCapture  bool
+	HTTPSRateCapPerSec  uint32 // 0 = unlimited
+	HTTPSBodySizeCap    uint32 // 0 = default (1024 bytes)
+	// EnableJavaTLS also attaches the java_tls kprobe for JVM HTTPS traffic
+	// via the postman-java-agent ioctl bridge. Only effective when
+	// EnableHTTPSCapture is also true.
+	EnableJavaTLS bool
 }
 
 type Daemonset struct {
@@ -44,6 +55,12 @@ type Daemonset struct {
 	InsightsEnvironment      string
 	InsightsReproModeEnabled bool
 	InsightsRateLimit        float64
+
+	// HTTPS capture config, propagated from DaemonsetArgs.
+	EnableHTTPSCapture bool
+	HTTPSRateCapPerSec uint32
+	HTTPSBodySizeCap   uint32
+	EnableJavaTLS      bool
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -211,6 +228,10 @@ func StartDaemonset(args DaemonsetArgs) error {
 		TelemetryInterval:        telemetryInterval,
 		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
 		DiscoveryMode:            args.DiscoveryMode,
+		EnableHTTPSCapture:       args.EnableHTTPSCapture,
+		HTTPSRateCapPerSec:       args.HTTPSRateCapPerSec,
+		HTTPSBodySizeCap:         args.HTTPSBodySizeCap,
+		EnableJavaTLS:            args.EnableJavaTLS,
 	}
 
 	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
