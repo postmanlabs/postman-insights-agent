@@ -18,7 +18,7 @@ import (
 // a malformed or pathological stream that never produces a parseable HTTP
 // message could grow unbounded. The value mirrors OBI's `large_buffers`
 // limit at the user-space side.
-const MaxPendingPerFlow = 64 * 1024
+const MaxPendingPerFlow = 1 * 1024 * 1024
 
 // Adapter feeds decrypted-byte events from a Reader into the existing akinet
 // HTTP/HTTP2 parsers, producing akinet.ParsedNetworkTraffic records that are
@@ -26,17 +26,17 @@ const MaxPendingPerFlow = 64 * 1024
 //
 // Per-flow state machine:
 //
-//   For each FlowKey (PID, SSLCtx, Direction):
-//     - Incoming bytes are appended to a per-flow pending buffer.
-//     - With no current parser: consult the FactorySelector.
-//         Accept       → create parser, hand pending bytes to Parse.
-//         NeedMoreData → keep pending bytes, return.
-//         Reject       → drop the flow permanently.
-//     - With a current parser: call Parse(pending, false). On a non-nil
-//       result, emit a ParsedNetworkTraffic on Out, clear the parser, and
-//       re-enter the "no parser" branch with any unused tail bytes (this
-//       handles HTTP keep-alive pipelining: one TCP/SSL flow carrying
-//       N back-to-back requests or responses).
+//	For each FlowKey (PID, SSLCtx, Direction):
+//	  - Incoming bytes are appended to a per-flow pending buffer.
+//	  - With no current parser: consult the FactorySelector.
+//	      Accept       → create parser, hand pending bytes to Parse.
+//	      NeedMoreData → keep pending bytes, return.
+//	      Reject       → drop the flow permanently.
+//	  - With a current parser: call Parse(pending, false). On a non-nil
+//	    result, emit a ParsedNetworkTraffic on Out, clear the parser, and
+//	    re-enter the "no parser" branch with any unused tail bytes (this
+//	    handles HTTP keep-alive pipelining: one TCP/SSL flow carrying
+//	    N back-to-back requests or responses).
 //
 // The flow is forgotten after a configurable idle timeout (default 30s) or
 // when an SSL_shutdown event arrives.

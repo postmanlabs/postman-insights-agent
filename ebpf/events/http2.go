@@ -91,8 +91,8 @@ type h2State struct {
 	// In-progress HEADERS+CONTINUATION sequence: HPACK requires CONTINUATION
 	// frames to be feed contiguously to the decoder. We accumulate the
 	// header block fragment bytes here until END_HEADERS is set.
-	headerBlock     []byte
-	headersStreamID uint32
+	headerBlock      []byte
+	headersStreamID  uint32
 	headersEndStream bool
 
 	// Per-stream state, keyed by stream ID.
@@ -146,7 +146,7 @@ type h2Stream struct {
 
 // h2MaxBodyBytes bounds the body bytes we'll buffer per stream. Mirrors
 // adapter's MaxPendingPerFlow.
-const h2MaxBodyBytes = 64 * 1024
+const h2MaxBodyBytes = 1 * 1024 * 1024
 
 func newH2State(interfaceTag string) *h2State {
 	_ = interfaceTag // reserved
@@ -183,7 +183,8 @@ func IsHTTP2Preface(b []byte) bool {
 // read/write).
 //
 // An HTTP/2 frame header (RFC 7540 §4.1) is 9 bytes:
-//   length(3) | type(1) | flags(1) | R+streamID(4, top bit reserved=0)
+//
+//	length(3) | type(1) | flags(1) | R+streamID(4, top bit reserved=0)
 //
 // We require:
 //   - at least 9 bytes,
