@@ -240,48 +240,25 @@ static __always_inline int emit_event(
         return -1;
     }
 
-    // Fill all fields that require function calls BEFORE computing to_copy.
-    // Every BPF function call (bpf_ktime_get_ns, lookup_fd, counter_inc)
-    // clobbers r0-r5, which forces the compiler to spill any live value —
-    // including to_copy — to the BPF stack. A stack reload then loses the
-    // verifier-tracked bounds, causing "R2 min value is negative" at the
-    // bpf_probe_read_user call site. By completing all function calls first,
-    // to_copy can be computed, bounded, and passed directly to
-    // bpf_probe_read_user with no intervening spill.
-    e->ts_ns    = bpf_ktime_get_ns();
-    e->pid      = pid_tgid >> 32;
-    e->tid      = (__u32)pid_tgid;
-    e->ssl_ctx  = ssl_ctx;
-    e->len_total = reported_len;
-    e->fd       = lookup_fd(pid_tgid >> 32, ssl_ctx);
-    if (e->fd >= 0) counter_inc(6, 1);
-    e->direction = direction;
-    __builtin_memset(e->_pad, 0, sizeof(e->_pad));
-
-    // Compute to_copy as an explicitly zero-extended __u64.
-    //
-    // Root cause of "R2 min value is negative":
-    //   'reported_len' traces back to the uretprobe 'ret' (an int), which
-    //   lives in a 64-bit BPF register (R9) whose upper 32 bits are undefined.
-    //   The verifier conservatively assigns smin_value = INT64_MIN to that
-    //   register. Bound checks via `if (to_copy > X)` operate on a temporary
-    //   zero-extended copy (R3 in the trace, var_off=(0x0;0x3ff)), but the
-    //   compiler re-uses the original R9-derived register (R6) when setting
-    //   up R2 for bpf_probe_read_user — one that still has smin = INT64_MIN.
-    //
-    // Fix: mask with 0xffffffff to force a zero-extension instruction that
-    // updates the register the compiler tracks as 'to_copy'. After the mask,
-    // var_off=(0x0; 0xffffffff) → smin_value = 0. The subsequent bound checks
-    // then narrow it to [0, MAX_EVENT_PAYLOAD], satisfying both the "non-negative"
-    // and the "within payload array" verifier requirements.
-    __u64 to_copy = ((__u64)reported_len) & 0xffffffffULL;
+    __u32 to_copy = reported_len;
     if (to_copy > max_capture_bytes) {
         to_copy = max_capture_bytes;
     }
+    // Clamp to the compile-time array bound (verifier proof via conditional).
     if (to_copy > MAX_EVENT_PAYLOAD) {
         to_copy = MAX_EVENT_PAYLOAD;
     }
-    e->len_captured = (__u32)to_copy;
+
+    e->ts_ns        = bpf_ktime_get_ns();
+    e->pid          = pid_tgid >> 32;
+    e->tid          = (__u32)pid_tgid;
+    e->ssl_ctx      = ssl_ctx;
+    e->len_total    = reported_len;
+    e->len_captured = to_copy;
+    e->fd           = lookup_fd(pid_tgid >> 32, ssl_ctx);
+    if (e->fd >= 0) counter_inc(6, 1);
+    e->direction    = direction;
+    __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);
