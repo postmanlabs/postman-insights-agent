@@ -1,0 +1,156 @@
+# Two test workloads in two distinct namespaces, each running an HTTPS
+# client in a tight loop. The agent's --https-target-namespaces filter is
+# exercised against these in the e2e demo.
+#
+#   namespace `team-py`   : Python pod hitting https://service.team-srv.svc:8443/
+#   namespace `team-node` : Node.js pod hitting the same
+#
+# `team-srv` namespace hosts the HTTPS server (nginx with a self-signed cert).
+# Captured request hosts on the client side correlate to the same upstream so
+# the demo can show "this REQ came from team-py" vs "this REQ came from
+# team-node".
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-srv
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-py
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-node
+---
+# Self-signed cert + nginx HTTPS server, shared by both clients.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: server-config
+  namespace: team-srv
+data:
+  nginx.conf: |
+    daemon off;
+    worker_processes 1;
+    error_log stderr warn;
+    pid /tmp/nginx.pid;
+    events { worker_connections 64; }
+    http {
+      access_log off;
+      server {
+        listen 8443 ssl;
+        ssl_certificate     /etc/nginx-tls/tls.crt;
+        ssl_certificate_key /etc/nginx-tls/tls.key;
+        location / {
+          return 200 "hello from kind\n";
+          add_header Content-Type text/plain;
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: server
+  namespace: team-srv
+  labels: { app: server }
+spec:
+  initContainers:
+  - name: gencert
+    image: alpine/openssl:latest
+    command:
+    - sh
+    - -c
+    - |
+      openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout /etc/nginx-tls/tls.key \
+        -out /etc/nginx-tls/tls.crt \
+        -days 1 -subj "/CN=server.team-srv.svc"
+    volumeMounts:
+    - { name: tls, mountPath: /etc/nginx-tls }
+  containers:
+  - name: nginx
+    image: nginx:1.27
+    command: ["nginx", "-c", "/etc/nginx-conf/nginx.conf"]
+    volumeMounts:
+    - { name: conf, mountPath: /etc/nginx-conf }
+    - { name: tls,  mountPath: /etc/nginx-tls }
+    ports:
+    - containerPort: 8443
+  volumes:
+  - name: conf
+    configMap:
+      name: server-config
+  - name: tls
+    emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: team-srv
+spec:
+  selector: { app: server }
+  ports:
+  - port: 8443
+    targetPort: 8443
+---
+# Python client in team-py.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-py
+  namespace: team-py
+  labels: { app: client-py }
+spec:
+  containers:
+  - name: py
+    image: python:3.12-slim
+    command:
+    - sh
+    - -c
+    - |
+      pip install --quiet requests urllib3 || true
+      python3 -c '
+      import time, urllib3, requests
+      urllib3.disable_warnings()
+      while True:
+        try:
+          r = requests.get("https://server.team-srv.svc:8443/", verify=False, timeout=2)
+          print("py", r.status_code, r.text.strip(), flush=True)
+        except Exception as e:
+          print("py err:", e, flush=True)
+        time.sleep(1)'
+---
+# Node client in team-node.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-node
+  namespace: team-node
+  labels: { app: client-node }
+spec:
+  containers:
+  - name: node
+    image: node:20-slim
+    command:
+    - sh
+    - -c
+    - |
+      cat > /tmp/loop.js <<'JS'
+      const https = require("https");
+      function tick() {
+        https.get("https://server.team-srv.svc:8443/",
+          { rejectUnauthorized: false }, res => {
+            let body = "";
+            res.on("data", d => body += d);
+            res.on("end", () => console.log("node", res.statusCode, body.trim()));
+          }).on("error", e => console.log("node err:", e.message));
+      }
+      setInterval(tick, 1000);
+      tick();
+      JS
+      node /tmp/loop.js
