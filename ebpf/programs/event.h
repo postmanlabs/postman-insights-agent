@@ -17,7 +17,7 @@
 // truncated; the full length is preserved in `len_total` for accounting.
 //
 // Mirrors OBI's FULL_BUF_SIZE (bpf/common/http_info.h). Power of two.
-#define MAX_EVENT_PAYLOAD 1024
+#define MAX_EVENT_PAYLOAD 4096
 
 // A single decrypted-bytes event emitted by an SSL_read or SSL_write
 // uretprobe. One TLS record may produce multiple events; the userspace

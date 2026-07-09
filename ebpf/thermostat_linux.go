@@ -22,12 +22,12 @@ import (
 //
 // Algorithm (matches OBI/Pixie heuristics):
 //
-//   * Sample %CPU every 1s using /proc/self/stat (utime + stime).
-//   * If a 10s rolling window averages > HighWatermark, halve max_capture_bytes
+//   - Sample %CPU every 1s using /proc/self/stat (utime + stime).
+//   - If a 10s rolling window averages > HighWatermark, halve max_capture_bytes
 //     down to a floor of 64 bytes. Log every transition.
-//   * If a 30s rolling window averages < LowWatermark, double back up to the
+//   - If a 30s rolling window averages < LowWatermark, double back up to the
 //     configured ceiling. Log every transition.
-//   * Hard bound: never below 64, never above the user-configured ceiling.
+//   - Hard bound: never below 64, never above the user-configured ceiling.
 //
 // The thermostat keeps a snapshot of its current decision visible via
 // CurrentCap() so telemetry can include it.
@@ -51,7 +51,7 @@ type Thermostat struct {
 // watermarks.
 func NewThermostat(l *loader.Loader, ceiling uint32) *Thermostat {
 	if ceiling == 0 {
-		ceiling = 1024
+		ceiling = 4096
 	}
 	t := &Thermostat{
 		loader:        l,
