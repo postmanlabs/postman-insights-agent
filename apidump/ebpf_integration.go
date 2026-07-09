@@ -158,11 +158,12 @@ func startHTTPSeBPFCapture(
 
 	bodyCap := args.HTTPS.BodySizeCap
 	if bodyCap == 0 {
-		bodyCap = 1024
+		bodyCap = 4096
 	}
 
 	ebpfArgs := ebpf.Defaults()
 	ebpfArgs.MaxCaptureBytes = bodyCap
+	ebpfArgs.DisableThermostat = args.HTTPS.DisableThermostat
 	ebpfArgs.EnforcePIDAllowlist = false
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
@@ -271,14 +272,48 @@ func startHTTPSeBPFCapture(
 	}()
 
 	// Actual eBPF collect loop (libssl uprobes).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer close(out)
-		if err := ebpf.Collect(captureCtx, ebpfArgs); err != nil {
-			printer.Stderr.Warningf("ebpf: capture stopped: %v\n", err)
+	//
+	// Two paths:
+	//  - NodeCollector set (DaemonSet): BPF programs already loaded once for the
+	//    node. Subscribe registers this pod's discovery + out channel with the
+	//    shared loader — no additional loader.Load() call.
+	//  - NodeCollector nil (standalone apidump / tests): original ebpf.Collect()
+	//    path, behaviour completely unchanged.
+	if args.HTTPS.NodeCollector != nil {
+		unsubscribe := args.HTTPS.NodeCollector.Subscribe(
+			captureCtx,
+			ebpfArgs.Discovery,
+			ebpfArgs.FactorySelector,
+			out,
+			ebpfArgs.ProcRoot,
+		)
+		// Expose node-level handles to the telemetry worker (mirrors HookLoader).
+		if ebpfArgs.HookLoader != nil {
+			ebpfArgs.HookLoader(
+				args.HTTPS.NodeCollector.Loader(),
+				args.HTTPS.NodeCollector.Thermostat(),
+				args.HTTPS.NodeCollector.Manager(),
+				nil, // per-pod adapter is internal to NodeCollector.Subscribe
+			)
 		}
-	}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(out)
+			<-captureCtx.Done()
+			unsubscribe()
+		}()
+	} else {
+		// Standalone path: original behaviour, no change.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(out)
+			if err := ebpf.Collect(captureCtx, ebpfArgs); err != nil {
+				printer.Stderr.Warningf("ebpf: capture stopped: %v\n", err)
+			}
+		}()
+	}
 
 	// Java TLS capture (--enable-java-tls) is wired in ebpf_integration_javatls_linux.go
 	// which is added in the java-tls PR alongside collect_javatls_linux.go.

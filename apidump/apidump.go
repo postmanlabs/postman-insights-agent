@@ -27,6 +27,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/location"
 	"github.com/postmanlabs/postman-insights-agent/pcap"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
@@ -135,10 +136,14 @@ type HTTPSCaptureArgs struct {
 	// limits how many bytes the BPF program copies from the SSL buffer into the
 	// ringbuf per SSL_read/SSL_write call, in kernel space. A single HTTPS body
 	// spans many such calls, so effective per-request coverage is higher.
-	// Defaults to 1024 (== MAX_EVENT_PAYLOAD in event.h), which is the size of
+	// Defaults to 4096 (== MAX_EVENT_PAYLOAD in event.h), which is the size of
 	// the fixed payload array in the ssl_event struct. The thermostat may lower
 	// this at runtime under CPU pressure.
 	BodySizeCap uint32
+
+	// DisableThermostat skips the CPU thermostat that lowers max_capture_bytes
+	// under load. Useful for e2e demos and debugging.
+	DisableThermostat bool
 
 	// CaptureMode is one of "headers" | "truncated" | "full". Phase 2 wires
 	// only "truncated" (the default, capped by BodySizeCap).
@@ -157,6 +162,16 @@ type HTTPSCaptureArgs struct {
 	// Requires postman-java-agent.jar to be injected into target JVMs (via the
 	// kube-webhook or manually). Has no effect when Enabled is false.
 	EnableJavaTLS bool
+
+	// NodeCollector, when non-nil, is a node-scoped shared eBPF collector
+	// that was already initialised (loader.Load called once). startHTTPSeBPFCapture
+	// will call NodeCollector.Subscribe instead of spinning up its own
+	// ebpf.Collect() pipeline, avoiding redundant BPF program loads for each
+	// monitored pod on the same node.
+	//
+	// When nil (standalone apidump, tests), startHTTPSeBPFCapture falls back to
+	// the original ebpf.Collect() path — no behaviour change for existing callers.
+	NodeCollector *ebpf.NodeCollector
 }
 
 type Args struct {
