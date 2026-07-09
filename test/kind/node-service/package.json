@@ -1,0 +1,10 @@
+{
+  "name": "postman-insights-node-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "kind test workload: HTTPS + gRPC in one Node process (libssl eBPF capture)",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.6",
+    "@grpc/proto-loader": "^0.7.13"
+  }
+}

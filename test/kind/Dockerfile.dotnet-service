@@ -1,0 +1,40 @@
+# ASP.NET Core combined HTTPS + gRPC test server for kind (libssl / OpenSSL path).
+#
+# Kestrel terminates TLS with PEM certs from /tls — same capture model as the
+# customer's ASP.NET + OpenSSL on :8443 setup.
+#
+#   docker build -f test/kind/Dockerfile.dotnet-service -t pia-dotnet-service:test .
+#   kind load docker-image pia-dotnet-service:test --name pia-https-test
+
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+COPY test/kind/dotnet-service/ ./dotnet-service/
+
+WORKDIR /src/dotnet-service
+RUN dotnet restore DotnetService.csproj
+RUN dotnet restore Client/Client.csproj
+RUN dotnet publish DotnetService.csproj -c Release -o /app/publish
+RUN dotnet publish Client/Client.csproj -c Release -o /app/client
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+
+COPY --from=build /app/publish ./
+COPY --from=build /app/client ./client
+
+RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+ENV ASPNETCORE_URLS= \
+    TLS_DIR=/tls \
+    BIND_HOST=0.0.0.0 \
+    HTTPS_PORT=8443 \
+    GRPC_PORT=8446
+
+EXPOSE 8443 8446
+
+# Run dotnet as a child of sh (not PID 1) — same pattern as node-service for
+# reliable eBPF uprobe attach in Kind.
+CMD ["sh", "-c", "dotnet DotnetService.dll"]

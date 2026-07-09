@@ -1,0 +1,34 @@
+# Node combined HTTPS + gRPC test server for kind — dynamic libssl path.
+#
+# Uses Debian apt nodejs (links libssl.so.3). eBPF capture via the
+# postman-insights-agent DaemonSet (apidump-ebpf) works reliably in Kind
+# for this image. Use Dockerfile.node-service for official Node 20 / static
+# BoringSSL (Kind capture still WIP).
+#
+#   docker build -f test/kind/Dockerfile.node-service-dynamic -t pia-node-service:test .
+#   kind load docker-image pia-node-service:test --name pia-https-test
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nodejs npm ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY test/kind/node-service/package.json ./
+RUN npm install --omit=dev
+
+COPY test/kind/node-service/server.js test/kind/node-service/client.js ./
+COPY test/kind/node-service/proto ./proto
+
+RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+ENV TLS_DIR=/tls \
+    BIND_HOST=0.0.0.0 \
+    HTTPS_PORT=8443 \
+    GRPC_PORT=8446
+
+EXPOSE 8443 8446
+CMD ["node", "server.js"]
