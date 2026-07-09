@@ -148,12 +148,11 @@ type h2Stream struct {
 // adapter's MaxPendingPerFlow.
 const h2MaxBodyBytes = 1 * 1024 * 1024
 
-func newH2State(interfaceTag string) *h2State {
-	_ = interfaceTag // reserved
+func newH2State(bidiID akinet.TCPBidiID) *h2State {
 	return &h2State{
 		hpack:   hpack.NewDecoder(4096, nil),
 		streams: map[uint32]*h2Stream{},
-		bidiID:  akinet.TCPBidiID(uuid.New()),
+		bidiID:  bidiID,
 	}
 }
 
