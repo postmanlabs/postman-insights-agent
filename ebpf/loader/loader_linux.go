@@ -20,7 +20,7 @@ import (
 // generate locally for whichever arch the host kernel exposes via
 // /sys/kernel/btf/vmlinux.
 //
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations" libssl ../programs/libssl.bpf.c -- -I../programs
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations -Wno-microsoft-anon-tag" libssl ../programs/libssl.bpf.c -- -I../programs
 
 // Loader owns the loaded BPF objects (maps + programs) for a single Insights
 // Agent process. One Loader serves all target processes; per-process state

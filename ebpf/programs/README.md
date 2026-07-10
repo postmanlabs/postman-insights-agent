@@ -63,7 +63,7 @@ From `ebpf/loader/loader.go`:
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go \
 //   -target amd64,arm64 \
 //   -cc clang \
-//   -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations" \
+//   -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations -Wno-microsoft-anon-tag" \
 //   libssl ../programs/libssl.bpf.c -- -I../programs
 ```
 
