@@ -10,6 +10,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/memview"
+	"github.com/google/gopacket/reassembly"
 	"github.com/google/uuid"
 )
 
@@ -18,7 +19,7 @@ import (
 // a malformed or pathological stream that never produces a parseable HTTP
 // message could grow unbounded. The value mirrors OBI's `large_buffers`
 // limit at the user-space side.
-const MaxPendingPerFlow = 64 * 1024
+const MaxPendingPerFlow = 1 * 1024 * 1024
 
 // Adapter feeds decrypted-byte events from a Reader into the existing akinet
 // HTTP/HTTP2 parsers, producing akinet.ParsedNetworkTraffic records that are
@@ -26,17 +27,17 @@ const MaxPendingPerFlow = 64 * 1024
 //
 // Per-flow state machine:
 //
-//   For each FlowKey (PID, SSLCtx, Direction):
-//     - Incoming bytes are appended to a per-flow pending buffer.
-//     - With no current parser: consult the FactorySelector.
-//         Accept       → create parser, hand pending bytes to Parse.
-//         NeedMoreData → keep pending bytes, return.
-//         Reject       → drop the flow permanently.
-//     - With a current parser: call Parse(pending, false). On a non-nil
-//       result, emit a ParsedNetworkTraffic on Out, clear the parser, and
-//       re-enter the "no parser" branch with any unused tail bytes (this
-//       handles HTTP keep-alive pipelining: one TCP/SSL flow carrying
-//       N back-to-back requests or responses).
+//	For each FlowKey (PID, SSLCtx, Direction):
+//	  - Incoming bytes are appended to a per-flow pending buffer.
+//	  - With no current parser: consult the FactorySelector.
+//	      Accept       → create parser, hand pending bytes to Parse.
+//	      NeedMoreData → keep pending bytes, return.
+//	      Reject       → drop the flow permanently.
+//	  - With a current parser: call Parse(pending, false). On a non-nil
+//	    result, emit a ParsedNetworkTraffic on Out, clear the parser, and
+//	    re-enter the "no parser" branch with any unused tail bytes (this
+//	    handles HTTP keep-alive pipelining: one TCP/SSL flow carrying
+//	    N back-to-back requests or responses).
 //
 // The flow is forgotten after a configurable idle timeout (default 30s) or
 // when an SSL_shutdown event arrives.
@@ -61,10 +62,12 @@ type Adapter struct {
 	mu    sync.Mutex
 	flows map[FlowKey]*flowState
 
-	// resolved caches socket tuples by (pid, ssl_ctx) so the ingress and
-	// egress sides of the same TLS connection share one /proc lookup, and
-	// so a successful early-event resolve survives even after the socket
-	// has been closed.
+	// conns holds per-TLS-connection state shared by ingress and egress
+	// FlowKeys with the same (PID, SSLCtx). Mirrors pcap's single bidiID per
+	// TCP connection in tcpStream.
+	conns map[connKey]*tlsConnState
+
+	// resolved caches socket tuples by (pid, ssl_ctx, fd).
 	resolved map[resolvedKey]SocketInfo
 
 	// Counters exported for telemetry / tests.
@@ -72,11 +75,57 @@ type Adapter struct {
 	FlowsDropped    uint64
 }
 
+// connKey identifies a TLS connection (both directions).
+type connKey struct {
+	PID    uint32
+	SSLCtx uint64
+}
+
+// tlsConnState is shared by all FlowKeys on the same TLS connection.
+type tlsConnState struct {
+	bidiID akinet.TCPBidiID
+
+	// Synthetic pair indices substitute for TCP seq/ack in the akihttp
+	// parser (request Seq = ack, response Seq = seq). Requests push their
+	// index onto unmatchedRequests; responses pop FIFO so pipelined HTTP/1.1
+	// still pairs correctly.
+	nextPairIdx       int
+	unmatchedRequests []int
+	activeFlowCount   int
+
+	// Resolved 4-tuple shared by ingress and egress on this TLS connection.
+	socketResolved bool
+	localIP        net.IP
+	localPort      int
+	remoteIP       net.IP
+	remotePort     int
+}
+
+func (c *tlsConnState) pairSeqForFactory(factory akinet.TCPParserFactory) reassembly.Sequence {
+	if isHTTPRequestParserFactory(factory) {
+		idx := c.nextPairIdx
+		c.nextPairIdx++
+		c.unmatchedRequests = append(c.unmatchedRequests, idx)
+		return reassembly.Sequence(idx)
+	}
+	idx := c.nextPairIdx
+	if len(c.unmatchedRequests) > 0 {
+		idx = c.unmatchedRequests[0]
+		c.unmatchedRequests = c.unmatchedRequests[1:]
+	} else {
+		c.nextPairIdx++
+	}
+	return reassembly.Sequence(idx)
+}
+
+func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {
+	return factory.Name() == "HTTP/1.x Request Parser Factory"
+}
+
 type flowState struct {
 	parser    akinet.TCPParser
 	pending   memview.MemView
-	bidiID    akinet.TCPBidiID
-	msgSeq    int
+	conn      *tlsConnState
 	firstSeen time.Time
 	lastSeen  time.Time
 	totalIn   int  // total bytes ever observed on this flow
@@ -88,14 +137,7 @@ type flowState struct {
 	// Detection happens on the first bytes via IsHTTP2Preface.
 	h2 *h2State
 
-	// Resolved (or cached) socket info for this flow. Resolved on first
-	// event with a valid fd; reused for the lifetime of the flow.
-	socketResolved bool
-	localIP        net.IP
-	localPort      int
-	remoteIP       net.IP
-	remotePort     int
-	pid            uint32 // for Forget on flow close
+	pid uint32 // for Forget on flow close
 }
 
 // resolvedKey includes fd because nginx (and other servers) maintain SSL*
@@ -114,7 +156,8 @@ func NewAdapter(fs akinet.TCPParserFactorySelector, out chan<- akinet.ParsedNetw
 		FactorySelector: fs,
 		Out:             out,
 		flows:           make(map[FlowKey]*flowState),
-		resolved:        make(map[resolvedKey]SocketInfo),
+		conns:    make(map[connKey]*tlsConnState),
+		resolved: make(map[resolvedKey]SocketInfo),
 	}
 }
 
@@ -127,44 +170,30 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	defer a.mu.Unlock()
 
 	key := ev.Key()
+	ck := connKey{PID: ev.PID, SSLCtx: ev.SSLCtx}
+	conn := a.conns[ck]
+	if conn == nil {
+		conn = &tlsConnState{bidiID: akinet.TCPBidiID(uuid.New())}
+		a.conns[ck] = conn
+	}
+
 	st := a.flows[key]
 	if st == nil {
 		st = &flowState{
 			firstSeen: ev.Time(monoEpoch),
-			bidiID:    akinet.TCPBidiID(uuid.New()),
+			conn:      conn,
 			ifaceTag:  fmt.Sprintf("ebpf-pid-%d", ev.PID),
 			pid:       ev.PID,
 		}
 		a.flows[key] = st
+		conn.activeFlowCount++
 	}
 	if st.dropped {
 		return
 	}
 
-	// Lazily resolve the 4-tuple from (pid, fd). On success we cache by
-	// (pid, ssl_ctx, fd) — fd is needed because SSL* pointers are reused
-	// across distinct TCP connections by servers with connection pools.
-	// Same (pid, ssl_ctx, fd) means same actual connection and the tuple
-	// is safe to share between ingress and egress and between events whose
-	// fd has been reclaimed.
-	if !st.socketResolved && a.Resolver != nil && ev.FD >= 0 {
-		rk := resolvedKey{PID: ev.PID, SSLCtx: ev.SSLCtx, FD: ev.FD}
-		if info, ok := a.resolved[rk]; ok {
-			st.localIP = info.LocalIP
-			st.localPort = info.LocalPort
-			st.remoteIP = info.RemoteIP
-			st.remotePort = info.RemotePort
-			st.socketResolved = true
-		} else if info, err := a.Resolver.Resolve(ev.PID, ev.FD); err == nil {
-			a.resolved[rk] = info
-			st.localIP = info.LocalIP
-			st.localPort = info.LocalPort
-			st.remoteIP = info.RemoteIP
-			st.remotePort = info.RemotePort
-			st.socketResolved = true
-		}
-		// Failed lookups are non-fatal; we'll retry on the next event.
-	}
+	// Lazily resolve the 4-tuple from (pid, fd) when available.
+	a.tryResolveConn(conn, ev)
 	st.lastSeen = ev.Time(monoEpoch)
 	st.totalIn += int(ev.LenCaptured)
 
@@ -182,7 +211,7 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	// the common case for gotls because the TLS handshake + preface complete
 	// before the uprobes catch their first non-handshake call).
 	if st.pending.Len() == 0 && (IsHTTP2Preface(ev.Bytes()) || IsHTTP2Frame(ev.Bytes())) {
-		st.h2 = newH2State(st.ifaceTag)
+		st.h2 = newH2State(st.conn.bidiID)
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
 		}
@@ -215,11 +244,10 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 				}
 				return
 			case akinet.Accept:
-				// initialSeq/initialAck are zero — we don't have TCP seq numbers
-				// in the eBPF path, and the akihttp parser doesn't depend on
-				// them for correctness, only for cross-pcap reassembly pairing
-				// (which doesn't apply here: our bidiID is synthetic).
-				st.parser = factory.CreateParser(st.bidiID, 0, 0)
+				// Synthetic seq/ack mirror pcap: request PairKey uses ack,
+				// response PairKey uses seq, both equal to the same pair index.
+				pairSeq := st.conn.pairSeqForFactory(factory)
+				st.parser = factory.CreateParser(st.conn.bidiID, pairSeq, pairSeq)
 			}
 		}
 
@@ -239,24 +267,23 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 		// Got a complete message. Emit it and continue with unused tail.
 		a.Out <- a.toPNT(st, key, result, now)
 		a.MessagesEmitted++
-		st.msgSeq++
 		st.parser = nil
 		st.pending = unused
 	}
 }
 
 func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetworkTraffic) {
-	if st.socketResolved {
+	if st.conn.socketResolved {
 		if key.Direction == DirEgress {
-			pnt.SrcIP, pnt.SrcPort = st.localIP, st.localPort
-			pnt.DstIP, pnt.DstPort = st.remoteIP, st.remotePort
+			pnt.SrcIP, pnt.SrcPort = st.conn.localIP, st.conn.localPort
+			pnt.DstIP, pnt.DstPort = st.conn.remoteIP, st.conn.remotePort
 		} else {
-			pnt.SrcIP, pnt.SrcPort = st.remoteIP, st.remotePort
-			pnt.DstIP, pnt.DstPort = st.localIP, st.localPort
+			pnt.SrcIP, pnt.SrcPort = st.conn.remoteIP, st.conn.remotePort
+			pnt.DstIP, pnt.DstPort = st.conn.localIP, st.conn.localPort
 		}
 	}
 	if req, ok := pnt.Content.(akinet.HTTPRequest); ok {
-		enrichHTTPRequestURL(&req, key.Direction, st.localIP, st.localPort, st.remoteIP, st.remotePort)
+		enrichHTTPRequestURL(&req, key.Direction, st.conn.localIP, st.conn.localPort, st.conn.remoteIP, st.conn.remotePort)
 		pnt.Content = req
 	}
 	a.Out <- pnt
@@ -288,17 +315,17 @@ func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkConten
 		ObservationTime: st.firstSeen,
 		FinalPacketTime: now,
 	}
-	if st.socketResolved {
+	if st.conn.socketResolved {
 		if key.Direction == DirEgress {
-			pnt.SrcIP = st.localIP
-			pnt.SrcPort = st.localPort
-			pnt.DstIP = st.remoteIP
-			pnt.DstPort = st.remotePort
+			pnt.SrcIP = st.conn.localIP
+			pnt.SrcPort = st.conn.localPort
+			pnt.DstIP = st.conn.remoteIP
+			pnt.DstPort = st.conn.remotePort
 		} else {
-			pnt.SrcIP = st.remoteIP
-			pnt.SrcPort = st.remotePort
-			pnt.DstIP = st.localIP
-			pnt.DstPort = st.localPort
+			pnt.SrcIP = st.conn.remoteIP
+			pnt.SrcPort = st.conn.remotePort
+			pnt.DstIP = st.conn.localIP
+			pnt.DstPort = st.conn.localPort
 		}
 	} else {
 		pnt.SrcIP = net.IPv4zero
@@ -315,11 +342,19 @@ func (a *Adapter) GC(now time.Time, maxIdle time.Duration) int {
 	dropped := 0
 	for k, st := range a.flows {
 		if now.Sub(st.lastSeen) > maxIdle {
-			delete(a.flows, k)
+			a.forgetFlow(k, st)
 			dropped++
 		}
 	}
 	return dropped
+}
+
+func (a *Adapter) forgetFlow(key FlowKey, st *flowState) {
+	delete(a.flows, key)
+	st.conn.activeFlowCount--
+	if st.conn.activeFlowCount == 0 {
+		delete(a.conns, connKey{PID: key.PID, SSLCtx: key.SSLCtx})
+	}
 }
 
 // CloseFlow forgets state for one flow. Called when an SSL_shutdown event
@@ -327,7 +362,9 @@ func (a *Adapter) GC(now time.Time, maxIdle time.Duration) int {
 func (a *Adapter) CloseFlow(key FlowKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.flows, key)
+	if st, ok := a.flows[key]; ok {
+		a.forgetFlow(key, st)
+	}
 }
 
 // Snapshot returns counts for telemetry.
@@ -347,7 +384,33 @@ func (a *Adapter) Snapshot() (numFlows int, totalBytes int) {
 func (a *Adapter) PreResolve(pid uint32, sslCtx uint64, fd int32, info SocketInfo) {
 	a.mu.Lock()
 	a.resolved[resolvedKey{PID: pid, SSLCtx: sslCtx, FD: fd}] = info
+	if conn, ok := a.conns[connKey{PID: pid, SSLCtx: sslCtx}]; ok {
+		a.applySocketInfo(conn, info)
+	}
 	a.mu.Unlock()
+}
+
+func (a *Adapter) tryResolveConn(conn *tlsConnState, ev *SSLEvent) {
+	if conn.socketResolved || a.Resolver == nil || ev.FD < 0 {
+		return
+	}
+	rk := resolvedKey{PID: ev.PID, SSLCtx: ev.SSLCtx, FD: ev.FD}
+	if info, ok := a.resolved[rk]; ok {
+		a.applySocketInfo(conn, info)
+		return
+	}
+	if info, err := a.Resolver.Resolve(ev.PID, ev.FD); err == nil {
+		a.resolved[rk] = info
+		a.applySocketInfo(conn, info)
+	}
+}
+
+func (a *Adapter) applySocketInfo(conn *tlsConnState, info SocketInfo) {
+	conn.localIP = info.LocalIP
+	conn.localPort = info.LocalPort
+	conn.remoteIP = info.RemoteIP
+	conn.remotePort = info.RemotePort
+	conn.socketResolved = true
 }
 
 // ForgetResolved drops cached resolutions for a PID (on PID exit).

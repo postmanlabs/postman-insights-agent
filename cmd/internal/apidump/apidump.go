@@ -62,6 +62,7 @@ var (
 	httpsCBPFExcludePort  uint16
 	httpsRateCapPerSec    uint32
 	enableJavaTLS         bool
+	httpsNoThermostat     bool
 	privacyMode           string
 
 	commonApidumpFlags *CommonApidumpFlags
@@ -340,16 +341,17 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 
 		// HTTPS-via-eBPF.
 		HTTPS: apidump.HTTPSCaptureArgs{
-			Enabled:          enableHTTPSCapture,
-			Libraries:        httpsLibraries,
-			TargetNamespaces: httpsTargetNamespaces,
-			BodySizeCap:      httpsBodySizeCap,
-			CaptureMode:      httpsCaptureMode,
-			CBPFExcludePort:  httpsCBPFExcludePort,
-			RateCapPerSec:    httpsRateCapPerSec,
-			EnableJavaTLS:    enableJavaTLS,
+			Enabled:           enableHTTPSCapture,
+			Libraries:         httpsLibraries,
+			TargetNamespaces:  httpsTargetNamespaces,
+			BodySizeCap:       httpsBodySizeCap,
+			CaptureMode:       httpsCaptureMode,
+			CBPFExcludePort:   httpsCBPFExcludePort,
+			RateCapPerSec:     httpsRateCapPerSec,
+			EnableJavaTLS:     enableJavaTLS,
+			DisableThermostat: httpsNoThermostat,
 		},
-		PrivacyMode:           privacyMode,
+		PrivacyMode: privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
 		return cmderr.AkitaErr{Err: err}
@@ -559,7 +561,7 @@ func init() {
 	Cmd.Flags().Uint32Var(
 		&httpsBodySizeCap,
 		"https-body-size-cap",
-		1024,
+		4096,
 		"Maximum plaintext bytes captured per SSL_read/SSL_write event. Larger bodies are truncated.",
 	)
 	Cmd.Flags().StringVar(
@@ -589,6 +591,12 @@ func init() {
 		"Also capture JVM TLS traffic via the java_tls kprobe (postman-java-agent ioctl bridge). "+
 			"Requires --enable-https-capture and postman-java-agent.jar injected into target JVMs "+
 			"(via the kube-webhook or JAVA_TOOL_OPTIONS manually).",
+	)
+	Cmd.Flags().BoolVar(
+		&httpsNoThermostat,
+		"no-thermostat",
+		false,
+		"Disable the CPU thermostat that lowers max-capture-bytes under load.",
 	)
 	Cmd.Flags().StringVar(
 		&privacyMode,

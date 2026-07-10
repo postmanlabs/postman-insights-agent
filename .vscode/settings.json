@@ -1,0 +1,11 @@
+{
+  // eBPF loader sources use `//go:build linux && insights_bpf`. On macOS, gopls
+  // must cross-compile as Linux with the tag enabled to type-check those files.
+  "gopls": {
+    "buildFlags": ["-tags=insights_bpf"],
+    "env": {
+      "GOOS": "linux",
+      "GOARCH": "arm64"
+    }
+  }
+}

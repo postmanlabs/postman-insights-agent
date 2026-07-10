@@ -1,7 +1,7 @@
 # eBPF-enabled build of postman-insights-agent.
 #
 # Produces a binary compiled with -tags insights_bpf so all eBPF paths
-# (HTTPS capture via SSL uprobes, Java TLS via kprobes) are included.
+# (HTTPS capture via SSL uprobes) are included.
 # Use this image for DaemonSet deployments that need --enable-https-capture.
 #
 # The standard build-scripts/Dockerfile builds WITHOUT eBPF (tags osusergo,netgo
@@ -56,16 +56,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap0.8 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
-# Java agent JAR — used by the kube-webhook init container to seed the
-# shared volume for instrumented pods. Built on the host via
-# `cd java-agent && gradle shadowJar`; if missing the docker build fails fast.
-COPY java-agent/build/libs/postman-java-agent.jar /opt/postman-java-agent.jar
-# gRPC + combined REST/gRPC test workload (build:
-#   cd java-agent/testdata/grpc-java && gradle shadowJar)
-COPY java-agent/testdata/grpc-java/build/libs/grpc-java.jar /opt/grpc-java.jar
-# Minimal HTTPS test workload — JDK HttpsServer exercising the SSLEngine path.
-# (build: cd java-agent/testdata/hello-https && gradle --no-daemon shadowJar)
-COPY java-agent/testdata/hello-https/build/libs/hello-https.jar /opt/hello-https.jar
 # Requires privileged + CAP_BPF at runtime.
 # See modules/insights_agent_mns/main.tf for the full capability set.
 USER root

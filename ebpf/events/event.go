@@ -10,9 +10,9 @@ const (
 	DirIngress uint8 = 1 // local process is receiving (SSL_read)
 )
 
-// MaxEventPayload mirrors MAX_EVENT_PAYLOAD in event.h. Used to size the
+// MaxEventPayload mirrors MAX_EVENT_PAYLOAD in event.h (4096). Used to size the
 // payload byte array when decoding ringbuf records.
-const MaxEventPayload = 1024
+const MaxEventPayload = 4096
 
 // SSLEvent is the Go form of `struct ssl_event` emitted by libssl.bpf.c.
 //
