@@ -213,8 +213,10 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 // factorySelector and procRoot mirror the apidump pipeline. out is owned by
 // the caller; it is never closed by Subscribe.
 //
-// Returns a cancel func. Call it (and drain out) when the pod terminates to
-// unregister the pod and stop the subscription goroutine.
+// Returns a cancel func and the pod's events.Adapter. Call cancel (and drain
+// out) when the pod terminates to unregister the pod and stop the subscription
+// goroutine. The returned adapter is exposed so the caller can feed its
+// per-pod capture counters (MessagesEmitted, FlowsActive) into telemetry.
 func (nc *NodeCollector) Subscribe(
 	ctx context.Context,
 	disco <-chan discovery.Target,
@@ -222,7 +224,7 @@ func (nc *NodeCollector) Subscribe(
 	out chan<- akinet.ParsedNetworkTraffic,
 	procRoot string,
 	netnsInode uint64,
-) context.CancelFunc {
+) (context.CancelFunc, *events.Adapter) {
 	subCtx, cancel := context.WithCancel(ctx)
 
 	adapter := events.NewAdapter(factorySelector, out)
@@ -307,5 +309,5 @@ func (nc *NodeCollector) Subscribe(
 		}
 	}()
 
-	return cancel
+	return cancel, adapter
 }

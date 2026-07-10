@@ -14,6 +14,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 )
@@ -46,6 +47,6 @@ func (nc *NodeCollector) Subscribe(
 	_ chan<- akinet.ParsedNetworkTraffic,
 	_ string,
 	_ uint64,
-) context.CancelFunc {
-	return func() {}
+) (context.CancelFunc, *events.Adapter) {
+	return func() {}, nil
 }
