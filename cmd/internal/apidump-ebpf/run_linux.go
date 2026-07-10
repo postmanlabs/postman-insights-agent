@@ -32,7 +32,6 @@ var (
 	flagStatsEvery       time.Duration
 	flagTargetNamespaces []string
 	flagNoThermostat     bool
-	flagEnableJavaTLS    bool
 )
 
 func init() {
@@ -42,7 +41,6 @@ func init() {
 	Cmd.Flags().DurationVar(&flagStatsEvery, "stats-every", 0, "If >0, log BPF counter stats every interval.")
 	Cmd.Flags().StringSliceVar(&flagTargetNamespaces, "target-namespaces", nil, "Restrict capture to PIDs whose K8s namespace is in this list. Requires running in a kube cluster.")
 	Cmd.Flags().BoolVar(&flagNoThermostat, "no-thermostat", false, "Disable CPU thermostat that lowers max-capture-bytes under load (recommended for Kind e2e demo).")
-	Cmd.Flags().BoolVar(&flagEnableJavaTLS, "enable-javatls", false, "Also attach the java_tls kprobe (JVM ioctl path). Use on the single node DaemonSet so Java and libssl capture share one log stream.")
 }
 
 func runE(cmd *cobra.Command, _ []string) error {
@@ -159,43 +157,8 @@ func runE(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	printer.Stderr.Infof("Starting eBPF HTTPS capture spike (duration=%v, max-bytes=%d, rate-cap=%d, javatls=%v)\n",
-		flagDuration, flagMaxBytes, flagRateCap, flagEnableJavaTLS)
-
-	if flagEnableJavaTLS {
-		javaAdapter := events.NewAdapter(selector, out)
-		javaCollector, err := ebpf.NewJavaTLSCollector(flagMaxBytes, false, javaAdapter)
-		if err != nil {
-			return fmt.Errorf("javatls collector: %w", err)
-		}
-		defer javaCollector.Close()
-		if err := javaCollector.Attach(); err != nil {
-			return fmt.Errorf("javatls attach: %w", err)
-		}
-		printer.Stderr.Infof("Attached java_tls kprobe (same stdout as libssl capture).\n")
-		monoEpoch := time.Now()
-		go javaCollector.Run(ctx, monoEpoch)
-		if flagStatsEvery > 0 {
-			go func() {
-				t := time.NewTicker(flagStatsEvery)
-				defer t.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-t.C:
-						printer.Stderr.Infof(
-							"javatls-stats: emitted=%d ringbuf_drops=%d read_fail=%d bytes=%d bad_cmd=%d\n",
-							javaCollector.CounterEmitted(),
-							javaCollector.CounterRingbufDrops(),
-							javaCollector.CounterReadFailed(),
-							javaCollector.CounterBytes(),
-							javaCollector.CounterBadCmd())
-					}
-				}
-			}()
-		}
-	}
+	printer.Stderr.Infof("Starting eBPF HTTPS capture spike (duration=%v, max-bytes=%d, rate-cap=%d)\n",
+		flagDuration, flagMaxBytes, flagRateCap)
 
 	if err := ebpf.Collect(ctx, args); err != nil {
 		return err

@@ -47,10 +47,6 @@ type DaemonsetArgs struct {
 	HTTPSBodySizeCap     uint32 // 0 = default (4096 bytes)
 	HTTPSCBPFExcludePort uint16 // 0 = no cBPF port exclusion; kube run defaults to 443
 	HTTPSNoThermostat    bool
-	// EnableJavaTLS also attaches the java_tls kprobe for JVM HTTPS traffic
-	// via the postman-java-agent ioctl bridge. Only effective when
-	// EnableHTTPSCapture is also true.
-	EnableJavaTLS bool
 }
 
 type Daemonset struct {
@@ -65,7 +61,6 @@ type Daemonset struct {
 	HTTPSBodySizeCap     uint32
 	HTTPSCBPFExcludePort uint16
 	HTTPSNoThermostat    bool
-	EnableJavaTLS        bool
 
 	// EBPFNodeCollector is a node-scoped shared eBPF collector initialised once
 	// per agent pod when EnableHTTPSCapture is true. Nil when HTTPS capture is
@@ -244,7 +239,6 @@ func StartDaemonset(args DaemonsetArgs) error {
 		HTTPSBodySizeCap:         args.HTTPSBodySizeCap,
 		HTTPSCBPFExcludePort:     args.HTTPSCBPFExcludePort,
 		HTTPSNoThermostat:        args.HTTPSNoThermostat,
-		EnableJavaTLS:            args.EnableJavaTLS,
 	}
 
 	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.

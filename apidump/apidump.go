@@ -157,12 +157,6 @@ type HTTPSCaptureArgs struct {
 	// disables. Forwarded into the BPF rate_cap_per_sec global.
 	RateCapPerSec uint32
 
-	// EnableJavaTLS, when true, also attaches the java_tls kprobe that
-	// captures JVM TLS traffic piped via the postman-java-agent ioctl bridge.
-	// Requires postman-java-agent.jar to be injected into target JVMs (via the
-	// kube-webhook or manually). Has no effect when Enabled is false.
-	EnableJavaTLS bool
-
 	// NodeCollector, when non-nil, is a node-scoped shared eBPF collector
 	// that was already initialised (loader.Load called once). startHTTPSeBPFCapture
 	// will call NodeCollector.Subscribe instead of spinning up its own

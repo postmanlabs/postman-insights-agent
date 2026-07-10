@@ -315,8 +315,5 @@ func startHTTPSeBPFCapture(
 		}()
 	}
 
-	// Java TLS capture (--enable-java-tls) is wired in ebpf_integration_javatls_linux.go
-	// which is added in the java-tls PR alongside collect_javatls_linux.go.
-
 	return cancel
 }
