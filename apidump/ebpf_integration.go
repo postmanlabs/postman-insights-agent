@@ -286,6 +286,7 @@ func startHTTPSeBPFCapture(
 			ebpfArgs.FactorySelector,
 			out,
 			ebpfArgs.ProcRoot,
+			args.HTTPS.ContainerNetnsInode,
 		)
 		// Expose node-level handles to the telemetry worker (mirrors HookLoader).
 		if ebpfArgs.HookLoader != nil {

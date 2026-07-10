@@ -11,13 +11,20 @@ package ebpf
 //
 // Design:
 //   - ONE loader.Load() → one BPF program set, one ring buffer, one uprobe manager.
-//   - ONE ring buffer reader goroutine dispatches events to subscribers by PID.
+//   - ONE ring buffer reader goroutine dispatches events to subscribers,
+//     primarily by network-namespace inode (see routeSub) with a PID fallback.
 //   - ONE thermostat and rate-cap refiller run at the node level.
 //   - Per-pod: own discovery channel, own events.Adapter, own out channel.
 //     Subscribe() registers the pod; the returned cancel unregisters it.
 //
-// Thread safety: pidToSub is protected by mu. Subscribe/unsubscribe and the
-// event-dispatch loop all acquire the appropriate lock.
+// Routing key: events are routed by the pod's network-namespace inode, which is
+// stable across PID namespaces. The BPF-stamped `pid` is the init-namespace
+// TGID and does NOT match discovery's node-namespace PID in nested setups
+// (KIND / k3d / minikube --driver=docker), so PID is only a fallback for
+// non-nested nodes.
+//
+// Thread safety: netnsToSub and pidToSub are protected by mu. Subscribe/
+// unsubscribe and the event-dispatch loop all acquire the appropriate lock.
 
 import (
 	"context"
@@ -33,11 +40,8 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
-// podSub holds per-pod state registered via Subscribe.
-type podSub struct {
-	adapter *events.Adapter
-	out     chan<- akinet.ParsedNetworkTraffic
-}
+// podSub and routeSub live in sub.go (build-tag-free) so the routing logic is
+// unit-tested on every platform.
 
 // NodeCollector is a node-scoped eBPF coordinator. Create one per agent pod
 // via NewNodeCollector, start it with Run, then call Subscribe for each
@@ -56,7 +60,11 @@ type NodeCollector struct {
 	// maxCaptureBytes is the initial BPF capture cap (may be lowered by thermostat).
 	maxCaptureBytes uint32
 
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// netnsToSub is the primary routing table: pod netns inode -> subscriber.
+	netnsToSub map[uint64]*podSub
+	// pidToSub is a fallback routing table (node-ns PID -> subscriber) used on
+	// non-nested nodes where BPF PIDs match discovery PIDs.
 	pidToSub map[uint32]*podSub
 }
 
@@ -100,6 +108,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
+		netnsToSub:      make(map[uint64]*podSub),
 		pidToSub:        make(map[uint32]*podSub),
 	}
 	return nc, nil
@@ -162,7 +171,7 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 				return nil
 			}
 			nc.mu.RLock()
-			sub := nc.pidToSub[ev.PID]
+			sub := routeSub(nc.netnsToSub, nc.pidToSub, uint64(ev.NetNS), ev.PID)
 			nc.mu.RUnlock()
 			if sub != nil {
 				sub.adapter.Feed(ev, nc.monoEpoch)
@@ -170,8 +179,14 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 
 		case <-gcTicker.C:
 			nc.mu.RLock()
-			adapters := make([]*events.Adapter, 0, len(nc.pidToSub))
+			adapters := make([]*events.Adapter, 0, len(nc.netnsToSub)+len(nc.pidToSub))
 			seen := make(map[*events.Adapter]struct{})
+			for _, s := range nc.netnsToSub {
+				if _, ok := seen[s.adapter]; !ok {
+					adapters = append(adapters, s.adapter)
+					seen[s.adapter] = struct{}{}
+				}
+			}
 			for _, s := range nc.pidToSub {
 				if _, ok := seen[s.adapter]; !ok {
 					adapters = append(adapters, s.adapter)
@@ -190,20 +205,23 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 
 // Subscribe registers a pod subscriber with the NodeCollector. It starts a
 // goroutine that drives discovery (attaching/detaching uprobes) and routes
-// BPF events for the pod's PIDs to out via an events.Adapter.
+// BPF events for the pod to out via an events.Adapter.
 //
 // disco is a /proc-scoped discovery channel filtered to the pod's netns inode
-// (or namespace). factorySelector and procRoot mirror the apidump pipeline.
-// out is owned by the caller; it is never closed by Subscribe.
+// (or namespace). netnsInode is the pod's network-namespace inode and is the
+// primary routing key (0 disables netns routing, falling back to PID).
+// factorySelector and procRoot mirror the apidump pipeline. out is owned by
+// the caller; it is never closed by Subscribe.
 //
 // Returns a cancel func. Call it (and drain out) when the pod terminates to
-// unregister PIDs and stop the subscription goroutine.
+// unregister the pod and stop the subscription goroutine.
 func (nc *NodeCollector) Subscribe(
 	ctx context.Context,
 	disco <-chan discovery.Target,
 	factorySelector akinet.TCPParserFactorySelector,
 	out chan<- akinet.ParsedNetworkTraffic,
 	procRoot string,
+	netnsInode uint64,
 ) context.CancelFunc {
 	subCtx, cancel := context.WithCancel(ctx)
 
@@ -214,15 +232,18 @@ func (nc *NodeCollector) Subscribe(
 		go preResolveLoop(subCtx, nc.ldr, adapter.Resolver, adapter, 5*time.Millisecond)
 	}
 
-	go func() {
-		defer func() {
-			// On exit: unregister all PIDs this subscription may still own.
-			// (Normal path: Removed events already unregistered them one by one.)
-			if adapter.Resolver != nil {
-				// Nothing to clean up in resolver per-sub — it's stateless per PID.
-			}
-		}()
+	// One subscriber per pod. Register it by netns inode immediately (the netns
+	// is known upfront, unlike PIDs which arrive via discovery). This is the key
+	// that events actually route on; PID registration below is only a fallback
+	// for non-nested nodes.
+	sub := &podSub{adapter: adapter, out: out}
+	if netnsInode != 0 {
+		nc.mu.Lock()
+		nc.netnsToSub[netnsInode] = sub
+		nc.mu.Unlock()
+	}
 
+	go func() {
 		// Track which PIDs this subscription registered so we can clean up on
 		// cancel even if discovery doesn't emit Removed events in time.
 		ownedPIDs := make(map[uint32]struct{})
@@ -230,8 +251,11 @@ func (nc *NodeCollector) Subscribe(
 		for {
 			select {
 			case <-subCtx.Done():
-				// Unregister any remaining PIDs.
+				// Unregister the pod's netns route and any remaining PIDs.
 				nc.mu.Lock()
+				if netnsInode != 0 {
+					delete(nc.netnsToSub, netnsInode)
+				}
 				for pid := range ownedPIDs {
 					delete(nc.pidToSub, uint32(pid))
 				}
@@ -271,7 +295,6 @@ func (nc *NodeCollector) Subscribe(
 						tgt.PID, tgt.Lib.HostPath, err)
 					continue
 				}
-				sub := &podSub{adapter: adapter, out: out}
 				nc.mu.Lock()
 				nc.pidToSub[uint32(tgt.PID)] = sub
 				nc.mu.Unlock()

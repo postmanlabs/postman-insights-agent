@@ -45,6 +45,7 @@ func (nc *NodeCollector) Subscribe(
 	_ akinet.TCPParserFactorySelector,
 	_ chan<- akinet.ParsedNetworkTraffic,
 	_ string,
+	_ uint64,
 ) context.CancelFunc {
 	return func() {}
 }

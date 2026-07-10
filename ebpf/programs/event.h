@@ -36,6 +36,10 @@ struct ssl_event {
     __s32 fd;                             // socket fd associated with ssl_ctx, or -1
     __u8  direction;                      // DIR_EGRESS or DIR_INGRESS
     __u8  _pad[3];                        // align to 8 bytes
+    __u32 netns;                          // network-namespace inode (task->nsproxy->net_ns->ns.inum).
+                                          // Routing key: stable across PID namespaces, unlike `pid`,
+                                          // so it matches the pod netns discovery filters on even in
+                                          // nested environments (KIND/k3d/minikube-docker).
     __u8  payload[MAX_EVENT_PAYLOAD];
 };
 
