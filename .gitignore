@@ -41,7 +41,3 @@ ebpf/loader/*.o
 test/kind/webhook/tls.crt
 test/kind/webhook/tls.key
 test/kind/webhook/webhook-deployment-with-certs.yaml
-
-# Generated certs from gen-test-certs.sh — created at runtime, do not commit.
-java-agent/testdata/hello-https/certs/*.p12
-java-agent/testdata/hello-https/certs/*.pem

@@ -1,0 +1,61 @@
+# Builds a Linux CLI binary with eBPF support (insights_bpf tag) and exports
+# it to the local bin/ directory via `make docker-build-ebpf`.
+#
+# Produces only the agent binary — no Java agent JARs or test workloads.
+# For a full deployment image (DaemonSet), use build-scripts/Dockerfile.ebpf.
+#
+# Uses Alpine + static linking (same approach as build-scripts/Dockerfile) so
+# the exported binary does not depend on libpcap.so at runtime.
+#
+# vmlinux.h: either commit a pre-generated copy under ebpf/programs/ (e.g.
+# from `make dev-shell` + bpftool), or build on a Linux host/CI runner where
+# /sys/kernel/btf/vmlinux is available and it will be generated at build time.
+
+FROM golang:1.25-alpine AS build
+
+# Alpine's libpcap does not include D-Bus support, so static linking with
+# -tags osusergo,netgo works cleanly without pulling in D-Bus.
+# Debian-based images compile libpcap with D-Bus, which causes unresolved
+# symbol errors when linking statically.
+RUN apk add --no-cache \
+        clang \
+        llvm \
+        bpftool \
+        libbpf-dev \
+        libpcap-dev \
+        gcc \
+        musl-dev \
+        linux-headers \
+        git \
+        ca-certificates
+
+RUN go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0
+ENV PATH="/root/go/bin:${PATH}"
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN if [ -f ebpf/programs/vmlinux.h ]; then \
+        echo "==> using pre-generated ebpf/programs/vmlinux.h"; \
+    elif [ -f /sys/kernel/btf/vmlinux ]; then \
+        echo "==> generating vmlinux.h from build host BTF"; \
+        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+    else \
+        echo "ERROR: ebpf/programs/vmlinux.h missing and /sys/kernel/btf/vmlinux unavailable." >&2; \
+        echo "Generate it first, e.g. inside make dev-shell:" >&2; \
+        echo "  bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h" >&2; \
+        exit 1; \
+    fi
+
+RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
+    go build -tags "insights_bpf,osusergo,netgo" \
+        -ldflags "-linkmode external -extldflags '-static'" \
+        -o /out/postman-insights-agent .
+
+FROM scratch AS bin
+
+COPY --from=build /out/postman-insights-agent /postman-insights-agent
