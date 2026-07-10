@@ -10,6 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// testNodeCollector is a non-nil sentinel so HTTPS-enabled buildHTTPSArgs tests
+// pass the DaemonSet gate requiring a shared NodeCollector, without a real BPF host.
+var testNodeCollector = &ebpf.NodeCollector{}
+
 // ---------------------------------------------------------------------------
 // buildHTTPSArgs
 // ---------------------------------------------------------------------------
@@ -41,6 +45,7 @@ func TestBuildHTTPSArgs_InodeTakesPriority(t *testing.T) {
 	// This is the normal DaemonSet path for any scaled deployment.
 	d := &Daemonset{
 		EnableHTTPSCapture:   true,
+		EBPFNodeCollector:    testNodeCollector,
 		HTTPSRateCapPerSec:   500,
 		HTTPSBodySizeCap:     2048,
 		HTTPSCBPFExcludePort: 443,
@@ -64,7 +69,7 @@ func TestBuildHTTPSArgs_InodeZeroWithNamespace_FallsBackToNamespace(t *testing.T
 	// Inode lookup failed (CRI unavailable, rapid startup, etc.) but the pod
 	// namespace is known (discovery mode). Fall back to namespace-level
 	// filtering so HTTPS capture is not silently lost.
-	d := &Daemonset{EnableHTTPSCapture: true, HTTPSRateCapPerSec: 100}
+	d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSRateCapPerSec: 100}
 	pod := &PodArgs{Namespace: "team-a"}
 
 	got := buildHTTPSArgs(d, pod, 0 /* inode unavailable */)
@@ -78,7 +83,7 @@ func TestBuildHTTPSArgs_InodeZeroWithNamespace_FallsBackToNamespace(t *testing.T
 func TestBuildHTTPSArgs_InodeZeroWithoutNamespace_NodeWide(t *testing.T) {
 	// Inode unavailable AND namespace unknown (non-discovery mode).
 	// eBPF runs node-wide — acceptable for single-pod non-discovery setups.
-	d := &Daemonset{EnableHTTPSCapture: true}
+	d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector}
 	pod := &PodArgs{Namespace: ""}
 
 	got := buildHTTPSArgs(d, pod, 0)
@@ -118,6 +123,7 @@ func TestBuildHTTPSArgs_RateAndBodyPropagation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d := &Daemonset{
 				EnableHTTPSCapture: true,
+				EBPFNodeCollector:  testNodeCollector,
 				HTTPSRateCapPerSec: tt.rateCapPerSec,
 				HTTPSBodySizeCap:   tt.bodySizeCap,
 			}
@@ -142,6 +148,7 @@ func TestBuildHTTPSArgs_CBPFExcludePortPropagation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d := &Daemonset{
 				EnableHTTPSCapture:   true,
+				EBPFNodeCollector:    testNodeCollector,
 				HTTPSCBPFExcludePort: tt.excludePort,
 			}
 			got := buildHTTPSArgs(d, &PodArgs{}, 42)
@@ -244,7 +251,7 @@ func TestBuildHTTPSArgs_ReturnsCorrectType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildHTTPSArgs — NodeCollector propagation (AC-1141)
+// buildHTTPSArgs — NodeCollector propagation
 // ---------------------------------------------------------------------------
 
 func TestBuildHTTPSArgs_NodeCollectorPropagated(t *testing.T) {
@@ -284,20 +291,19 @@ func TestBuildHTTPSArgs_NodeCollectorNilWhenDisabled(t *testing.T) {
 		"NodeCollector must not be forwarded when HTTPS capture is disabled")
 }
 
-func TestBuildHTTPSArgs_NodeCollectorNilWhenNotSet(t *testing.T) {
-	// When EBPFNodeCollector is not set (BPF load failed, or pre-AC-1141 code
-	// path), NodeCollector must be nil so startHTTPSeBPFCapture falls back to
-	// the per-pod ebpf.Collect() path without any behaviour change.
+func TestBuildHTTPSArgs_NodeCollectorMissingDisablesHTTPS(t *testing.T) {
+	// When EBPFNodeCollector is not set (BPF load failed at DaemonSet startup),
+	// HTTPS must be disabled for per-pod apidump — do not fall back to per-pod
+	// ebpf.Collect(), which would reload BPF programs once per monitored pod.
 	d := &Daemonset{
 		EnableHTTPSCapture: true,
 		EBPFNodeCollector:  nil,
 	}
 	got := buildHTTPSArgs(d, &PodArgs{Namespace: "team-a"}, 12345)
 
-	assert.True(t, got.Enabled)
-	assert.Nil(t, got.NodeCollector,
-		"NodeCollector must be nil when EBPFNodeCollector is not initialised — "+
-			"ensures fallback to per-pod ebpf.Collect() without regression")
+	assert.False(t, got.Enabled,
+		"HTTPS must be disabled when the shared NodeCollector is unavailable")
+	assert.Nil(t, got.NodeCollector)
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +313,7 @@ func TestBuildHTTPSArgs_NodeCollectorNilWhenNotSet(t *testing.T) {
 func TestHTTPSCaptureArgs_NodeCollectorDefaultsNil(t *testing.T) {
 	// Zero-value HTTPSCaptureArgs must have NodeCollector=nil so existing
 	// callers that construct HTTPSCaptureArgs directly (tests, standalone
-	// apidump) are not affected by the AC-1141 change.
+	// apidump) are not affected.
 	var args apidump.HTTPSCaptureArgs
 	assert.Nil(t, args.NodeCollector,
 		"NodeCollector zero value must be nil — existing callers must not change")
@@ -318,8 +324,8 @@ func TestHTTPSCaptureArgs_NodeCollectorDefaultsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDaemonset_EBPFNodeCollectorDefaultsNil(t *testing.T) {
-	// A zero-value Daemonset must have EBPFNodeCollector=nil so the fallback
-	// to per-pod ebpf.Collect() is the default behaviour (no regression).
+	// A zero-value Daemonset must have EBPFNodeCollector=nil before startup
+	// initialises the shared node-scoped collector.
 	d := &Daemonset{}
 	assert.Nil(t, d.EBPFNodeCollector)
 }

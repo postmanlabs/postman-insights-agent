@@ -24,10 +24,10 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ci"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/location"
 	"github.com/postmanlabs/postman-insights-agent/pcap"
-	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
@@ -170,7 +170,8 @@ type HTTPSCaptureArgs struct {
 	// monitored pod on the same node.
 	//
 	// When nil (standalone apidump, tests), startHTTPSeBPFCapture falls back to
-	// the original ebpf.Collect() path — no behaviour change for existing callers.
+	// the original ebpf.Collect() path. The DaemonSet path disables HTTPS
+	// capture when NodeCollector is unavailable rather than falling back.
 	NodeCollector *ebpf.NodeCollector
 }
 

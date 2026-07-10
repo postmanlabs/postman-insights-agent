@@ -69,7 +69,8 @@ type Daemonset struct {
 
 	// EBPFNodeCollector is a node-scoped shared eBPF collector initialised once
 	// per agent pod when EnableHTTPSCapture is true. Nil when HTTPS capture is
-	// disabled or on non-Linux / non-insights_bpf builds.
+	// disabled, NodeCollector initialisation failed, or on non-Linux /
+	// non-insights_bpf builds.
 	EBPFNodeCollector *ebpf.NodeCollector
 
 	KubeClient  kube_apis.KubeClient
@@ -278,7 +279,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		if err != nil {
 			printer.Warningf(
 				"ebpf: failed to initialise node-scoped BPF collector (%v); "+
-					"HTTPS capture will be disabled.\n", err)
+					"HTTPS capture will be disabled for all monitored pods on this node.\n", err)
 		} else {
 			daemonsetRun.EBPFNodeCollector = nc
 			printer.Infof("ebpf: node-scoped BPF collector initialised (one loader for all pods on this node)\n")

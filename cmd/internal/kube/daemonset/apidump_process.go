@@ -156,6 +156,13 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		return apidump.HTTPSCaptureArgs{Enabled: false}
 	}
 
+	// DaemonSet HTTPS capture requires the shared node-scoped NodeCollector.
+	// If initialisation failed at startup, do not fall back to per-pod
+	// ebpf.Collect() — that would reload BPF programs once per monitored pod.
+	if d.EBPFNodeCollector == nil {
+		return apidump.HTTPSCaptureArgs{Enabled: false}
+	}
+
 	args := apidump.HTTPSCaptureArgs{
 		Enabled:             true,
 		ContainerNetnsInode: netnsInode,
@@ -164,7 +171,7 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		CBPFExcludePort:     d.HTTPSCBPFExcludePort,
 		DisableThermostat:   d.HTTPSNoThermostat,
 		EnableJavaTLS:       d.EnableJavaTLS,
-		NodeCollector:       d.EBPFNodeCollector, // shared loader — nil falls back to per-pod Collect()
+		NodeCollector:       d.EBPFNodeCollector,
 	}
 
 	// Only fall back to namespace-level filtering when the inode is
