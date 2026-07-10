@@ -37,7 +37,7 @@ var (
 
 func init() {
 	Cmd.Flags().DurationVar(&flagDuration, "duration", 0, "Stop after this duration (0 = run until SIGINT)")
-	Cmd.Flags().Uint32Var(&flagMaxBytes, "max-capture-bytes", 1024, "Maximum plaintext bytes captured per event")
+	Cmd.Flags().Uint32Var(&flagMaxBytes, "max-capture-bytes", 4096, "Maximum plaintext bytes captured per event")
 	Cmd.Flags().Uint32Var(&flagRateCap, "rate-cap-per-sec", 0, "Per-PID rate cap (events/sec). 0 disables rate limiting.")
 	Cmd.Flags().DurationVar(&flagStatsEvery, "stats-every", 0, "If >0, log BPF counter stats every interval.")
 	Cmd.Flags().StringSliceVar(&flagTargetNamespaces, "target-namespaces", nil, "Restrict capture to PIDs whose K8s namespace is in this list. Requires running in a kube cluster.")
@@ -141,7 +141,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 						rd, _ := ldr.ReadCounter(loader.CounterReadFailed)
 						rc, _ := ldr.ReadCounter(4) // rate-cap drops
 						by, _ := ldr.ReadCounter(loader.CounterBytesCaptured)
-						sf, _ := ldr.ReadCounter(5) // SSL_set_fd calls
+						sf, _ := ldr.ReadCounter(5)   // SSL_set_fd calls
 						fdok, _ := ldr.ReadCounter(6) // events with fd>=0
 						var resStats string
 						if a != nil && a.Resolver != nil {

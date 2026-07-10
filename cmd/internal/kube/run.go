@@ -16,23 +16,27 @@ var (
 	excludeLabels     map[string]string
 
 	// HTTPS capture via eBPF uprobes on libssl.
-	enableHTTPSCapture bool
-	httpsRateCapPerSec uint32
-	httpsBodySizeCap   uint32
+	enableHTTPSCapture   bool
+	httpsRateCapPerSec   uint32
+	httpsBodySizeCap     uint32
+	httpsCBPFExcludePort uint16
+	httpsNoThermostat    bool
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
-		ReproMode:          reproMode,
-		RateLimit:          rateLimit,
-		DiscoveryMode:      discoveryMode,
-		IncludeNamespaces:  includeNamespaces,
-		ExcludeNamespaces:  excludeNamespaces,
-		IncludeLabels:      includeLabels,
-		ExcludeLabels:      excludeLabels,
-		EnableHTTPSCapture: enableHTTPSCapture,
-		HTTPSRateCapPerSec: httpsRateCapPerSec,
-		HTTPSBodySizeCap:   httpsBodySizeCap,
+		ReproMode:            reproMode,
+		RateLimit:            rateLimit,
+		DiscoveryMode:        discoveryMode,
+		IncludeNamespaces:    includeNamespaces,
+		ExcludeNamespaces:    excludeNamespaces,
+		IncludeLabels:        includeLabels,
+		ExcludeLabels:        excludeLabels,
+		EnableHTTPSCapture:   enableHTTPSCapture,
+		HTTPSRateCapPerSec:   httpsRateCapPerSec,
+		HTTPSBodySizeCap:     httpsBodySizeCap,
+		HTTPSCBPFExcludePort: httpsCBPFExcludePort,
+		HTTPSNoThermostat:    httpsNoThermostat,
 	})
 	if err == nil {
 		return nil
@@ -116,7 +120,20 @@ func init() {
 		&httpsBodySizeCap,
 		"https-body-size-cap",
 		0,
-		"Maximum bytes captured per HTTPS payload (0 = default 1024).",
+		"Maximum bytes captured per HTTPS payload (0 = default 4096).",
+	)
+	runCmd.PersistentFlags().BoolVar(
+		&httpsNoThermostat,
+		"no-thermostat",
+		false,
+		"Disable the CPU thermostat that lowers max-capture-bytes under load.",
+	)
+	runCmd.PersistentFlags().Uint16Var(
+		&httpsCBPFExcludePort,
+		"https-cbpf-exclude-port",
+		443,
+		"TCP port whose packets are removed from the cBPF filter when --enable-https-capture is set. "+
+			"Avoids double-counting TLS handshake bytes already captured via eBPF. 0 disables exclusion.",
 	)
 
 	Cmd.AddCommand(runCmd)

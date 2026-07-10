@@ -93,7 +93,6 @@ spec:
           - "kube"
           - "run"
           - "--enable-https-capture"
-          - "--enable-java-tls"
           - "--discovery-mode"
           # Namespace filtering: only monitor pods in these namespaces.
           # eBPF discovery is also scoped per-pod to its own namespace.

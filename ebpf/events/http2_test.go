@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/google/uuid"
 	"golang.org/x/net/http2/hpack"
 )
 
@@ -63,7 +64,7 @@ func buildDataFrame(streamID uint32, endStream bool, body []byte) []byte {
 
 // TestH2_RequestNoBody — HEADERS with END_STREAM emits an HTTPRequest.
 func TestH2_RequestNoBody(t *testing.T) {
-	s := newH2State("test")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	frame := buildHeadersFrame(t, 1, true, []hpack.HeaderField{
 		{Name: ":method", Value: "GET"},
 		{Name: ":path", Value: "/users/42"},
@@ -95,7 +96,7 @@ func TestH2_RequestNoBody(t *testing.T) {
 
 // TestH2_RequestWithBody — HEADERS + DATA(END_STREAM) → HTTPRequest with body.
 func TestH2_RequestWithBody(t *testing.T) {
-	s := newH2State("test")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	headers := buildHeadersFrame(t, 3, false, []hpack.HeaderField{
 		{Name: ":method", Value: "POST"},
 		{Name: ":path", Value: "/echo"},
@@ -119,7 +120,7 @@ func TestH2_RequestWithBody(t *testing.T) {
 
 // TestH2_Response — :status pseudo-header yields an HTTPResponse.
 func TestH2_Response(t *testing.T) {
-	s := newH2State("test")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	frame := buildHeadersFrame(t, 1, true, []hpack.HeaderField{
 		{Name: ":status", Value: "204"},
 		{Name: "content-length", Value: "0"},
@@ -139,7 +140,7 @@ func TestH2_Response(t *testing.T) {
 
 // TestH2_Preface — preface is stripped before frame parsing.
 func TestH2_Preface(t *testing.T) {
-	s := newH2State("test")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	frame := buildHeadersFrame(t, 1, true, []hpack.HeaderField{
 		{Name: ":method", Value: "GET"},
 		{Name: ":path", Value: "/"},
@@ -153,7 +154,7 @@ func TestH2_Preface(t *testing.T) {
 
 // TestH2_MultipleStreams — interleaved frames on two streams produce two PNTs.
 func TestH2_MultipleStreams(t *testing.T) {
-	s := newH2State("test")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	h1 := buildHeadersFrame(t, 1, false, []hpack.HeaderField{
 		{Name: ":method", Value: "GET"},
 		{Name: ":path", Value: "/a"},
@@ -188,7 +189,7 @@ func TestH2_MultipleStreams(t *testing.T) {
 
 // TestH2_ChunkedDelivery — bytes split across multiple feed calls reassemble.
 func TestH2_ChunkedDelivery(t *testing.T) {
-	s := newH2State("test")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	frame := buildHeadersFrame(t, 1, true, []hpack.HeaderField{
 		{Name: ":method", Value: "GET"},
 		{Name: ":path", Value: "/chunked"},
@@ -258,7 +259,7 @@ func TestIsHTTP2Frame(t *testing.T) {
 // Host header is present (common for gRPC over HTTP/2), the emitted URL must
 // not be "https:///path".
 func TestH2_AuthorityFromHostHeader(t *testing.T) {
-	s := newH2State("iface-1")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 	frame := buildHeadersFrame(t, 5, true, []hpack.HeaderField{
 		{Name: ":method", Value: "POST"},
 		{Name: ":path", Value: "/phase5c2.Greeter/SayHello"},
@@ -283,7 +284,7 @@ func TestH2_AuthorityFromHostHeader(t *testing.T) {
 // a length-prefixed message inside DATA should be decoded and the message
 // body should equal the protobuf payload (framing stripped).
 func TestH2_GRPCFraming(t *testing.T) {
-	s := newH2State("iface-1")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 
 	// Build a gRPC request: HEADERS with :method=POST, :path=/svc/Method,
 	// content-type: application/grpc, followed by a DATA frame whose
@@ -325,7 +326,7 @@ func TestH2_GRPCFraming(t *testing.T) {
 // TestH2_GRPCFramingSplit: a gRPC message that arrives split across two
 // DATA frames must be reassembled (framing reassembly).
 func TestH2_GRPCFramingSplit(t *testing.T) {
-	s := newH2State("iface-1")
+	s := newH2State(akinet.TCPBidiID(uuid.New()))
 
 	headers := buildHeadersFrame(t, 3, false, []hpack.HeaderField{
 		{Name: ":method", Value: "POST"},

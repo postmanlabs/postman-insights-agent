@@ -6,7 +6,7 @@
 # data to Postman and does NOT exercise the full production code path.
 #
 # For production use (or e2e with real credentials), use agent-daemonset-prod.yaml
-# which runs `kube run --enable-https-capture --enable-java-tls --discovery-mode`.
+# which runs `kube run --enable-https-capture --discovery-mode`.
 #
 # Privileges follow docs/https-capture-design.md §8.1:
 #   - hostPID: true (so PIDs in /host/proc match the kernel's view)
@@ -73,11 +73,9 @@ spec:
       - name: agent
         image: pia-agent-ebpf:test
         imagePullPolicy: Never
-        # apidump-ebpf spike: libssl uprobes (Node, dotnet, …) + java_tls kprobe
-        # (JVM ioctl path) in one process — same log stream as production DaemonSet.
+        # apidump-ebpf spike: libssl uprobes (Node, dotnet, …) in one process.
         args:
           - "apidump-ebpf"
-          - "--enable-javatls"
           - "--stats-every=10s"
           - "--max-capture-bytes=512"
           - "--no-thermostat"

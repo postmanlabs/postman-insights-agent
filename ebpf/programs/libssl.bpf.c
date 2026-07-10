@@ -215,8 +215,7 @@ static __always_inline int pid_allowed(__u32 tgid) {
 // so the BPF verifier can prove the bounded read. Modern verifiers (kernel
 // 5.2+) track conditional bounds. The old mask trick (&= MAX_EVENT_PAYLOAD-1)
 // was incorrect: when to_copy == MAX_EVENT_PAYLOAD after the runtime cap,
-// 1024 & 1023 == 0, causing every ≥ MAX_EVENT_PAYLOAD-byte payload to be
-// captured as 1 byte. Plain conditional has no such edge case.
+// 4096 & 4095 would truncate to zero at the boundary; plain conditional has no such edge case.
 static __always_inline int emit_event(
         __u64 pid_tgid,
         __u64 ssl_ctx,

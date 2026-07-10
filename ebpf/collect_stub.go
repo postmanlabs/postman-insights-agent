@@ -19,7 +19,7 @@ import (
 // to *ebpf.Thermostat in their telemetry plumbing.
 type Thermostat struct{}
 
-func (*Thermostat) CurrentCap() uint32   { return 0 }
+func (*Thermostat) CurrentCap() uint32  { return 0 }
 func (*Thermostat) CPUPercent() float64 { return 0 }
 
 // Args is the platform-neutral declaration so callers can construct it
@@ -41,7 +41,7 @@ type Args struct {
 
 func Defaults() Args {
 	return Args{
-		MaxCaptureBytes:   1024,
+		MaxCaptureBytes:   4096,
 		DiscoveryInterval: 5 * time.Second,
 		FlowIdleTimeout:   30 * time.Second,
 	}
@@ -58,13 +58,13 @@ func NewJavaTLSCollector(_ uint32, _ bool, _ *events.Adapter) (*JavaTLSCollector
 	return nil, ErrUnsupported
 }
 
-func (c *JavaTLSCollector) Attach() error                              { return ErrUnsupported }
-func (c *JavaTLSCollector) Run(_ context.Context, _ time.Time)        {}
-func (c *JavaTLSCollector) Close() error                              { return nil }
-func (c *JavaTLSCollector) AddTargetPID(_ uint32) error               { return nil }
-func (c *JavaTLSCollector) RemoveTargetPID(_ uint32) error            { return nil }
-func (c *JavaTLSCollector) CounterEmitted() uint64                    { return 0 }
-func (c *JavaTLSCollector) CounterRingbufDrops() uint64               { return 0 }
-func (c *JavaTLSCollector) CounterReadFailed() uint64                 { return 0 }
-func (c *JavaTLSCollector) CounterBytes() uint64                      { return 0 }
-func (c *JavaTLSCollector) CounterBadCmd() uint64                     { return 0 }
+func (c *JavaTLSCollector) Attach() error                      { return ErrUnsupported }
+func (c *JavaTLSCollector) Run(_ context.Context, _ time.Time) {}
+func (c *JavaTLSCollector) Close() error                       { return nil }
+func (c *JavaTLSCollector) AddTargetPID(_ uint32) error        { return nil }
+func (c *JavaTLSCollector) RemoveTargetPID(_ uint32) error     { return nil }
+func (c *JavaTLSCollector) CounterEmitted() uint64             { return 0 }
+func (c *JavaTLSCollector) CounterRingbufDrops() uint64        { return 0 }
+func (c *JavaTLSCollector) CounterReadFailed() uint64          { return 0 }
+func (c *JavaTLSCollector) CounterBytes() uint64               { return 0 }
+func (c *JavaTLSCollector) CounterBadCmd() uint64              { return 0 }

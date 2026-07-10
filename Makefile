@@ -1,4 +1,4 @@
-.PHONY: clean build test mock dev-shell dev-build dev-down
+.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf
 
 export GO111MODULE = on
 
@@ -29,6 +29,9 @@ endif
 
 docker-build:
 	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile .
+
+docker-build-ebpf:
+	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile.ebpf-bin .
 
 # --- Dev-container shortcuts for HTTPS-via-eBPF work on macOS. ---
 dev-build:

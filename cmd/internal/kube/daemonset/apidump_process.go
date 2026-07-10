@@ -119,7 +119,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			WorkloadName:            podArgs.WorkloadName,
 			WorkloadType:            podArgs.WorkloadType,
 			Labels:                  podArgs.Labels,
-			HTTPS: buildHTTPSArgs(d, podArgs, netnsInode),
+			HTTPS:                   buildHTTPSArgs(d, podArgs, netnsInode),
 			DaemonsetArgs: optionals.Some(apidump.DaemonsetArgs{
 				TargetNetworkNamespaceOpt: networkNamespace,
 				StopChan:                  podArgs.StopChan,
@@ -161,6 +161,8 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		ContainerNetnsInode: netnsInode,
 		RateCapPerSec:       d.HTTPSRateCapPerSec,
 		BodySizeCap:         d.HTTPSBodySizeCap,
+		CBPFExcludePort:     d.HTTPSCBPFExcludePort,
+		DisableThermostat:   d.HTTPSNoThermostat,
 		EnableJavaTLS:       d.EnableJavaTLS,
 	}
 

@@ -135,10 +135,14 @@ type HTTPSCaptureArgs struct {
 	// limits how many bytes the BPF program copies from the SSL buffer into the
 	// ringbuf per SSL_read/SSL_write call, in kernel space. A single HTTPS body
 	// spans many such calls, so effective per-request coverage is higher.
-	// Defaults to 1024 (== MAX_EVENT_PAYLOAD in event.h), which is the size of
+	// Defaults to 4096 (== MAX_EVENT_PAYLOAD in event.h), which is the size of
 	// the fixed payload array in the ssl_event struct. The thermostat may lower
 	// this at runtime under CPU pressure.
 	BodySizeCap uint32
+
+	// DisableThermostat skips the CPU thermostat that lowers max_capture_bytes
+	// under load. Useful for e2e demos and debugging.
+	DisableThermostat bool
 
 	// CaptureMode is one of "headers" | "truncated" | "full". Phase 2 wires
 	// only "truncated" (the default, capped by BodySizeCap).

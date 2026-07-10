@@ -131,6 +131,63 @@ loop:
 	if got[1].Method != "POST" || got[1].URL.Path != "/b" {
 		t.Errorf("second: %s %s", got[1].Method, got[1].URL)
 	}
+	if got[0].Seq == got[1].Seq {
+		t.Errorf("pipelined requests should have distinct pair indices, both Seq=%d", got[0].Seq)
+	}
+}
+
+// Ingress request + egress response on the same TLS connection share StreamID
+// and Seq so BackendCollector can pair them (mirrors pcap tcpStream.bidiID).
+func TestAdapter_RequestResponsePairing(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const pid uint32 = 52837
+	const sslCtx uint64 = 0xDEADBEEF
+
+	req := []byte("GET / HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n")
+	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+	feed(t, a, pid, sslCtx, DirIngress, req)
+	feed(t, a, pid, sslCtx, DirEgress, resp)
+
+	var reqContent akinet.HTTPRequest
+	var respContent akinet.HTTPResponse
+	for i := 0; i < 2; i++ {
+		pnt := <-out
+		switch c := pnt.Content.(type) {
+		case akinet.HTTPRequest:
+			reqContent = c
+		case akinet.HTTPResponse:
+			respContent = c
+		}
+	}
+
+	if reqContent.StreamID != respContent.StreamID {
+		t.Fatalf("StreamID mismatch: req=%v resp=%v", reqContent.StreamID, respContent.StreamID)
+	}
+	if reqContent.Seq != respContent.Seq {
+		t.Fatalf("Seq mismatch: req=%d resp=%d", reqContent.Seq, respContent.Seq)
+	}
+}
+
+// Repeated GET / on keep-alive must not reuse the same pair index.
+func TestAdapter_KeepAliveDistinctPairKeys(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const pid uint32 = 52837
+	const sslCtx uint64 = 0xDEADBEEF
+
+	req := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	feed(t, a, pid, sslCtx, DirIngress, req)
+	first := (<-out).Content.(akinet.HTTPRequest)
+
+	feed(t, a, pid, sslCtx, DirIngress, req)
+	second := (<-out).Content.(akinet.HTTPRequest)
+
+	if first.StreamID != second.StreamID {
+		t.Fatalf("keep-alive requests should share StreamID")
+	}
+	if first.Seq == second.Seq {
+		t.Fatalf("keep-alive requests must not collide on Seq: both %d", first.Seq)
+	}
 }
 
 // GET requests with query strings must preserve RawQuery through the adapter.
