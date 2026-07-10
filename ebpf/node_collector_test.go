@@ -131,3 +131,21 @@ func TestNodeCollectorConfig_DisableThermostatField(t *testing.T) {
 	cfg2 := NodeCollectorConfig{DisableThermostat: false}
 	assert.False(t, cfg2.DisableThermostat)
 }
+
+func TestNewNodeCollector_DisableThermostatSkipsThermostat(t *testing.T) {
+	// When DisableThermostat is set, NewNodeCollector must not wire a thermostat
+	// so NodeCollector.Run() never starts the CPU throttle loop (mirrors
+	// ebpf.Collect's behaviour).
+	nc, err := NewNodeCollector(NodeCollectorConfig{
+		MaxCaptureBytes:   4096,
+		DisableThermostat: true,
+	})
+	if errors.Is(err, ErrUnsupported) {
+		t.Skipf("NewNodeCollector failed (%v); skipping thermostat test", err)
+	}
+	require.NoError(t, err)
+	require.NotNil(t, nc)
+	defer func() { _ = nc.Close() }()
+
+	assert.Nil(t, nc.Thermostat(), "DisableThermostat must leave Thermostat() nil")
+}

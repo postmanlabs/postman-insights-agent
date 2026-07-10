@@ -56,16 +56,16 @@ type NodeCollector struct {
 	// maxCaptureBytes is the initial BPF capture cap (may be lowered by thermostat).
 	maxCaptureBytes uint32
 
-	mu        sync.RWMutex
-	pidToSub  map[uint32]*podSub
+	mu       sync.RWMutex
+	pidToSub map[uint32]*podSub
 }
 
 // NodeCollectorConfig mirrors the relevant fields from ebpf.Args used at
 // the node level.
 type NodeCollectorConfig struct {
-	MaxCaptureBytes uint32
-	RateCapPerSec   uint32
-	FlowIdleTimeout time.Duration
+	MaxCaptureBytes   uint32
+	RateCapPerSec     uint32
+	FlowIdleTimeout   time.Duration
 	DisableThermostat bool
 }
 
@@ -87,7 +87,10 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		return nil, err
 	}
 
-	therm := NewThermostat(l, cfg.MaxCaptureBytes)
+	var therm *Thermostat
+	if !cfg.DisableThermostat {
+		therm = NewThermostat(l, cfg.MaxCaptureBytes)
+	}
 
 	nc := &NodeCollector{
 		ldr:             l,
