@@ -101,7 +101,7 @@ func TestNodeCollectorStub_Subscribe(t *testing.T) {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 
-	cancel := nc.Subscribe(ctx, disco, nil, out, "")
+	cancel, _ := nc.Subscribe(ctx, disco, nil, out, "", 0)
 	require.NotNil(t, cancel, "Subscribe must return a non-nil cancel func")
 
 	// Calling cancel must not panic.

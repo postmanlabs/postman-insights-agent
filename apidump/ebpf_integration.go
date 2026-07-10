@@ -280,20 +280,24 @@ func startHTTPSeBPFCapture(
 	//  - NodeCollector nil (standalone apidump / tests): original ebpf.Collect()
 	//    path, behaviour completely unchanged.
 	if args.HTTPS.NodeCollector != nil {
-		unsubscribe := args.HTTPS.NodeCollector.Subscribe(
+		unsubscribe, adapter := args.HTTPS.NodeCollector.Subscribe(
 			captureCtx,
 			ebpfArgs.Discovery,
 			ebpfArgs.FactorySelector,
 			out,
 			ebpfArgs.ProcRoot,
+			args.HTTPS.ContainerNetnsInode,
 		)
-		// Expose node-level handles to the telemetry worker (mirrors HookLoader).
+		// Expose node-level handles + this pod's adapter to the telemetry worker
+		// (mirrors HookLoader). The adapter carries the per-pod MessagesEmitted /
+		// FlowsActive counters, so passing it makes ebpf-stats msgs/flows_active
+		// reflect the NodeCollector path instead of always reading 0.
 		if ebpfArgs.HookLoader != nil {
 			ebpfArgs.HookLoader(
 				args.HTTPS.NodeCollector.Loader(),
 				args.HTTPS.NodeCollector.Thermostat(),
 				args.HTTPS.NodeCollector.Manager(),
-				nil, // per-pod adapter is internal to NodeCollector.Subscribe
+				adapter,
 			)
 		}
 		wg.Add(1)
