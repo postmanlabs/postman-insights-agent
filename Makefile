@@ -1,4 +1,4 @@
-.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf
+.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf generate-ebpf
 
 export GO111MODULE = on
 
@@ -17,6 +17,13 @@ ifeq ($(UNAME_S),Linux)
     BUILD_TAGS := insights_bpf
   endif
 endif
+
+generate-ebpf:
+	# Generate bpf2go bindings (libssl_*_bpfel.go) inside the Linux dev
+	# container. Required for VS Code/gopls on macOS when .vscode/settings.json
+	# enables -tags=insights_bpf. Outputs are gitignored; safe to re-run.
+	# Prerequisite: make dev-build (Docker Desktop must be running).
+	./build-scripts/dev-container.sh run 'bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h && cd ebpf/loader && go generate -tags insights_bpf ./...'
 
 build: clean
 ifeq ($(BUILD_TAGS),insights_bpf)

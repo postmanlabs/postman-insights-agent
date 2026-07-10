@@ -28,6 +28,30 @@ Required on the build host:
   ```
   This file is **not** checked into the repo (per-arch, large). The build
   scripts generate it during the container build.
+
+### Generating bpf2go output locally (IDE / full eBPF build)
+
+`go generate` emits `ebpf/loader/libssl_*_bpfel.go` and `*.o`. These are
+**gitignored** — CI regenerates them at build time. Without them, VS Code
+may show `undefined: libsslObjects` when gopls type-checks with
+`-tags=insights_bpf` (see `.vscode/settings.json`).
+
+**macOS (via Docker — no host bpftool required):**
+
+```sh
+make dev-build        # one-time: build the dev container image
+make generate-ebpf    # writes vmlinux.h + libssl_*_bpfel.go into your tree
+```
+
+Requires Docker Desktop. Reload the editor / restart gopls after running.
+
+**Linux (native toolchain):**
+
+```sh
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
+cd ebpf/loader && go generate -tags insights_bpf ./...
+```
+
 - libbpf headers (`bpf/bpf_helpers.h`, `bpf/bpf_tracing.h`, `bpf/bpf_core_read.h`)
   Provided by the `libbpf-dev` package or vendored.
 
@@ -39,7 +63,7 @@ From `ebpf/loader/loader.go`:
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go \
 //   -target amd64,arm64 \
 //   -cc clang \
-//   -cflags "-O2 -g -Wall -Werror" \
+//   -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations" \
 //   libssl ../programs/libssl.bpf.c -- -I../programs
 ```
 

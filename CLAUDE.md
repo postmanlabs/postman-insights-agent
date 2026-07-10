@@ -33,6 +33,7 @@ Common commands (from `Makefile`):
 | `make build`    | `go build -o bin/postman-insights-agent .` (runs `clean` first) |
 | `make clean`    | `go clean` |
 | `make mock`     | `go generate ./rest` (regenerates gomock mocks) |
+| `make generate-ebpf` | Generate bpf2go bindings (`libssl_*_bpfel.go`) inside the Linux dev container; use on macOS before eBPF IDE work or to fix gopls `undefined: libsslObjects` errors (requires `make dev-build` + Docker) |
 | `make test`     | `make mock` then `go test ./...` |
 | `make docker-build` | Build via `build-scripts/Dockerfile`, output binary to `bin/` |
 
@@ -105,7 +106,7 @@ Test-only / hidden flags live on the root command (`testOnlyUseHTTPSFlag`, `dogf
 - **Mocks**: `rest/` uses gomock. Run `make mock` (or `go generate ./rest`) after changing interfaces in `rest/interface.go`. `make test` does this automatically.
 - **libpcap is required at build time** on every platform — `pcap/get_pcap_handle_linux.go` is Linux-only; the generic file covers other OSes.
 - **Linux-only features**: `kube run` (DaemonSet mode), eBPF capture, and some pcap paths assume Linux. Be mindful when adding code under build-tagged files.
-- **eBPF generated files**: `ebpf/loader/*_bpfel.go` and `*.o` are produced by `go generate ./ebpf/loader` (via `bpf2go`) and are gitignored — CI regenerates them from source. Do not commit them.
+- **eBPF generated files**: `ebpf/loader/*_bpfel.go` and `*.o` are produced by `go generate ./ebpf/loader` (via `bpf2go`) and are gitignored — CI regenerates them from source. Do not commit them. On macOS, run `make dev-build` then `make generate-ebpf` to create them locally for VS Code/gopls (see `ebpf/README.md`).
 - **Helm charts** live in `charts/`, not `deployment/`. The `deployment/` directory is a Go package for environment detection.
 - **Akita lineage**: Many package names, struct names, and dependencies still say `akita`. Do **not** rename these casually — they cross module boundaries (`github.com/akitasoftware/akita-ir`, `akita-libs`, `go-utils`). When in doubt, leave the name alone.
 - **Backend talk** goes through `rest/` clients. Avoid hitting external HTTP from other packages directly.

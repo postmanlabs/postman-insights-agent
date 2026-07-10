@@ -20,7 +20,7 @@ import (
 // generate locally for whichever arch the host kernel exposes via
 // /sys/kernel/btf/vmlinux.
 //
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror" libssl ../programs/libssl.bpf.c -- -I../programs
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations" libssl ../programs/libssl.bpf.c -- -I../programs
 
 // Loader owns the loaded BPF objects (maps + programs) for a single Insights
 // Agent process. One Loader serves all target processes; per-process state
@@ -78,7 +78,7 @@ func (l *Loader) EventsMap() *ebpf.Map        { return l.libssl.Events }
 func (l *Loader) TargetPIDsMap() *ebpf.Map    { return l.libssl.TargetPids }
 func (l *Loader) CountersMap() *ebpf.Map      { return l.libssl.Counters }
 func (l *Loader) RateBucketsMap() *ebpf.Map   { return l.libssl.PidRateBuckets }
-func (l *Loader) SSLFdMap() (*ebpf.Map, bool)  { return l.libssl.SslCtxToFd, true }
+func (l *Loader) SSLFdMap() (*ebpf.Map, bool) { return l.libssl.SslCtxToFd, true }
 
 // SetRateCapPerSec updates the BPF-side per-PID rate cap (tokens/sec). 0
 // disables rate limiting.
