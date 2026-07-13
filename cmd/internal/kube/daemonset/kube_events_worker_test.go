@@ -57,7 +57,7 @@ func TestValidateContainerConfig_TraditionalMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := validateContainerConfig(tt.cfg)
+			result := validateContainerConfig(tt.cfg, "")
 			assert.Equal(t, tt.expectValidCount, result.ValidAttrCount)
 			assert.Len(t, result.MissingAttrs, tt.expectMissingCount)
 			if tt.expectMissing != nil {
@@ -124,7 +124,7 @@ func TestValidateContainerConfig_WorkspaceMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := validateContainerConfig(tt.cfg)
+			result := validateContainerConfig(tt.cfg, "")
 			assert.Equal(t, tt.expectValidCount, result.ValidAttrCount)
 			assert.Len(t, result.MissingAttrs, tt.expectMissingCount)
 			assert.Len(t, result.ValidationErrors, tt.expectValidErrCount)
@@ -141,7 +141,7 @@ func TestValidateContainerConfig_DiscoveryModeFallback(t *testing.T) {
 	cfg := requiredContainerConfig{
 		apiKey: "PMK-test-key",
 	}
-	result := validateContainerConfig(cfg)
+	result := validateContainerConfig(cfg, "")
 	assert.Equal(t, 1, result.ValidAttrCount)
 	assert.Contains(t, result.MissingAttrs, POSTMAN_INSIGHTS_PROJECT_ID)
 }
@@ -572,4 +572,195 @@ func TestApplyDiscoveryModeConfig_ExplicitIDs_PerPodOverrides(t *testing.T) {
 	assert.False(t, podArgs.DiscoveryMode)
 	assert.False(t, podArgs.ReproMode)
 	assert.Equal(t, 200.0, podArgs.AgentRateLimit)
+}
+
+func TestResolveInsightsAPIKey(t *testing.T) {
+	key, err := resolveInsightsAPIKey("pod-key", "ds-key", "my-pod")
+	require.NoError(t, err)
+	assert.Equal(t, "pod-key", key)
+
+	key, err = resolveInsightsAPIKey("", "ds-key", "my-pod")
+	require.NoError(t, err)
+	assert.Equal(t, "ds-key", key)
+
+	key, err = resolveInsightsAPIKey("   ", "ds-key", "my-pod")
+	require.NoError(t, err)
+	assert.Equal(t, "ds-key", key)
+
+	_, err = resolveInsightsAPIKey("", "", "my-pod")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), POSTMAN_INSIGHTS_API_KEY)
+}
+
+func TestValidateContainerConfig_DaemonSetAPIKeyFallback(t *testing.T) {
+	cfg := requiredContainerConfig{
+		projectID: "svc_abc123",
+	}
+
+	result := validateContainerConfig(cfg, "ds-api-key")
+	assert.Equal(t, 2, result.ValidAttrCount)
+	assert.Empty(t, result.MissingAttrs)
+}
+
+func TestSelectMainContainer_PrefersContainerWithServiceIDsOverAPIKeyOnly(t *testing.T) {
+	validUUID := "12345678-1234-1234-1234-123456789abc"
+	containerConfigMap := map[string]containerConfig{
+		"container-with-key-only": {
+			requiredContainerConfig: requiredContainerConfig{
+				apiKey: "pod-api-key",
+			},
+		},
+		"container-with-workspace-ids": {
+			requiredContainerConfig: requiredContainerConfig{
+				workspaceID: validUUID,
+				systemEnv:   validUUID,
+			},
+		},
+	}
+
+	_, selectedConfig, validation := selectMainContainer(containerConfigMap, "ds-api-key", []string{
+		"container-with-key-only",
+		"container-with-workspace-ids",
+	})
+	require.Empty(t, validation.MissingAttrs)
+	assert.Equal(t, validUUID, selectedConfig.requiredContainerConfig.workspaceID)
+	assert.Equal(t, validUUID, selectedConfig.requiredContainerConfig.systemEnv)
+	assert.Empty(t, selectedConfig.requiredContainerConfig.apiKey)
+}
+
+func TestSelectMainContainer_DeterministicTieBreak(t *testing.T) {
+	containerConfigMap := map[string]containerConfig{
+		"container-a": {
+			requiredContainerConfig: requiredContainerConfig{
+				apiKey: "pod-api-key",
+			},
+		},
+		"container-b": {
+			requiredContainerConfig: requiredContainerConfig{
+				projectID: "svc_abc123",
+			},
+		},
+	}
+
+	_, selectedConfig, validation := selectMainContainer(containerConfigMap, "ds-api-key", []string{
+		"container-a",
+		"container-b",
+	})
+	require.Empty(t, validation.MissingAttrs)
+	assert.Equal(t, "svc_abc123", selectedConfig.requiredContainerConfig.projectID)
+}
+
+func TestApplyExplicitServiceCredentials_NonDiscovery(t *testing.T) {
+	validUUID := "12345678-1234-1234-1234-123456789abc"
+	validSystemEnv := "abcdefab-abcd-abcd-abcd-abcdefabcdef"
+	validServiceID := akid.GenerateServiceID()
+
+	tests := []struct {
+		name            string
+		cfg             requiredContainerConfig
+		expectAPIKey    string
+		expectWorkspace string
+		expectProject   akid.ServiceID
+	}{
+		{
+			name: "workspace mode falls back to daemonset key",
+			cfg: requiredContainerConfig{
+				workspaceID: validUUID,
+				systemEnv:   validSystemEnv,
+			},
+			expectAPIKey:    "ds-api-key",
+			expectWorkspace: validUUID,
+		},
+		{
+			name: "traditional mode falls back to daemonset key",
+			cfg: requiredContainerConfig{
+				projectID: validServiceID.String(),
+			},
+			expectAPIKey:  "ds-api-key",
+			expectProject: validServiceID,
+		},
+		{
+			name: "pod key takes precedence over daemonset key",
+			cfg: requiredContainerConfig{
+				projectID: validServiceID.String(),
+				apiKey:    "pod-api-key",
+			},
+			expectAPIKey:  "pod-api-key",
+			expectProject: validServiceID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Daemonset{
+				InsightsAPIKey:      "ds-api-key",
+				InsightsEnvironment: "production",
+			}
+			pod := testPod("my-pod", "default")
+			podArgs := NewPodArgs(pod.Name)
+
+			err := d.applyExplicitServiceCredentials(pod, podArgs, tt.cfg, false)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.expectAPIKey, podArgs.PodCreds.InsightsAPIKey)
+			assert.Equal(t, "production", podArgs.PodCreds.InsightsEnvironment)
+			if tt.expectWorkspace != "" {
+				assert.Equal(t, tt.expectWorkspace, podArgs.WorkspaceID)
+				assert.Equal(t, validSystemEnv, podArgs.SystemEnv)
+			}
+			if tt.expectProject != (akid.ServiceID{}) {
+				assert.Equal(t, tt.expectProject, podArgs.InsightsProjectID)
+			}
+		})
+	}
+}
+
+func TestApplyExplicitServiceCredentials_EmptyAPIKey_Error(t *testing.T) {
+	validUUID := "12345678-1234-1234-1234-123456789abc"
+	d := &Daemonset{InsightsAPIKey: ""}
+	pod := testPod("my-pod", "default")
+	podArgs := NewPodArgs(pod.Name)
+
+	err := d.applyExplicitServiceCredentials(pod, podArgs, requiredContainerConfig{
+		workspaceID: validUUID,
+		systemEnv:   validUUID,
+	}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), POSTMAN_INSIGHTS_API_KEY)
+}
+
+func TestApplyDiscoveryModeConfig_UsesBestContainerConfig(t *testing.T) {
+	validUUID := "12345678-1234-1234-1234-123456789abc"
+	validSystemEnv := "abcdefab-abcd-abcd-abcd-abcdefabcdef"
+
+	d := &Daemonset{
+		DiscoveryMode:       true,
+		InsightsAPIKey:      "ds-api-key",
+		InsightsEnvironment: "production",
+		ClusterName:         "test-cluster",
+	}
+	pod := testPod("my-pod", "default")
+	podArgs := NewPodArgs(pod.Name)
+
+	containerConfigMap := map[string]containerConfig{
+		"first-container": {},
+		"second-container": {
+			requiredContainerConfig: requiredContainerConfig{
+				workspaceID: validUUID,
+				systemEnv:   validSystemEnv,
+			},
+		},
+	}
+	_, mainConfig, _ := selectMainContainer(containerConfigMap, d.InsightsAPIKey, []string{
+		"first-container",
+		"second-container",
+	})
+
+	err := d.applyDiscoveryModeConfig(pod, podArgs, mainConfig)
+	require.NoError(t, err)
+
+	assert.False(t, podArgs.DiscoveryMode)
+	assert.Equal(t, validUUID, podArgs.WorkspaceID)
+	assert.Equal(t, validSystemEnv, podArgs.SystemEnv)
+	assert.Equal(t, "ds-api-key", podArgs.PodCreds.InsightsAPIKey)
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
@@ -82,7 +83,7 @@ type Daemonset struct {
 
 	// Discovery mode
 	DiscoveryMode  bool
-	InsightsAPIKey string // DaemonSet-level API key for discovery mode
+	InsightsAPIKey string // DaemonSet-level API key; required in discovery mode, optional fallback otherwise
 	PodFilter      *PodFilter
 }
 
@@ -163,6 +164,12 @@ func parseKeyValuePairs(s string) map[string]string {
 	return result
 }
 
+// loadDaemonSetInsightsAPIKey reads the DaemonSet-level Postman API key from the environment.
+func loadDaemonSetInsightsAPIKey() string {
+	key, _ := cfg.GetPostmanAPIKeyAndEnvironment()
+	return strings.TrimSpace(key)
+}
+
 func StartDaemonset(args DaemonsetArgs) error {
 	// Apply environment variable defaults before processing.
 	args.applyEnvVarDefaults()
@@ -223,6 +230,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
+		InsightsAPIKey:           loadDaemonSetInsightsAPIKey(),
 		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
 		InsightsReproModeEnabled: args.ReproMode,
 		InsightsRateLimit:        args.RateLimit,
@@ -240,13 +248,11 @@ func StartDaemonset(args DaemonsetArgs) error {
 		EnableJavaTLS:            args.EnableJavaTLS,
 	}
 
-	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
+	// In discovery mode, the DaemonSet-level API key is required and the pod filter is initialized.
 	if args.DiscoveryMode {
-		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
-		if apiKey == "" {
+		if daemonsetRun.InsightsAPIKey == "" {
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
-		daemonsetRun.InsightsAPIKey = apiKey
 		podFilter, err := NewPodFilter(
 			daemonsetRun.KubeClient.AgentHost,
 			args.IncludeNamespaces,
@@ -259,6 +265,12 @@ func StartDaemonset(args DaemonsetArgs) error {
 		}
 		daemonsetRun.PodFilter = podFilter
 		printer.Infof("Discovery mode enabled. Using DaemonSet-level API key.\n")
+	} else if daemonsetRun.InsightsAPIKey == "" {
+		printer.Warningf(
+			"No DaemonSet-level %s set. Pods without their own API key will fail "+
+				"when processed; pods with no required configuration are skipped silently.\n",
+			POSTMAN_INSIGHTS_API_KEY,
+		)
 	}
 	if err := daemonsetRun.Run(); err != nil {
 		return cmderr.AkitaErr{Err: err}

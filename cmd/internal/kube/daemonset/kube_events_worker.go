@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
@@ -262,23 +263,19 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	// flow for that pod instead of auto-discovery's RegisterDiscoveredService.
 	// Pods without explicit IDs continue to use auto-discovery unchanged.
 	if d.DiscoveryMode {
-		// Pick the first running container for network namespace capture.
-		mainUUID := ""
-		var mainConfig containerConfig
-		if len(containerUUIDs) > 0 {
-			mainUUID = containerUUIDs[0]
-			if cfg, ok := containerConfigMap[mainUUID]; ok {
-				mainConfig = cfg
-			}
-		}
+		// Use the first running container's network namespace for packet capture. All
+		// containers in a pod share the same network namespace, but the CRI API
+		// requires a specific container ID to resolve it.
+		captureUUID := containerUUIDs[0]
+		_, mainConfig, _ := selectMainContainer(containerConfigMap, d.InsightsAPIKey, containerUUIDs)
 
 		deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
-		podArgs.ContainerUUID = mainUUID
+		podArgs.ContainerUUID = captureUUID
 
 		return d.applyDiscoveryModeConfig(pod, podArgs, mainConfig)
 	}
 
-	mainUUID, mainContainerConfig, validation := selectMainContainer(containerConfigMap)
+	mainUUID, mainContainerConfig, validation := selectMainContainer(containerConfigMap, d.InsightsAPIKey, containerUUIDs)
 
 	deployment.SetK8sTraceTags(pod, podArgs.TraceTags)
 	podArgs.ContainerUUID = mainUUID
@@ -304,24 +301,8 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	req := mainContainerConfig.requiredContainerConfig
-
-	if req.workspaceID != "" {
-		// Workspace mode
-		podArgs.WorkspaceID = req.workspaceID
-		podArgs.SystemEnv = req.systemEnv
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      req.apiKey,
-			InsightsEnvironment: d.InsightsEnvironment,
-		}
-	} else {
-		// Traditional mode
-		if err = akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
-			return errors.Wrap(err, "failed to parse project ID")
-		}
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      req.apiKey,
-			InsightsEnvironment: d.InsightsEnvironment,
-		}
+	if err := d.applyExplicitServiceCredentials(pod, podArgs, req, false); err != nil {
+		return err
 	}
 
 	// Check if Nginx traffic should be dropped, with a default fallback to the DaemonSet config
@@ -371,43 +352,8 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 		// Pod has explicit service IDs; route to the traditional/workspace
 		// apidump flow instead of RegisterDiscoveredService.
 		printer.Infof("Pod %s has explicit service IDs; using them instead of auto-discovery.\n", pod.Name)
-
-		if req.workspaceID != "" && req.projectID != "" {
-			return errors.Errorf("pod %s: %s and %s are mutually exclusive; set one or the other, not both",
-				pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, POSTMAN_INSIGHTS_PROJECT_ID)
-		}
-
-		if req.workspaceID != "" {
-			if _, err := uuid.Parse(req.workspaceID); err != nil {
-				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, req.workspaceID)
-			}
-			if req.systemEnv == "" {
-				return errors.Errorf("pod %s: %s is required when %s is set", pod.Name, POSTMAN_INSIGHTS_SYSTEM_ENV, POSTMAN_INSIGHTS_WORKSPACE_ID)
-			}
-			if _, err := uuid.Parse(req.systemEnv); err != nil {
-				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_SYSTEM_ENV, req.systemEnv)
-			}
-			podArgs.WorkspaceID = req.workspaceID
-			podArgs.SystemEnv = req.systemEnv
-		} else {
-			if err := akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
-				return errors.Wrapf(err, "pod %s: failed to parse %s", pod.Name, POSTMAN_INSIGHTS_PROJECT_ID)
-			}
-		}
-
-		// Use pod's own API key if available, otherwise fall back to the
-		// DaemonSet-level key so pods only need to set IDs, not credentials.
-		apiKey := req.apiKey
-		if apiKey == "" {
-			apiKey = d.InsightsAPIKey
-		}
-		if apiKey == "" {
-			return errors.Errorf("pod %s: no API key configured; set %s on the pod or provide a DaemonSet-level key",
-				pod.Name, POSTMAN_INSIGHTS_API_KEY)
-		}
-		podArgs.PodCreds = PodCreds{
-			InsightsAPIKey:      apiKey,
-			InsightsEnvironment: d.InsightsEnvironment,
+		if err := d.applyExplicitServiceCredentials(pod, podArgs, req, true); err != nil {
+			return err
 		}
 	} else {
 		// No explicit IDs: use auto-discovery (RegisterDiscoveredService).
@@ -462,6 +408,54 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 	return nil
 }
 
+// applyExplicitServiceCredentials configures podArgs for workspace or traditional mode
+// using explicit service IDs from the selected container. When validateWorkspaceIDs is
+// true, workspace and system environment IDs are validated before use.
+func (d *Daemonset) applyExplicitServiceCredentials(
+	pod coreV1.Pod,
+	podArgs *PodArgs,
+	req requiredContainerConfig,
+	validateWorkspaceIDs bool,
+) error {
+	if req.workspaceID != "" && req.projectID != "" {
+		return errors.Errorf("pod %s: %s and %s are mutually exclusive; set one or the other, not both",
+			pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, POSTMAN_INSIGHTS_PROJECT_ID)
+	}
+
+	if req.workspaceID != "" {
+		if validateWorkspaceIDs {
+			if _, err := uuid.Parse(req.workspaceID); err != nil {
+				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_WORKSPACE_ID, req.workspaceID)
+			}
+			if req.systemEnv == "" {
+				return errors.Errorf("pod %s: %s is required when %s is set", pod.Name, POSTMAN_INSIGHTS_SYSTEM_ENV, POSTMAN_INSIGHTS_WORKSPACE_ID)
+			}
+			if _, err := uuid.Parse(req.systemEnv); err != nil {
+				return errors.Errorf("pod %s: %s must be a valid UUID, got %q", pod.Name, POSTMAN_INSIGHTS_SYSTEM_ENV, req.systemEnv)
+			}
+		}
+		podArgs.WorkspaceID = req.workspaceID
+		podArgs.SystemEnv = req.systemEnv
+	} else {
+		if err := akid.ParseIDAs(req.projectID, &podArgs.InsightsProjectID); err != nil {
+			if validateWorkspaceIDs {
+				return errors.Wrapf(err, "pod %s: failed to parse %s", pod.Name, POSTMAN_INSIGHTS_PROJECT_ID)
+			}
+			return errors.Wrap(err, "failed to parse project ID")
+		}
+	}
+
+	apiKey, err := resolveInsightsAPIKey(req.apiKey, d.InsightsAPIKey, pod.Name)
+	if err != nil {
+		return err
+	}
+	podArgs.PodCreds = PodCreds{
+		InsightsAPIKey:      apiKey,
+		InsightsEnvironment: d.InsightsEnvironment,
+	}
+	return nil
+}
+
 // parseBoolConfig parses a boolean configuration value, logs errors if parsing fails,
 // and returns the parsed value along with a default fallback.
 func parseBoolConfig(configValue, configName, podName string, defaultValue bool) bool {
@@ -496,33 +490,78 @@ func parseSliceConfig(configValue, configName, podName string) []string {
 	return parsedValue
 }
 
+// resolveInsightsAPIKey returns the pod's API key if set, otherwise the
+// DaemonSet-level fallback key. Whitespace-only values are treated as unset.
+func resolveInsightsAPIKey(podKey, daemonsetKey, podName string) (string, error) {
+	podKey = strings.TrimSpace(podKey)
+	daemonsetKey = strings.TrimSpace(daemonsetKey)
+	if podKey != "" {
+		return podKey, nil
+	}
+	if daemonsetKey != "" {
+		printer.Infof("Pod %s: using DaemonSet-level API key (no pod-level %s set).\n",
+			podName, POSTMAN_INSIGHTS_API_KEY)
+		return daemonsetKey, nil
+	}
+	return "", errors.Errorf("pod %s: no API key configured; set %s on the pod or provide a DaemonSet-level key",
+		podName, POSTMAN_INSIGHTS_API_KEY)
+}
+
 // selectMainContainer picks the container in the pod with the most valid required
 // attributes (for deciding which container's config to use). Returns its UUID, config,
-// and validation result.
-func selectMainContainer(containerConfigMap map[string]containerConfig) (uuid string, config containerConfig, result containerValidationResult) {
+// and validation result. When multiple containers tie on ValidAttrCount, containers
+// with explicit service IDs are preferred, then lexicographic UUID order within
+// orderedUUIDs for deterministic selection.
+func selectMainContainer(
+	containerConfigMap map[string]containerConfig,
+	fallbackAPIKey string,
+	orderedUUIDs []string,
+) (uuid string, config containerConfig, result containerValidationResult) {
 	result.ValidAttrCount = -1
-	for u, cfg := range containerConfigMap {
-		v := validateContainerConfig(cfg.requiredContainerConfig)
-		if v.ValidAttrCount > result.ValidAttrCount {
+	bestPriority := -1
+
+	for _, u := range orderedUUIDs {
+		cfg, ok := containerConfigMap[u]
+		if !ok {
+			continue
+		}
+		v := validateContainerConfig(cfg.requiredContainerConfig, fallbackAPIKey)
+		priority := explicitServiceConfigPriority(cfg.requiredContainerConfig)
+		if v.ValidAttrCount > result.ValidAttrCount ||
+			(v.ValidAttrCount == result.ValidAttrCount && priority > bestPriority) ||
+			(v.ValidAttrCount == result.ValidAttrCount && priority == bestPriority && uuid == "") {
 			uuid = u
 			config = cfg
 			result = v
+			bestPriority = priority
 		}
 	}
 	return uuid, config, result
+}
+
+func explicitServiceConfigPriority(cfg requiredContainerConfig) int {
+	if cfg.projectID != "" || cfg.workspaceID != "" {
+		return 2
+	}
+	if strings.TrimSpace(cfg.apiKey) != "" {
+		return 1
+	}
+	return 0
 }
 
 // validateContainerConfig validates a container's required config.
 // - ValidAttrCount: used to pick the "best" container (higher = more complete config).
 // - MissingAttrs: required env var names that are not set.
 // - ValidationErrors: format errors (e.g. invalid UUID).
-// Rules: apiKey is always required. Either (projectID for traditional mode) or
-// (workspaceID + systemEnv as valid UUIDs for workspace mode) must be present.
-func validateContainerConfig(cfg requiredContainerConfig) containerValidationResult {
+// Rules: apiKey is required unless fallbackAPIKey is set. Either (projectID for
+// traditional mode) or (workspaceID + systemEnv as valid UUIDs for workspace mode)
+// must be present.
+func validateContainerConfig(cfg requiredContainerConfig, fallbackAPIKey string) containerValidationResult {
 	var r containerValidationResult
 
-	// API key is required in both modes
-	if cfg.apiKey != "" {
+	apiKey := strings.TrimSpace(cfg.apiKey)
+	fallbackAPIKey = strings.TrimSpace(fallbackAPIKey)
+	if apiKey != "" || fallbackAPIKey != "" {
 		r.ValidAttrCount++
 	} else {
 		r.MissingAttrs = append(r.MissingAttrs, POSTMAN_INSIGHTS_API_KEY)
