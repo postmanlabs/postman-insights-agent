@@ -234,12 +234,20 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	chunk := append([]byte(nil), ev.Bytes()...)
 	st.pending.Append(memview.New(chunk))
 
-	a.drain(key, st, ev.Time(monoEpoch))
+	a.drain(key, st, ev.Time(monoEpoch), ev.Truncated())
 }
 
 // drain runs the parser state machine until no progress can be made.
 // Caller holds a.mu.
-func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
+//
+// truncated indicates the SSL call that produced the bytes just appended was
+// truncated at the per-event capture cap (len_total > len_captured). The
+// missing tail was dropped in-kernel and will NEVER arrive, so we must not let
+// the incomplete message keep the parser open — otherwise it head-of-line
+// blocks every later message on the same connection (the request/response
+// drift bug). We finalize such a message best-effort (isEnd=true) and, if that
+// fails, abandon just this message's parser while keeping the flow alive.
+func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time, truncated bool) {
 	for st.pending.Len() > 0 && !st.dropped {
 		if st.parser == nil {
 			factory, decision, discardFront := a.FactorySelector.Select(st.pending, false)
@@ -251,6 +259,13 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 				a.dropFlow(key, st)
 				return
 			case akinet.NeedMoreData:
+				// Can't identify the protocol yet. If the bytes were truncated,
+				// the identifying tail is gone — abandon this message but keep the
+				// flow alive so the next SSL call parses cleanly.
+				if truncated {
+					a.resetParser(st)
+					return
+				}
 				if st.pending.Len() > MaxPendingPerFlow {
 					a.dropFlow(key, st)
 				}
@@ -263,24 +278,40 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 			}
 		}
 
-		result, unused, _, err := st.parser.Parse(st.pending, false)
+		// isEnd=truncated forces the parser to finalize best-effort when the
+		// tail is unrecoverable (per the TCPParser contract it then returns a
+		// non-nil result or an error), instead of parking in NeedMoreData and
+		// head-of-line blocking every later message on the same connection.
+		result, unused, _, err := st.parser.Parse(st.pending, truncated)
 		if err != nil {
-			// Parse error — flow is permanently un-parseable.
+			if truncated {
+				// Truncated + unparseable: drop only this message's parser, keep
+				// the flow so subsequent messages still pair correctly.
+				a.resetParser(st)
+				return
+			}
+			// Genuine parse error on a complete stream — flow is un-parseable.
 			a.dropFlow(key, st)
 			return
 		}
 		if result == nil {
-			// Parser absorbed all bytes and awaits more. Clear pending; next
-			// event will append fresh bytes.
+			// Only reachable when isEnd=false: parser absorbed all bytes and
+			// awaits more. Clear pending; the next event appends fresh bytes.
 			st.pending.Clear()
 			return
 		}
 
-		// Got a complete message. Emit it and continue with unused tail.
+		// Got a complete (or best-effort finalized) message. Emit and continue.
 		a.Out <- a.toPNT(st, key, result, now)
 		a.MessagesEmitted++
 		st.parser = nil
 		st.pending = unused
+		if truncated {
+			// The remainder after a truncated SSL call is not a clean message
+			// boundary — don't try to reparse it as a new message.
+			st.pending.Clear()
+			return
+		}
 		// Any leftover (pipelined) bytes belong to the next message, and they
 		// arrived at "now" — start its clock here so it doesn't inherit this
 		// message's start time.
@@ -288,6 +319,14 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 			st.msgStart = now
 		}
 	}
+}
+
+// resetParser abandons the current message's parser without marking the flow
+// dropped, so subsequent messages on the same connection keep parsing and
+// pairing. Contrast with dropFlow, which kills the flow permanently.
+func (a *Adapter) resetParser(st *flowState) {
+	st.parser = nil
+	st.pending.Clear()
 }
 
 func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetworkTraffic) {
