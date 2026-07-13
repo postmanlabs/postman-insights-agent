@@ -366,6 +366,15 @@ func init() {
 	}
 }
 
+// dropOutboundWitnesses gates agent-side suppression of OUTBOUND-direction
+// witnesses. Direction is computed correctly upstream (see
+// ebpf/events/adapter.go: directionForPair) and set on the witness, but the
+// backend/UI do not yet support the OUTBOUND NetworkDirection — uploading such
+// witnesses would render incorrectly. Until the backend and pcap path add OUTBOUND support,
+// we drop these at the agent and log it. Flip this to false (and remove the
+// block below) to re-enable once the backend is ready.
+const dropOutboundWitnesses = true
+
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	if w.witnessFlushed {
 		printer.Debugf("Witness %v already flushed.\n", w.id)
@@ -374,6 +383,14 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	defer func() {
 		w.witnessFlushed = true
 	}()
+
+	// TEMPORARY: block outbound witnesses at the agent until the backend
+	// supports the OUTBOUND direction. Marked flushed by the defer above so it
+	// is not retried on the next pair-cache flush. See dropOutboundWitnesses.
+	if dropOutboundWitnesses && w.direction == akinet.DirectionOutbound {
+		printer.Debugf("Dropping OUTBOUND witness %v (agent-side gate; backend does not yet support outbound direction)\n", w.id)
+		return
+	}
 
 	// Mark the method as not obfuscated.
 	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE
