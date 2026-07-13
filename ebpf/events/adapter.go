@@ -286,6 +286,7 @@ func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetwork
 		enrichHTTPRequestURL(&req, key.Direction, st.conn.localIP, st.conn.localPort, st.conn.remoteIP, st.conn.remotePort)
 		pnt.Content = req
 	}
+	pnt.Direction = directionForPair(pnt.Content, key.Direction)
 	a.Out <- pnt
 	a.MessagesEmitted++
 }
@@ -331,7 +332,37 @@ func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkConten
 		pnt.SrcIP = net.IPv4zero
 		pnt.DstIP = net.IPv4zero
 	}
+	pnt.Direction = directionForPair(c, key.Direction)
 	return pnt
+}
+
+// directionForPair maps the wire direction of an SSL call (ingress = SSL_read,
+// egress = SSL_write) and the HTTP message kind to the service-relative
+// direction of the whole request/response pair:
+//
+//	request received (ingress)  -> service is the server -> inbound
+//	request sent     (egress)   -> service is the client -> outbound
+//	response received (ingress) -> service is the client -> outbound
+//	response sent     (egress)  -> service is the server -> inbound
+//
+// Both the request and the response of a pair therefore resolve to the same
+// direction, so it does not matter which arrives first.
+func directionForPair(content akinet.ParsedNetworkContent, wireDir uint8) akinet.NetTrafficDirection {
+	ingress := wireDir == DirIngress
+	switch content.(type) {
+	case akinet.HTTPRequest:
+		if ingress {
+			return akinet.DirectionInbound
+		}
+		return akinet.DirectionOutbound
+	case akinet.HTTPResponse:
+		if ingress {
+			return akinet.DirectionOutbound
+		}
+		return akinet.DirectionInbound
+	default:
+		return akinet.DirectionUnknown
+	}
 }
 
 // GC removes flows idle for longer than `maxIdle`. Call periodically.

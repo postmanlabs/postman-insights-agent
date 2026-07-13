@@ -56,6 +56,11 @@ type witnessWithInfo struct {
 	id              akid.WitnessID
 	isRequest       bool
 
+	// direction is the traffic direction relative to the monitored service, as
+	// reported by the capture layer (currently the eBPF path; DirectionUnknown
+	// for producers that do not compute it, e.g. pcap).
+	direction akinet.NetTrafficDirection
+
 	// Mutex protecting witness while it is being processed and/or flushed.
 	witnessMutex sync.Mutex
 
@@ -75,8 +80,16 @@ func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 		return nil, errors.Wrap(err, "failed to marshal witness proto")
 	}
 
+	// Map the capture-layer direction to the backend's NetworkDirection.
+	// Default to Inbound when unknown, preserving prior behaviour for producers
+	// (e.g. the pcap path) that do not yet compute a direction.
+	direction := kgxapi.Inbound
+	if r.direction == akinet.DirectionOutbound {
+		direction = kgxapi.Outbound
+	}
+
 	return &kgxapi.WitnessReport{
-		Direction:       kgxapi.Inbound,
+		Direction:       direction,
 		OriginAddr:      r.srcIP,
 		OriginPort:      r.srcPort,
 		DestinationAddr: r.dstIP,
@@ -260,6 +273,13 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			learn.MergeWitness(pair.witness, partial.Witness)
 			pair.computeProcessingLatency(isRequest, t)
 
+			// Backfill direction if the first-seen half didn't carry one. Both
+			// halves of an eBPF pair report the same direction, so this is a
+			// no-op there; it helps mixed producers.
+			if pair.direction == akinet.DirectionUnknown {
+				pair.direction = t.Direction
+			}
+
 			// If partial is the request, flip the src/dst in the pair before
 			// reporting.
 			if isRequest {
@@ -268,8 +288,8 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			}
 
 			c.queueUpload(pair)
-			printer.Debugf("Completed witness %v at %v -- %v\n",
-				partial.PairKey, t.ObservationTime, t.FinalPacketTime)
+			printer.Debugf("Completed witness %v direction=%s at %v -- %v\n",
+				partial.PairKey, pair.direction, t.ObservationTime, t.FinalPacketTime)
 		}()
 	} else {
 		// Store the partial witness for now, waiting for its pair or a
@@ -285,6 +305,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			finalPacketTime: t.FinalPacketTime,
 			id:              partial.PairKey,
 			isRequest:       isRequest,
+			direction:       t.Direction,
 		}
 		c.pairCache.Store(partial.PairKey, w)
 		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",

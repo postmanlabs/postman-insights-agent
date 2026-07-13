@@ -28,8 +28,8 @@ github.com/agext/levenshtein v1.2.1 h1:QmvMAjj2aEICytGiWzmxoE0x2KZvE0fvmqMOfy2tj
 github.com/agext/levenshtein v1.2.1/go.mod h1:JEDfjyjHDjOF/1e4FlBE/PkbqA9OfWu2ki2W0IB5558=
 github.com/akitasoftware/akita-ir v0.0.0-20250819204808-cf56d019e1b4 h1:FO97EZIFk3N1S/ku1uLFEcvsUEawcqBEIHUtDVlDPuw=
 github.com/akitasoftware/akita-ir v0.0.0-20250819204808-cf56d019e1b4/go.mod h1:WEWPzhZtxlJnov3MxcqSDiZaHHf00vs3aJwCdt3OwzA=
-github.com/akitasoftware/akita-libs v0.0.0-20250819213613-5adf3287b6a3 h1:VVaDA+PKX1UTM6k8mWy4siR1T2MJoNHSVPkLrnaFGZE=
-github.com/akitasoftware/akita-libs v0.0.0-20250819213613-5adf3287b6a3/go.mod h1:wBQmA6uL5GWBzCeuJpSWDs5kPpaG2T6wrjSBg1YOAdA=
+github.com/akitasoftware/akita-libs v0.0.0-20260710160248-7b4a18a88ad4 h1:6lnsYXAQOZ2fr6B6cwPvFLSlXlfoo6YONG9HpmreGcg=
+github.com/akitasoftware/akita-libs v0.0.0-20260710160248-7b4a18a88ad4/go.mod h1:wBQmA6uL5GWBzCeuJpSWDs5kPpaG2T6wrjSBg1YOAdA=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803 h1:ebIh/EFuaP8GczzMe8EwVID/blSv5Tej6S8NE4xyarQ=
 github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803/go.mod h1:+IOXf7l/QCAQECJzjJwhTp1sBkRoJ6WciZwJezUwBa4=
 github.com/akitasoftware/gopacket v1.1.18-0.20240820200020-7289ae956f70 h1:VnU7QLDBwRujpQoHwShs5yu0Ahv1fSalNJa4UijwlmY=
@@ -119,8 +119,6 @@ github.com/emicklei/go-restful/v3 v3.11.0 h1:rAQeMHw1c7zTmncogyy8VvRZwtkmkZ4FxER
 github.com/emicklei/go-restful/v3 v3.11.0/go.mod h1:6n3XBCmQQb25CM2LCACGz8ukIrRry+4bhvbpWn3mrbc=
 github.com/evanphx/json-patch v4.12.0+incompatible h1:4onqiflcdA9EOZ4RxV643DvftH5pOlLGNtQ5lPWQu84=
 github.com/evanphx/json-patch v4.12.0+incompatible/go.mod h1:50XU6AFN0ol/bzJsmQLiYLvXMP4fmwYFNcr97nuDLSk=
-github.com/evanphx/json-patch/v5 v5.9.11 h1:/8HVnzMq13/3x9TPvjG08wUGqBTmZBsCWzjTM0wiaDU=
-github.com/evanphx/json-patch/v5 v5.9.11/go.mod h1:3j+LviiESTElxA4p3EMKAB9HXj3/XEtnUf6OZxqIQTM=
 github.com/fatih/color v1.7.0/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=
 github.com/fatih/color v1.16.0 h1:zmkK9Ngbjj+K0yRhTVONQh1p/HknKYSlNT+vZCzyokM=
 github.com/fatih/color v1.16.0/go.mod h1:fL2Sau1YI5c0pdGEVCbKQbLXB6edEj1ZgiY4NijnWvE=
