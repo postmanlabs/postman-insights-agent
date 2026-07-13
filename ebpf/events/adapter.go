@@ -123,10 +123,16 @@ func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {
 }
 
 type flowState struct {
-	parser    akinet.TCPParser
-	pending   memview.MemView
-	conn      *tlsConnState
+	parser akinet.TCPParser
+	pending memview.MemView
+	conn    *tlsConnState
+	// firstSeen is when this flow was first observed (connection-level; used as
+	// a fallback and for GC). msgStart is when the CURRENT message's first byte
+	// arrived — this is what a witness's ObservationTime must use, otherwise
+	// every message on a keep-alive flow inherits the flow's first-ever
+	// timestamp (causing negative processing latency and wrong witness times).
 	firstSeen time.Time
+	msgStart  time.Time
 	lastSeen  time.Time
 	totalIn   int  // total bytes ever observed on this flow
 	dropped   bool // permanent: malformed or oversized
@@ -218,6 +224,12 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 		return
 	}
 
+	// Mark the start of a new message: when there are no buffered bytes for an
+	// in-progress message, this event carries the first byte of the next one.
+	if st.pending.Len() == 0 {
+		st.msgStart = ev.Time(monoEpoch)
+	}
+
 	// Copy bytes — the underlying ringbuf record is reused once Feed returns.
 	chunk := append([]byte(nil), ev.Bytes()...)
 	st.pending.Append(memview.New(chunk))
@@ -269,6 +281,12 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 		a.MessagesEmitted++
 		st.parser = nil
 		st.pending = unused
+		// Any leftover (pipelined) bytes belong to the next message, and they
+		// arrived at "now" — start its clock here so it doesn't inherit this
+		// message's start time.
+		if st.pending.Len() > 0 {
+			st.msgStart = now
+		}
 	}
 }
 
@@ -310,10 +328,19 @@ func (a *Adapter) dropFlow(key FlowKey, st *flowState) {
 // SrcIP=local, DstIP=remote when we wrote (egress) — what we sent goes from
 // us to them. For ingress (we received bytes), SrcIP=remote, DstIP=local.
 func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkContent, now time.Time) akinet.ParsedNetworkTraffic {
+	// ObservationTime is the start of THIS message (msgStart), not the flow's
+	// first-ever message (firstSeen) — otherwise every message on a keep-alive
+	// connection inherits the flow's creation time, producing negative
+	// processing latency and incorrect witness timestamps. Fall back to
+	// firstSeen if msgStart was never set.
+	obsTime := st.msgStart
+	if obsTime.IsZero() {
+		obsTime = st.firstSeen
+	}
 	pnt := akinet.ParsedNetworkTraffic{
 		Content:         c,
 		Interface:       st.ifaceTag,
-		ObservationTime: st.firstSeen,
+		ObservationTime: obsTime,
 		FinalPacketTime: now,
 	}
 	if st.conn.socketResolved {
