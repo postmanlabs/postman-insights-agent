@@ -24,6 +24,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ci"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/location"
 	"github.com/postmanlabs/postman-insights-agent/pcap"
@@ -156,11 +157,16 @@ type HTTPSCaptureArgs struct {
 	// disables. Forwarded into the BPF rate_cap_per_sec global.
 	RateCapPerSec uint32
 
-	// EnableJavaTLS, when true, also attaches the java_tls kprobe that
-	// captures JVM TLS traffic piped via the postman-java-agent ioctl bridge.
-	// Requires postman-java-agent.jar to be injected into target JVMs (via the
-	// kube-webhook or manually). Has no effect when Enabled is false.
-	EnableJavaTLS bool
+	// NodeCollector, when non-nil, is a node-scoped shared eBPF collector
+	// that was already initialised (loader.Load called once). startHTTPSeBPFCapture
+	// will call NodeCollector.Subscribe instead of spinning up its own
+	// ebpf.Collect() pipeline, avoiding redundant BPF program loads for each
+	// monitored pod on the same node.
+	//
+	// When nil (standalone apidump, tests), startHTTPSeBPFCapture falls back to
+	// the original ebpf.Collect() path. The DaemonSet path disables HTTPS
+	// capture when NodeCollector is unavailable rather than falling back.
+	NodeCollector *ebpf.NodeCollector
 }
 
 type Args struct {

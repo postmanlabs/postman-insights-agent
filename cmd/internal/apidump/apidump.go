@@ -61,7 +61,6 @@ var (
 	httpsCaptureMode      string
 	httpsCBPFExcludePort  uint16
 	httpsRateCapPerSec    uint32
-	enableJavaTLS         bool
 	httpsNoThermostat     bool
 	privacyMode           string
 
@@ -348,7 +347,6 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 			CaptureMode:       httpsCaptureMode,
 			CBPFExcludePort:   httpsCBPFExcludePort,
 			RateCapPerSec:     httpsRateCapPerSec,
-			EnableJavaTLS:     enableJavaTLS,
 			DisableThermostat: httpsNoThermostat,
 		},
 		PrivacyMode: privacyMode,
@@ -583,14 +581,6 @@ func init() {
 		0,
 		"Per-PID rate cap (events/sec) for HTTPS capture (sampling layer 2). 0 disables. "+
 			"Recommended: 1000 for production workloads. Kernel-enforced via a token bucket.",
-	)
-	Cmd.Flags().BoolVar(
-		&enableJavaTLS,
-		"enable-java-tls",
-		false,
-		"Also capture JVM TLS traffic via the java_tls kprobe (postman-java-agent ioctl bridge). "+
-			"Requires --enable-https-capture and postman-java-agent.jar injected into target JVMs "+
-			"(via the kube-webhook or JAVA_TOOL_OPTIONS manually).",
 	)
 	Cmd.Flags().BoolVar(
 		&httpsNoThermostat,

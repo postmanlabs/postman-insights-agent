@@ -12,6 +12,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -46,10 +47,6 @@ type DaemonsetArgs struct {
 	HTTPSBodySizeCap     uint32 // 0 = default (4096 bytes)
 	HTTPSCBPFExcludePort uint16 // 0 = no cBPF port exclusion; kube run defaults to 443
 	HTTPSNoThermostat    bool
-	// EnableJavaTLS also attaches the java_tls kprobe for JVM HTTPS traffic
-	// via the postman-java-agent ioctl bridge. Only effective when
-	// EnableHTTPSCapture is also true.
-	EnableJavaTLS bool
 }
 
 type Daemonset struct {
@@ -64,7 +61,12 @@ type Daemonset struct {
 	HTTPSBodySizeCap     uint32
 	HTTPSCBPFExcludePort uint16
 	HTTPSNoThermostat    bool
-	EnableJavaTLS        bool
+
+	// EBPFNodeCollector is a node-scoped shared eBPF collector initialised once
+	// per agent pod when EnableHTTPSCapture is true. Nil when HTTPS capture is
+	// disabled, NodeCollector initialisation failed, or on non-Linux /
+	// non-insights_bpf builds.
+	EBPFNodeCollector *ebpf.NodeCollector
 
 	KubeClient  kube_apis.KubeClient
 	CRIClient   *cri_apis.CriClient
@@ -237,7 +239,6 @@ func StartDaemonset(args DaemonsetArgs) error {
 		HTTPSBodySizeCap:         args.HTTPSBodySizeCap,
 		HTTPSCBPFExcludePort:     args.HTTPSCBPFExcludePort,
 		HTTPSNoThermostat:        args.HTTPSNoThermostat,
-		EnableJavaTLS:            args.EnableJavaTLS,
 	}
 
 	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
@@ -260,8 +261,32 @@ func StartDaemonset(args DaemonsetArgs) error {
 		daemonsetRun.PodFilter = podFilter
 		printer.Infof("Discovery mode enabled. Using DaemonSet-level API key.\n")
 	}
+	// Initialise a shared NodeCollector once per agent pod when HTTPS capture
+	// is enabled. This loads the eBPF programs exactly once for all pods on
+	// this node, instead of once per monitored pod.
+	if args.EnableHTTPSCapture {
+		nc, err := ebpf.NewNodeCollector(ebpf.NodeCollectorConfig{
+			MaxCaptureBytes:   args.HTTPSBodySizeCap,
+			RateCapPerSec:     args.HTTPSRateCapPerSec,
+			DisableThermostat: args.HTTPSNoThermostat,
+		})
+		if err != nil {
+			printer.Warningf(
+				"ebpf: failed to initialise node-scoped BPF collector (%v); "+
+					"HTTPS capture will be disabled for all monitored pods on this node.\n", err)
+		} else {
+			daemonsetRun.EBPFNodeCollector = nc
+			printer.Infof("ebpf: node-scoped BPF collector initialised (one loader for all pods on this node)\n")
+		}
+	}
+
 	if err := daemonsetRun.Run(); err != nil {
 		return cmderr.AkitaErr{Err: err}
+	}
+
+	// Clean up the shared NodeCollector after Run() returns.
+	if daemonsetRun.EBPFNodeCollector != nil {
+		_ = daemonsetRun.EBPFNodeCollector.Close()
 	}
 
 	return nil
@@ -278,6 +303,22 @@ func StartDaemonset(args DaemonsetArgs) error {
 func (d *Daemonset) Run() error {
 	printer.Infof("Starting daemonset agent...\n")
 	done := make(chan struct{})
+
+	// Start the shared eBPF node collector's event-dispatch loop when enabled.
+	// This must be running before any per-pod Subscribe() calls are made.
+	if d.EBPFNodeCollector != nil {
+		nodeCtx, cancelNode := context.WithCancel(context.Background())
+		go func() {
+			<-done
+			cancelNode()
+		}()
+		go func() {
+			if err := d.EBPFNodeCollector.Run(nodeCtx); err != nil {
+				printer.Warningf("ebpf: node-collector stopped: %v\n", err)
+			}
+		}()
+		printer.Infof("ebpf: node-collector event loop started\n")
+	}
 
 	// Start the telemetry worker
 	printer.Infof("Starting telemetry worker...\n")

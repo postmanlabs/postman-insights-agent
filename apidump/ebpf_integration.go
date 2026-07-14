@@ -272,17 +272,52 @@ func startHTTPSeBPFCapture(
 	}()
 
 	// Actual eBPF collect loop (libssl uprobes).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer close(out)
-		if err := ebpf.Collect(captureCtx, ebpfArgs); err != nil {
-			printer.Stderr.Warningf("ebpf: capture stopped: %v\n", err)
+	//
+	// Two paths:
+	//  - NodeCollector set (DaemonSet): BPF programs already loaded once for the
+	//    node. Subscribe registers this pod's discovery + out channel with the
+	//    shared loader — no additional loader.Load() call.
+	//  - NodeCollector nil (standalone apidump / tests): original ebpf.Collect()
+	//    path, behaviour completely unchanged.
+	if args.HTTPS.NodeCollector != nil {
+		unsubscribe, adapter := args.HTTPS.NodeCollector.Subscribe(
+			captureCtx,
+			ebpfArgs.Discovery,
+			ebpfArgs.FactorySelector,
+			out,
+			ebpfArgs.ProcRoot,
+			args.HTTPS.ContainerNetnsInode,
+		)
+		// Expose node-level handles + this pod's adapter to the telemetry worker
+		// (mirrors HookLoader). The adapter carries the per-pod MessagesEmitted /
+		// FlowsActive counters, so passing it makes ebpf-stats msgs/flows_active
+		// reflect the NodeCollector path instead of always reading 0.
+		if ebpfArgs.HookLoader != nil {
+			ebpfArgs.HookLoader(
+				args.HTTPS.NodeCollector.Loader(),
+				args.HTTPS.NodeCollector.Thermostat(),
+				args.HTTPS.NodeCollector.Manager(),
+				adapter,
+			)
 		}
-	}()
-
-	// Java TLS capture (--enable-java-tls) is wired in ebpf_integration_javatls_linux.go
-	// which is added in the java-tls PR alongside collect_javatls_linux.go.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(out)
+			<-captureCtx.Done()
+			unsubscribe()
+		}()
+	} else {
+		// Standalone path: original behaviour, no change.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(out)
+			if err := ebpf.Collect(captureCtx, ebpfArgs); err != nil {
+				printer.Stderr.Warningf("ebpf: capture stopped: %v\n", err)
+			}
+		}()
+	}
 
 	return cancel
 }

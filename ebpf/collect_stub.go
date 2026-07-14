@@ -49,22 +49,3 @@ func Defaults() Args {
 
 // Collect is a no-op on platforms / builds without eBPF support.
 func Collect(_ context.Context, _ Args) error { return ErrUnsupported }
-
-// JavaTLSCollector is a stub on non-eBPF builds. The real implementation
-// lives in collect_javatls_linux.go (//go:build linux && insights_bpf).
-type JavaTLSCollector struct{}
-
-func NewJavaTLSCollector(_ uint32, _ bool, _ *events.Adapter) (*JavaTLSCollector, error) {
-	return nil, ErrUnsupported
-}
-
-func (c *JavaTLSCollector) Attach() error                      { return ErrUnsupported }
-func (c *JavaTLSCollector) Run(_ context.Context, _ time.Time) {}
-func (c *JavaTLSCollector) Close() error                       { return nil }
-func (c *JavaTLSCollector) AddTargetPID(_ uint32) error        { return nil }
-func (c *JavaTLSCollector) RemoveTargetPID(_ uint32) error     { return nil }
-func (c *JavaTLSCollector) CounterEmitted() uint64             { return 0 }
-func (c *JavaTLSCollector) CounterRingbufDrops() uint64        { return 0 }
-func (c *JavaTLSCollector) CounterReadFailed() uint64          { return 0 }
-func (c *JavaTLSCollector) CounterBytes() uint64               { return 0 }
-func (c *JavaTLSCollector) CounterBadCmd() uint64              { return 0 }

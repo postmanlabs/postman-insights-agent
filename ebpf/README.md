@@ -47,25 +47,46 @@ The eBPF code paths are gated behind two conditions:
 
 ## How to actually build & run
 
+### VS Code / gopls on macOS (fix "undefined: libsslObjects")
+
+`loader_linux.go` depends on bpf2go-generated `libssl_*_bpfel.go`, which is
+gitignored. If `.vscode/settings.json` enables `-tags=insights_bpf`, gopls
+needs those files present locally:
+
+```bash
+make dev-build        # one-time: build the dev container image
+make generate-ebpf    # generates vmlinux.h + bpf2go bindings via Docker
+```
+
+This does **not** affect plain `make` or `make test` on macOS (those use
+stubs). Reload VS Code after generating.
+
 ### On macOS (Apple Silicon or Intel) via Docker Desktop
 
 ```bash
 make dev-build          # one-time: build the dev container image
-make dev-shell          # open a shell inside it (repo bind-mounted, --pid=host)
+make generate-ebpf      # bpf2go bindings for IDE or local eBPF work
+make dev-shell          # optional: open a shell inside the dev container
 
-# Inside the shell:
-bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
-make build-ebpf         # generates bpf2go bindings + builds insights_bpf binary
+# Inside the shell (or after generate-ebpf on the host tree):
+make build              # on Linux inside the container → insights_bpf binary
 ./bin/postman-insights-agent apidump-ebpf --duration 60s          # spike
 # or for the production path:
 ./bin/postman-insights-agent apidump --enable-https-capture --project ...
 ```
 
+Or build a static eBPF binary without entering the shell:
+
+```bash
+make docker-build-ebpf
+```
+
 ### On a Linux host with `clang ≥ 14`, `llvm-strip`, `bpftool`, `libbpf-dev`
 
 ```bash
-sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
-make build-ebpf
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
+cd ebpf/loader && go generate -tags insights_bpf ./...
+make   # auto-detects toolchain and builds with insights_bpf
 sudo ./bin/postman-insights-agent apidump-ebpf --duration 60s
 ```
 

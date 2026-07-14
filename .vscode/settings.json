@@ -1,11 +1,17 @@
 {
-  // eBPF loader sources use `//go:build linux && insights_bpf`. On macOS, gopls
-  // must cross-compile as Linux with the tag enabled to type-check those files.
+  // eBPF loader sources use `//go:build linux && insights_bpf`. On macOS,
+  // gopls cross-compiles as Linux with that tag to type-check those files.
+  //
+  // PREREQUISITE: bpf2go output (libssl_bpfel.go) is gitignored and must be
+  // generated once before gopls can resolve libsslObjects / loadLibssl:
+  //   make generate-ebpf
+  // That writes ebpf/loader/libssl_bpfel.go into your working tree locally.
+  // Without it, VS Code will show "undefined: libsslObjects" — that is
+  // expected and does not affect `make` / `make test` on macOS.
   "gopls": {
     "buildFlags": ["-tags=insights_bpf"],
     "env": {
-      "GOOS": "linux",
-      "GOARCH": "arm64"
+      "GOOS": "linux"
     }
   }
 }
