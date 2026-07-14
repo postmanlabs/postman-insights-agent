@@ -25,30 +25,13 @@ RUN go mod download
 
 COPY . .
 
-# vmlinux.h must come from the TARGET kernel's BTF (the Linux kernel that will
-# actually run the eBPF programs). It cannot be generated from the build host's
-# kernel when cross-compiling (e.g. building linux/amd64 on Apple Silicon).
-#
-# How to generate vmlinux.h for EKS (run once, commit the result):
-#   kubectl run btf-dump --restart=Never --rm -i \
-#     --image=debian:bookworm-slim \
-#     --overrides='{"spec":{"nodeName":"<eks-node>","hostPID":true,
-#       "containers":[{"name":"b","image":"debian:bookworm-slim",
-#       "command":["cat","/sys/kernel/btf/vmlinux"],
-#       "securityContext":{"privileged":true},
-#       "volumeMounts":[{"name":"btf","mountPath":"/sys/kernel/btf","readOnly":true}]}],
-#       "volumes":[{"name":"btf","hostPath":{"path":"/sys/kernel/btf"}}]}}' \
-#     > /tmp/vmlinux-eks
-#   docker run --rm -v /tmp:/tmp ubuntu:22.04 \
-#     sh -c "apt-get update -q && apt-get install -y -q linux-tools-generic 2>/dev/null;
-#            /usr/lib/linux-tools/*/bpftool btf dump file /tmp/vmlinux-eks format c" \
-#     > ebpf/programs/vmlinux.h
-#
 # Provide vmlinux.h for eBPF CO-RE. Prefer a header dropped into the build
-# context; otherwise generate it from the build host's kernel BTF. Must run on a
-# Linux host whose kernel exposes /sys/kernel/btf/vmlinux, built NATIVELY for the
-# target arch (cross-arch would bake the wrong pt_regs layout). CO-RE relocates
-# against the runtime kernel, so the builder kernel version need not match.
+# context; otherwise generate it from the build host's kernel BTF at build time.
+# Must run on a Linux host whose kernel exposes /sys/kernel/btf/vmlinux, built
+# NATIVELY for the target arch (CI and EC2 satisfy this; Apple Silicon cross-
+# compiling does not — it would bake the wrong pt_regs layout). CO-RE relocations
+# handle kernel-version differences at load time, so the builder kernel need not
+# match the deployment kernel.
 RUN set -eu; \
     if [ -f ebpf/programs/vmlinux.h ]; then \
         echo "==> using provided ebpf/programs/vmlinux.h"; \

@@ -432,9 +432,4 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		totalWitnesses += 1
 		return true
 	})
-	podName, ok := c.traceTags[tags.XAkitaKubernetesPod]
-	if !ok {
-		podName = "unknown"
-	}
-	printer.Debugf("flushed-witnesses in cache: %v, total-witnesses in cache: %v for svc: %v and pod: %v\n", flushedWitnesses, totalWitnesses, c.serviceID, podName)
 }

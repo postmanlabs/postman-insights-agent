@@ -259,6 +259,15 @@ static __always_inline int emit_event(
     e->direction    = direction;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
+    // Network-namespace inode of the calling task. This is the routing key the
+    // userspace NodeCollector matches against the pod's netns (from
+    // /proc/<pid>/ns/net). Unlike `pid` (bpf_get_current_pid_tgid returns the
+    // init-namespace tgid), the netns inode is identical across PID-namespace
+    // nesting, so routing works even when the agent runs inside a nested node
+    // container (KIND/k3d/minikube --driver=docker). 0 if it cannot be read.
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    e->netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);
         counter_inc(2, 1);  // probe_read_user failed (target VMA gone, etc.)

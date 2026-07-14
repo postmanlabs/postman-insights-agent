@@ -1,7 +1,7 @@
 // Package loader handles compiling, loading, and attaching the eBPF programs
 // used for HTTPS capture.
 //
-// BUILD TAGS
+// # BUILD TAGS
 //
 // The "real" loader (loader_linux.go) is gated behind `linux && insights_bpf`.
 // Without the `insights_bpf` build tag, a no-op stub (loader_stub.go) is used
@@ -11,11 +11,17 @@
 //
 // To build the real eBPF subsystem:
 //
-//  1. Install clang ≥ 14 and llvm-strip.
+//  1. Install clang ≥ 14 and llvm-strip (or use the Docker dev container on macOS).
 //  2. Generate vmlinux.h on the build host (see ../programs/README.md).
 //  3. Run `go generate ./ebpf/loader/...` to compile the .bpf.c files and
-//     emit bpf2go bindings.
+//     emit bpf2go bindings (libssl_*_bpfel.go).
 //  4. Build with `go build -tags insights_bpf ./...`.
+//
+// On macOS, steps 2–3 are wrapped as `make generate-ebpf` (runs inside Docker;
+// requires `make dev-build` first). That produces the gitignored bpf2go files
+// locally so VS Code/gopls can resolve libsslObjects and loadLibssl when
+// .vscode/settings.json enables the insights_bpf tag. Plain `make` / `make test`
+// on macOS do not need this step.
 //
 // See docs/https-capture-design.md §9 (phased delivery plan) for context.
 package loader
