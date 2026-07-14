@@ -75,7 +75,7 @@ type Args struct {
 // Defaults returns sensible default Args for production use.
 func Defaults() Args {
 	return Args{
-		MaxCaptureBytes:     4096,
+		MaxCaptureBytes:     16384,
 		EnforcePIDAllowlist: false,
 		DiscoveryInterval:   5 * time.Second,
 		FlowIdleTimeout:     30 * time.Second,
