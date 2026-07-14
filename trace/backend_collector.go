@@ -56,6 +56,11 @@ type witnessWithInfo struct {
 	id              akid.WitnessID
 	isRequest       bool
 
+	// direction is the traffic direction relative to the monitored service, as
+	// reported by the capture layer (currently the eBPF path; DirectionUnknown
+	// for producers that do not compute it, e.g. pcap).
+	direction akinet.NetTrafficDirection
+
 	// Mutex protecting witness while it is being processed and/or flushed.
 	witnessMutex sync.Mutex
 
@@ -75,8 +80,16 @@ func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 		return nil, errors.Wrap(err, "failed to marshal witness proto")
 	}
 
+	// Map the capture-layer direction to the backend's NetworkDirection.
+	// Default to Inbound when unknown, preserving prior behaviour for producers
+	// (e.g. the pcap path) that do not yet compute a direction.
+	direction := kgxapi.Inbound
+	if r.direction == akinet.DirectionOutbound {
+		direction = kgxapi.Outbound
+	}
+
 	return &kgxapi.WitnessReport{
-		Direction:       kgxapi.Inbound,
+		Direction:       direction,
 		OriginAddr:      r.srcIP,
 		OriginPort:      r.srcPort,
 		DestinationAddr: r.dstIP,
@@ -260,6 +273,13 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			learn.MergeWitness(pair.witness, partial.Witness)
 			pair.computeProcessingLatency(isRequest, t)
 
+			// Backfill direction if the first-seen half didn't carry one. Both
+			// halves of an eBPF pair report the same direction, so this is a
+			// no-op there; it helps mixed producers.
+			if pair.direction == akinet.DirectionUnknown {
+				pair.direction = t.Direction
+			}
+
 			// If partial is the request, flip the src/dst in the pair before
 			// reporting.
 			if isRequest {
@@ -268,8 +288,8 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			}
 
 			c.queueUpload(pair)
-			printer.Debugf("Completed witness %v at %v -- %v\n",
-				partial.PairKey, t.ObservationTime, t.FinalPacketTime)
+			printer.Debugf("Completed witness %v direction=%s at %v -- %v\n",
+				partial.PairKey, pair.direction, t.ObservationTime, t.FinalPacketTime)
 		}()
 	} else {
 		// Store the partial witness for now, waiting for its pair or a
@@ -285,6 +305,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			finalPacketTime: t.FinalPacketTime,
 			id:              partial.PairKey,
 			isRequest:       isRequest,
+			direction:       t.Direction,
 		}
 		c.pairCache.Store(partial.PairKey, w)
 		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",
@@ -345,6 +366,15 @@ func init() {
 	}
 }
 
+// dropOutboundWitnesses gates agent-side suppression of OUTBOUND-direction
+// witnesses. Direction is computed correctly upstream (see
+// ebpf/events/adapter.go: directionForPair) and set on the witness, but the
+// backend/UI do not yet support the OUTBOUND NetworkDirection — uploading such
+// witnesses would render incorrectly. Until the backend and pcap path add OUTBOUND support,
+// we drop these at the agent and log it. Flip this to false (and remove the
+// block below) to re-enable once the backend is ready.
+const dropOutboundWitnesses = true
+
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	if w.witnessFlushed {
 		printer.Debugf("Witness %v already flushed.\n", w.id)
@@ -353,6 +383,14 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	defer func() {
 		w.witnessFlushed = true
 	}()
+
+	// TEMPORARY: block outbound witnesses at the agent until the backend
+	// supports the OUTBOUND direction. Marked flushed by the defer above so it
+	// is not retried on the next pair-cache flush. See dropOutboundWitnesses.
+	if dropOutboundWitnesses && w.direction == akinet.DirectionOutbound {
+		printer.Debugf("Dropping OUTBOUND witness %v (agent-side gate; backend does not yet support outbound direction)\n", w.id)
+		return
+	}
 
 	// Mark the method as not obfuscated.
 	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE

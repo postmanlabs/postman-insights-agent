@@ -265,6 +265,26 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	// https://github.com/google/gopacket/blob/0ad7f2610e344e58c1c95e2adda5c3258da8e97b/layers/endpoints.go#L30
 	srcE, dstE := f.netFlow.Endpoints()
 	srcP, dstP := f.tcpFlow.Endpoints()
+
+	// TODO(direction): populate ParsedNetworkTraffic.Direction for the pcap path.
+	// The eBPF path already sets it (see ebpf/events/adapter.go: directionForPair),
+	// and trace.BackendCollector.toReport already maps it to the witness
+	// (INBOUND/OUTBOUND); pcap currently leaves it DirectionUnknown -> defaults to
+	// INBOUND. To implement:
+	//   - Plumb this host/interface's own IPs (already enumerated in
+	//     apidump.getInboundBPFFilter, net.go) into the pcap parser/stream.
+	//   - Same rule as eBPF, using the real packet IPs we have here:
+	//       HTTPRequest : DstIP in localIPs -> DirectionInbound  (we are the server)
+	//                     SrcIP in localIPs -> DirectionOutbound (we are the client)
+	//       HTTPResponse: invert the above.
+	//     (akinet.TCPConnectionMetadata.Initiator is an alternative signal but is
+	//     unreliable here because Accept() forces stream start without the SYN.)
+	// NOTE: this is only the tagging half. Outbound pcap traffic is currently
+	// routed to a DummyCollector (apidump.go, notMatchedFilter chain) and never
+	// uploaded, and the inbound/outbound BPF split only exists when --port/
+	// --bpf-filter is set. Actually surfacing outbound pcap witnesses is a
+	// separate, deliberate decision. Also depends on the backend accepting
+	// OUTBOUND. See the eBPF direction work for the shared-lib pieces.
 	return akinet.ParsedNetworkTraffic{
 		SrcIP:           net.IP(srcE.Raw()),
 		SrcPort:         int(binary.BigEndian.Uint16(srcP.Raw())),
