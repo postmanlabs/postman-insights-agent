@@ -11,17 +11,17 @@ type Config struct {
 	EnforcePIDAllowlist bool
 
 	// MaxCaptureBytes is the maximum number of plaintext bytes copied per
-	// event. Clamped to MAX_EVENT_PAYLOAD (4096) at the BPF level. Power
+	// event. Clamped to MAX_EVENT_PAYLOAD (16384) at the BPF level. Power
 	// of two recommended for verifier-friendly masking.
 	MaxCaptureBytes uint32
 }
 
 // Default returns the default load config: no PID allowlist enforcement,
-// 4 KiB capture per event.
+// 16 KiB capture per event.
 func Default() Config {
 	return Config{
 		EnforcePIDAllowlist: false,
-		MaxCaptureBytes:     4096,
+		MaxCaptureBytes:     16384,
 	}
 }
 
@@ -34,7 +34,7 @@ func (c Config) bpfEnforce() uint32 {
 
 func (c Config) bpfMaxCapture() uint32 {
 	if c.MaxCaptureBytes == 0 {
-		return 4096
+		return 16384
 	}
 	return c.MaxCaptureBytes
 }

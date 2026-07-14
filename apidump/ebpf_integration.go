@@ -34,6 +34,7 @@ type HTTPSCaptureStats struct {
 	BytesCaptured   uint64
 	MessagesEmitted uint64 // HTTP messages parsed (from adapter)
 	FlowsDropped    uint64 // adapter flow drops (parse error / oversize)
+	H2HPACKDesyncs  uint64 // HTTP/2 connections dropped due to HPACK desync (mid-attach)
 	CurrentCapBytes uint32 // current max_capture_bytes (thermostat-adjusted)
 	CPUPercent      float64
 }
@@ -44,10 +45,10 @@ func (s HTTPSCaptureStats) String() string {
 	return fmt.Sprintf(
 		"probes=%d flows_active=%d events=%d bytes=%d msgs=%d "+
 			"dropped_ringbuf=%d dropped_flows=%d read_failures=%d "+
-			"cap_bytes=%d cpu=%.1f%%",
+			"h2_hpack_desyncs=%d cap_bytes=%d cpu=%.1f%%",
 		s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
 		s.MessagesEmitted, s.EventsDropped, s.FlowsDropped, s.ReadFailures,
-		s.CurrentCapBytes, s.CPUPercent)
+		s.H2HPACKDesyncs, s.CurrentCapBytes, s.CPUPercent)
 }
 
 // httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
@@ -76,6 +77,7 @@ func httpsTelemetryWorker(
 			s.FlowsActive, _ = adapter.Snapshot()
 			s.MessagesEmitted = adapter.MessagesEmitted
 			s.FlowsDropped = adapter.FlowsDropped
+			s.H2HPACKDesyncs = adapter.H2HPACKDesyncs
 		}
 		if ldr != nil {
 			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
@@ -158,7 +160,7 @@ func startHTTPSeBPFCapture(
 
 	bodyCap := args.HTTPS.BodySizeCap
 	if bodyCap == 0 {
-		bodyCap = 4096
+		bodyCap = 16384 // MAX_EVENT_PAYLOAD; see ebpf/programs/event.h
 	}
 
 	ebpfArgs := ebpf.Defaults()

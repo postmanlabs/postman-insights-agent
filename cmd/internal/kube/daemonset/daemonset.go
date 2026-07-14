@@ -44,7 +44,7 @@ type DaemonsetArgs struct {
 	// pipeline alongside the pcap pipeline, scoped to the pod's namespace.
 	EnableHTTPSCapture   bool
 	HTTPSRateCapPerSec   uint32 // 0 = unlimited
-	HTTPSBodySizeCap     uint32 // 0 = default (4096 bytes)
+	HTTPSBodySizeCap     uint32 // 0 = default (16384 bytes)
 	HTTPSCBPFExcludePort uint16 // 0 = no cBPF port exclusion; kube run defaults to 443
 	HTTPSNoThermostat    bool
 }

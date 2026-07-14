@@ -73,6 +73,12 @@ type Adapter struct {
 	// Counters exported for telemetry / tests.
 	MessagesEmitted uint64
 	FlowsDropped    uint64
+
+	// H2HPACKDesyncs counts HTTP/2 connections whose HPACK context went
+	// irrecoverably desynced (mid-connection attach) and were therefore
+	// dropped. Counted once per flow. Surfaced in ebpf-stats to quantify how
+	// much H2 traffic we currently cannot decode.
+	H2HPACKDesyncs uint64
 }
 
 // connKey identifies a TLS connection (both directions).
@@ -164,6 +170,10 @@ type flowState struct {
 	// Detection happens on the first bytes via IsHTTP2Preface.
 	h2 *h2State
 
+	// h2DesyncCounted ensures the H2HPACKDesyncs counter is incremented at most
+	// once per flow even though the decoder stays desynced for its lifetime.
+	h2DesyncCounted bool
+
 	pid uint32 // for Forget on flow close
 }
 
@@ -233,6 +243,7 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
 		}
+		a.accountH2Desync(st)
 		return
 	}
 
@@ -251,6 +262,7 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
 		}
+		a.accountH2Desync(st)
 		return
 	}
 
@@ -376,6 +388,15 @@ func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetwork
 	pnt.Direction = directionForPair(pnt.Content, key.Direction)
 	a.Out <- pnt
 	a.MessagesEmitted++
+}
+
+// accountH2Desync increments the H2HPACKDesyncs telemetry counter the first
+// time a flow's HTTP/2 decoder becomes HPACK-desynced. Caller holds a.mu.
+func (a *Adapter) accountH2Desync(st *flowState) {
+	if st.h2 != nil && !st.h2DesyncCounted && st.h2.Desynced() {
+		st.h2DesyncCounted = true
+		a.H2HPACKDesyncs++
+	}
 }
 
 // dropFlow marks a flow as permanently un-parseable and releases its buffer.

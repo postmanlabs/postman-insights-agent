@@ -559,7 +559,7 @@ func init() {
 	Cmd.Flags().Uint32Var(
 		&httpsBodySizeCap,
 		"https-body-size-cap",
-		4096,
+		16384,
 		"Maximum plaintext bytes captured per SSL_read/SSL_write event. Larger bodies are truncated.",
 	)
 	Cmd.Flags().StringVar(
