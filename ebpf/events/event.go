@@ -28,6 +28,7 @@ type SSLEvent struct {
 	FD          int32  // socket fd associated with the SSL*, or -1 if unknown
 	Direction   uint8  // DirEgress or DirIngress
 	_           [3]byte
+	NetNS       uint32 // network-namespace inode (routing key; matches /proc/<pid>/ns/net)
 	Payload     [MaxEventPayload]byte
 }
 

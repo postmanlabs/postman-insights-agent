@@ -1,4 +1,6 @@
-.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf
+.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf generate-ebpf
+
+.DEFAULT_GOAL := build
 
 export GO111MODULE = on
 
@@ -42,6 +44,11 @@ dev-shell:
 
 dev-down:
 	./build-scripts/dev-container.sh down
+
+# macOS-only: generate bpf2go bindings via Docker (not used in CI — CI has
+# native bpftool/clang and runs go generate inside the build target above).
+generate-ebpf:
+	./build-scripts/dev-container.sh run 'bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h && cd ebpf/loader && go generate -tags insights_bpf ./...'
 
 clean:
 	go clean
