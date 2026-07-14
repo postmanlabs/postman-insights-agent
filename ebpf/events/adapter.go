@@ -93,6 +93,27 @@ type tlsConnState struct {
 	unmatchedRequests []int
 	activeFlowCount   int
 
+	// gotls reuses the same SSL* pointer (and therefore the same connKey and
+	// this tlsConnState, including bidiID) across successive H2 connections,
+	// and H2 stream IDs restart at 1 on each connection. Because an H2 witness
+	// ID is (StreamID=bidiID, Seq=streamID), a reused bidiID makes every new
+	// connection collide on stream 1, 3, 5... To avoid that, h2State.feed()
+	// detects the client preface that begins each connection and, if this conn
+	// has already carried H2 traffic (h2Seen), bumps h2Epoch and regenerates
+	// bidiID so the new connection gets a fresh witness namespace.
+	//
+	// h2Seen:  false until the first H2 client preface on this conn (so the
+	//          first connection keeps the id the conn was created with).
+	// h2Epoch: increments once per subsequent connection. Each direction's
+	//          h2State caches the epoch it reset at and, when it observes the
+	//          shared epoch advance, resets its own per-connection HPACK/stream
+	//          state. This keeps both directions on the same bidiID (so
+	//          request/response still pair) and gives each connection a fresh
+	//          HPACK context (the peer's dynamic table also resets per
+	//          connection).
+	h2Seen  bool
+	h2Epoch uint64
+
 	// Resolved 4-tuple shared by ingress and egress on this TLS connection.
 	socketResolved bool
 	localIP        net.IP
@@ -204,6 +225,10 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	st.totalIn += int(ev.LenCaptured)
 
 	// If we've already committed this flow to the HTTP/2 path, stay there.
+	// Note: the HTTP/1 truncation recovery in drain() has no HTTP/2 equivalent —
+	// a truncated event (ev.Truncated()) leaves a hole in the frame stream, so
+	// feed() may wait indefinitely for 9+length bytes or misalign on the next
+	// frame and corrupt the rest of the connection's decode.
 	if st.h2 != nil {
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
@@ -217,7 +242,12 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	// the common case for gotls because the TLS handshake + preface complete
 	// before the uprobes catch their first non-handshake call).
 	if st.pending.Len() == 0 && (IsHTTP2Preface(ev.Bytes()) || IsHTTP2Frame(ev.Bytes())) {
-		st.h2 = newH2State(st.conn.bidiID)
+		// New-connection detection and the per-connection witness-namespace
+		// (bidiID) regeneration are handled inside h2State.feed() at the client-
+		// preface boundary, because a reused SSL* keeps the same flowState/h2State
+		// (this branch is only hit the first time, or after a GC reset) — see the
+		// preface handling in feed().
+		st.h2 = newH2State(st.conn)
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
 		}
