@@ -1,8 +1,3 @@
-# Working copy selected at build time by arch (copied from one of the
-# committed vmlinux_<arch>.h files below). Not committed.
+# Generated at build time from the build host's kernel BTF (see the eBPF
+# Dockerfiles and the Makefile build target). Not committed — per-arch and large.
 vmlinux.h
-
-# The per-arch headers ARE committed (see gen-vmlinux.sh). Force-include them
-# so they are not swept up by any broader ignore rule.
-!vmlinux_amd64.h
-!vmlinux_arm64.h

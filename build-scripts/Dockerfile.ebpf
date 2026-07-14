@@ -44,19 +44,22 @@ COPY . .
 #            /usr/lib/linux-tools/*/bpftool btf dump file /tmp/vmlinux-eks format c" \
 #     > ebpf/programs/vmlinux.h
 #
-# Select the committed per-arch header (see ebpf/programs/gen-vmlinux.sh).
-# CO-RE relocates the compiled programs against the actual runtime kernel, so
-# the committed LTS-baseline header works across customer kernels (>= 5.8).
-ARG TARGETARCH
+# Provide vmlinux.h for eBPF CO-RE. Prefer a header dropped into the build
+# context; otherwise generate it from the build host's kernel BTF. Must run on a
+# Linux host whose kernel exposes /sys/kernel/btf/vmlinux, built NATIVELY for the
+# target arch (cross-arch would bake the wrong pt_regs layout). CO-RE relocates
+# against the runtime kernel, so the builder kernel version need not match.
 RUN set -eu; \
-    arch="${TARGETARCH:-$(go env GOARCH)}"; \
-    src="ebpf/programs/vmlinux_${arch}.h"; \
-    if [ ! -f "$src" ] || grep -q '#error' "$src"; then \
-        echo "ERROR: $src missing or still a placeholder. Run ebpf/programs/gen-vmlinux.sh on Linux and commit it." >&2; \
+    if [ -f ebpf/programs/vmlinux.h ]; then \
+        echo "==> using provided ebpf/programs/vmlinux.h"; \
+    elif [ -r /sys/kernel/btf/vmlinux ]; then \
+        echo "==> generating ebpf/programs/vmlinux.h from build host BTF"; \
+        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+    else \
+        echo "ERROR: ebpf/programs/vmlinux.h not provided and /sys/kernel/btf/vmlinux is unavailable in the build sandbox." >&2; \
+        echo "Build on a Linux host with kernel BTF, or drop a pre-generated vmlinux.h into ebpf/programs/." >&2; \
         exit 1; \
-    fi; \
-    cp "$src" ebpf/programs/vmlinux.h; \
-    echo "==> using $src"
+    fi
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
     go build -tags insights_bpf -o /out/postman-insights-agent .
 

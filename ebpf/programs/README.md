@@ -22,18 +22,20 @@ Required on the build host:
 
 - `clang` ≥ 14 (we use `-target bpf`)
 - `llvm-strip`
-- Kernel headers / `vmlinux.h`. **The per-arch headers are committed** as
-  `vmlinux_amd64.h` and `vmlinux_arm64.h` (generated on Linux from a recent
-  Ubuntu LTS kernel's BTF). The build copies the arch-appropriate one to the
-  working `vmlinux.h` (which stays git-ignored). Regenerate the committed
-  headers at each release with:
+- Kernel headers / `vmlinux.h`. This is **generated at build time** from the
+  build host's kernel BTF and is **not committed** (per-arch and large):
   ```sh
-  ./ebpf/programs/gen-vmlinux.sh
+  bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
   ```
-  We commit them (rather than generating at build time) because the release
-  build runs on macOS machines that have no Linux kernel BTF. CO-RE relocates
-  the compiled programs against the actual runtime kernel, so an LTS-baseline
-  header is sufficient — we do not track individual customer kernel versions.
+  The eBPF Dockerfiles and the `make` build target do this automatically. Two
+  constraints follow: the build host's kernel must expose
+  `/sys/kernel/btf/vmlinux`, and the build must be **native per-arch** (a
+  cross-arch build would bake the wrong `pt_regs` layout — the release builds
+  amd64 and arm64 on separate machines). CO-RE relocates the compiled programs
+  against the *runtime* kernel, so the builder kernel version need not match the
+  deployment kernel. If a build environment cannot expose kernel BTF, drop a
+  pre-generated `vmlinux.h` into this directory and the build will use it; for a
+  fully deterministic header, source one from [BTFHub](https://github.com/aquasecurity/btfhub).
 - libbpf headers (`bpf/bpf_helpers.h`, `bpf/bpf_tracing.h`, `bpf/bpf_core_read.h`)
   Provided by the `libbpf-dev` package or vendored.
 

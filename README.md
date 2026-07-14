@@ -60,7 +60,9 @@ capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
 - **Not available on macOS** — the macOS build captures HTTP only; all eBPF
   paths compile to no-ops there.
 
-Building with eBPF requires the `insights_bpf` build tag plus clang, `bpf2go`,
-and the committed `vmlinux.h` headers. On Linux with clang + bpftool installed,
-`make` auto-detects the toolchain and builds with eBPF; otherwise it builds the
-plain binary. See `ebpf/programs/README.md` for details.
+Building with eBPF requires the `insights_bpf` build tag plus clang and
+`bpf2go`, and a `vmlinux.h` generated from the build host's kernel BTF (produced
+automatically at build time; requires a native per-arch Linux build). On Linux
+with clang + bpftool installed, `make` auto-detects the toolchain and builds
+with eBPF; otherwise it builds the plain binary. See `ebpf/programs/README.md`
+for details.

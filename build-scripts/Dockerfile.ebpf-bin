@@ -39,25 +39,23 @@ RUN go mod download
 
 COPY . .
 
-# Select the committed per-arch vmlinux.h for the target architecture. These
-# headers are generated on Linux and committed (see ebpf/programs/gen-vmlinux.sh);
-# they cannot be produced on the macOS release machines. CO-RE relocates the
-# compiled programs against the actual runtime kernel, so an LTS-baseline header
-# is sufficient.
-ARG TARGETARCH
+# Provide vmlinux.h for eBPF CO-RE. Prefer a header that was dropped into the
+# build context; otherwise generate it from the build host's kernel BTF. This
+# stage must run on a Linux host whose kernel exposes /sys/kernel/btf/vmlinux,
+# built NATIVELY for the target arch (a cross-arch build would bake the wrong
+# pt_regs layout). CO-RE relocates against the runtime kernel, so the builder
+# kernel's exact version does not need to match the deployment kernel.
 RUN set -eu; \
-    arch="${TARGETARCH:-$(go env GOARCH)}"; \
-    src="ebpf/programs/vmlinux_${arch}.h"; \
-    if [ ! -f "$src" ]; then \
-        echo "ERROR: $src not found. Run ebpf/programs/gen-vmlinux.sh on Linux and commit it." >&2; \
+    if [ -f ebpf/programs/vmlinux.h ]; then \
+        echo "==> using provided ebpf/programs/vmlinux.h"; \
+    elif [ -r /sys/kernel/btf/vmlinux ]; then \
+        echo "==> generating ebpf/programs/vmlinux.h from build host BTF"; \
+        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+    else \
+        echo "ERROR: ebpf/programs/vmlinux.h not provided and /sys/kernel/btf/vmlinux is unavailable in the build sandbox." >&2; \
+        echo "Build on a Linux host with kernel BTF, or drop a pre-generated vmlinux.h into ebpf/programs/." >&2; \
         exit 1; \
-    fi; \
-    if grep -q '#error' "$src"; then \
-        echo "ERROR: $src is still a placeholder. Run ebpf/programs/gen-vmlinux.sh on Linux and commit the real header." >&2; \
-        exit 1; \
-    fi; \
-    cp "$src" ebpf/programs/vmlinux.h; \
-    echo "==> using $src"
+    fi
 
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
     go build -tags "insights_bpf,osusergo,netgo" \

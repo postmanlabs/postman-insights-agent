@@ -15,7 +15,7 @@ Repos referenced:
 All decisions below are **locked** (confirmed by the team — see §9 for the full record).
 
 1. **Build strategy: one eBPF-enabled Linux build, rolled out RC-first.** ✅ We add eBPF to the single existing Linux build rather than maintaining two. This is safe for existing users because eBPF only does anything when the operator passes `--enable-https-capture` at runtime; with the flag off, behaviour is identical to today, even on old kernels. To protect the currently-working release, we roll the new build out through the `preview`/release-candidate tag first and only promote it to `latest` after validation. (Rejected alternative, kept as a documented safety valve: a separate eBPF image variant — §8.)
-2. **`vmlinux.h`: commit a pre-generated copy per architecture** (amd64 + arm64) into the agent repo, **generated from a recent stable Ubuntu LTS kernel's BTF and refreshed at each release.** ✅ This is the smallest change that makes the eBPF build work on the existing macOS release machines; CO-RE handles adapting to customer kernels. (Concept explained in §3.1.)
+2. **`vmlinux.h`: generate at build time inside the Docker build; not committed.** ✅ The release build runs inside `docker build` (`make cli-docker-release`), so a build step generates `vmlinux.h` from the build host's kernel BTF. Requires the build sandbox to expose `/sys/kernel/btf/vmlinux`, and a native per-arch build (the release already builds amd64 and arm64 on separate machines; a cross-arch build would bake the wrong `pt_regs`). CO-RE relocates against the runtime kernel, so the header need not be reproducible or match customer kernels. A pre-provided header (e.g. from BTFHub) is a documented escape hatch if a builder can't expose kernel BTF. (Concept explained in §3.1.)
 3. **DaemonSet: the agent captures HTTPS in-process; remove the `ecapture` sidecar.** ✅ In-agent `--enable-https-capture` has reached parity with the sidecar, so the sidecar is deleted and its privileges move onto the agent container. Matches the design doc's "DaemonSet only, no sidecars." (Concept explained in §3.3.)
 4. **deb/systemd and Beanstalk: HTTPS capture is opt-in.** ✅ Default behaviour stays HTTP-only; operators enable HTTPS explicitly (via `EXTRA_APIDUMP_ARGS` / an env toggle). No behaviour change for existing installs.
 5. **Kernel floor: Linux 5.8+** for HTTPS capture (RHEL 8 / 4.18 via Red Hat's backports). This is a support-matrix and docs change, not a code change.
@@ -43,13 +43,17 @@ The problem: `cli-postman/Dockerfile.cli.native` builds a **plain** binary. It h
 
 eBPF programs are tiny programs that run *inside the Linux kernel*. To compile them, the compiler needs a description of the exact layout of the kernel's internal data structures. That description is a generated header file called `vmlinux.h`.
 
-- It is normally produced from a running Linux machine by reading `/sys/kernel/btf/vmlinux` (BTF = "BPF Type Format", the kernel's built-in description of itself).
-- Modern eBPF uses a technique called **CO-RE** ("Compile Once, Run Everywhere"): as long as you compile against *a* reasonably recent `vmlinux.h`, the program automatically adapts to whatever kernel it actually runs on later. So we don't need one `vmlinux.h` per customer kernel — one recent one per CPU architecture is enough.
-- **Why it's a blocker for us:** our release machines are **macOS**, and a Mac has no Linux kernel and therefore no `/sys/kernel/btf/vmlinux` to generate this file from. And the file differs between the two CPU architectures we ship (amd64 and arm64), which are built on two different Macs.
+- It is produced from a running Linux machine by reading `/sys/kernel/btf/vmlinux` (BTF = "BPF Type Format", the kernel's built-in description of itself).
+- Modern eBPF uses a technique called **CO-RE** ("Compile Once, Run Everywhere"): as long as you compile against *a* reasonably recent `vmlinux.h`, the program automatically adapts to whatever kernel it actually runs on later. So we don't need one `vmlinux.h` per customer kernel, and it doesn't even need to be reproducible.
 
-The agent repo already git-ignores this file (`ebpf/programs/.gitignore` contains `vmlinux.h`), which is why it isn't in the build today.
+**Where does it come from at release time?** The release binary is built *inside* `docker build` (`make cli-docker-release`), not directly on the macOS host. So a build step generates `vmlinux.h` from the **build host's kernel BTF** — i.e. the kernel of the Docker VM the build runs in. This is the approach the agent's `build-scripts/Dockerfile.ebpf-bin` originally took.
 
-**Decision:** generate `vmlinux.h` once on a Linux box for each architecture from **a recent stable Ubuntu LTS kernel's BTF**, and **commit both into the repo** (e.g. `ebpf/programs/vmlinux_amd64.h` and `ebpf/programs/vmlinux_arm64.h`, with the build selecting the right one). Then the Mac-based Docker build just copies the correct file in. This is exactly the pattern the existing `build-scripts/Dockerfile.ebpf` anticipates in its comments. It's the least disruptive option; the alternative (moving eBPF compilation onto Linux CI runners) is cleaner long-term but changes where release artifacts are built, which is a much bigger lift. **Refresh cadence:** regenerate the committed headers at each release from the current stable LTS kernel — CO-RE means we don't need to track customer kernel versions, so a recent LTS baseline is sufficient.
+**Decision:** generate `vmlinux.h` at build time; do **not** commit it (the repo keeps git-ignoring `ebpf/programs/vmlinux.h`). Two constraints follow:
+
+- The `docker build` sandbox must be able to read `/sys/kernel/btf/vmlinux`. Under BuildKit this isn't guaranteed — **verify it on the actual Mac builders.** The Dockerfiles fail loudly (rather than silently shipping a broken/non-eBPF binary) if BTF is unavailable, and accept a pre-provided `vmlinux.h` as an escape hatch.
+- It must be a **native per-arch build** (amd64-on-amd64, arm64-on-arm64 — which is how the release already runs). A cross-arch build would bake the wrong `pt_regs` layout into the header.
+
+Note on reproducibility: pinning the Docker *image* version does **not** pin the header, because the BTF comes from the builder's kernel, not the image. That's acceptable because of CO-RE. If byte-level determinism is ever required without committing a header, source a pinned one from [BTFHub](https://github.com/aquasecurity/btfhub) inside the image.
 
 ### 3.2 What "build tags" mean here
 
@@ -69,11 +73,11 @@ The whole point of the new eBPF work is that **the agent now does this capture i
 
 ### 4.A `postman-insights-agent` (the agent source)
 
-1. **Commit `vmlinux.h` per architecture.**
-   - Remove `vmlinux.h` from `ebpf/programs/.gitignore` (or add explicit exceptions for the committed per-arch files).
-   - Add `ebpf/programs/vmlinux_amd64.h` and `ebpf/programs/vmlinux_arm64.h`, generated from a recent stable Ubuntu LTS kernel's BTF on a Linux host of each arch. Regenerate these at each release (see §3.1).
-   - Decide the selection mechanism: simplest is a tiny build step that copies the right file to `ebpf/programs/vmlinux.h` based on `TARGETARCH` before `go generate`.
-   - *Why:* without this, the Mac release build cannot compile the eBPF programs.
+1. **Generate `vmlinux.h` at build time (not committed).**
+   - Keep `ebpf/programs/vmlinux.h` git-ignored.
+   - The eBPF Dockerfiles (`build-scripts/Dockerfile.ebpf`, `Dockerfile.ebpf-bin`) generate it from `/sys/kernel/btf/vmlinux` if not already present, and fail loudly if the build sandbox can't expose kernel BTF. A pre-provided `vmlinux.h` is honoured as an escape hatch.
+   - The `make` build target also generates it in the Linux + eBPF-toolchain path, so local Linux builds work.
+   - *Why:* the release builds inside Docker, so the build host's BTF is available; committing a large per-arch header is unnecessary (see §3.1). **Constraint:** native per-arch builds only, and the build sandbox must expose `/sys/kernel/btf/vmlinux`.
 
 2. **Confirm the code-generation + build recipe is what the release will use.** The canonical eBPF build steps already exist and are proven in `build-scripts/Dockerfile.ebpf-bin`:
    - `go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0`
@@ -94,14 +98,14 @@ This is where most of the build work lives.
 1. **Teach `cli-postman/Dockerfile.cli.native` to build eBPF.** Merge the eBPF setup from `postman-insights-agent/build-scripts/Dockerfile.ebpf-bin` into it, while keeping everything that makes it a *release* build (the `./cliv2` target that links the proprietary plugin, and the version/telemetry `-ldflags`). Concretely, in the `build` stage:
    - `apk add --no-cache clang llvm bpftool libbpf-dev linux-headers` (in addition to the existing `libpcap-dev gcc musl-dev`). Alpine is already used and is exactly why static linking + eBPF works cleanly (Debian's libpcap pulls in D-Bus and breaks static linking — noted in both Dockerfiles).
    - `go install github.com/cilium/ebpf/cmd/bpf2go@v0.18.0` and put it on `PATH`.
-   - Copy in the correct `vmlinux.h` for `TARGETARCH`.
-   - `cd ebpf/loader && go generate -tags insights_bpf ./...` before the build.
+   - Because superstar consumes the agent as a **read-only module** (no `replace`/vendor), copy the agent module to a writable path, `go mod edit -replace` to it, generate `vmlinux.h` there from `/sys/kernel/btf/vmlinux`, then run codegen. Build with `GOFLAGS=-mod=mod` (cilium/ebpf is only imported under the `insights_bpf` tag and isn't yet in superstar's `go.sum`).
+   - `cd <writable-agent>/ebpf/loader && go generate -tags insights_bpf ./...` before the build.
    - Add `insights_bpf` to the existing `-tags osusergo,netgo` so it becomes `-tags "insights_bpf,osusergo,netgo"`. Keep the existing `-ldflags` (version, git SHA, amplitude key) and add the static-link flags already present.
    - Keep the final `FROM alpine:3.22.0` runtime stage; add `libpcap` if the runtime needs it (the current release image copies a fully static binary, so confirm nothing new is dynamically linked after adding eBPF).
 
-2. **`cli-postman/Makefile`.** The `cli-docker-release` / `cli-docker-ci` targets pass build args and don't need structural change, but:
-   - Ensure the Docker build receives `TARGETARCH` (or an equivalent build-arg) so the right `vmlinux.h` is selected.
-   - Consider a guard so a missing `vmlinux.h` fails loudly with a clear message rather than silently building a non-eBPF binary.
+2. **`cli-postman/Makefile`.** The `cli-docker-release` / `cli-docker-ci` targets pass build args and don't need structural change:
+   - `TARGETARCH` is auto-provided by BuildKit (native per-arch build); no need to pass it.
+   - The fail-loud guards live in the Dockerfile: it errors if `/sys/kernel/btf/vmlinux` is unavailable, and a post-build check errors if the binary lacks eBPF symbols.
    - `native-bin` (macOS): **leave as-is** (no `insights_bpf`). This is intentional — macOS has no eBPF.
 
 3. **Superstar CI.** If superstar's CI builds the CLI image for integration tests, that build will now need the eBPF toolchain too, or it should explicitly keep building the non-eBPF (stub) variant for tests. Decide which; at minimum make sure CI doesn't break when the Dockerfile changes.
@@ -159,7 +163,7 @@ This is where most of the build work lives.
 
 This directly addresses the "single build might make the current one un-work" concern.
 
-1. Land the agent-repo changes (committed `vmlinux.h`, docs).
+1. Land the agent-repo changes (Dockerfile/Makefile build-time `vmlinux.h` generation, docs).
 2. Update `cli-postman/Dockerfile.cli.native`; build locally on both an amd64 and an arm64 machine and confirm the binary runs and reports `--enable-https-capture`.
 3. Cut a **release candidate** (`run.sh --rc 1 minor`). RCs push only the `preview` ECR tag and skip S3/APT/Homebrew/GitHub — so real users on `latest` are untouched while you validate.
 4. Validate the RC image in a test cluster (HTTP capture unchanged; HTTPS capture works; old-kernel node still fine with the flag off).
@@ -186,7 +190,7 @@ Trade-off: lower risk to the existing artifacts, but more artifacts, more releas
 
 1. **ecapture parity → confirmed replaced.** In-agent `--enable-https-capture` has reached parity with the `ecapture-sidecar`. We delete the sidecar from the shipped DaemonSet and move its privileges onto the agent container (§4.C.2).
 2. **HTTPS default → opt-in** for deb/systemd and Beanstalk. Default behaviour stays HTTP-only; operators enable HTTPS explicitly (§4.C.3, §4.C.6).
-3. **`vmlinux.h` source → stable Ubuntu LTS kernel, refreshed per release.** Commit amd64/arm64 headers generated from a recent LTS kernel's BTF; regenerate each release. CO-RE handles customer-kernel differences (§3.1, §4.A.1).
+3. **`vmlinux.h` → generated at build time in Docker, not committed.** A `docker build` step dumps it from the build host's kernel BTF; requires a native per-arch build and a sandbox that exposes `/sys/kernel/btf/vmlinux` (verify on the Mac builders). CO-RE means it need not match customer kernels or be reproducible; a pre-provided header is an escape hatch (§3.1, §4.A.1). *(Revised from the earlier "commit per-arch headers" decision — the build runs in Docker, so committing is unnecessary.)*
 4. **Build strategy → single eBPF-enabled build, RC-first rollout** (§1.1, §7). The separate-variant approach (§8) is rejected but retained as a documented safety valve.
 5. **Java TLS → out of scope this release.** Ship OpenSSL/Node/Go HTTPS capture now; defer `--enable-java-tls` and the mutating-webhook / JVM-injection deployment story to a later phase. That phase will add: publishing/injecting the Postman Java agent JAR, the `kube webhook` MutatingWebhookConfiguration deployment, and the associated `charts/postman-insights-webhook/` release story — none of which are touched by this release.
 
@@ -194,9 +198,9 @@ Trade-off: lower risk to the existing artifacts, but more artifacts, more releas
 
 ## 10. Checklist (once decisions are locked)
 
-- [ ] `postman-insights-agent`: commit `vmlinux_amd64.h` / `vmlinux_arm64.h`; adjust `.gitignore`; arch-select step; docs; README flags.
+- [ ] `postman-insights-agent`: build-time `vmlinux.h` generation in eBPF Dockerfiles + `make`; keep it git-ignored; docs; README flags.
 - [ ] `cli-postman/Dockerfile.cli.native`: add eBPF toolchain + `go generate` + `insights_bpf` tag; keep version/telemetry ldflags and `./cliv2`.
-- [ ] `cli-postman/Makefile`: pass `TARGETARCH`; fail-loud guard; leave `native-bin` untouched.
+- [ ] `cli-postman/Makefile`: no structural change (`TARGETARCH` auto via BuildKit; guards in Dockerfile); leave `native-bin` untouched.
 - [ ] Bump `cli-postman/CURRENT_VERSION` (minor).
 - [ ] `insights-agent-pkg-manager` DaemonSet: remove ecapture; add caps/hostPID/mounts; pass `--enable-https-capture`.
 - [ ] `deb_build` postinst: add `cap_bpf,cap_perfmon`; document opt-in flag in `etc/default`.

@@ -21,6 +21,10 @@ endif
 build: clean
 ifeq ($(BUILD_TAGS),insights_bpf)
 	@echo "==> eBPF toolchain detected — building with insights_bpf tag"
+	@if [ ! -f ebpf/programs/vmlinux.h ]; then \
+		echo "==> generating ebpf/programs/vmlinux.h from host BTF"; \
+		bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+	fi
 	cd ebpf/loader && go generate -tags insights_bpf ./...
 else
 	@echo "==> No eBPF toolchain (or non-Linux) — building without insights_bpf tag"
