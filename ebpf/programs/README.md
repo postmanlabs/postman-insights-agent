@@ -22,12 +22,18 @@ Required on the build host:
 
 - `clang` ≥ 14 (we use `-target bpf`)
 - `llvm-strip`
-- Kernel headers / vmlinux.h. We generate `vmlinux.h` from BTF:
+- Kernel headers / `vmlinux.h`. **The per-arch headers are committed** as
+  `vmlinux_amd64.h` and `vmlinux_arm64.h` (generated on Linux from a recent
+  Ubuntu LTS kernel's BTF). The build copies the arch-appropriate one to the
+  working `vmlinux.h` (which stays git-ignored). Regenerate the committed
+  headers at each release with:
   ```sh
-  bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
+  ./ebpf/programs/gen-vmlinux.sh
   ```
-  This file is **not** checked into the repo (per-arch, large). The build
-  scripts generate it during the container build.
+  We commit them (rather than generating at build time) because the release
+  build runs on macOS machines that have no Linux kernel BTF. CO-RE relocates
+  the compiled programs against the actual runtime kernel, so an LTS-baseline
+  header is sufficient — we do not track individual customer kernel versions.
 - libbpf headers (`bpf/bpf_helpers.h`, `bpf/bpf_tracing.h`, `bpf/bpf_core_read.h`)
   Provided by the `libbpf-dev` package or vendored.
 
@@ -37,14 +43,19 @@ From `ebpf/loader/loader.go`:
 
 ```go
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go \
-//   -target amd64,arm64 \
+//   -target native \
 //   -cc clang \
 //   -cflags "-O2 -g -Wall -Werror" \
 //   libssl ../programs/libssl.bpf.c -- -I../programs
 ```
 
-This produces `libssl_bpfel.go` (little-endian) and `libssl_bpfel.o` for each
-target architecture, embedded into the Go binary via `go:embed`.
+We use `-target native` (not `-target amd64,arm64`): Debian bookworm ships
+libbpf 1.1, which lacks the synthetic per-arch `pt_regs` structs needed for
+cross-arch codegen, so we build each architecture natively (the release builds
+amd64 and arm64 on separate machines). This produces `libssl_bpfel.go`
+(little-endian) and `libssl_bpfel.o`, embedded into the Go binary via
+`go:embed`. These generated files are git-ignored and regenerated in every
+build environment.
 
 ## Why GPL license tag
 

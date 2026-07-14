@@ -44,10 +44,19 @@ COPY . .
 #            /usr/lib/linux-tools/*/bpftool btf dump file /tmp/vmlinux-eks format c" \
 #     > ebpf/programs/vmlinux.h
 #
-# On a native Linux/amd64 build host (CI, EC2) you can instead generate it at
-# build time by replacing the COPY below with:
-#   RUN bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
-COPY ebpf/programs/vmlinux.h ebpf/programs/vmlinux.h
+# Select the committed per-arch header (see ebpf/programs/gen-vmlinux.sh).
+# CO-RE relocates the compiled programs against the actual runtime kernel, so
+# the committed LTS-baseline header works across customer kernels (>= 5.8).
+ARG TARGETARCH
+RUN set -eu; \
+    arch="${TARGETARCH:-$(go env GOARCH)}"; \
+    src="ebpf/programs/vmlinux_${arch}.h"; \
+    if [ ! -f "$src" ] || grep -q '#error' "$src"; then \
+        echo "ERROR: $src missing or still a placeholder. Run ebpf/programs/gen-vmlinux.sh on Linux and commit it." >&2; \
+        exit 1; \
+    fi; \
+    cp "$src" ebpf/programs/vmlinux.h; \
+    echo "==> using $src"
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
     go build -tags insights_bpf -o /out/postman-insights-agent .
 

@@ -39,17 +39,25 @@ RUN go mod download
 
 COPY . .
 
-RUN if [ -f ebpf/programs/vmlinux.h ]; then \
-        echo "==> using pre-generated ebpf/programs/vmlinux.h"; \
-    elif [ -f /sys/kernel/btf/vmlinux ]; then \
-        echo "==> generating vmlinux.h from build host BTF"; \
-        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
-    else \
-        echo "ERROR: ebpf/programs/vmlinux.h missing and /sys/kernel/btf/vmlinux unavailable." >&2; \
-        echo "Generate it first, e.g. inside make dev-shell:" >&2; \
-        echo "  bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h" >&2; \
+# Select the committed per-arch vmlinux.h for the target architecture. These
+# headers are generated on Linux and committed (see ebpf/programs/gen-vmlinux.sh);
+# they cannot be produced on the macOS release machines. CO-RE relocates the
+# compiled programs against the actual runtime kernel, so an LTS-baseline header
+# is sufficient.
+ARG TARGETARCH
+RUN set -eu; \
+    arch="${TARGETARCH:-$(go env GOARCH)}"; \
+    src="ebpf/programs/vmlinux_${arch}.h"; \
+    if [ ! -f "$src" ]; then \
+        echo "ERROR: $src not found. Run ebpf/programs/gen-vmlinux.sh on Linux and commit it." >&2; \
         exit 1; \
-    fi
+    fi; \
+    if grep -q '#error' "$src"; then \
+        echo "ERROR: $src is still a placeholder. Run ebpf/programs/gen-vmlinux.sh on Linux and commit the real header." >&2; \
+        exit 1; \
+    fi; \
+    cp "$src" ebpf/programs/vmlinux.h; \
+    echo "==> using $src"
 
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
     go build -tags "insights_bpf,osusergo,netgo" \

@@ -1,1 +1,8 @@
+# Working copy selected at build time by arch (copied from one of the
+# committed vmlinux_<arch>.h files below). Not committed.
 vmlinux.h
+
+# The per-arch headers ARE committed (see gen-vmlinux.sh). Force-include them
+# so they are not swept up by any broader ignore rule.
+!vmlinux_amd64.h
+!vmlinux_arm64.h
