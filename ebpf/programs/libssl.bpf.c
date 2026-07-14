@@ -76,11 +76,14 @@ struct {
     __type(value, struct ssl_args_t);
 } active_ssl_write_args SEC(".maps");
 
-// Output ring buffer. 2 MB per ringbuf; cilium/ebpf reads on the Go side.
-// OBI uses the same size.
+// Output ring buffer; cilium/ebpf reads on the Go side. Each event reserves a
+// fixed sizeof(struct ssl_event) (~MAX_EVENT_PAYLOAD) regardless of bytes
+// copied, so the ring holds ~ (size / sizeof(event)) events. Sized to 8 MiB so
+// that with the 16 KiB MAX_EVENT_PAYLOAD we retain ~512 events of headroom —
+// the same headroom the original 2 MiB / 4 KiB gave (keep these proportional).
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 21);         // 2 MiB
+    __uint(max_entries, 1 << 23);         // 8 MiB
 } events SEC(".maps");
 
 // PID allowlist. Userspace populates this with target PIDs (discovered

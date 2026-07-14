@@ -138,6 +138,15 @@ func (s *h2State) HPACKErrors() uint64 {
 	return s.hpackErrors
 }
 
+// Desynced reports whether this flow's HPACK context has irrecoverably
+// diverged (mid-connection attach), i.e. we've stopped emitting witnesses from
+// it. Used for the h2_hpack_desyncs telemetry counter.
+func (s *h2State) Desynced() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hpackDesynced
+}
+
 // h2Stream accumulates pseudo-headers + body for a single HTTP/2 stream.
 type h2Stream struct {
 	// Pseudo-headers extracted from HEADERS.

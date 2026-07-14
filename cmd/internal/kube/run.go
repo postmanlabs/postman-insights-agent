@@ -120,7 +120,7 @@ func init() {
 		&httpsBodySizeCap,
 		"https-body-size-cap",
 		0,
-		"Maximum bytes captured per HTTPS payload (0 = default 4096).",
+		"Maximum bytes captured per HTTPS payload (0 = default 16384).",
 	)
 	runCmd.PersistentFlags().BoolVar(
 		&httpsNoThermostat,
