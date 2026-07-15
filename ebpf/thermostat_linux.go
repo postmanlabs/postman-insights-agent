@@ -20,14 +20,27 @@ import (
 // Thermostat is a closed-loop controller that watches the agent's own CPU
 // usage and adjusts the BPF-side max_capture_bytes knob to keep cost bounded.
 //
-// Algorithm (matches OBI/Pixie heuristics):
+// Algorithm:
 //
-//   - Sample %CPU every 1s using /proc/self/stat (utime + stime).
+//   - Sample %CPU every 1s using /proc/self/stat (utime + stime). %CPU is
+//     expressed relative to a SINGLE core: 100.0 == one full core busy, so on a
+//     multi-core box the value can exceed 100. Watermarks are in these units.
 //   - If a 10s rolling window averages > HighWatermark, halve max_capture_bytes
-//     down to a floor of 64 bytes. Log every transition.
+//     down to a floor of 64 bytes.
 //   - If a 30s rolling window averages < LowWatermark, double back up to the
-//     configured ceiling. Log every transition.
-//   - Hard bound: never below 64, never above the user-configured ceiling.
+//     configured ceiling.
+//   - Cooldown: after any adjustment, make no further adjustment for
+//     AdjustCooldown (default = HighWindow). Without this the loop would halve
+//     every tick — the reduced cap's CPU effect takes several seconds to appear
+//     in the rolling average, so back-to-back halving overshoots straight to the
+//     64-byte floor. The cooldown lets the loop observe the effect of each step.
+//   - Hard bound: never below MinCap (64), never above the configured ceiling.
+//
+// Defaults are deliberately generous (High 50% / Low 25% of one core): the
+// measured value is the agent's WHOLE-process CPU (parsing, uploads, k8s
+// informers, pcap path — not just the eBPF copy), so a tight threshold throttles
+// even when capture is cheap. Override at runtime with the env vars
+// POSTMAN_INSIGHTS_HTTPS_CPU_HIGH_PCT / _LOW_PCT (percent of one core).
 //
 // The thermostat keeps a snapshot of its current decision visible via
 // CurrentCap() so telemetry can include it.
@@ -35,12 +48,14 @@ type Thermostat struct {
 	loader  *loader.Loader
 	ceiling uint32 // configured max (user-set --https-body-size-cap)
 
-	HighWatermark float64 // %CPU above which we throttle (default 5.0)
-	LowWatermark  float64 // %CPU below which we recover (default 3.0)
+	HighWatermark float64 // %CPU (of one core) above which we throttle (default 50.0)
+	LowWatermark  float64 // %CPU (of one core) below which we recover (default 25.0)
 	HighWindow    time.Duration
 	LowWindow     time.Duration
-	MinCap        uint32 // never below this (default 64)
+	MinCap        uint32        // never below this (default 64)
+	AdjustCooldown time.Duration // min gap between adjustments (default = HighWindow)
 
+	lastAdjust time.Time     // wall time of the last cap change (cooldown gate)
 	currentCap atomic.Uint32 // exposed via CurrentCap()
 	cpuPct     atomic.Uint64 // last-measured %CPU * 100 (so atomic fits in u64)
 }
@@ -51,19 +66,50 @@ type Thermostat struct {
 // watermarks.
 func NewThermostat(l *loader.Loader, ceiling uint32) *Thermostat {
 	if ceiling == 0 {
-		ceiling = 4096
+		ceiling = 16384
 	}
 	t := &Thermostat{
 		loader:        l,
 		ceiling:       ceiling,
-		HighWatermark: 5.0,
-		LowWatermark:  3.0,
+		HighWatermark: 50.0, // 50% of one core (see type doc for scale/rationale)
+		LowWatermark:  25.0, // 25% of one core
 		HighWindow:    10 * time.Second,
 		LowWindow:     30 * time.Second,
 		MinCap:        64,
 	}
+	t.AdjustCooldown = t.HighWindow
+
+	// Optional runtime overrides (percent of one core). Applied only if valid
+	// and if they preserve Low < High; otherwise keep defaults.
+	if v, ok := envPositiveFloat("POSTMAN_INSIGHTS_HTTPS_CPU_HIGH_PCT"); ok {
+		t.HighWatermark = v
+	}
+	if v, ok := envPositiveFloat("POSTMAN_INSIGHTS_HTTPS_CPU_LOW_PCT"); ok {
+		t.LowWatermark = v
+	}
+	if t.LowWatermark >= t.HighWatermark {
+		printer.Stderr.Warningf(
+			"ebpf: thermostat watermark override invalid (low %.1f >= high %.1f); using defaults 25/50\n",
+			t.LowWatermark, t.HighWatermark)
+		t.HighWatermark, t.LowWatermark = 50.0, 25.0
+	}
+
 	t.currentCap.Store(ceiling)
 	return t
+}
+
+// envPositiveFloat reads a strictly-positive float from an env var. Returns
+// (0, false) when unset, unparseable, or <= 0.
+func envPositiveFloat(key string) (float64, bool) {
+	s := os.Getenv(key)
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 // CurrentCap reports the most recent BPF-side max_capture_bytes the
@@ -126,49 +172,60 @@ func (t *Thermostat) Run(ctx context.Context) {
 }
 
 // maybeAdjust applies the throttle / recover decisions based on the samples
-// window.
+// window, honouring the post-adjustment cooldown. Runs in the single Run
+// goroutine, so lastAdjust needs no locking.
 func (t *Thermostat) maybeAdjust(now time.Time, samples []sample) {
-	// Compute rolling averages for both windows.
 	avgHigh, nHigh := windowAvg(samples, now.Add(-t.HighWindow))
 	avgLow, nLow := windowAvg(samples, now.Add(-t.LowWindow))
 
 	cap := t.currentCap.Load()
+	inCooldown := !t.lastAdjust.IsZero() && now.Sub(t.lastAdjust) < t.AdjustCooldown
 
-	// Need a full window before acting.
+	newCap := t.decideCap(cap, inCooldown, avgHigh, nHigh, avgLow, nLow)
+	if newCap == cap {
+		return
+	}
+
+	verb := "throttling"
+	avg, window, watermark := avgHigh, t.HighWindow, t.HighWatermark
+	if newCap > cap {
+		verb, avg, window, watermark = "recovering", avgLow, t.LowWindow, t.LowWatermark
+	}
+	if err := t.loader.SetMaxCaptureBytes(newCap); err != nil {
+		printer.Stderr.Warningf("ebpf: thermostat %s SetMaxCaptureBytes(%d) failed: %v\n", verb, newCap, err)
+		return
+	}
+	printer.Stderr.Infof(
+		"ebpf: thermostat %s — %.1f%% CPU (of one core) over %s vs watermark %.1f%%; max_capture_bytes %d → %d\n",
+		verb, avg, window, watermark, cap, newCap)
+	t.currentCap.Store(newCap)
+	t.lastAdjust = now
+}
+
+// decideCap is the pure throttle/recover decision: given the current cap, the
+// cooldown state, and the rolling averages + sample counts for each window, it
+// returns the next cap (== cap when no change). No I/O, so it is unit-testable.
+func (t *Thermostat) decideCap(cap uint32, inCooldown bool, avgHigh float64, nHigh int, avgLow float64, nLow int) uint32 {
+	if inCooldown {
+		return cap
+	}
+	// Throttle: full high-window of samples averaging over the high watermark.
 	if nHigh >= int(t.HighWindow/time.Second) && avgHigh > t.HighWatermark {
 		newCap := cap / 2
 		if newCap < t.MinCap {
 			newCap = t.MinCap
 		}
-		if newCap != cap {
-			if err := t.loader.SetMaxCaptureBytes(newCap); err != nil {
-				printer.Stderr.Warningf("ebpf: thermostat throttle SetMaxCaptureBytes(%d) failed: %v\n", newCap, err)
-				return
-			}
-			printer.Stderr.Infof(
-				"ebpf: thermostat throttling — %.1f%% CPU over %s exceeded %.1f%%; max_capture_bytes %d → %d\n",
-				avgHigh, t.HighWindow, t.HighWatermark, cap, newCap)
-			t.currentCap.Store(newCap)
-			return
-		}
+		return newCap
 	}
-
+	// Recover: full low-window averaging under the low watermark, room to grow.
 	if nLow >= int(t.LowWindow/time.Second) && avgLow < t.LowWatermark && cap < t.ceiling {
 		newCap := cap * 2
 		if newCap > t.ceiling {
 			newCap = t.ceiling
 		}
-		if newCap != cap {
-			if err := t.loader.SetMaxCaptureBytes(newCap); err != nil {
-				printer.Stderr.Warningf("ebpf: thermostat recover SetMaxCaptureBytes(%d) failed: %v\n", newCap, err)
-				return
-			}
-			printer.Stderr.Infof(
-				"ebpf: thermostat recovering — %.1f%% CPU over %s below %.1f%%; max_capture_bytes %d → %d\n",
-				avgLow, t.LowWindow, t.LowWatermark, cap, newCap)
-			t.currentCap.Store(newCap)
-		}
+		return newCap
 	}
+	return cap
 }
 
 func windowAvg(samples []sample, since time.Time) (float64, int) {
