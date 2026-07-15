@@ -73,6 +73,12 @@ type Adapter struct {
 	// Counters exported for telemetry / tests.
 	MessagesEmitted uint64
 	FlowsDropped    uint64
+
+	// H2HPACKDesyncs counts HTTP/2 connections whose HPACK context went
+	// irrecoverably desynced (mid-connection attach) and were therefore
+	// dropped. Counted once per flow. Surfaced in ebpf-stats to quantify how
+	// much H2 traffic we currently cannot decode.
+	H2HPACKDesyncs uint64
 }
 
 // connKey identifies a TLS connection (both directions).
@@ -92,6 +98,27 @@ type tlsConnState struct {
 	nextPairIdx       int
 	unmatchedRequests []int
 	activeFlowCount   int
+
+	// gotls reuses the same SSL* pointer (and therefore the same connKey and
+	// this tlsConnState, including bidiID) across successive H2 connections,
+	// and H2 stream IDs restart at 1 on each connection. Because an H2 witness
+	// ID is (StreamID=bidiID, Seq=streamID), a reused bidiID makes every new
+	// connection collide on stream 1, 3, 5... To avoid that, h2State.feed()
+	// detects the client preface that begins each connection and, if this conn
+	// has already carried H2 traffic (h2Seen), bumps h2Epoch and regenerates
+	// bidiID so the new connection gets a fresh witness namespace.
+	//
+	// h2Seen:  false until the first H2 client preface on this conn (so the
+	//          first connection keeps the id the conn was created with).
+	// h2Epoch: increments once per subsequent connection. Each direction's
+	//          h2State caches the epoch it reset at and, when it observes the
+	//          shared epoch advance, resets its own per-connection HPACK/stream
+	//          state. This keeps both directions on the same bidiID (so
+	//          request/response still pair) and gives each connection a fresh
+	//          HPACK context (the peer's dynamic table also resets per
+	//          connection).
+	h2Seen  bool
+	h2Epoch uint64
 
 	// Resolved 4-tuple shared by ingress and egress on this TLS connection.
 	socketResolved bool
@@ -123,10 +150,16 @@ func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {
 }
 
 type flowState struct {
-	parser    akinet.TCPParser
-	pending   memview.MemView
-	conn      *tlsConnState
+	parser akinet.TCPParser
+	pending memview.MemView
+	conn    *tlsConnState
+	// firstSeen is when this flow was first observed (connection-level; used as
+	// a fallback and for GC). msgStart is when the CURRENT message's first byte
+	// arrived — this is what a witness's ObservationTime must use, otherwise
+	// every message on a keep-alive flow inherits the flow's first-ever
+	// timestamp (causing negative processing latency and wrong witness times).
 	firstSeen time.Time
+	msgStart  time.Time
 	lastSeen  time.Time
 	totalIn   int  // total bytes ever observed on this flow
 	dropped   bool // permanent: malformed or oversized
@@ -136,6 +169,10 @@ type flowState struct {
 	// the stateful HTTP/2 decoder instead of the akinet single-use parser.
 	// Detection happens on the first bytes via IsHTTP2Preface.
 	h2 *h2State
+
+	// h2DesyncCounted ensures the H2HPACKDesyncs counter is incremented at most
+	// once per flow even though the decoder stays desynced for its lifetime.
+	h2DesyncCounted bool
 
 	pid uint32 // for Forget on flow close
 }
@@ -198,10 +235,15 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	st.totalIn += int(ev.LenCaptured)
 
 	// If we've already committed this flow to the HTTP/2 path, stay there.
+	// Note: the HTTP/1 truncation recovery in drain() has no HTTP/2 equivalent —
+	// a truncated event (ev.Truncated()) leaves a hole in the frame stream, so
+	// feed() may wait indefinitely for 9+length bytes or misalign on the next
+	// frame and corrupt the rest of the connection's decode.
 	if st.h2 != nil {
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
 		}
+		a.accountH2Desync(st)
 		return
 	}
 
@@ -211,23 +253,43 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	// the common case for gotls because the TLS handshake + preface complete
 	// before the uprobes catch their first non-handshake call).
 	if st.pending.Len() == 0 && (IsHTTP2Preface(ev.Bytes()) || IsHTTP2Frame(ev.Bytes())) {
-		st.h2 = newH2State(st.conn.bidiID)
+		// New-connection detection and the per-connection witness-namespace
+		// (bidiID) regeneration are handled inside h2State.feed() at the client-
+		// preface boundary, because a reused SSL* keeps the same flowState/h2State
+		// (this branch is only hit the first time, or after a GC reset) — see the
+		// preface handling in feed().
+		st.h2 = newH2State(st.conn)
 		for _, pnt := range st.h2.feed(ev.Bytes(), ev.Time(monoEpoch), st.ifaceTag) {
 			a.emitH2PNT(key, st, pnt)
 		}
+		a.accountH2Desync(st)
 		return
+	}
+
+	// Mark the start of a new message: when there are no buffered bytes for an
+	// in-progress message, this event carries the first byte of the next one.
+	if st.pending.Len() == 0 {
+		st.msgStart = ev.Time(monoEpoch)
 	}
 
 	// Copy bytes — the underlying ringbuf record is reused once Feed returns.
 	chunk := append([]byte(nil), ev.Bytes()...)
 	st.pending.Append(memview.New(chunk))
 
-	a.drain(key, st, ev.Time(monoEpoch))
+	a.drain(key, st, ev.Time(monoEpoch), ev.Truncated())
 }
 
 // drain runs the parser state machine until no progress can be made.
 // Caller holds a.mu.
-func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
+//
+// truncated indicates the SSL call that produced the bytes just appended was
+// truncated at the per-event capture cap (len_total > len_captured). The
+// missing tail was dropped in-kernel and will NEVER arrive, so we must not let
+// the incomplete message keep the parser open — otherwise it head-of-line
+// blocks every later message on the same connection (the request/response
+// drift bug). We finalize such a message best-effort (isEnd=true) and, if that
+// fails, abandon just this message's parser while keeping the flow alive.
+func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time, truncated bool) {
 	for st.pending.Len() > 0 && !st.dropped {
 		if st.parser == nil {
 			factory, decision, discardFront := a.FactorySelector.Select(st.pending, false)
@@ -239,6 +301,13 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 				a.dropFlow(key, st)
 				return
 			case akinet.NeedMoreData:
+				// Can't identify the protocol yet. If the bytes were truncated,
+				// the identifying tail is gone — abandon this message but keep the
+				// flow alive so the next SSL call parses cleanly.
+				if truncated {
+					a.resetParser(st)
+					return
+				}
 				if st.pending.Len() > MaxPendingPerFlow {
 					a.dropFlow(key, st)
 				}
@@ -251,25 +320,55 @@ func (a *Adapter) drain(key FlowKey, st *flowState, now time.Time) {
 			}
 		}
 
-		result, unused, _, err := st.parser.Parse(st.pending, false)
+		// isEnd=truncated forces the parser to finalize best-effort when the
+		// tail is unrecoverable (per the TCPParser contract it then returns a
+		// non-nil result or an error), instead of parking in NeedMoreData and
+		// head-of-line blocking every later message on the same connection.
+		result, unused, _, err := st.parser.Parse(st.pending, truncated)
 		if err != nil {
-			// Parse error — flow is permanently un-parseable.
+			if truncated {
+				// Truncated + unparseable: drop only this message's parser, keep
+				// the flow so subsequent messages still pair correctly.
+				a.resetParser(st)
+				return
+			}
+			// Genuine parse error on a complete stream — flow is un-parseable.
 			a.dropFlow(key, st)
 			return
 		}
 		if result == nil {
-			// Parser absorbed all bytes and awaits more. Clear pending; next
-			// event will append fresh bytes.
+			// Only reachable when isEnd=false: parser absorbed all bytes and
+			// awaits more. Clear pending; the next event appends fresh bytes.
 			st.pending.Clear()
 			return
 		}
 
-		// Got a complete message. Emit it and continue with unused tail.
+		// Got a complete (or best-effort finalized) message. Emit and continue.
 		a.Out <- a.toPNT(st, key, result, now)
 		a.MessagesEmitted++
 		st.parser = nil
 		st.pending = unused
+		if truncated {
+			// The remainder after a truncated SSL call is not a clean message
+			// boundary — don't try to reparse it as a new message.
+			st.pending.Clear()
+			return
+		}
+		// Any leftover (pipelined) bytes belong to the next message, and they
+		// arrived at "now" — start its clock here so it doesn't inherit this
+		// message's start time.
+		if st.pending.Len() > 0 {
+			st.msgStart = now
+		}
 	}
+}
+
+// resetParser abandons the current message's parser without marking the flow
+// dropped, so subsequent messages on the same connection keep parsing and
+// pairing. Contrast with dropFlow, which kills the flow permanently.
+func (a *Adapter) resetParser(st *flowState) {
+	st.parser = nil
+	st.pending.Clear()
 }
 
 func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetworkTraffic) {
@@ -286,8 +385,18 @@ func (a *Adapter) emitH2PNT(key FlowKey, st *flowState, pnt akinet.ParsedNetwork
 		enrichHTTPRequestURL(&req, key.Direction, st.conn.localIP, st.conn.localPort, st.conn.remoteIP, st.conn.remotePort)
 		pnt.Content = req
 	}
+	pnt.Direction = directionForPair(pnt.Content, key.Direction)
 	a.Out <- pnt
 	a.MessagesEmitted++
+}
+
+// accountH2Desync increments the H2HPACKDesyncs telemetry counter the first
+// time a flow's HTTP/2 decoder becomes HPACK-desynced. Caller holds a.mu.
+func (a *Adapter) accountH2Desync(st *flowState) {
+	if st.h2 != nil && !st.h2DesyncCounted && st.h2.Desynced() {
+		st.h2DesyncCounted = true
+		a.H2HPACKDesyncs++
+	}
 }
 
 // dropFlow marks a flow as permanently un-parseable and releases its buffer.
@@ -309,10 +418,19 @@ func (a *Adapter) dropFlow(key FlowKey, st *flowState) {
 // SrcIP=local, DstIP=remote when we wrote (egress) — what we sent goes from
 // us to them. For ingress (we received bytes), SrcIP=remote, DstIP=local.
 func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkContent, now time.Time) akinet.ParsedNetworkTraffic {
+	// ObservationTime is the start of THIS message (msgStart), not the flow's
+	// first-ever message (firstSeen) — otherwise every message on a keep-alive
+	// connection inherits the flow's creation time, producing negative
+	// processing latency and incorrect witness timestamps. Fall back to
+	// firstSeen if msgStart was never set.
+	obsTime := st.msgStart
+	if obsTime.IsZero() {
+		obsTime = st.firstSeen
+	}
 	pnt := akinet.ParsedNetworkTraffic{
 		Content:         c,
 		Interface:       st.ifaceTag,
-		ObservationTime: st.firstSeen,
+		ObservationTime: obsTime,
 		FinalPacketTime: now,
 	}
 	if st.conn.socketResolved {
@@ -331,7 +449,37 @@ func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkConten
 		pnt.SrcIP = net.IPv4zero
 		pnt.DstIP = net.IPv4zero
 	}
+	pnt.Direction = directionForPair(c, key.Direction)
 	return pnt
+}
+
+// directionForPair maps the wire direction of an SSL call (ingress = SSL_read,
+// egress = SSL_write) and the HTTP message kind to the service-relative
+// direction of the whole request/response pair:
+//
+//	request received (ingress)  -> service is the server -> inbound
+//	request sent     (egress)   -> service is the client -> outbound
+//	response received (ingress) -> service is the client -> outbound
+//	response sent     (egress)  -> service is the server -> inbound
+//
+// Both the request and the response of a pair therefore resolve to the same
+// direction, so it does not matter which arrives first.
+func directionForPair(content akinet.ParsedNetworkContent, wireDir uint8) akinet.NetTrafficDirection {
+	ingress := wireDir == DirIngress
+	switch content.(type) {
+	case akinet.HTTPRequest:
+		if ingress {
+			return akinet.DirectionInbound
+		}
+		return akinet.DirectionOutbound
+	case akinet.HTTPResponse:
+		if ingress {
+			return akinet.DirectionOutbound
+		}
+		return akinet.DirectionInbound
+	default:
+		return akinet.DirectionUnknown
+	}
 }
 
 // GC removes flows idle for longer than `maxIdle`. Call periodically.

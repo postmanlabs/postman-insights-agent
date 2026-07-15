@@ -36,7 +36,6 @@ package events
 
 import (
 	"encoding/binary"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -98,13 +97,37 @@ type h2State struct {
 	// Per-stream state, keyed by stream ID.
 	streams map[uint32]*h2Stream
 
-	// Connection-flow identity used for emitted PNTs.
-	bidiID akinet.TCPBidiID
+	// conn is the shared per-TLS-connection state. The witness namespace
+	// (bidiID) lives here rather than being snapshotted, so that when the
+	// adapter regenerates conn.bidiID for a reused SSL* pointer, BOTH direction
+	// decoders emit under the new id and request/response still pair. Read the
+	// id via s.bidiID().
+	conn *tlsConnState
+
+	// epoch is the conn.h2Epoch value this decoder last reset at. When the
+	// shared epoch advances (a new connection began on the reused SSL*, detected
+	// via the client preface on either direction), feed() resets this decoder's
+	// per-connection state so we don't carry stream/HPACK state across
+	// connections. See tlsConnState.h2Epoch.
+	epoch uint64
 
 	// hpackErrors counts HEADERS+CONTINUATION decode failures. Non-zero on
 	// a flow strongly suggests we attached mid-connection and missed the
 	// dynamic-table state. Exposed via HPACKErrors() for telemetry.
 	hpackErrors uint64
+
+	// hpackDesynced latches true after the first HPACK decode failure. A
+	// decode failure proves the encoder's dynamic table diverged from ours
+	// (we attached mid-connection and missed the inserts that populated it).
+	// This is UNRECOVERABLE: we can never reconstruct entries we never saw.
+	// Critically, a desynced table can still decode later blocks *without
+	// error* yet return the WRONG header values (a stale/mis-indexed dynamic
+	// entry), which would emit corrupt method/path/status into the UI. So once
+	// desynced we stop decoding HEADERS on this connection entirely and emit
+	// nothing further from it — dropping the connection is strictly safer than
+	// risking silently-wrong data. New connections (caught at their preface)
+	// are unaffected and decode normally.
+	hpackDesynced bool
 }
 
 // HPACKErrors returns the number of HEADERS decode failures on this flow.
@@ -113,6 +136,15 @@ func (s *h2State) HPACKErrors() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hpackErrors
+}
+
+// Desynced reports whether this flow's HPACK context has irrecoverably
+// diverged (mid-connection attach), i.e. we've stopped emitting witnesses from
+// it. Used for the h2_hpack_desyncs telemetry counter.
+func (s *h2State) Desynced() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hpackDesynced
 }
 
 // h2Stream accumulates pseudo-headers + body for a single HTTP/2 stream.
@@ -148,17 +180,47 @@ type h2Stream struct {
 // adapter's MaxPendingPerFlow.
 const h2MaxBodyBytes = 1 * 1024 * 1024
 
-func newH2State(bidiID akinet.TCPBidiID) *h2State {
+func newH2State(conn *tlsConnState) *h2State {
 	return &h2State{
 		hpack:   hpack.NewDecoder(4096, nil),
 		streams: map[uint32]*h2Stream{},
-		bidiID:  bidiID,
+		conn:    conn,
 	}
+}
+
+// bidiID returns the live per-connection witness namespace. It is read fresh
+// (not snapshotted) so a mid-life regeneration by the adapter is reflected in
+// every subsequently emitted stream on this connection.
+func (s *h2State) bidiID() akinet.TCPBidiID {
+	return s.conn.bidiID
+}
+
+// resetForNewConnection clears the per-connection decode state when the reused
+// SSL* pointer rolls to a new connection. HPACK state and stream state are
+// strictly per-connection (RFC 7540/7541), so carrying them across connections
+// would desync the dynamic table and collide stream IDs. It intentionally does
+// NOT touch s.pending (the caller is mid-parse) or the shared conn/epoch.
+func (s *h2State) resetForNewConnection() {
+	s.hpack = hpack.NewDecoder(4096, nil)
+	s.streams = map[uint32]*h2Stream{}
+	s.headerBlock = s.headerBlock[:0]
+	s.headersStreamID = 0
+	s.headersEndStream = false
+	s.hpackDesynced = false
 }
 
 // IsHTTP2Preface returns true if the given bytes start with the HTTP/2
 // connection preface or look like a SETTINGS frame at stream_id=0 (which is
 // what the server sends back as its half of the preface).
+// isH2ClientPreface reports whether b begins with the HTTP/2 client connection
+// preface ("PRI * HTTP/2.0..."). Unlike IsHTTP2Preface it does NOT match the
+// server-side SETTINGS frame, so it fires exactly once per connection (on the
+// client-write side). The adapter uses it to regenerate the per-connection
+// bidiID exactly once when an SSL* pointer is reused for a new connection.
+func isH2ClientPreface(b []byte) bool {
+	return len(b) >= len(H2Preface) && string(b[:len(H2Preface)]) == H2Preface
+}
+
 func IsHTTP2Preface(b []byte) bool {
 	if len(b) >= len(H2Preface) && string(b[:len(H2Preface)]) == H2Preface {
 		return true
@@ -258,9 +320,33 @@ func (s *h2State) feed(data []byte, now time.Time, ifaceTag string) []akinet.Par
 
 	s.pending = append(s.pending, data...)
 
-	// If we haven't yet consumed the preface and it's present, skip it.
-	if len(s.pending) >= len(H2Preface) && string(s.pending[:len(H2Preface)]) == H2Preface {
+	// A client preface at the start of pending marks the beginning of a
+	// connection. Because a reused SSL* keeps this same h2State alive across
+	// connections, seeing a preface again means a NEW connection has begun. If
+	// the conn has already carried H2 traffic, roll the shared witness namespace
+	// (bump epoch + regenerate bidiID) so this connection's stream 1/3/5... do
+	// not collide with the previous connection's on witness ID. Then reset our
+	// per-connection decode state (fresh HPACK context — the peer's dynamic
+	// table also resets per connection — and empty stream map).
+	if isH2ClientPreface(s.pending) {
+		if s.conn.h2Seen {
+			s.conn.h2Epoch++
+			s.conn.bidiID = akinet.TCPBidiID(uuid.New())
+		}
+		s.conn.h2Seen = true
+		s.epoch = s.conn.h2Epoch
+		s.resetForNewConnection()
 		s.pending = s.pending[len(H2Preface):]
+	}
+
+	// Peer direction (the one that does NOT carry the client preface, e.g. the
+	// server's SETTINGS side) picks up a connection roll lazily: when it sees
+	// the shared epoch has advanced past the one it last reset at, it resets its
+	// own per-connection decode state so it decodes the new connection under the
+	// new (regenerated) bidiID and a fresh HPACK context.
+	if s.epoch != s.conn.h2Epoch {
+		s.epoch = s.conn.h2Epoch
+		s.resetForNewConnection()
 	}
 
 	var out []akinet.ParsedNetworkTraffic
@@ -347,13 +433,26 @@ func (s *h2State) handleContinuation(flags uint8, streamID uint32, payload []byt
 }
 
 func (s *h2State) finalizeHeaderBlock(now time.Time, ifaceTag string) (akinet.ParsedNetworkTraffic, bool) {
+	// Once this connection's HPACK context has proven desynced, do not decode
+	// further HEADERS: the dynamic table is unreliable, so a "successful" decode
+	// could still yield wrong values. Consume the block and emit nothing. Frame
+	// parsing (which is length-prefixed and independent of HPACK) continues
+	// unaffected, so we stay in sync at the frame level.
+	if s.hpackDesynced {
+		s.headerBlock = s.headerBlock[:0]
+		return akinet.ParsedNetworkTraffic{}, false
+	}
+
 	fields, err := s.hpack.DecodeFull(s.headerBlock)
 	s.headerBlock = s.headerBlock[:0]
 	if err != nil {
-		// Likely mid-connection attach: the encoder's HPACK dynamic table
-		// state was built across HEADERS frames we never observed.
-		// Counter is exposed via HPACKErrors() so telemetry can surface it.
+		// Mid-connection attach: the encoder's HPACK dynamic table was built
+		// across HEADERS frames we never observed, so it has irrecoverably
+		// diverged from ours. Latch desync so we stop trusting this connection
+		// (see hpackDesynced). Counter is exposed via HPACKErrors() for
+		// telemetry.
 		s.hpackErrors++
+		s.hpackDesynced = true
 		return akinet.ParsedNetworkTraffic{}, false
 	}
 
@@ -498,7 +597,7 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 			}
 		}
 		pnt.Content = akinet.HTTPRequest{
-			StreamID:   uuid.UUID(s.bidiID),
+			StreamID:   uuid.UUID(s.bidiID()),
 			Seq:        int(streamID),
 			Method:     st.method,
 			ProtoMajor: 2,
@@ -512,7 +611,7 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 	}
 	if st.status != 0 {
 		pnt.Content = akinet.HTTPResponse{
-			StreamID:   uuid.UUID(s.bidiID),
+			StreamID:   uuid.UUID(s.bidiID()),
 			Seq:        int(streamID),
 			StatusCode: st.status,
 			ProtoMajor: 2,
@@ -543,5 +642,3 @@ func isPseudoHeader(name string) bool {
 	return len(name) > 0 && name[0] == ':'
 }
 
-// silence unused-import warnings when only some types are referenced.
-var _ = fmt.Sprintf

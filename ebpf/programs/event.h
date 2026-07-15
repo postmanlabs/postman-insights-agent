@@ -12,12 +12,21 @@
 #define DIR_EGRESS  0  // data the local process is sending (SSL_write)
 #define DIR_INGRESS 1  // data the local process is receiving (SSL_read)
 
-// Max plaintext bytes copied per event. Sized to fit a typical HTTP
-// request/response head (method+path+headers). Bodies beyond this are
+// Max plaintext bytes copied per event. Sized to fit an HTTP
+// request/response head plus a typical JSON body. Bodies beyond this are
 // truncated; the full length is preserved in `len_total` for accounting.
 //
-// Mirrors OBI's FULL_BUF_SIZE (bpf/common/http_info.h). Power of two.
-#define MAX_EVENT_PAYLOAD 4096
+// NOTE: this is also the fixed size reserved in the ring buffer per event
+// (bpf_ringbuf_reserve(sizeof(struct ssl_event))), so EVERY event — even a
+// tiny healthcheck — costs this many bytes of ring space regardless of how
+// many bytes are actually copied. When raising it, raise the `events` ringbuf
+// size in libssl.bpf.c proportionally to keep event-count headroom.
+//
+// Raised 4096 -> 16384: 4 KiB truncated common ~11-12 KiB JSON list responses
+// (see len_total >> len_captured in traces). 16 KiB covers those with headroom
+// while keeping per-event copy cost bounded (the runtime max_capture_bytes knob
+// + CPU thermostat still throttle actual copies under load). Power of two.
+#define MAX_EVENT_PAYLOAD 16384
 
 // A single decrypted-bytes event emitted by an SSL_read or SSL_write
 // uretprobe. One TLS record may produce multiple events; the userspace
