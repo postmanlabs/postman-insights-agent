@@ -1,1 +1,3 @@
+# Generated at build time from the build host's kernel BTF (see the eBPF
+# Dockerfiles and the Makefile build target). Not committed — per-arch and large.
 vmlinux.h

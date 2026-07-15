@@ -21,12 +21,20 @@ Required on the build host:
 
 - `clang` ≥ 14 (we use `-target bpf`)
 - `llvm-strip`
-- Kernel headers / vmlinux.h. We generate `vmlinux.h` from BTF:
+- Kernel headers / `vmlinux.h`. This is **generated at build time** from the
+  build host's kernel BTF and is **not committed** (per-arch and large):
   ```sh
   bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
   ```
-  This file is **not** checked into the repo (per-arch, large). The build
-  scripts generate it during the container build.
+  The eBPF Dockerfiles and the `make` build target do this automatically. Two
+  constraints follow: the build host's kernel must expose
+  `/sys/kernel/btf/vmlinux`, and the build must be **native per-arch** (a
+  cross-arch build would bake the wrong `pt_regs` layout — the release builds
+  amd64 and arm64 on separate machines). CO-RE relocates the compiled programs
+  against the *runtime* kernel, so the builder kernel version need not match the
+  deployment kernel. If a build environment cannot expose kernel BTF, drop a
+  pre-generated `vmlinux.h` into this directory and the build will use it; for a
+  fully deterministic header, source one from [BTFHub](https://github.com/aquasecurity/btfhub).
 
 ### Generating bpf2go output locally (IDE / full eBPF build)
 
@@ -60,14 +68,19 @@ From `ebpf/loader/loader.go`:
 
 ```go
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go \
-//   -target amd64,arm64 \
+//   -target native \
 //   -cc clang \
 //   -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations -Wno-microsoft-anon-tag" \
 //   libssl ../programs/libssl.bpf.c -- -I../programs
 ```
 
-This produces `libssl_bpfel.go` (little-endian) and `libssl_bpfel.o` for each
-target architecture, embedded into the Go binary via `go:embed`.
+We use `-target native` (not `-target amd64,arm64`): Debian bookworm ships
+libbpf 1.1, which lacks the synthetic per-arch `pt_regs` structs needed for
+cross-arch codegen, so we build each architecture natively (the release builds
+amd64 and arm64 on separate machines). This produces `libssl_bpfel.go`
+(little-endian) and `libssl_bpfel.o`, embedded into the Go binary via
+`go:embed`. These generated files are git-ignored and regenerated in every
+build environment.
 
 ## Why GPL license tag
 
