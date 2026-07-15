@@ -211,11 +211,12 @@ static __always_inline int pid_allowed(__u32 tgid) {
 // Copy up to `len` bytes from `user_buf` into a freshly-reserved ringbuf
 // event and submit it. Returns 0 on success, -1 on failure.
 //
-// NOTE on the verifier: we clamp `to_copy` to the compile-time array bound
-// so the BPF verifier can prove the bounded read. Modern verifiers (kernel
-// 5.2+) track conditional bounds. The old mask trick (&= MAX_EVENT_PAYLOAD-1)
-// was incorrect: when to_copy == MAX_EVENT_PAYLOAD after the runtime cap,
-// 4096 & 4095 would truncate to zero at the boundary; plain conditional has no such edge case.
+// NOTE on the verifier: `to_copy` derives from the uretprobe return value,
+// whose upper 32 bits are undefined, so the verifier initially tracks it as
+// smin=INT64_MIN. We (1) zero-extend with `& 0xffffffff` to force smin=0, then
+// (2) clamp to the compile-time array bound so the bounded read verifies.
+// This is NOT the old truncating `& (MAX_EVENT_PAYLOAD-1)` mask (4096 & 4095 -> 0
+// at the boundary); `& 0xffffffff` never alters the value.
 static __always_inline int emit_event(
         __u64 pid_tgid,
         __u64 ssl_ctx,
@@ -239,7 +240,12 @@ static __always_inline int emit_event(
         return -1;
     }
 
-    __u32 to_copy = reported_len;
+    // Zero-extend: the uretprobe return (int ret) has undefined upper 32 bits,
+    // so the verifier tracks smin=INT64_MIN. Using __u64 with & 0xffffffffULL
+    // forces the compiler to emit the AND instruction (it's not a no-op on a
+    // 64-bit value), so the verifier sees var_off=(0x0; 0xffffffff) -> smin=0.
+    // A plain __u32 cast + `& 0xffffffff` is a no-op and gets optimized away.
+    __u64 to_copy = (__u64)reported_len & 0xffffffffULL;
     if (to_copy > max_capture_bytes) {
         to_copy = max_capture_bytes;
     }
@@ -340,7 +346,7 @@ int BPF_URETPROBE(uretprobe_ssl_read, int ret) {
         return 0;
     }
 
-    emit_event(id, args->ssl, (const void *)args->buf, (__u32)ret, DIR_INGRESS);
+    emit_event(id, args->ssl, (const void *)args->buf, (__u32)(ret & 0xffffffffU), DIR_INGRESS);
     bpf_map_delete_elem(&active_ssl_read_args, &id);
     return 0;
 }
@@ -421,7 +427,7 @@ int BPF_URETPROBE(uretprobe_ssl_write, int ret) {
         return 0;
     }
 
-    emit_event(id, args->ssl, (const void *)args->buf, (__u32)ret, DIR_EGRESS);
+    emit_event(id, args->ssl, (const void *)args->buf, (__u32)(ret & 0xffffffffU), DIR_EGRESS);
     bpf_map_delete_elem(&active_ssl_write_args, &id);
     return 0;
 }
