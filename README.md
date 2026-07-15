@@ -43,3 +43,25 @@ binary:
 
 1. Install [gomock](https://github.com/golang/mock): `go get github.com/golang/mock/mockgen`
 2. `make test`
+
+## HTTPS capture (eBPF)
+
+In addition to plaintext HTTP capture (classic BPF via libpcap), the agent can
+capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
+**opt-in** and **Linux-only**.
+
+- Enable it by passing `--enable-https-capture` to `apidump`.
+- Related flags: `--https-capture-mode`, and the HTTPS rate/body-size caps.
+- **Requirements:** Linux kernel **5.8+** (RHEL/CentOS/Rocky/Alma 8 with 4.18 is
+  supported via Red Hat's eBPF backports). Requires `CAP_BPF` + `CAP_PERFMON`
+  (or `CAP_SYS_ADMIN` on older kernels) and access to `/sys/kernel/debug`,
+  `/sys/fs/bpf`, and host `/proc`.
+- **Not available on macOS** — the macOS build captures HTTP only; all eBPF
+  paths compile to no-ops there.
+
+Building with eBPF requires the `insights_bpf` build tag plus clang and
+`bpf2go`, and a `vmlinux.h` generated from the build host's kernel BTF (produced
+automatically at build time; requires a native per-arch Linux build). On Linux
+with clang + bpftool installed, `make` auto-detects the toolchain and builds
+with eBPF; otherwise it builds the plain binary. See `ebpf/programs/README.md`
+for details.

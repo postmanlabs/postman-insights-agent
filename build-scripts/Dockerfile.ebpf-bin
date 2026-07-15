@@ -39,15 +39,23 @@ RUN go mod download
 
 COPY . .
 
-RUN if [ -f ebpf/programs/vmlinux.h ]; then \
-        echo "==> using pre-generated ebpf/programs/vmlinux.h"; \
-    elif [ -f /sys/kernel/btf/vmlinux ]; then \
-        echo "==> generating vmlinux.h from build host BTF"; \
-        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+# Provide vmlinux.h for eBPF CO-RE. Prefer a header that was dropped into the
+# build context; otherwise generate it from the build host's kernel BTF. This
+# stage must run on a Linux host whose kernel exposes /sys/kernel/btf/vmlinux,
+# built NATIVELY for the target arch (a cross-arch build would bake the wrong
+# pt_regs layout). CO-RE relocates against the runtime kernel, so the builder
+# kernel's exact version does not need to match the deployment kernel.
+RUN set -eu; \
+    if [ -f ebpf/programs/vmlinux.h ]; then \
+        echo "==> using provided ebpf/programs/vmlinux.h"; \
+    elif [ -r /sys/kernel/btf/vmlinux ]; then \
+        echo "==> generating ebpf/programs/vmlinux.h from build host BTF"; \
+        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h.tmp \
+            && mv ebpf/programs/vmlinux.h.tmp ebpf/programs/vmlinux.h \
+            || { rm -f ebpf/programs/vmlinux.h.tmp; echo "ERROR: failed to generate vmlinux.h from build host BTF" >&2; exit 1; }; \
     else \
-        echo "ERROR: ebpf/programs/vmlinux.h missing and /sys/kernel/btf/vmlinux unavailable." >&2; \
-        echo "Generate it first, e.g. inside make dev-shell:" >&2; \
-        echo "  bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h" >&2; \
+        echo "ERROR: ebpf/programs/vmlinux.h not provided and /sys/kernel/btf/vmlinux is unavailable in the build sandbox." >&2; \
+        echo "Build on a Linux host with kernel BTF, or drop a pre-generated vmlinux.h into ebpf/programs/." >&2; \
         exit 1; \
     fi
 
