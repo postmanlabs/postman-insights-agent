@@ -50,7 +50,7 @@ In addition to plaintext HTTP capture (classic BPF via libpcap), the agent can
 capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
 **opt-in** and **Linux-only**.
 
-- Enable it by passing `--enable-https-capture` to `apidump` (add
+- Enable it by passing `--enable-https-capture` to `apidump`.
 - Related flags: `--https-capture-mode`, and the HTTPS rate/body-size caps.
 - **Requirements:** Linux kernel **5.8+** (RHEL/CentOS/Rocky/Alma 8 with 4.18 is
   supported via Red Hat's eBPF backports). Requires `CAP_BPF` + `CAP_PERFMON`

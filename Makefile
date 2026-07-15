@@ -24,8 +24,15 @@ build: clean
 ifeq ($(BUILD_TAGS),insights_bpf)
 	@echo "==> eBPF toolchain detected — building with insights_bpf tag"
 	@if [ ! -f ebpf/programs/vmlinux.h ]; then \
+		if [ ! -r /sys/kernel/btf/vmlinux ]; then \
+			echo "ERROR: ebpf/programs/vmlinux.h missing and /sys/kernel/btf/vmlinux is unreadable — cannot generate it." >&2; \
+			echo "Build on a Linux host with kernel BTF, or drop a pre-generated vmlinux.h into ebpf/programs/." >&2; \
+			exit 1; \
+		fi; \
 		echo "==> generating ebpf/programs/vmlinux.h from host BTF"; \
-		bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+		bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h.tmp \
+			&& mv ebpf/programs/vmlinux.h.tmp ebpf/programs/vmlinux.h \
+			|| { rm -f ebpf/programs/vmlinux.h.tmp; echo "ERROR: failed to generate vmlinux.h from host BTF" >&2; exit 1; }; \
 	fi
 	cd ebpf/loader && go generate -tags insights_bpf ./...
 else
@@ -52,7 +59,15 @@ dev-down:
 # macOS-only: generate bpf2go bindings via Docker (not used in CI — CI has
 # native bpftool/clang and runs go generate inside the build target above).
 generate-ebpf:
-	./build-scripts/dev-container.sh run 'bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h && cd ebpf/loader && go generate -tags insights_bpf ./...'
+	./build-scripts/dev-container.sh run 'set -eu; \
+		if [ ! -r /sys/kernel/btf/vmlinux ]; then \
+			echo "ERROR: /sys/kernel/btf/vmlinux is unreadable — cannot generate vmlinux.h." >&2; \
+			exit 1; \
+		fi; \
+		bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h.tmp \
+			&& mv ebpf/programs/vmlinux.h.tmp ebpf/programs/vmlinux.h \
+			|| { rm -f ebpf/programs/vmlinux.h.tmp; echo "ERROR: failed to generate vmlinux.h from host BTF" >&2; exit 1; }; \
+		cd ebpf/loader && go generate -tags insights_bpf ./...'
 
 clean:
 	go clean

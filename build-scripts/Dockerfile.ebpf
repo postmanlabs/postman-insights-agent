@@ -37,7 +37,9 @@ RUN set -eu; \
         echo "==> using provided ebpf/programs/vmlinux.h"; \
     elif [ -r /sys/kernel/btf/vmlinux ]; then \
         echo "==> generating ebpf/programs/vmlinux.h from build host BTF"; \
-        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h; \
+        bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h.tmp \
+            && mv ebpf/programs/vmlinux.h.tmp ebpf/programs/vmlinux.h \
+            || { rm -f ebpf/programs/vmlinux.h.tmp; echo "ERROR: failed to generate vmlinux.h from build host BTF" >&2; exit 1; }; \
     else \
         echo "ERROR: ebpf/programs/vmlinux.h not provided and /sys/kernel/btf/vmlinux is unavailable in the build sandbox." >&2; \
         echo "Build on a Linux host with kernel BTF, or drop a pre-generated vmlinux.h into ebpf/programs/." >&2; \
