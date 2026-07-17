@@ -262,10 +262,11 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	// flow for that pod instead of auto-discovery's RegisterDiscoveredService.
 	// Pods without explicit IDs continue to use auto-discovery unchanged.
 	if d.DiscoveryMode {
-		// Pick the first running container for network namespace capture.
-		mainUUID := ""
-		var mainConfig containerConfig
-		if len(containerUUIDs) > 0 {
+		// Prefer the container with explicit workspace/project IDs (hybrid mode).
+		// Do not use containerUUIDs[0]: sidecars like istio-proxy are often first
+		// and lack POSTMAN_INSIGHTS_* env vars on the application container.
+		mainUUID, mainConfig, _ := selectMainContainer(containerConfigMap)
+		if mainUUID == "" && len(containerUUIDs) > 0 {
 			mainUUID = containerUUIDs[0]
 			if cfg, ok := containerConfigMap[mainUUID]; ok {
 				mainConfig = cfg
