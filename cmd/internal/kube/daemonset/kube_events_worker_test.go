@@ -160,6 +160,30 @@ func testPod(name, namespace string) coreV1.Pod {
 	}
 }
 
+func TestSelectMainContainer_PrefersWorkspaceContainerOverSidecar(t *testing.T) {
+	validUUID := "12345678-1234-1234-1234-123456789abc"
+	validSystemEnv := "abcdefab-abcd-abcd-abcd-abcdefabcdef"
+
+	sidecarUUID := "istio-proxy-uuid"
+	appUUID := "app-container-uuid"
+
+	containerConfigMap := map[string]containerConfig{
+		sidecarUUID: {requiredContainerConfig: requiredContainerConfig{}},
+		appUUID: {
+			requiredContainerConfig: requiredContainerConfig{
+				workspaceID: validUUID,
+				systemEnv:   validSystemEnv,
+			},
+		},
+	}
+
+	uuid, config, result := selectMainContainer(containerConfigMap)
+	assert.Equal(t, appUUID, uuid)
+	assert.Equal(t, validUUID, config.requiredContainerConfig.workspaceID)
+	assert.Equal(t, validSystemEnv, config.requiredContainerConfig.systemEnv)
+	assert.Equal(t, 2, result.ValidAttrCount)
+}
+
 func TestApplyDiscoveryModeConfig_NoExplicitIDs(t *testing.T) {
 	d := &Daemonset{
 		DiscoveryMode:       true,
