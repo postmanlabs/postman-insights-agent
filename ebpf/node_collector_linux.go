@@ -51,6 +51,9 @@ type NodeCollector struct {
 	mgr   *uprobes.Manager
 	therm *Thermostat
 
+	// monoEpoch maps BPF timestamps onto wall clock. It is owned exclusively by
+	// Run's event loop — the only goroutine that reads or updates it — so it
+	// needs no locking. Run periodically re-checks it via adjustEpoch.
 	monoEpoch time.Time
 
 	// flowIdleTimeout is forwarded to per-pod GC tickers.
@@ -88,6 +91,13 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		cfg.FlowIdleTimeout = 30 * time.Second
 	}
 
+	// Establish the monotonic→wall-clock epoch before loading anything, so that
+	// a clock failure aborts startup without leaking loaded BPF programs.
+	monoEpoch, err := monotonicEpoch()
+	if err != nil {
+		return nil, err
+	}
+
 	l, err := loader.Load(loader.Config{
 		MaxCaptureBytes: cfg.MaxCaptureBytes,
 	})
@@ -104,7 +114,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		ldr:             l,
 		mgr:             uprobes.NewManager(l),
 		therm:           therm,
-		monoEpoch:       time.Now().Add(-time.Duration(monotonicNow())),
+		monoEpoch:       monoEpoch,
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
@@ -178,6 +188,10 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 			}
 
 		case <-gcTicker.C:
+			// Re-check the epoch: if the machine stopped running since the last
+			// tick, every witness after the resume would otherwise be back-dated.
+			nc.monoEpoch = adjustEpoch(nc.monoEpoch)
+
 			nc.mu.RLock()
 			adapters := make([]*events.Adapter, 0, len(nc.netnsToSub)+len(nc.pidToSub))
 			seen := make(map[*events.Adapter]struct{})
