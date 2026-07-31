@@ -77,3 +77,12 @@ mock:
 
 test: mock
 	go test ./...
+
+# eBPF code sits behind the insights_bpf tag, so `make test` never compiles it.
+# Run the tagged tests explicitly. Requires a Linux host with the eBPF toolchain
+# and generated bpf2go bindings (run `make build` first).
+#
+# NOTE: some tests in ./ebpf/... load real BPF programs and need CAP_BPF, so this
+# target is not expected to pass in an unprivileged container.
+test-ebpf:
+	go test -tags insights_bpf ./ebpf/...
