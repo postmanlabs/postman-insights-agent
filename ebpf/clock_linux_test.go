@@ -26,16 +26,19 @@ import (
 //  1. Suspend BEFORE the agent starts — the original bug. Fixed by reading the
 //     right clock. Only TestBPFClockIDMatchesKtimeGetNS catches a regression
 //     here on every host; see the blind-spot note below.
-//  2. Suspend AFTER the agent starts — MONOTONIC stalls while wall clock moves,
-//     so a once-computed epoch drifts. Fixed by adjustEpochForSuspend, and
-//     covered deterministically by TestAdjustEpochForSuspend* below.
+//  2. The machine stops running AFTER the agent starts — guest suspend, a paused
+//     VM (what a Mac lid-close does to Docker Desktop), or a wall-clock step.
+//     MONOTONIC stalls while wall clock moves on, so a once-computed epoch
+//     drifts. Fixed by adjustEpoch, and covered deterministically by
+//     TestAdjustEpoch* below.
 //
 // BLIND SPOT for mode 1: on a host that has never suspended, CLOCK_MONOTONIC and
 // CLOCK_BOOTTIME return identical values, so the runtime checks here cannot tell
 // them apart and would have passed against the buggy code. CI runners, cloud VMs
 // and fresh containers are all in that category — which is exactly why this bug
-// reached a customer. The mode-2 tests do not share this weakness: they fake the
-// previous suspend sample rather than relying on the host having slept.
+// reached a customer. The mode-2 tests do not share this weakness: they hand
+// adjustEpoch a deliberately stale epoch rather than relying on the host having
+// stopped running, so they discriminate on any machine.
 
 // clockNano reads a POSIX clock and returns its value in nanoseconds.
 func clockNano(t *testing.T, clockID int32) int64 {
@@ -114,7 +117,7 @@ func TestMonotonicEpochConvertsToWallClock(t *testing.T) {
 	tsNS := clockNano(t, unix.CLOCK_MONOTONIC)
 
 	before := time.Now()
-	monoEpoch, _, err := monotonicEpoch()
+	monoEpoch, err := monotonicEpoch()
 	if err != nil {
 		t.Fatalf("monotonicEpoch() returned an error: %v", err)
 	}
@@ -135,62 +138,59 @@ func TestMonotonicEpochConvertsToWallClock(t *testing.T) {
 	}
 }
 
-// TestAdjustEpochForSuspendCorrectsBackDating is the regression test for failure
-// mode 2, and unlike the checks above it has full discriminating power on any
-// host — including CI runners that have never slept.
+// TestAdjustEpochCorrectsBackDating is the regression test for failure mode 2,
+// and unlike the checks above it has full discriminating power on any host —
+// including CI runners and Docker Desktop VMs that have never stopped running.
 //
-// The trick is to fake the *previous* sample rather than the clock: passing a
-// lastSuspended value that is 6 h stale is indistinguishable, from
-// adjustEpochForSuspend's point of view, from the host having just woken from a
-// 6 h sleep. Without the correction the epoch stays put and every witness after
-// a resume is back-dated by 6 h.
-func TestAdjustEpochForSuspendCorrectsBackDating(t *testing.T) {
-	epoch, suspended, err := monotonicEpoch()
+// The trick is to hand adjustEpoch an epoch that is 6 h too early. That is
+// indistinguishable, from its point of view, from the machine having just resumed
+// after 6 h of not running. Without the correction the epoch stays stale and every
+// subsequent witness is back-dated by 6 h — precisely the reported bug.
+func TestAdjustEpochCorrectsBackDating(t *testing.T) {
+	correct, err := monotonicEpoch()
 	if err != nil {
 		t.Fatalf("monotonicEpoch() returned an error: %v", err)
 	}
 
-	const slept = 6 * time.Hour
-	stale := suspended - slept // as if we last sampled before a 6 h sleep
+	const stopped = 6 * time.Hour
+	stale := correct.Add(-stopped)
 
-	got, gotSuspended := adjustEpochForSuspend(epoch, stale)
+	got := adjustEpoch(stale)
 
 	const tolerance = 100 * time.Millisecond
-	moved := got.Sub(epoch)
-	if moved < slept-tolerance || moved > slept+tolerance {
-		t.Errorf("epoch moved by %v after a simulated %v suspend, want %v (tolerance %v); "+
-			"witnesses captured after a resume will be back-dated by the shortfall",
-			moved, slept, slept, tolerance)
+	if drift := got.Sub(correct); drift < -tolerance || drift > tolerance {
+		t.Errorf("adjustEpoch left the epoch %v away from correct after a simulated %v "+
+			"stall (tolerance %v); witnesses after a resume would be back-dated by that much",
+			drift, stopped, tolerance)
 	}
 
-	if gotSuspended < suspended-tolerance || gotSuspended > suspended+tolerance {
-		t.Errorf("returned suspend sample = %v, want ~%v; a wrong sample makes the "+
-			"next adjustment over- or under-correct", gotSuspended, suspended)
+	// Guard the direction: a stale epoch must move forward, never further back.
+	if !got.After(stale) {
+		t.Errorf("epoch moved from %v to %v — it must move forward to catch up", stale, got)
 	}
 }
 
-// TestAdjustEpochForSuspendIgnoresNoise checks the common case: no suspend since
-// the last sample, so the epoch must not move. If this drifted, the epoch would
-// be nudged on every GC tick and timestamps on a single flow could straddle a
+// TestAdjustEpochIgnoresNoise checks the common case: nothing has happened since
+// the epoch was derived, so it must not move at all. If it drifted here, the epoch
+// would be nudged on every GC tick and timestamps on a single flow could straddle a
 // change, producing the negative processing latency that ebpf/events/adapter.go
 // documents having already been fixed once.
-func TestAdjustEpochForSuspendIgnoresNoise(t *testing.T) {
-	epoch, suspended, err := monotonicEpoch()
+func TestAdjustEpochIgnoresNoise(t *testing.T) {
+	epoch, err := monotonicEpoch()
 	if err != nil {
 		t.Fatalf("monotonicEpoch() returned an error: %v", err)
 	}
 
-	got, _ := adjustEpochForSuspend(epoch, suspended)
-	if !got.Equal(epoch) {
-		t.Errorf("epoch moved by %v with no intervening suspend, want no change",
-			got.Sub(epoch))
+	if got := adjustEpoch(epoch); !got.Equal(epoch) {
+		t.Errorf("epoch moved by %v with nothing to correct, want no change", got.Sub(epoch))
 	}
 
-	// A negative step should be impossible, but must never drag the epoch
-	// backwards if it somehow occurs.
-	got, _ = adjustEpochForSuspend(epoch, suspended+time.Hour)
-	if !got.Equal(epoch) {
-		t.Errorf("epoch moved by %v on a negative suspend step, want no change",
-			got.Sub(epoch))
+	// Sub-threshold drift in either direction must also be left alone.
+	for _, skew := range []time.Duration{500 * time.Millisecond, -500 * time.Millisecond} {
+		nudged := epoch.Add(skew)
+		if got := adjustEpoch(nudged); !got.Equal(nudged) {
+			t.Errorf("epoch with %v sub-threshold skew was adjusted to %v, want no change",
+				skew, got)
+		}
 	}
 }

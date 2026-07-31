@@ -47,9 +47,10 @@ func monotonicNow() (int64, error) {
 }
 
 // monotonicEpoch returns the wall-clock instant that a BPF timestamp of zero
-// corresponds to, for use with events.SSLEvent.Time, together with the amount
-// of time the host has spent suspended so far. Callers must keep that second
-// value and feed it back into adjustEpochForSuspend — see that function for why.
+// corresponds to, for use with events.SSLEvent.Time.
+//
+// The value is only valid while the machine keeps running: see adjustEpoch,
+// which callers must apply periodically to keep it honest.
 //
 // Callers must treat a returned error as fatal to capture: without a valid
 // epoch, every witness timestamp would be wrong.
@@ -57,21 +58,12 @@ func monotonicNow() (int64, error) {
 // The conversion lives here rather than at the call sites because getting the
 // sign or the time.Duration wrapping wrong is precisely the failure this
 // package has already shipped once.
-func monotonicEpoch() (time.Time, time.Duration, error) {
+func monotonicEpoch() (time.Time, error) {
 	mono, err := monotonicNow()
 	if err != nil {
-		return time.Time{}, 0, fmt.Errorf("unable to establish monotonic-clock epoch: %w", err)
+		return time.Time{}, fmt.Errorf("unable to establish monotonic-clock epoch: %w", err)
 	}
-	epoch := time.Now().Add(-time.Duration(mono))
-
-	// Not fatal: if we cannot read BOOTTIME we simply lose suspend correction,
-	// which is strictly better than refusing to capture.
-	suspended, err := suspendedSinceBoot()
-	if err != nil {
-		printer.Debugf("ebpf: cannot read CLOCK_BOOTTIME (%v); suspend correction disabled\n", err)
-		suspended = 0
-	}
-	return epoch, suspended, nil
+	return time.Now().Add(-time.Duration(mono)), nil
 }
 
 // suspendedSinceBoot returns how long the host has spent suspended, as
@@ -88,50 +80,60 @@ func suspendedSinceBoot() (time.Duration, error) {
 	return time.Duration(boot.Nano() - mono.Nano()), nil
 }
 
-// suspendAdjustThreshold is the smallest suspend we bother correcting for. The
-// two clock reads in suspendedSinceBoot are separate syscalls, so the measured
-// difference carries sub-millisecond noise; one second is far above that noise
-// and far below any real suspend.
-const suspendAdjustThreshold = time.Second
+// epochDriftThreshold is the smallest epoch error we bother correcting.
+//
+// Re-deriving the epoch involves two separate syscalls, so a freshly computed
+// value differs from a correct stored one by sub-microsecond noise (measured at
+// ~2 µs on a Docker Desktop VM). One second sits six orders of magnitude above
+// that noise, and far below any suspend or clock step worth reacting to. It also
+// comfortably absorbs NTP *slew*, which is bounded to a few hundred ppm — about
+// 7 ms over a 15 s tick.
+const epochDriftThreshold = time.Second
 
-// adjustEpochForSuspend corrects an epoch for any suspend that happened since
-// lastSuspended was sampled, and returns the corrected epoch plus a fresh
-// sample. Callers pass both values back in on the next call.
+// adjustEpoch re-derives the monotonic→wall-clock epoch and adopts the new value
+// if it has drifted from the stored one by more than epochDriftThreshold.
 //
 // Why this is needed: the epoch maps CLOCK_MONOTONIC onto wall clock, but
-// MONOTONIC stalls while the host is suspended and wall clock does not. So a
-// suspend after the epoch was taken leaves it too early by exactly the suspend
-// duration, back-dating every subsequent witness — the same failure as the
-// original CLOCK_BOOTTIME bug, just triggered later. A laptop-hosted cluster
-// (kind/k3d/minikube) hits this every time the lid closes.
+// MONOTONIC stalls whenever the machine stops running while wall clock keeps
+// advancing. Anything that does that leaves the epoch too early, back-dating
+// every subsequent witness — the same failure as the original CLOCK_BOOTTIME
+// bug, just triggered later. A laptop-hosted cluster (kind/k3d/minikube) hits
+// this every time the lid closes.
 //
-// The correction is exact rather than approximate: if the host slept for S, the
-// suspend delta grows by exactly S and the epoch must move forward by exactly S.
+// Comparing against wall clock, rather than tracking CLOCK_BOOTTIME - MONOTONIC,
+// is deliberate. The BOOTTIME difference only reveals suspends the *guest kernel*
+// accounted for. It misses a paused VM — which is what a Mac lid-close does to
+// Docker Desktop, and what live-migration or a throttled hypervisor does in
+// production — because both clocks stall together and their difference never
+// changes. Checking the epoch itself catches guest suspend, VM pause and NTP
+// steps alike, without needing to tell them apart.
 //
-// This deliberately does NOT re-derive the epoch from scratch on a timer.
-// Re-deriving would nudge the epoch continuously, so two timestamps on one flow
-// could straddle a change and produce negative processing latency — see the
-// msgStart comment in ebpf/events/adapter.go. This only moves the epoch on a
-// real suspend, which is rare and is already a discontinuity in wall time.
+// The threshold is what keeps this safe. Adopting a new epoch on every tick would
+// nudge it continuously, so two timestamps on one flow could straddle a change and
+// produce negative processing latency — see the msgStart comment in
+// ebpf/events/adapter.go. Below the threshold the epoch is left exactly alone.
 //
 // Not goroutine-safe: callers must hold the epoch in a single goroutine (both
 // Collect and NodeCollector.Run read and update it from one event loop).
-func adjustEpochForSuspend(epoch time.Time, lastSuspended time.Duration) (time.Time, time.Duration) {
-	suspended, err := suspendedSinceBoot()
+func adjustEpoch(epoch time.Time) time.Time {
+	fresh, err := monotonicEpoch()
 	if err != nil {
 		// Keep what we have; a stale epoch beats a corrupted one.
-		printer.Debugf("ebpf: suspend check failed (%v); leaving clock epoch unchanged\n", err)
-		return epoch, lastSuspended
+		printer.Debugf("ebpf: clock re-check failed (%v); leaving epoch unchanged\n", err)
+		return epoch
 	}
 
-	// A negative step should be impossible (the delta is non-decreasing), but if
-	// it happens, resample without touching the epoch.
-	step := suspended - lastSuspended
-	if step < suspendAdjustThreshold {
-		return epoch, suspended
+	drift := fresh.Sub(epoch)
+	if drift > -epochDriftThreshold && drift < epochDriftThreshold {
+		return epoch
 	}
 
-	printer.Infof("ebpf: host suspended for %v; advancing clock epoch to keep witness "+
-		"timestamps on wall clock (total suspended since boot: %v)\n", step, suspended)
-	return epoch.Add(step), suspended
+	suspendNote := ""
+	if suspended, err := suspendedSinceBoot(); err == nil {
+		suspendNote = fmt.Sprintf(", guest-accounted suspend since boot: %v", suspended)
+	}
+	printer.Infof("ebpf: clock epoch drifted by %v (host suspended, VM paused, or wall "+
+		"clock stepped); adopting new epoch to keep witness timestamps on wall clock%s\n",
+		drift, suspendNote)
+	return fresh
 }

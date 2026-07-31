@@ -173,9 +173,9 @@ func Collect(ctx context.Context, args Args) error {
 	// Establish monotonic-clock epoch so event timestamps map to wall clock.
 	// Fatal on failure: without it every witness would carry a bogus timestamp.
 	//
-	// monoEpoch and suspended are owned by the event loop below — it is the only
-	// goroutine that reads or updates them, so no locking is needed.
-	monoEpoch, suspended, err := monotonicEpoch()
+	// monoEpoch is owned by the event loop below — it is the only goroutine that
+	// reads or updates it, so no locking is needed.
+	monoEpoch, err := monotonicEpoch()
 	if err != nil {
 		return err
 	}
@@ -222,9 +222,9 @@ func Collect(ctx context.Context, args Args) error {
 			adapter.Feed(ev, monoEpoch)
 
 		case <-gcTicker.C:
-			// Correct the epoch if the host suspended since the last tick,
-			// otherwise every witness after a resume would be back-dated.
-			monoEpoch, suspended = adjustEpochForSuspend(monoEpoch, suspended)
+			// Re-check the epoch: if the machine stopped running since the last
+			// tick, every witness after the resume would otherwise be back-dated.
+			monoEpoch = adjustEpoch(monoEpoch)
 
 			if n := adapter.GC(time.Now(), args.FlowIdleTimeout); n > 0 {
 				printer.Debugf("ebpf: GC dropped %d idle flows\n", n)

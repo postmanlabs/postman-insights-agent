@@ -51,12 +51,10 @@ type NodeCollector struct {
 	mgr   *uprobes.Manager
 	therm *Thermostat
 
-	// monoEpoch maps BPF timestamps onto wall clock, and suspended tracks how
-	// long the host has slept so monoEpoch can be corrected after a resume.
-	// Both are owned exclusively by Run's event loop — the only goroutine that
-	// reads or updates them — so they need no locking.
+	// monoEpoch maps BPF timestamps onto wall clock. It is owned exclusively by
+	// Run's event loop — the only goroutine that reads or updates it — so it
+	// needs no locking. Run periodically re-checks it via adjustEpoch.
 	monoEpoch time.Time
-	suspended time.Duration
 
 	// flowIdleTimeout is forwarded to per-pod GC tickers.
 	flowIdleTimeout time.Duration
@@ -95,7 +93,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 
 	// Establish the monotonic→wall-clock epoch before loading anything, so that
 	// a clock failure aborts startup without leaking loaded BPF programs.
-	monoEpoch, suspended, err := monotonicEpoch()
+	monoEpoch, err := monotonicEpoch()
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +115,6 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		mgr:             uprobes.NewManager(l),
 		therm:           therm,
 		monoEpoch:       monoEpoch,
-		suspended:       suspended,
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
@@ -191,9 +188,9 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 			}
 
 		case <-gcTicker.C:
-			// Correct the epoch if the host suspended since the last tick,
-			// otherwise every witness after a resume would be back-dated.
-			nc.monoEpoch, nc.suspended = adjustEpochForSuspend(nc.monoEpoch, nc.suspended)
+			// Re-check the epoch: if the machine stopped running since the last
+			// tick, every witness after the resume would otherwise be back-dated.
+			nc.monoEpoch = adjustEpoch(nc.monoEpoch)
 
 			nc.mu.RLock()
 			adapters := make([]*events.Adapter, 0, len(nc.netnsToSub)+len(nc.pidToSub))
