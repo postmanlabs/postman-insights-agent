@@ -152,8 +152,15 @@ func TestMonotonicEpochConvertsToWallClock(t *testing.T) {
 // with Add, which shifts the monotonic reading too, so the synthetic drift is visible
 // via monotonic even when a real one would not be. Hence this separate check.
 //
-// String() is the documented way to observe the reading: it appends a final
-// "m=±<value>" field when one is present.
+// Inspecting String() is the only practical way to detect this. It is not laziness:
+// no behavioural assertion can distinguish the two states. Telling them apart would
+// need two Times sharing a monotonic base but differing in wall clock, which the
+// public API cannot construct. Every arithmetic check we tried passes either way —
+// including epoch.Add(-d).Sub(epoch), which returns exactly -d whether Sub compares
+// wall or monotonic components, because Add shifts both.
+//
+// String() is documented to append a final "m=±<value>" field when a monotonic
+// reading is present, so it is a legitimate observation of the thing we care about.
 func TestMonotonicEpochHasNoMonotonicReading(t *testing.T) {
 	epoch, err := monotonicEpoch()
 	if err != nil {
@@ -163,15 +170,7 @@ func TestMonotonicEpochHasNoMonotonicReading(t *testing.T) {
 	if s := epoch.String(); strings.Contains(s, " m=") {
 		t.Errorf("monotonicEpoch() carries a monotonic clock reading (%s); Sub would "+
 			"then compare monotonic components and adjustEpoch would compute zero drift "+
-			"forever. Strip it with Round(0).", s)
-	}
-
-	// Behavioural companion: a purely wall-clock shift must be visible through Sub.
-	// With a monotonic reading present this difference would read as ~0.
-	const shift = 6 * time.Hour
-	if got := epoch.Add(-shift).Sub(epoch); got != -shift {
-		t.Errorf("wall-clock shift of %v measured as %v through Sub; the epoch is not "+
-			"a pure wall-clock value", -shift, got)
+			"forever, silently disabling suspend correction. Strip it with Round(0).", s)
 	}
 }
 
