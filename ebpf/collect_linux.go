@@ -171,7 +171,14 @@ func Collect(ctx context.Context, args Args) error {
 	}
 
 	// Establish monotonic-clock epoch so event timestamps map to wall clock.
-	monoEpoch := time.Now().Add(-time.Duration(monotonicNow()))
+	// Fatal on failure: without it every witness would carry a bogus timestamp.
+	//
+	// monoEpoch is owned by the event loop below — it is the only goroutine that
+	// reads or updates it, so no locking is needed.
+	monoEpoch, err := monotonicEpoch()
+	if err != nil {
+		return err
+	}
 
 	// 5. Main loop: route discovered targets to the uprobe manager, route
 	//    BPF events to the adapter, periodically GC stale flows.
@@ -215,6 +222,10 @@ func Collect(ctx context.Context, args Args) error {
 			adapter.Feed(ev, monoEpoch)
 
 		case <-gcTicker.C:
+			// Re-check the epoch: if the machine stopped running since the last
+			// tick, every witness after the resume would otherwise be back-dated.
+			monoEpoch = adjustEpoch(monoEpoch)
+
 			if n := adapter.GC(time.Now(), args.FlowIdleTimeout); n > 0 {
 				printer.Debugf("ebpf: GC dropped %d idle flows\n", n)
 			}

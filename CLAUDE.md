@@ -34,7 +34,8 @@ Common commands (from `Makefile`):
 | `make clean`    | `go clean` |
 | `make mock`     | `go generate ./rest` (regenerates gomock mocks) |
 | `make generate-ebpf` | Generate bpf2go bindings (`libssl_*_bpfel.go`) inside the Linux dev container; use on macOS before eBPF IDE work or to fix gopls `undefined: libsslObjects` errors (requires `make dev-build` + Docker) |
-| `make test`     | `make mock` then `go test ./...` |
+| `make test`     | `make mock` then `go test ./...` (does **not** compile `insights_bpf`-tagged code) |
+| `make test-ebpf` | `go test -tags insights_bpf ./ebpf/...` — the only way tagged eBPF tests run; needs Linux + toolchain, and some tests need CAP_BPF |
 | `make docker-build` | Build via `build-scripts/Dockerfile`, output binary to `bin/` |
 
 CI (`.circleci/config.yml`) runs `make` and `gotestsum --junitfile ...` against all packages.
