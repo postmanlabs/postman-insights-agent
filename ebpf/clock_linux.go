@@ -58,12 +58,22 @@ func monotonicNow() (int64, error) {
 // The conversion lives here rather than at the call sites because getting the
 // sign or the time.Duration wrapping wrong is precisely the failure this
 // package has already shipped once.
+// The Round(0) is load-bearing, not cosmetic. time.Now() attaches a monotonic
+// clock reading, Add preserves it, and Sub uses the monotonic components whenever
+// BOTH operands carry one. Go's monotonic clock is CLOCK_MONOTONIC — the same
+// clock monotonicNow() reads — so a monotonic-carrying epoch makes
+// adjustEpoch's drift calculation cancel to zero identically:
+//
+//	(M1 - C1) - (M0 - C0) = (M1 - M0) - (C1 - C0) = 0
+//
+// which is precisely the wall-clock jump we are trying to detect. Round(0) is
+// the canonical way to strip the reading, forcing Sub onto wall clock.
 func monotonicEpoch() (time.Time, error) {
 	mono, err := monotonicNow()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("unable to establish monotonic-clock epoch: %w", err)
 	}
-	return time.Now().Add(-time.Duration(mono)), nil
+	return time.Now().Round(0).Add(-time.Duration(mono)), nil
 }
 
 // suspendedSinceBoot returns how long the host has spent suspended, as
@@ -112,6 +122,11 @@ const epochDriftThreshold = time.Second
 // nudge it continuously, so two timestamps on one flow could straddle a change and
 // produce negative processing latency — see the msgStart comment in
 // ebpf/events/adapter.go. Below the threshold the epoch is left exactly alone.
+//
+// This depends on monotonicEpoch stripping Go's monotonic clock reading: the
+// Sub below MUST compare wall clocks. If either operand regains a monotonic
+// reading, drift silently computes as zero and this function becomes a no-op.
+// TestMonotonicEpochHasNoMonotonicReading guards that.
 //
 // Not goroutine-safe: callers must hold the epoch in a single goroutine (both
 // Collect and NodeCollector.Run read and update it from one event loop).

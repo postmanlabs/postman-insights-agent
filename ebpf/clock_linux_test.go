@@ -5,6 +5,7 @@
 package ebpf
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +136,42 @@ func TestMonotonicEpochConvertsToWallClock(t *testing.T) {
 	if skew := before.Sub(eventTime); skew < -tolerance || skew > tolerance {
 		t.Errorf("event stamped now resolved to %v, which is %v away from wall clock "+
 			"%v (tolerance %v)", eventTime, skew, before, tolerance)
+	}
+}
+
+// TestMonotonicEpochHasNoMonotonicReading guards a subtle trap that made
+// adjustEpoch a silent no-op.
+//
+// time.Now() attaches a monotonic clock reading and Add preserves it. Sub uses the
+// monotonic components whenever BOTH operands carry one, and Go's monotonic clock is
+// CLOCK_MONOTONIC — the very clock the epoch is derived against. So a
+// monotonic-carrying epoch makes adjustEpoch's drift cancel to exactly zero, hiding
+// the wall-clock jump it exists to detect.
+//
+// TestAdjustEpochCorrectsBackDating cannot catch this: it fabricates a stale epoch
+// with Add, which shifts the monotonic reading too, so the synthetic drift is visible
+// via monotonic even when a real one would not be. Hence this separate check.
+//
+// String() is the documented way to observe the reading: it appends a final
+// "m=±<value>" field when one is present.
+func TestMonotonicEpochHasNoMonotonicReading(t *testing.T) {
+	epoch, err := monotonicEpoch()
+	if err != nil {
+		t.Fatalf("monotonicEpoch() returned an error: %v", err)
+	}
+
+	if s := epoch.String(); strings.Contains(s, " m=") {
+		t.Errorf("monotonicEpoch() carries a monotonic clock reading (%s); Sub would "+
+			"then compare monotonic components and adjustEpoch would compute zero drift "+
+			"forever. Strip it with Round(0).", s)
+	}
+
+	// Behavioural companion: a purely wall-clock shift must be visible through Sub.
+	// With a monotonic reading present this difference would read as ~0.
+	const shift = 6 * time.Hour
+	if got := epoch.Add(-shift).Sub(epoch); got != -shift {
+		t.Errorf("wall-clock shift of %v measured as %v through Sub; the epoch is not "+
+			"a pure wall-clock value", -shift, got)
 	}
 }
 
