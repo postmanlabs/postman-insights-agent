@@ -171,7 +171,11 @@ func Collect(ctx context.Context, args Args) error {
 	}
 
 	// Establish monotonic-clock epoch so event timestamps map to wall clock.
-	monoEpoch := time.Now().Add(-time.Duration(monotonicNow()))
+	// Fatal on failure: without it every witness would carry a bogus timestamp.
+	monoEpoch, err := monotonicEpoch()
+	if err != nil {
+		return err
+	}
 
 	// 5. Main loop: route discovered targets to the uprobe manager, route
 	//    BPF events to the adapter, periodically GC stale flows.

@@ -88,6 +88,13 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		cfg.FlowIdleTimeout = 30 * time.Second
 	}
 
+	// Establish the monotonic→wall-clock epoch before loading anything, so that
+	// a clock failure aborts startup without leaking loaded BPF programs.
+	monoEpoch, err := monotonicEpoch()
+	if err != nil {
+		return nil, err
+	}
+
 	l, err := loader.Load(loader.Config{
 		MaxCaptureBytes: cfg.MaxCaptureBytes,
 	})
@@ -104,7 +111,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		ldr:             l,
 		mgr:             uprobes.NewManager(l),
 		therm:           therm,
-		monoEpoch:       time.Now().Add(-time.Duration(monotonicNow())),
+		monoEpoch:       monoEpoch,
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,

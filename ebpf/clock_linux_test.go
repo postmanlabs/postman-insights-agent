@@ -75,7 +75,10 @@ func TestMonotonicNowReadsBPFClock(t *testing.T) {
 	delta := suspendDelta(t)
 	t.Logf("host suspend delta (BOOTTIME-MONOTONIC): %v", delta)
 
-	got := monotonicNow()
+	got, err := monotonicNow()
+	if err != nil {
+		t.Fatalf("monotonicNow() returned an error: %v", err)
+	}
 	if got <= 0 {
 		t.Fatalf("monotonicNow() = %d, want a positive nanosecond count", got)
 	}
@@ -100,18 +103,29 @@ func TestMonotonicNowReadsBPFClock(t *testing.T) {
 }
 
 // TestMonotonicEpochConvertsToWallClock exercises the full production path:
-// derive the epoch the way collect_linux.go and node_collector_linux.go do, feed
-// a BPF-style timestamp through events.SSLEvent.Time(), and confirm the result
-// is the present moment rather than some point in the past.
+// derive the epoch via monotonicEpoch(), feed a BPF-style timestamp through
+// events.SSLEvent.Time(), and confirm the result is the present moment rather
+// than some point in the past.
+//
+// This also guards the sign and the time.Duration conversion inside
+// monotonicEpoch(), and would catch an epoch left at time.Now() (which maps
+// events into the future by the host's uptime).
 func TestMonotonicEpochConvertsToWallClock(t *testing.T) {
 	delta := suspendDelta(t)
 
 	// A real event stamped "right now" by the BPF program would carry this value.
 	tsNS := clockNano(t, unix.CLOCK_MONOTONIC)
 
-	// Mirror production epoch derivation exactly.
 	before := time.Now()
-	monoEpoch := time.Now().Add(-time.Duration(monotonicNow()))
+	monoEpoch, err := monotonicEpoch()
+	if err != nil {
+		t.Fatalf("monotonicEpoch() returned an error: %v", err)
+	}
+
+	if !monoEpoch.Before(before) {
+		t.Errorf("monotonicEpoch() = %v, which is not before now (%v); the epoch "+
+			"must sit roughly one uptime in the past", monoEpoch, before)
+	}
 
 	ev := events.SSLEvent{TimestampNS: uint64(tsNS)}
 	eventTime := ev.Time(monoEpoch)
