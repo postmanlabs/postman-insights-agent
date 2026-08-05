@@ -27,6 +27,7 @@ type Summary struct {
 	FilterSummary    *trace.PacketCounter
 	PrefilterSummary *trace.PacketCounter
 	NegationSummary  *trace.PacketCounter
+	HTTPSSummary     *trace.PacketCounter
 
 	// HTTPSCaptureEnabled is true when --enable-https-capture is in effect,
 	// which suppresses the "HTTPS traffic is currently unsupported" warning
@@ -285,9 +286,12 @@ func (s *Summary) PrintWarnings() {
 	}
 
 	// Check summary to see if the trace will have anything in it.
-	totalCount := s.FilterSummary.Total()
-	if totalCount.HTTPRequests == 0 && totalCount.HTTPResponses == 0 {
-		if totalCount.TCPPackets == 0 {
+	totalCount := s.totalCounts()
+	totalRequests := totalCount.HTTPRequests + totalCount.HTTPSRequests
+	totalResponses := totalCount.HTTPResponses + totalCount.HTTPSResponses
+	pcapTotalCount := s.FilterSummary.Total()
+	if totalRequests == 0 && totalResponses == 0 {
+		if pcapTotalCount.TCPPackets == 0 {
 			if s.CapturingNegation && s.NegationSummary.Total().TCPPackets == 0 {
 				msg := "Did not capture any TCP packets during the trace. " +
 					"This may mean the traffic is on a different interface, or that " +
@@ -298,16 +302,16 @@ func (s *Summary) PrintWarnings() {
 					"This may mean your filter is incorrect, such as the wrong TCP port."
 				printer.Stderr.Infof("%s\n", printer.Color.Yellow(msg))
 			}
-		} else if totalCount.TLSHello > 0 && !s.HTTPSCaptureEnabled {
-			msg := fmt.Sprintf("Captured %d TLS handshake messages out of %d total TCP segments. ", totalCount.TLSHello, totalCount.TCPPackets) +
+		} else if pcapTotalCount.TLSHello > 0 && !s.HTTPSCaptureEnabled {
+			msg := fmt.Sprintf("Captured %d TLS handshake messages out of %d total TCP segments. ", pcapTotalCount.TLSHello, pcapTotalCount.TCPPackets) +
 				"This may mean you are trying to capture HTTPS traffic, which is currently unsupported."
 			printer.Stderr.Infof("%s\n", msg)
-		} else if totalCount.TLSHello > 0 && s.HTTPSCaptureEnabled {
+		} else if pcapTotalCount.TLSHello > 0 && s.HTTPSCaptureEnabled {
 			printer.Stderr.Infof(
 				"HTTPS capture (eBPF) is active alongside pcap; %d TLS handshakes observed via libpcap, decrypted bodies were captured via libssl uprobes.\n",
-				totalCount.TLSHello)
-		} else if totalCount.Unparsed > 0 {
-			msg := fmt.Sprintf("Captured %d TCP packets total; %d unparsed TCP segments. ", totalCount.TCPPackets, totalCount.Unparsed) +
+				pcapTotalCount.TLSHello)
+		} else if pcapTotalCount.Unparsed > 0 {
+			msg := fmt.Sprintf("Captured %d TCP packets total; %d unparsed TCP segments. ", pcapTotalCount.TCPPackets, pcapTotalCount.Unparsed) +
 				"No TLS headers were found, so this may represent a network protocol that the agent does not know how to parse."
 			printer.Stderr.Infof("%s\n", msg)
 		} else if s.NumUserFilters > 0 && s.PrefilterSummary.Total().HTTPRequests != 0 {
@@ -317,22 +321,32 @@ func (s *Summary) PrintWarnings() {
 		if env.InDocker() && env.HasDockerInternalHostAddress() {
 			printer.Stderr.Infof("If you're using macOS and your service is not running in a Docker container, try using the native Postman Insights Agent with `brew install postman-insights-agent`.\n")
 		}
-		printer.Stderr.Errorf("%s 🛑\n\n", printer.Color.Red("No HTTP calls captured!"))
+		printer.Stderr.Errorf("%s 🛑\n\n", printer.Color.Red("No HTTP or HTTPS calls captured!"))
 		return
 	}
-	if totalCount.HTTPRequests == 0 {
-		printer.Stderr.Warningf("%s ⚠\n\n", printer.Color.Yellow("Saw HTTP responses, but not requests."))
+	if totalRequests == 0 {
+		printer.Stderr.Warningf("%s ⚠\n\n", printer.Color.Yellow("Saw responses, but not requests."))
 	}
-	if totalCount.HTTPResponses == 0 {
-		printer.Stderr.Warningf("%s ⚠\n\n", printer.Color.Yellow("Saw HTTP requests, but not responses."))
+	if totalResponses == 0 {
+		printer.Stderr.Warningf("%s ⚠\n\n", printer.Color.Yellow("Saw requests, but not responses."))
 	}
 }
 
 // Returns true if the trace generated from this apidump will be empty.
 func (s *Summary) IsEmpty() bool {
 	// Check summary to see if the trace will have anything in it.
-	totalCount := s.FilterSummary.Total()
-	return totalCount.HTTPRequests == 0 && totalCount.HTTPResponses == 0
+	totalCount := s.totalCounts()
+	return totalCount.HTTPRequests+totalCount.HTTPSRequests == 0 &&
+		totalCount.HTTPResponses+totalCount.HTTPSResponses == 0
+}
+
+func (s *Summary) totalCounts() client_telemetry.PacketCounts {
+	total := s.FilterSummary.Total()
+	if s.HTTPSSummary != nil {
+		httpsTotal := s.HTTPSSummary.Total()
+		total.Add(httpsTotal)
+	}
+	return total
 }
 
 // DumpPacketCounters prints the accumulated packet counts per interface and per port,
