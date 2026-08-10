@@ -86,10 +86,20 @@ func (l *Loader) SetRateCapPerSec(v uint32) error {
 	return l.libssl.RateCapPerSec.Set(v)
 }
 
-// RefillRateBucket sets a single PID's bucket to `tokens`. Userspace calls
-// this once per second from the per-PID refill goroutine.
+// RefillRateBucket sets a single PID's bucket to `tokens` on all CPUs.
+// Userspace calls this once per second from the per-PID refill goroutine.
+// PidRateBuckets is a PERCPU_HASH map so the value must be a slice of
+// length >= possible CPUs — one slot per CPU.
 func (l *Loader) RefillRateBucket(pid uint32, tokens uint64) error {
-	return l.libssl.PidRateBuckets.Update(&pid, &tokens, ebpf.UpdateAny)
+	nCPU, err := ebpf.PossibleCPU()
+	if err != nil {
+		return fmt.Errorf("ebpf: get possible CPUs: %w", err)
+	}
+	values := make([]uint64, nCPU)
+	for i := range values {
+		values[i] = tokens
+	}
+	return l.libssl.PidRateBuckets.Update(&pid, values, ebpf.UpdateAny)
 }
 
 // DeleteRateBucket removes a PID from the rate-bucket map (called on PID exit).
