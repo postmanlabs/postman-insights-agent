@@ -30,8 +30,7 @@ type Summary struct {
 	HTTPSSummary     *trace.PacketCounter
 
 	// HTTPSCaptureEnabled is true when --enable-https-capture is in effect,
-	// which suppresses the "HTTPS traffic is currently unsupported" warning
-	// at end-of-trace.
+	// which changes the end-of-trace warning for detected HTTPS traffic.
 	HTTPSCaptureEnabled bool
 }
 
@@ -304,11 +303,11 @@ func (s *Summary) PrintWarnings() {
 			}
 		} else if pcapTotalCount.TLSHello > 0 && !s.HTTPSCaptureEnabled {
 			msg := fmt.Sprintf("Captured %d TLS handshake messages out of %d total TCP segments. ", pcapTotalCount.TLSHello, pcapTotalCount.TCPPackets) +
-				"This may mean you are trying to capture HTTPS traffic, which is currently unsupported."
+				"HTTPS traffic was detected, but HTTPS capture is disabled. Re-run with --enable-https-capture to capture it."
 			printer.Stderr.Infof("%s\n", msg)
 		} else if pcapTotalCount.TLSHello > 0 && s.HTTPSCaptureEnabled {
 			printer.Stderr.Infof(
-				"HTTPS capture (eBPF) is active alongside pcap; %d TLS handshakes observed via libpcap, decrypted bodies were captured via libssl uprobes.\n",
+				"HTTPS capture (eBPF) is active alongside pcap; %d TLS handshakes observed via libpcap, but no decrypted HTTPS calls were captured.\n",
 				pcapTotalCount.TLSHello)
 		} else if pcapTotalCount.Unparsed > 0 {
 			msg := fmt.Sprintf("Captured %d TCP packets total; %d unparsed TCP segments. ", pcapTotalCount.TCPPackets, pcapTotalCount.Unparsed) +
