@@ -529,7 +529,10 @@ func (a *apidump) SendPacketTelemetry(observationDuration int, windowStartTime t
 		AgentRateLimit:                  a.WitnessesPerMinute,
 	}
 	if a.dumpSummary != nil {
-		req.PacketCountSummary = a.dumpSummary.FilterSummary.Summary(topNForSummary)
+		req.PacketCountSummary = mergePacketCountSummaries(
+			a.dumpSummary.FilterSummary.Summary(topNForSummary),
+			summaryOrNil(a.dumpSummary.HTTPSSummary, topNForSummary),
+		)
 	}
 
 	a.SendTelemetry(req)
@@ -1137,6 +1140,7 @@ func (a *apidump) Run() error {
 	// and the backend sink are all reused unchanged.
 	if args.HTTPS.Enabled && args.Out.AkitaURI != nil {
 		httpsSummary := trace.NewPacketCounter()
+		a.dumpSummary.HTTPSSummary = httpsSummary
 		var httpsCollector trace.Collector = trace.NewBackendCollector(
 			a.backendSvc,
 			traceTags,

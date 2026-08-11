@@ -42,7 +42,7 @@ type PacketCounter struct {
 	byInterface       *BoundedPacketCounter[string]
 	mutex             sync.RWMutex
 
-	// XXX(cns): Only counts HTTPRequest and TLSHello.  Other metrics are not
+	// XXX(cns): Only counts HTTPRequest, HTTPSRequest, and TLSHello. Other metrics are not
 	//   easily tracked per-host.
 	byHost *BoundedPacketCounter[string]
 }
@@ -134,7 +134,8 @@ func (s *PacketCounter) Update(c PacketCounts) {
 func (s *PacketCounter) HasRequestAndResponse() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return s.total.HTTPRequests > 0 && s.total.HTTPResponses > 0
+	return (s.total.HTTPRequests > 0 && s.total.HTTPResponses > 0) ||
+		(s.total.HTTPSRequests > 0 && s.total.HTTPSResponses > 0)
 }
 
 func (s *PacketCounter) Total() PacketCounts {
@@ -193,7 +194,9 @@ func (s *PacketCounter) Summary(n int) *PacketCountSummary {
 
 	topByPort, byPortOverflow := s.byPort.TopN(n, func(c *PacketCounts) int { return c.TCPPackets })
 	topByInterface, byInterfaceOverflow := s.byInterface.TopN(n, func(c *PacketCounts) int { return c.TCPPackets })
-	topByHost, byHostOverflow := s.byHost.TopN(n, func(c *PacketCounts) int { return c.HTTPRequests + c.TLSHello })
+	topByHost, byHostOverflow := s.byHost.TopN(n, func(c *PacketCounts) int {
+		return c.HTTPRequests + c.HTTPSRequests + c.TLSHello
+	})
 
 	var byPortOverflowPtr *PacketCounts
 	if overflow, exists := byPortOverflow.Get(); exists {

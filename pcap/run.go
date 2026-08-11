@@ -77,6 +77,10 @@ func Collect(
 		bufferTimeSum += now.Sub(t.ObservationTime)
 
 		t.Interface = intf
+		switch t.Content.(type) {
+		case akinet.HTTPRequest, akinet.HTTPResponse:
+			t.TransportSecurity = akinet.TransportSecurityPlaintext
+		}
 		err := proc.Process(t)
 		t.Content.ReleaseBuffers()
 		if err != nil {

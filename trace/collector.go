@@ -128,21 +128,23 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	switch c := t.Content.(type) {
 	case akinet.HTTPRequest:
 		pc.PacketCounts.Update(client_telemetry.PacketCounts{
-			Interface:    t.Interface,
-			DstHost:      c.Host,
-			SrcPort:      t.SrcPort,
-			DstPort:      t.DstPort,
-			HTTPRequests: 1,
+			Interface:     t.Interface,
+			DstHost:       c.Host,
+			SrcPort:       t.SrcPort,
+			DstPort:       t.DstPort,
+			HTTPRequests:  boolToInt(!isTLS(t)),
+			HTTPSRequests: boolToInt(isTLS(t)),
 		})
 	case akinet.HTTPResponse:
 		// TODO(cns): There's no easy way to get the host here to count HTTP
 		//    responses.  Revisit this if we ever add a pass to pair HTTP
 		//    requests and responses independently of the backend collector.
 		pc.PacketCounts.Update(client_telemetry.PacketCounts{
-			Interface:     t.Interface,
-			SrcPort:       t.SrcPort,
-			DstPort:       t.DstPort,
-			HTTPResponses: 1,
+			Interface:      t.Interface,
+			SrcPort:        t.SrcPort,
+			DstPort:        t.DstPort,
+			HTTPResponses:  boolToInt(!isTLS(t)),
+			HTTPSResponses: boolToInt(isTLS(t)),
 		})
 	case akinet.TLSClientHello:
 		dstHost := HostnameUnavailable
@@ -212,10 +214,25 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 }
 
 func (pc *PacketCountCollector) SendSuccessTelemetry() {
+	if pc.SuccessTelemetry == nil {
+		return
+	}
 	pc.SuccessTelemetry.Once.Do(func() {
 		pc.SuccessTelemetry.Channel <- struct{}{}
 	})
 }
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func isTLS(t akinet.ParsedNetworkTraffic) bool {
+	return t.TransportSecurity == akinet.TransportSecurityTLS
+}
+
 func (pc *PacketCountCollector) Close() error {
 	return pc.Collector.Close()
 }
