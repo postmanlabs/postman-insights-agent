@@ -150,7 +150,7 @@ func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {
 }
 
 type flowState struct {
-	parser akinet.TCPParser
+	parser  akinet.TCPParser
 	pending memview.MemView
 	conn    *tlsConnState
 	// firstSeen is when this flow was first observed (connection-level; used as
@@ -193,8 +193,8 @@ func NewAdapter(fs akinet.TCPParserFactorySelector, out chan<- akinet.ParsedNetw
 		FactorySelector: fs,
 		Out:             out,
 		flows:           make(map[FlowKey]*flowState),
-		conns:    make(map[connKey]*tlsConnState),
-		resolved: make(map[resolvedKey]SocketInfo),
+		conns:           make(map[connKey]*tlsConnState),
+		resolved:        make(map[resolvedKey]SocketInfo),
 	}
 }
 
@@ -428,10 +428,11 @@ func (a *Adapter) toPNT(st *flowState, key FlowKey, c akinet.ParsedNetworkConten
 		obsTime = st.firstSeen
 	}
 	pnt := akinet.ParsedNetworkTraffic{
-		Content:         c,
-		Interface:       st.ifaceTag,
-		ObservationTime: obsTime,
-		FinalPacketTime: now,
+		Content:           c,
+		Interface:         st.ifaceTag,
+		TransportSecurity: akinet.TransportSecurityTLS,
+		ObservationTime:   obsTime,
+		FinalPacketTime:   now,
 	}
 	if st.conn.socketResolved {
 		if key.Direction == DirEgress {

@@ -556,9 +556,10 @@ func (s *h2State) emitStream(streamID uint32, now time.Time, ifaceTag string) (a
 	}
 
 	pnt := akinet.ParsedNetworkTraffic{
-		Interface:       ifaceTag,
-		ObservationTime: now,
-		FinalPacketTime: now,
+		Interface:         ifaceTag,
+		TransportSecurity: akinet.TransportSecurityTLS,
+		ObservationTime:   now,
+		FinalPacketTime:   now,
 	}
 
 	// For gRPC, the "body" we attach to the emitted event is the
@@ -641,4 +642,3 @@ func (st *h2Stream) finalizeRequestMeta() {
 func isPseudoHeader(name string) bool {
 	return len(name) > 0 && name[0] == ':'
 }
-
