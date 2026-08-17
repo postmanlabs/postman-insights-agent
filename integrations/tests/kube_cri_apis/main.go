@@ -16,36 +16,13 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
 	"github.com/postmanlabs/postman-insights-agent/integrations/kube_apis"
 	"github.com/postmanlabs/postman-insights-agent/printer"
-	coreV1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/watch"
 )
-
-func k8s_watcher(kubeClient kube_apis.KubeClient) {
-	// Watch for pod events
-	for event := range kubeClient.PodEventWatch.ResultChan() {
-		printer.Infof("Received event: %v\n", event.Type)
-		switch event.Type {
-		case watch.Added, watch.Deleted:
-			if e, ok := event.Object.(*coreV1.Event); ok {
-				jsonData, err := json.Marshal(e)
-				if err != nil {
-					printer.Errorf("Failed to marshal event data: %v\n", err)
-					continue
-				}
-				printer.Infof("Event data: %s\n", string(jsonData))
-			}
-		default:
-			printer.Infof("Unhandled event type: %v\n", event.Type)
-		}
-	}
-}
 
 func k8s_funcs(kubeClient kube_apis.KubeClient) (string, error) {
 	// GetPodsInNode
@@ -148,7 +125,4 @@ func main() {
 			printer.Errorf("Error from cri_funcs: %v\n", err)
 		}
 	}
-
-	// Watch for pod events
-	k8s_watcher(kubeClient)
 }

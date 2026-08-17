@@ -14,6 +14,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
 	coreV1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 type baseEnvVarsError struct {
@@ -77,12 +78,69 @@ func (r containerValidationResult) hasNoAttrsSet() bool {
 	return r.ValidAttrCount == 0
 }
 
+// registerPodEventHandlers connects pod lifecycle events from the shared
+// informer to the daemonset's existing lifecycle handlers.
+func (d *Daemonset) registerPodEventHandlers() error {
+	if d.KubeClient.PodInformer == nil {
+		return errors.New("pod informer is not initialized")
+	}
+
+	_, err := d.KubeClient.PodInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			pod, ok := obj.(*coreV1.Pod)
+			if !ok {
+				printer.Errorf("Got unexpected pod add event object: %T\n", obj)
+				return
+			}
+			go d.handlePodAddEvent(*pod.DeepCopy())
+		},
+		UpdateFunc: func(_, newObj interface{}) {
+			pod, ok := newObj.(*coreV1.Pod)
+			if !ok {
+				printer.Errorf("Got unexpected pod update event object: %T\n", newObj)
+				return
+			}
+			go d.handlePodModifyEvent(*pod.DeepCopy())
+		},
+		DeleteFunc: func(obj interface{}) {
+			pod, ok := podFromDeleteEvent(obj)
+			if !ok {
+				printer.Errorf("Got unexpected pod delete event object: %T\n", obj)
+				return
+			}
+			go d.handlePodDeleteEvent(*pod.DeepCopy())
+		},
+	})
+	return err
+}
+
+func podFromDeleteEvent(obj interface{}) (*coreV1.Pod, bool) {
+	switch event := obj.(type) {
+	case *coreV1.Pod:
+		return event, true
+	case cache.DeletedFinalStateUnknown:
+		pod, ok := event.Obj.(*coreV1.Pod)
+		return pod, ok
+	case *cache.DeletedFinalStateUnknown:
+		pod, ok := event.Obj.(*coreV1.Pod)
+		return pod, ok
+	default:
+		return nil, false
+	}
+}
+
 // handlePodAddEvent handles the event when a pod is added to the Kubernetes cluster.
 // It performs the following steps:
 // 1. Check if the pod does not have the agent sidecar container.
 // 2. In discovery mode, apply pod filter; skip if the pod doesn't pass.
 // 3. Adds the pod arguments to a map and change state to PodPending.
 func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
+	// Informer handler registration replays objects already in the cache. Do not
+	// recreate state for pods reconciled before the handlers were registered.
+	if _, loaded := d.PodArgsByNameMap.Load(pod.UID); loaded {
+		return
+	}
+
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage([]coreV1.Pod{pod}, agentImage, true)
 	if err != nil {
@@ -110,7 +168,18 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 
 	err = d.addPodArgsToMap(pod.UID, args, PodPending)
 	if err != nil {
+		// Another Add callback may have won the LoadOrStore race.
+		if _, loaded := d.PodArgsByNameMap.Load(pod.UID); loaded {
+			return
+		}
 		printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)
+		return
+	}
+
+	// A pod can already be Running when its initial Add event is delivered.
+	// There may be no later status transition to trigger Modify.
+	if pod.Status.Phase == coreV1.PodRunning {
+		d.handlePodModifyEvent(pod)
 	}
 }
 

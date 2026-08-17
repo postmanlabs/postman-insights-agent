@@ -82,11 +82,29 @@ func TestPodInformerDeliversAddEvent(t *testing.T) {
 	}
 }
 
-func TestPodInformerSyncTimesOut(t *testing.T) {
-	informer := newPodInformer(fake.NewSimpleClientset(), "node-a")
+func TestKubeClientCloseStopsPodInformer(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	informer := newPodInformer(clientset, "node-a")
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
 
-	err := waitForPodInformerSync(informer, 10*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("waitForPodInformerSync() error = %v, want context deadline exceeded", err)
+	go func() {
+		informer.Run(stopCh)
+		close(done)
+	}()
+	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
+		t.Fatal("pod informer did not sync")
+	}
+
+	kubeClient := KubeClient{
+		PodInformer:       informer,
+		podInformerStopCh: stopCh,
+	}
+	kubeClient.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pod informer did not stop after KubeClient.Close")
 	}
 }

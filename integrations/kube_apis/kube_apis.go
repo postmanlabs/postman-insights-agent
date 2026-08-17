@@ -1,26 +1,18 @@
 package kube_apis
 
 import (
-	"context"
-	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
-	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-	watchTool "k8s.io/client-go/tools/watch"
 )
 
 const (
@@ -28,21 +20,11 @@ const (
 	POSTMAN_INSIGHTS_K8S_NODE = "POSTMAN_INSIGHTS_K8S_NODE"
 )
 
-// An exponential retry backoff policy that results in approximately 24 retires over a 24 hour period.
-var retry = wait.Backoff{
-	Duration: 10 * time.Millisecond,
-	Factor:   2.0,
-	Jitter:   0.1,
-	Steps:    24,
-	Cap:      24 * time.Hour,
-}
-
-// KubeClient struct holds the Kubernetes clientset and event watcher
+// KubeClient struct holds the Kubernetes clientset and pod informer.
 type KubeClient struct {
-	Clientset     *kubernetes.Clientset
-	PodEventWatch *watchTool.RetryWatcher
-	AgentNode     string
-	AgentHost     string
+	Clientset *kubernetes.Clientset
+	AgentNode string
+	AgentHost string
 
 	PodInformer       cache.SharedIndexInformer
 	podInformerStopCh chan struct{}
@@ -85,12 +67,6 @@ func NewKubeClient() (KubeClient, error) {
 		PodInformer: podInformer,
 	}
 
-	// Initialize event watcher
-	err = kubeClient.initPodsEventsWatcher()
-	if err != nil {
-		return KubeClient{}, err
-	}
-
 	kubeClient.podInformerStopCh = make(chan struct{})
 	go kubeClient.PodInformer.Run(kubeClient.podInformerStopCh)
 	if err := waitForPodInformerSync(kubeClient.PodInformer, POD_INFORMER_SYNC_TIMEOUT); err != nil {
@@ -101,54 +77,11 @@ func NewKubeClient() (KubeClient, error) {
 	return kubeClient, nil
 }
 
-// Close stops the event watcher and pod informer.
+// Close stops the pod informer.
 func (kc *KubeClient) Close() {
-	if kc.PodEventWatch != nil {
-		kc.PodEventWatch.Stop()
-	}
 	if kc.podInformerStopCh != nil {
 		close(kc.podInformerStopCh)
 	}
-}
-
-// initPodsEventsWatcher creates a new go-channel to listen for pod events in the cluster
-func (kc *KubeClient) initPodsEventsWatcher() error {
-	// Fetch own pod details and get the ResourceVersion
-	podsResourceVersion := ""
-	err := wait.ExponentialBackoff(retry, func() (bool, error) {
-		fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
-		pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-			FieldSelector: fieldSelector,
-		})
-		if err != nil {
-			return backoffOnKubeAPIErr(err, "get agent pod details")
-		}
-		podsResourceVersion = pods.ResourceVersion
-		return true, nil
-	})
-	if err != nil {
-		return errors.Wrap(err, "error getting own pod details")
-	}
-
-	// Create a watcher for pod events
-	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
-	fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-	retryWatcher, err := watchTool.NewRetryWatcher(podsResourceVersion, &cache.ListWatch{
-		ListFunc: func(options metaV1.ListOptions) (runtime.Object, error) {
-			options.FieldSelector = fieldSelector
-			return kc.Clientset.CoreV1().Pods("").List(context.Background(), options)
-		},
-		WatchFunc: func(options metaV1.ListOptions) (watch.Interface, error) {
-			options.FieldSelector = fieldSelector
-			return kc.Clientset.CoreV1().Pods("").Watch(context.Background(), options)
-		},
-	})
-	if err != nil {
-		return errors.Wrap(err, "error creating watcher")
-	}
-
-	kc.PodEventWatch = retryWatcher
-	return nil
 }
 
 // GetPodsInNode returns the names of all pods running in a given node

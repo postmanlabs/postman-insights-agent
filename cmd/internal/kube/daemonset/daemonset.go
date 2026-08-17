@@ -18,9 +18,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
-	coreV1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/watch"
 )
 
 const (
@@ -324,10 +322,6 @@ func (d *Daemonset) Run() error {
 	printer.Infof("Starting telemetry worker...\n")
 	go d.TelemetryWorker(done)
 
-	// Start the kubernetes events worker
-	printer.Infof("Starting kubernetes pods events worker...\n")
-	go d.KubernetesPodEventsWorker(done)
-
 	// Start the pods health worker
 	printer.Infof("Starting pods health worker...\n")
 	go d.PodsHealthWorker(done)
@@ -338,6 +332,15 @@ func (d *Daemonset) Run() error {
 	if err != nil {
 		printer.Errorf("Failed to start process in existing pods, error: %v\n", err)
 		printer.Errorf("Agent will not listen traffic from existing pods\n")
+	}
+
+	// Register handlers after reconciling the synchronized cache. The informer
+	// replays cached objects to newly registered handlers, so Add must be idempotent.
+	if err := d.registerPodEventHandlers(); err != nil {
+		close(done)
+		d.StopAllApiDumpProcesses()
+		d.KubeClient.Close()
+		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 
 	printer.Infof("Send SIGINT (Ctrl-C) to stop...\n")
@@ -362,8 +365,8 @@ func (d *Daemonset) Run() error {
 	printer.Debugf("Stopping all apidump processes...\n")
 	d.StopAllApiDumpProcesses()
 
-	// Stop K8s Watcher
-	printer.Debugf("Stopping k8s watcher...\n")
+	// Stop the pod informer.
+	printer.Debugf("Stopping k8s pod informer...\n")
 	d.KubeClient.Close()
 
 	printer.Infof("Exiting daemonset agent...\n")
@@ -478,39 +481,6 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	}
 
 	return nil
-}
-
-// KubernetesPodEventsWorker listens for Kubernetes events and handles them accordingly.
-// It runs indefinitely until the provided done channel is closed.
-func (d *Daemonset) KubernetesPodEventsWorker(done <-chan struct{}) {
-	for {
-		select {
-		case <-done:
-			printer.Debugf("Kubernetes pod events worker stopped\n")
-			return
-		case event := <-d.KubeClient.PodEventWatch.ResultChan():
-			switch event.Type {
-			case watch.Added:
-				printer.Debugf("Got k8s pod added event: %v\n", event.Object)
-				if p, ok := event.Object.(*coreV1.Pod); ok {
-					go d.handlePodAddEvent(*p)
-				}
-			// A pod is deleted
-			case watch.Deleted:
-				printer.Debugf("Got k8s pod deleted event: %v\n", event.Object)
-				if p, ok := event.Object.(*coreV1.Pod); ok {
-					go d.handlePodDeleteEvent(*p)
-				}
-			case watch.Modified:
-				printer.Debugf("Got k8s pod modified event: %v\n", event.Object)
-				if p, ok := event.Object.(*coreV1.Pod); ok {
-					go d.handlePodModifyEvent(*p)
-				}
-			case watch.Error:
-				printer.Errorf("Got k8s watcher error event: %v\n", event.Object)
-			}
-		}
-	}
 }
 
 // PodsHealthWorker periodically checks the health of the pods and prunes stopped processes.
