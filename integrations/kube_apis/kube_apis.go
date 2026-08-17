@@ -43,6 +43,9 @@ type KubeClient struct {
 	PodEventWatch *watchTool.RetryWatcher
 	AgentNode     string
 	AgentHost     string
+
+	PodInformer       cache.SharedIndexInformer
+	podInformerStopCh chan struct{}
 }
 
 // NewKubeClient initializes a new Kubernetes client
@@ -72,10 +75,14 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, errors.Wrap(err, "error getting hostname")
 	}
 
+	podInformer := newPodInformer(clientset, agentNodeName)
+
 	kubeClient := KubeClient{
 		Clientset: clientset,
 		AgentNode: agentNodeName,
 		AgentHost: agentHostName,
+
+		PodInformer: podInformer,
 	}
 
 	// Initialize event watcher
@@ -84,12 +91,24 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, err
 	}
 
+	kubeClient.podInformerStopCh = make(chan struct{})
+	go kubeClient.PodInformer.Run(kubeClient.podInformerStopCh)
+	if !cache.WaitForCacheSync(kubeClient.podInformerStopCh, kubeClient.PodInformer.HasSynced) {
+		kubeClient.Close()
+		return KubeClient{}, errors.New("error syncing pod informer")
+	}
+
 	return kubeClient, nil
 }
 
-// Close stops the event watcher
+// Close stops the event watcher and pod informer.
 func (kc *KubeClient) Close() {
-	kc.PodEventWatch.Stop()
+	if kc.PodEventWatch != nil {
+		kc.PodEventWatch.Stop()
+	}
+	if kc.podInformerStopCh != nil {
+		close(kc.podInformerStopCh)
+	}
 }
 
 // initPodsEventsWatcher creates a new go-channel to listen for pod events in the cluster
@@ -134,48 +153,38 @@ func (kc *KubeClient) initPodsEventsWatcher() error {
 
 // GetPodsInNode returns the names of all pods running in a given node
 func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
-	var pods []coreV1.Pod
-	err := wait.ExponentialBackoff(retry, func() (bool, error) {
-		fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-		podList, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-			FieldSelector: fieldSelector,
-		})
-		if err != nil {
-			return backoffOnKubeAPIErr(err, "get pods in agent node")
-		}
-		pods = podList.Items
-		return true, nil
-	})
-	if err != nil {
-		return []coreV1.Pod{}, errors.Wrap(err, "error getting pods")
+	if kc.PodInformer == nil {
+		return []coreV1.Pod{}, errors.New("pod informer is not initialized")
 	}
 
+	objects := kc.PodInformer.GetStore().List()
+	pods := make([]coreV1.Pod, 0, len(objects))
+	for _, object := range objects {
+		pod, ok := object.(*coreV1.Pod)
+		if ok {
+			pods = append(pods, *pod.DeepCopy())
+		}
+	}
 	return pods, nil
 }
 
 // GetPods returns a list of pods running on the agent node with the given names
 func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
-	pods, err := kc.GetPodsInAgentNode()
-	if err != nil {
-		return []coreV1.Pod{}, err
-	}
-	if len(pods) == 0 {
-		return []coreV1.Pod{}, errors.Errorf("no pods in node: %s", kc.AgentNode)
-	}
-
-	podMap := maps.NewMap[types.UID, coreV1.Pod]()
-	for _, pod := range pods {
-		podMap.Put(pod.UID, pod)
+	if kc.PodInformer == nil {
+		return []coreV1.Pod{}, errors.New("pod informer is not initialized")
 	}
 
 	var filteredPods []coreV1.Pod
 	for _, uid := range podUIDs {
-		pod, ok := podMap.Get(uid).Get()
-		if !ok {
+		objects, err := kc.PodInformer.GetIndexer().ByIndex("uid", string(uid))
+		if err != nil || len(objects) == 0 {
 			printer.Debugf("Pod not found with UID: %v\n", uid)
 			continue
 		}
-		filteredPods = append(filteredPods, pod)
+		pod, ok := objects[0].(*coreV1.Pod)
+		if ok {
+			filteredPods = append(filteredPods, *pod.DeepCopy())
+		}
 	}
 
 	if len(filteredPods) == 0 {
