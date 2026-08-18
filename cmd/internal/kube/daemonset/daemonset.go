@@ -303,6 +303,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 func (d *Daemonset) Run() error {
 	printer.Infof("Starting daemonset agent...\n")
 	done := make(chan struct{})
+	var healthWorkerWG sync.WaitGroup
 
 	// Start the shared eBPF node collector's event-dispatch loop when enabled.
 	// This must be running before any per-pod Subscribe() calls are made.
@@ -326,7 +327,11 @@ func (d *Daemonset) Run() error {
 
 	// Start the pods health worker
 	printer.Infof("Starting pods health worker...\n")
-	go d.PodsHealthWorker(done)
+	healthWorkerWG.Add(1)
+	go func() {
+		defer healthWorkerWG.Done()
+		d.PodsHealthWorker(done)
+	}()
 
 	// Start the process in the existing pods
 	printer.Infof("Starting process in existing pods...\n")
@@ -341,15 +346,17 @@ func (d *Daemonset) Run() error {
 	if err := d.registerPodEventHandlers(done); err != nil {
 		close(done)
 		d.stopPodEventDispatcher()
-		d.StopAllApiDumpProcesses()
+		healthWorkerWG.Wait()
 		d.KubeClient.Close()
+		d.StopAllApiDumpProcesses()
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
 		close(done)
 		d.stopPodEventDispatcher()
-		d.StopAllApiDumpProcesses()
+		healthWorkerWG.Wait()
 		d.KubeClient.Close()
+		d.StopAllApiDumpProcesses()
 		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
 	}
 
@@ -371,14 +378,15 @@ func (d *Daemonset) Run() error {
 	printer.Debugf("Signaling all workers to stop...\n")
 	close(done)
 	d.stopPodEventDispatcher()
+	healthWorkerWG.Wait()
+
+	// Stop and wait for the pod informer before stopping capture processes.
+	printer.Debugf("Stopping k8s pod informer...\n")
+	d.KubeClient.Close()
 
 	// Stop all apidump processes
 	printer.Debugf("Stopping all apidump processes...\n")
 	d.StopAllApiDumpProcesses()
-
-	// Stop the pod informer.
-	printer.Debugf("Stopping k8s pod informer...\n")
-	d.KubeClient.Close()
 
 	printer.Infof("Exiting daemonset agent...\n")
 	return nil

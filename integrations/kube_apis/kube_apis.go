@@ -28,6 +28,7 @@ type KubeClient struct {
 
 	PodInformer       cache.SharedIndexInformer
 	podInformerStopCh chan struct{}
+	podInformerDoneCh chan struct{}
 }
 
 // NewKubeClient initializes a new Kubernetes client
@@ -68,8 +69,12 @@ func NewKubeClient() (KubeClient, error) {
 	}
 
 	kubeClient.podInformerStopCh = make(chan struct{})
-	go kubeClient.PodInformer.Run(kubeClient.podInformerStopCh)
-	if err := waitForPodInformerSync(kubeClient.PodInformer, POD_INFORMER_SYNC_TIMEOUT); err != nil {
+	kubeClient.podInformerDoneCh = make(chan struct{})
+	go func() {
+		defer close(kubeClient.podInformerDoneCh)
+		kubeClient.PodInformer.Run(kubeClient.podInformerStopCh)
+	}()
+	if !cache.WaitForCacheSync(kubeClient.podInformerStopCh, kubeClient.PodInformer.HasSynced) {
 		kubeClient.Close()
 		return KubeClient{}, errors.Wrap(err, "error syncing pod informer")
 	}
@@ -81,6 +86,9 @@ func NewKubeClient() (KubeClient, error) {
 func (kc *KubeClient) Close() {
 	if kc.podInformerStopCh != nil {
 		close(kc.podInformerStopCh)
+	}
+	if kc.podInformerDoneCh != nil {
+		<-kc.podInformerDoneCh
 	}
 }
 
