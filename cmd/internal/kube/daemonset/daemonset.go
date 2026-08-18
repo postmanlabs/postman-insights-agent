@@ -342,6 +342,12 @@ func (d *Daemonset) Run() error {
 		d.KubeClient.Close()
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
+	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
+		close(done)
+		d.StopAllApiDumpProcesses()
+		d.KubeClient.Close()
+		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
+	}
 
 	printer.Infof("Send SIGINT (Ctrl-C) to stop...\n")
 

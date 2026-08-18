@@ -215,3 +215,54 @@ func TestPodFromDeleteEventHandlesTombstones(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileMissingPodsAfterStartupTerminatesMissingPod(t *testing.T) {
+	pod := &coreV1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+	}
+	env := newPodInformerTestEnv(t, pod)
+	d := testDaemonsetForInformer(env.informer)
+	args := NewPodArgs("pod-a")
+	require.NoError(t, args.changePodTrafficMonitorState(TrafficMonitoringRunning))
+	d.PodArgsByNameMap.Store(pod.UID, args)
+
+	err := env.clientset.CoreV1().Pods("default").Delete(t.Context(), pod.Name, metaV1.DeleteOptions{})
+	require.NoError(t, err)
+	waitFor(t, func() bool {
+		_, exists, err := env.informer.GetStore().Get(pod)
+		return err == nil && !exists
+	})
+
+	require.NoError(t, d.reconcileMissingPodsAfterStartup())
+
+	if args.PodTrafficMonitorState != PodTerminated {
+		t.Fatalf("pod state = %s, want %s", args.PodTrafficMonitorState, PodTerminated)
+	}
+	select {
+	case <-args.StopChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("missing pod was not signaled to stop")
+	}
+}
+
+func TestReconcileMissingPodsAfterStartupKeepsCachedPod(t *testing.T) {
+	pod := &coreV1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+	}
+	env := newPodInformerTestEnv(t, pod)
+	d := testDaemonsetForInformer(env.informer)
+	args := NewPodArgs(pod.Name)
+	require.NoError(t, args.changePodTrafficMonitorState(TrafficMonitoringRunning))
+	d.PodArgsByNameMap.Store(pod.UID, args)
+
+	require.NoError(t, d.reconcileMissingPodsAfterStartup())
+
+	if args.PodTrafficMonitorState != TrafficMonitoringRunning {
+		t.Fatalf("cached pod state = %s, want %s", args.PodTrafficMonitorState, TrafficMonitoringRunning)
+	}
+	select {
+	case <-args.StopChan:
+		t.Fatal("cached pod was incorrectly signaled to stop")
+	default:
+	}
+}
