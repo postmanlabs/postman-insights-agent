@@ -1,6 +1,8 @@
 package kube_apis
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -26,8 +28,8 @@ func TestPodInformerPopulatesCacheAndUIDIndex(t *testing.T) {
 	defer close(stopCh)
 	go informer.Run(stopCh)
 
-	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
-		t.Fatal("pod informer did not sync")
+	if err := waitForPodInformerSync(informer, POD_INFORMER_SYNC_TIMEOUT); err != nil {
+		t.Fatalf("pod informer did not sync: %v", err)
 	}
 
 	kubeClient := KubeClient{PodInformer: informer}
@@ -61,8 +63,8 @@ func TestPodInformerDeliversAddEvent(t *testing.T) {
 		t.Fatalf("AddEventHandler() returned error: %v", err)
 	}
 	go informer.Run(stopCh)
-	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
-		t.Fatal("pod informer did not sync")
+	if err := waitForPodInformerSync(informer, POD_INFORMER_SYNC_TIMEOUT); err != nil {
+		t.Fatalf("pod informer did not sync: %v", err)
 	}
 
 	pod := &coreV1.Pod{
@@ -77,5 +79,14 @@ func TestPodInformerDeliversAddEvent(t *testing.T) {
 	case <-added:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for pod add event")
+	}
+}
+
+func TestPodInformerSyncTimesOut(t *testing.T) {
+	informer := newPodInformer(fake.NewSimpleClientset(), "node-a")
+
+	err := waitForPodInformerSync(informer, 10*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waitForPodInformerSync() error = %v, want context deadline exceeded", err)
 	}
 }

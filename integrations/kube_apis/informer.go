@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -16,6 +17,7 @@ import (
 
 const (
 	POD_INFORMER_RESYNC_PERIOD = 10 * time.Minute
+	POD_INFORMER_SYNC_TIMEOUT  = 30 * time.Second
 )
 
 func newPodInformer(clientset kubernetes.Interface, nodeName string) cache.SharedIndexInformer {
@@ -46,6 +48,18 @@ func newPodInformer(clientset kubernetes.Interface, nodeName string) cache.Share
 				}
 				return []string{string(pod.UID)}, nil
 			},
+		},
+	)
+}
+
+func waitForPodInformerSync(informer cache.SharedIndexInformer, timeout time.Duration) error {
+	return wait.PollUntilContextTimeout(
+		context.Background(),
+		100*time.Millisecond,
+		timeout,
+		true,
+		func(context.Context) (bool, error) {
+			return informer.HasSynced(), nil
 		},
 	)
 }
