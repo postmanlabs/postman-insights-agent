@@ -79,6 +79,7 @@ func TestRegisterPodEventHandlersHandlesAdd(t *testing.T) {
 
 	pod := &coreV1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+		Spec:       coreV1.PodSpec{Containers: []coreV1.Container{{Name: "app", Image: "example/app:latest"}}},
 	}
 	_, err := env.clientset.CoreV1().Pods("default").Create(t.Context(), pod, metaV1.CreateOptions{})
 	require.NoError(t, err)
@@ -94,6 +95,7 @@ func TestHandlePodAddEventIsIdempotentForReplayedRunningPod(t *testing.T) {
 	d := testDaemonsetForInformer(env.informer)
 	pod := coreV1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+		Spec:       coreV1.PodSpec{Containers: []coreV1.Container{{Name: "app", Image: "example/app:latest"}}},
 		Status:     coreV1.PodStatus{Phase: coreV1.PodRunning},
 	}
 	existing := NewPodArgs(pod.Name)
@@ -117,6 +119,7 @@ func TestHandlePodAddEventProcessesNewRunningPod(t *testing.T) {
 	d := testDaemonsetForInformer(env.informer)
 	pod := coreV1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+		Spec:       coreV1.PodSpec{Containers: []coreV1.Container{{Name: "app", Image: "example/app:latest"}}},
 		Status:     coreV1.PodStatus{Phase: coreV1.PodRunning},
 	}
 
@@ -151,6 +154,7 @@ func TestRegisterPodEventHandlersReplaysExistingRunningPodSafely(t *testing.T) {
 func TestRegisterPodEventHandlersHandlesUpdate(t *testing.T) {
 	pod := &coreV1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+		Spec:       coreV1.PodSpec{Containers: []coreV1.Container{{Name: "app", Image: "example/app:latest"}}},
 	}
 	env := newPodInformerTestEnv(t, pod)
 	d := testDaemonsetForInformer(env.informer)
