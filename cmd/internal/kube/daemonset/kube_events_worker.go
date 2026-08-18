@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/viper"
 	coreV1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 )
 
 type baseEnvVarsError struct {
@@ -78,12 +80,80 @@ func (r containerValidationResult) hasNoAttrsSet() bool {
 	return r.ValidAttrCount == 0
 }
 
+type podEventType int
+
+const (
+	podAdded podEventType = iota
+	podModified
+	podDeleted
+)
+
+type podEvent struct {
+	eventType podEventType
+	pod       coreV1.Pod
+}
+
+type podEventDispatcher struct {
+	queue    workqueue.Interface
+	stopOnce sync.Once
+	wg       sync.WaitGroup
+}
+
+func newPodEventDispatcher() *podEventDispatcher {
+	return &podEventDispatcher{queue: workqueue.New()}
+}
+
+func (p *podEventDispatcher) start(d *Daemonset) {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		for {
+			item, shutdown := p.queue.Get()
+			if shutdown {
+				return
+			}
+
+			event, ok := item.(*podEvent)
+			if ok {
+				switch event.eventType {
+				case podAdded:
+					d.handlePodAddEvent(event.pod)
+				case podModified:
+					d.handlePodModifyEvent(event.pod)
+				case podDeleted:
+					d.handlePodDeleteEvent(event.pod)
+				}
+			}
+			p.queue.Done(item)
+		}
+	}()
+}
+
+func (p *podEventDispatcher) enqueue(event *podEvent) {
+	p.queue.Add(event)
+}
+
+func (p *podEventDispatcher) stop() {
+	p.stopOnce.Do(func() {
+		p.queue.ShutDownWithDrain()
+		p.wg.Wait()
+	})
+}
+
 // registerPodEventHandlers connects pod lifecycle events from the shared
 // informer to the daemonset's existing lifecycle handlers.
-func (d *Daemonset) registerPodEventHandlers() error {
+func (d *Daemonset) registerPodEventHandlers(done <-chan struct{}) error {
 	if d.KubeClient.PodInformer == nil {
 		return errors.New("pod informer is not initialized")
 	}
+
+	d.podEventDispatcher = newPodEventDispatcher()
+	d.podEventDispatcher.start(d)
+	dispatcher := d.podEventDispatcher
+	go func() {
+		<-done
+		dispatcher.stop()
+	}()
 
 	_, err := d.KubeClient.PodInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -92,7 +162,7 @@ func (d *Daemonset) registerPodEventHandlers() error {
 				printer.Errorf("Got unexpected pod add event object: %T\n", obj)
 				return
 			}
-			go d.handlePodAddEvent(*pod.DeepCopy())
+			dispatcher.enqueue(&podEvent{eventType: podAdded, pod: *pod.DeepCopy()})
 		},
 		UpdateFunc: func(_, newObj interface{}) {
 			pod, ok := newObj.(*coreV1.Pod)
@@ -100,7 +170,7 @@ func (d *Daemonset) registerPodEventHandlers() error {
 				printer.Errorf("Got unexpected pod update event object: %T\n", newObj)
 				return
 			}
-			go d.handlePodModifyEvent(*pod.DeepCopy())
+			dispatcher.enqueue(&podEvent{eventType: podModified, pod: *pod.DeepCopy()})
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := podFromDeleteEvent(obj)
@@ -108,10 +178,20 @@ func (d *Daemonset) registerPodEventHandlers() error {
 				printer.Errorf("Got unexpected pod delete event object: %T\n", obj)
 				return
 			}
-			go d.handlePodDeleteEvent(*pod.DeepCopy())
+			dispatcher.enqueue(&podEvent{eventType: podDeleted, pod: *pod.DeepCopy()})
 		},
 	})
+	if err != nil {
+		d.stopPodEventDispatcher()
+	}
 	return err
+}
+
+func (d *Daemonset) stopPodEventDispatcher() {
+	if d.podEventDispatcher != nil {
+		d.podEventDispatcher.stop()
+		d.podEventDispatcher = nil
+	}
 }
 
 func podFromDeleteEvent(obj interface{}) (*coreV1.Pod, bool) {

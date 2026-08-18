@@ -77,6 +77,8 @@ type Daemonset struct {
 	// WaitGroup to wait for all apidump processes to stop
 	ApidumpProcessesWG sync.WaitGroup
 
+	podEventDispatcher *podEventDispatcher
+
 	PodHealthCheckInterval time.Duration
 	TelemetryInterval      time.Duration
 
@@ -336,14 +338,16 @@ func (d *Daemonset) Run() error {
 
 	// Register handlers after reconciling the synchronized cache. The informer
 	// replays cached objects to newly registered handlers, so Add must be idempotent.
-	if err := d.registerPodEventHandlers(); err != nil {
+	if err := d.registerPodEventHandlers(done); err != nil {
 		close(done)
+		d.stopPodEventDispatcher()
 		d.StopAllApiDumpProcesses()
 		d.KubeClient.Close()
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
 		close(done)
+		d.stopPodEventDispatcher()
 		d.StopAllApiDumpProcesses()
 		d.KubeClient.Close()
 		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
@@ -366,6 +370,7 @@ func (d *Daemonset) Run() error {
 	// Signal all workers to stop
 	printer.Debugf("Signaling all workers to stop...\n")
 	close(done)
+	d.stopPodEventDispatcher()
 
 	// Stop all apidump processes
 	printer.Debugf("Stopping all apidump processes...\n")

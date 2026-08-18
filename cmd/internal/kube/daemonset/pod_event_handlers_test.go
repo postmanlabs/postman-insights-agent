@@ -75,7 +75,7 @@ func waitFor(t *testing.T, condition func() bool) {
 func TestRegisterPodEventHandlersHandlesAdd(t *testing.T) {
 	env := newPodInformerTestEnv(t)
 	d := testDaemonsetForInformer(env.informer)
-	require.NoError(t, d.registerPodEventHandlers())
+	require.NoError(t, d.registerPodEventHandlers(env.stopCh))
 
 	pod := &coreV1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
@@ -88,6 +88,26 @@ func TestRegisterPodEventHandlersHandlesAdd(t *testing.T) {
 		_, ok := d.PodArgsByNameMap.Load(pod.UID)
 		return ok
 	})
+}
+
+func TestPodEventDispatcherPreservesLifecycleOrder(t *testing.T) {
+	d := &Daemonset{}
+	dispatcher := newPodEventDispatcher()
+	dispatcher.start(d)
+
+	pod := coreV1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
+		Spec:       coreV1.PodSpec{Containers: []coreV1.Container{{Name: "app", Image: "example/app:latest"}}},
+	}
+	runningPod := *pod.DeepCopy()
+	runningPod.Status.Phase = coreV1.PodRunning
+	dispatcher.enqueue(&podEvent{eventType: podAdded, pod: pod})
+	dispatcher.enqueue(&podEvent{eventType: podModified, pod: runningPod})
+	dispatcher.stop()
+
+	if _, ok := d.PodArgsByNameMap.Load(pod.UID); ok {
+		t.Fatal("Update ran before Add and left the pod in Pending state")
+	}
 }
 
 func TestHandlePodAddEventIsIdempotentForReplayedRunningPod(t *testing.T) {
@@ -144,7 +164,7 @@ func TestRegisterPodEventHandlersReplaysExistingRunningPodSafely(t *testing.T) {
 	require.NoError(t, existing.changePodTrafficMonitorState(PodRunning))
 	d.PodArgsByNameMap.Store(pod.UID, existing)
 
-	require.NoError(t, d.registerPodEventHandlers())
+	require.NoError(t, d.registerPodEventHandlers(env.stopCh))
 	waitFor(t, func() bool {
 		actual, err := d.getPodArgsFromMap(pod.UID)
 		return err == nil && actual == existing && actual.PodTrafficMonitorState == PodRunning
@@ -158,7 +178,7 @@ func TestRegisterPodEventHandlersHandlesUpdate(t *testing.T) {
 	}
 	env := newPodInformerTestEnv(t, pod)
 	d := testDaemonsetForInformer(env.informer)
-	require.NoError(t, d.registerPodEventHandlers())
+	require.NoError(t, d.registerPodEventHandlers(env.stopCh))
 
 	waitFor(t, func() bool {
 		_, ok := d.PodArgsByNameMap.Load(pod.UID)
@@ -181,7 +201,7 @@ func TestRegisterPodEventHandlersHandlesUpdate(t *testing.T) {
 func TestRegisterPodEventHandlersHandlesDelete(t *testing.T) {
 	env := newPodInformerTestEnv(t)
 	d := testDaemonsetForInformer(env.informer)
-	require.NoError(t, d.registerPodEventHandlers())
+	require.NoError(t, d.registerPodEventHandlers(env.stopCh))
 
 	pod := &coreV1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{Namespace: "default", Name: "pod-a", UID: "pod-a-uid"},
