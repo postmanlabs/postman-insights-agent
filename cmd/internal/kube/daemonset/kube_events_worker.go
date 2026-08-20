@@ -162,6 +162,7 @@ func (d *Daemonset) registerPodEventHandlers(done <-chan struct{}) error {
 				printer.Errorf("Got unexpected pod add event object: %T\n", obj)
 				return
 			}
+			logPodInformerEvent("podAdded", pod)
 			dispatcher.enqueue(&podEvent{eventType: podAdded, pod: *pod.DeepCopy()})
 		},
 		UpdateFunc: func(_, newObj interface{}) {
@@ -170,6 +171,7 @@ func (d *Daemonset) registerPodEventHandlers(done <-chan struct{}) error {
 				printer.Errorf("Got unexpected pod update event object: %T\n", newObj)
 				return
 			}
+			logPodInformerEvent("podModified", pod)
 			dispatcher.enqueue(&podEvent{eventType: podModified, pod: *pod.DeepCopy()})
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -178,6 +180,7 @@ func (d *Daemonset) registerPodEventHandlers(done <-chan struct{}) error {
 				printer.Errorf("Got unexpected pod delete event object: %T\n", obj)
 				return
 			}
+			logPodInformerEvent("podDeleted", pod)
 			dispatcher.enqueue(&podEvent{eventType: podDeleted, pod: *pod.DeepCopy()})
 		},
 	})
@@ -185,6 +188,18 @@ func (d *Daemonset) registerPodEventHandlers(done <-chan struct{}) error {
 		d.stopPodEventDispatcher()
 	}
 	return err
+}
+
+func logPodInformerEvent(eventType string, pod *coreV1.Pod) {
+	printer.Debugf(
+		"informer event=%s namespace=%s name=%s uid=%s phase=%s resourceVersion=%s\n",
+		eventType,
+		pod.Namespace,
+		pod.Name,
+		pod.UID,
+		pod.Status.Phase,
+		pod.ResourceVersion,
+	)
 }
 
 func (d *Daemonset) stopPodEventDispatcher() {

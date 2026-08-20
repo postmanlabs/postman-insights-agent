@@ -74,7 +74,7 @@ func NewKubeClient() (KubeClient, error) {
 		defer close(kubeClient.podInformerDoneCh)
 		kubeClient.PodInformer.Run(kubeClient.podInformerStopCh)
 	}()
-	if !cache.WaitForCacheSync(kubeClient.podInformerStopCh, kubeClient.PodInformer.HasSynced) {
+	if err := waitForPodInformerSync(kubeClient.PodInformer, POD_INFORMER_SYNC_TIMEOUT); err != nil {
 		kubeClient.Close()
 		return KubeClient{}, errors.Wrap(err, "error syncing pod informer")
 	}
