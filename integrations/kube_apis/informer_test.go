@@ -1,8 +1,6 @@
 package kube_apis
 
 import (
-	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -82,11 +80,63 @@ func TestPodInformerDeliversAddEvent(t *testing.T) {
 	}
 }
 
-func TestPodInformerSyncTimesOut(t *testing.T) {
-	informer := newPodInformer(fake.NewSimpleClientset(), "node-a")
+func TestKubeClientCloseStopsPodInformer(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	informer := newPodInformer(clientset, "node-a")
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
 
-	err := waitForPodInformerSync(informer, 10*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("waitForPodInformerSync() error = %v, want context deadline exceeded", err)
+	go func() {
+		informer.Run(stopCh)
+		close(done)
+	}()
+	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
+		t.Fatal("pod informer did not sync")
+	}
+
+	kubeClient := KubeClient{
+		PodInformer:       informer,
+		podInformerStopCh: stopCh,
+	}
+	kubeClient.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pod informer did not stop after KubeClient.Close")
+	}
+}
+
+func TestKubeClientCloseWaitsForPodInformer(t *testing.T) {
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	kubeClient := KubeClient{
+		podInformerStopCh: stopCh,
+		podInformerDoneCh: doneCh,
+	}
+	closeReturned := make(chan struct{})
+
+	go func() {
+		kubeClient.Close()
+		close(closeReturned)
+	}()
+
+	select {
+	case <-closeReturned:
+		t.Fatal("KubeClient.Close returned before the informer done signal")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case <-stopCh:
+	default:
+		t.Fatal("KubeClient.Close did not signal the informer to stop")
+	}
+	close(doneCh)
+
+	select {
+	case <-closeReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("KubeClient.Close did not wait for the informer done signal")
 	}
 }
