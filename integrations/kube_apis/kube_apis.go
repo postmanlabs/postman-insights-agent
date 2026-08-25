@@ -1,26 +1,18 @@
 package kube_apis
 
 import (
-	"context"
-	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/akitasoftware/go-utils/maps"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	coreV1 "k8s.io/api/core/v1"
-	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-	watchTool "k8s.io/client-go/tools/watch"
 )
 
 const (
@@ -28,21 +20,15 @@ const (
 	POSTMAN_INSIGHTS_K8S_NODE = "POSTMAN_INSIGHTS_K8S_NODE"
 )
 
-// An exponential retry backoff policy that results in approximately 24 retires over a 24 hour period.
-var retry = wait.Backoff{
-	Duration: 10 * time.Millisecond,
-	Factor:   2.0,
-	Jitter:   0.1,
-	Steps:    24,
-	Cap:      24 * time.Hour,
-}
-
-// KubeClient struct holds the Kubernetes clientset and event watcher
+// KubeClient struct holds the Kubernetes clientset and pod informer.
 type KubeClient struct {
-	Clientset     *kubernetes.Clientset
-	PodEventWatch *watchTool.RetryWatcher
-	AgentNode     string
-	AgentHost     string
+	Clientset *kubernetes.Clientset
+	AgentNode string
+	AgentHost string
+
+	PodInformer       cache.SharedIndexInformer
+	podInformerStopCh chan struct{}
+	podInformerDoneCh chan struct{}
 }
 
 // NewKubeClient initializes a new Kubernetes client
@@ -72,110 +58,74 @@ func NewKubeClient() (KubeClient, error) {
 		return KubeClient{}, errors.Wrap(err, "error getting hostname")
 	}
 
+	podInformer := newPodInformer(clientset, agentNodeName)
+
 	kubeClient := KubeClient{
 		Clientset: clientset,
 		AgentNode: agentNodeName,
 		AgentHost: agentHostName,
+
+		PodInformer: podInformer,
 	}
 
-	// Initialize event watcher
-	err = kubeClient.initPodsEventsWatcher()
-	if err != nil {
-		return KubeClient{}, err
+	kubeClient.podInformerStopCh = make(chan struct{})
+	kubeClient.podInformerDoneCh = make(chan struct{})
+	go func() {
+		defer close(kubeClient.podInformerDoneCh)
+		kubeClient.PodInformer.Run(kubeClient.podInformerStopCh)
+	}()
+	if err := waitForPodInformerSync(kubeClient.PodInformer, POD_INFORMER_SYNC_TIMEOUT); err != nil {
+		kubeClient.Close()
+		return KubeClient{}, errors.Wrap(err, "error syncing pod informer")
 	}
 
 	return kubeClient, nil
 }
 
-// Close stops the event watcher
+// Close stops the pod informer.
 func (kc *KubeClient) Close() {
-	kc.PodEventWatch.Stop()
-}
-
-// initPodsEventsWatcher creates a new go-channel to listen for pod events in the cluster
-func (kc *KubeClient) initPodsEventsWatcher() error {
-	// Fetch own pod details and get the ResourceVersion
-	podsResourceVersion := ""
-	err := wait.ExponentialBackoff(retry, func() (bool, error) {
-		fieldSelector := fmt.Sprintf("metadata.name=%s", kc.AgentHost)
-		pods, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-			FieldSelector: fieldSelector,
-		})
-		if err != nil {
-			return backoffOnKubeAPIErr(err, "get agent pod details")
-		}
-		podsResourceVersion = pods.ResourceVersion
-		return true, nil
-	})
-	if err != nil {
-		return errors.Wrap(err, "error getting own pod details")
+	if kc.podInformerStopCh != nil {
+		close(kc.podInformerStopCh)
 	}
-
-	// Create a watcher for pod events
-	// Here ResourceVersion is set to the pod's ResourceVersion to watch events after the pod's creation
-	fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-	retryWatcher, err := watchTool.NewRetryWatcher(podsResourceVersion, &cache.ListWatch{
-		ListFunc: func(options metaV1.ListOptions) (runtime.Object, error) {
-			options.FieldSelector = fieldSelector
-			return kc.Clientset.CoreV1().Pods("").List(context.Background(), options)
-		},
-		WatchFunc: func(options metaV1.ListOptions) (watch.Interface, error) {
-			options.FieldSelector = fieldSelector
-			return kc.Clientset.CoreV1().Pods("").Watch(context.Background(), options)
-		},
-	})
-	if err != nil {
-		return errors.Wrap(err, "error creating watcher")
+	if kc.podInformerDoneCh != nil {
+		<-kc.podInformerDoneCh
 	}
-
-	kc.PodEventWatch = retryWatcher
-	return nil
 }
 
 // GetPodsInNode returns the names of all pods running in a given node
 func (kc *KubeClient) GetPodsInAgentNode() ([]coreV1.Pod, error) {
-	var pods []coreV1.Pod
-	err := wait.ExponentialBackoff(retry, func() (bool, error) {
-		fieldSelector := fmt.Sprintf("spec.nodeName=%s", kc.AgentNode)
-		podList, err := kc.Clientset.CoreV1().Pods("").List(context.Background(), metaV1.ListOptions{
-			FieldSelector: fieldSelector,
-		})
-		if err != nil {
-			return backoffOnKubeAPIErr(err, "get pods in agent node")
-		}
-		pods = podList.Items
-		return true, nil
-	})
-	if err != nil {
-		return []coreV1.Pod{}, errors.Wrap(err, "error getting pods")
+	if kc.PodInformer == nil {
+		return []coreV1.Pod{}, errors.New("pod informer is not initialized")
 	}
 
+	objects := kc.PodInformer.GetStore().List()
+	pods := make([]coreV1.Pod, 0, len(objects))
+	for _, object := range objects {
+		pod, ok := object.(*coreV1.Pod)
+		if ok {
+			pods = append(pods, *pod.DeepCopy())
+		}
+	}
 	return pods, nil
 }
 
 // GetPods returns a list of pods running on the agent node with the given names
 func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
-	pods, err := kc.GetPodsInAgentNode()
-	if err != nil {
-		return []coreV1.Pod{}, err
-	}
-	if len(pods) == 0 {
-		return []coreV1.Pod{}, errors.Errorf("no pods in node: %s", kc.AgentNode)
-	}
-
-	podMap := maps.NewMap[types.UID, coreV1.Pod]()
-	for _, pod := range pods {
-		podMap.Put(pod.UID, pod)
+	if kc.PodInformer == nil {
+		return []coreV1.Pod{}, errors.New("pod informer is not initialized")
 	}
 
 	var filteredPods []coreV1.Pod
 	for _, uid := range podUIDs {
-		pod, ok := podMap.Get(uid).Get()
-		if !ok {
+		objects, err := kc.PodInformer.GetIndexer().ByIndex("uid", string(uid))
+		if err != nil || len(objects) == 0 {
 			printer.Debugf("Pod not found with UID: %v\n", uid)
 			continue
 		}
-		filteredPods = append(filteredPods, pod)
+		pod, ok := objects[0].(*coreV1.Pod)
+		if ok {
+			filteredPods = append(filteredPods, *pod.DeepCopy())
+		}
 	}
 
 	if len(filteredPods) == 0 {
