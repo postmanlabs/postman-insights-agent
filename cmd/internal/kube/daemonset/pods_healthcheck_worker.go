@@ -97,6 +97,35 @@ func (d *Daemonset) checkPodsHealth() {
 	}
 }
 
+// reconcileMissingPodsAfterStartup stops capture for pods that were handled by
+// startup reconciliation but disappeared before informer handlers were registered.
+// The informer cache is already synchronized, so this is a local cache comparison.
+func (d *Daemonset) reconcileMissingPodsAfterStartup() error {
+	pods, err := d.KubeClient.GetPodsInAgentNode()
+	if err != nil {
+		return errors.Wrap(err, "failed to get pods in node")
+	}
+
+	cachedUIDs := make(map[types.UID]struct{}, len(pods))
+	for _, pod := range pods {
+		cachedUIDs[pod.UID] = struct{}{}
+	}
+
+	d.PodArgsByNameMap.Range(func(key, _ interface{}) bool {
+		podUID := key.(types.UID)
+		if _, exists := cachedUIDs[podUID]; !exists {
+			d.handleTerminatedPod(
+				podUID,
+				errors.Errorf("pod %s was deleted during startup reconciliation", podUID),
+				true,
+			)
+		}
+		return true
+	})
+
+	return nil
+}
+
 // handleTerminatedPod handles the terminated pod by changing the pod's traffic monitor state to PodTerminated
 // and stopping the API dump process for that pod.
 func (d *Daemonset) handleTerminatedPod(podUID types.UID, podStatusErr error, podDoesNotExists bool) {
