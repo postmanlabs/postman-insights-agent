@@ -165,6 +165,13 @@ type BackendCollector struct {
 	// Batch of reports (witnesses, TCP-connection reports, etc.) pending upload.
 	uploadReportBatch *batcher.InMemory[rawReport]
 
+	// Optional observer of upload outcomes. Set via SetUploadReporter rather than
+	// passed to the constructor, which already takes more arguments than is
+	// comfortable. Guarded by uploadReporterMutex because Flush runs the upload
+	// in its own goroutine.
+	uploadReporter      UploadReporter
+	uploadReporterMutex sync.Mutex
+
 	// Channel controlling periodic cache flush
 	flushDone chan struct{}
 
@@ -437,6 +444,25 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	c.uploadReportBatch.Add(rawReport{
 		Witness: w,
 	})
+}
+
+// SetUploadReporter installs an observer for upload outcomes. Passing nil
+// disables reporting.
+func (c *BackendCollector) SetUploadReporter(r UploadReporter) {
+	c.uploadReporterMutex.Lock()
+	defer c.uploadReporterMutex.Unlock()
+	c.uploadReporter = r
+}
+
+// reportUpload records the outcome of one upload batch, if an observer is set.
+func (c *BackendCollector) reportUpload(at time.Time, status UploadStatus) {
+	c.uploadReporterMutex.Lock()
+	reporter := c.uploadReporter
+	c.uploadReporterMutex.Unlock()
+
+	if reporter != nil {
+		reporter.RecordUpload(at, status)
+	}
 }
 
 func (c *BackendCollector) Close() error {

@@ -7,9 +7,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
@@ -18,6 +21,8 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
+	"github.com/postmanlabs/postman-insights-agent/version"
+	"github.com/spf13/viper"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -83,9 +88,26 @@ type Daemonset struct {
 	TelemetryInterval      time.Duration
 
 	// Discovery mode
-	DiscoveryMode  bool
-	InsightsAPIKey string // DaemonSet-level API key for discovery mode
-	PodFilter      *PodFilter
+	DiscoveryMode     bool
+	InsightsAPIKey    string // DaemonSet-level API key for discovery mode
+	PodFilter         *PodFilter
+	Coverage          *CoverageTracker
+	AgentID           string
+	RunID             string
+	telemetrySequence uint64
+
+	// telemetryEventsMu guards both the pending counters and the start of the
+	// window they cover, so a flush cannot split the two.
+	telemetryEventsMu    sync.Mutex
+	telemetryEvents      map[string]map[string]uint64
+	telemetryWindowStart time.Time
+
+	// agent_state bookkeeping. Only ever touched from sendTelemetry, which
+	// TelemetryWorker calls sequentially off a single ticker, so no lock is
+	// needed.
+	agentState          rest.AgentState
+	agentStateSince     time.Time
+	lastTelemetryFailed bool
 }
 
 // applyEnvVarDefaults reads discovery-mode environment variables and applies
@@ -176,23 +198,39 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	// Initialize the front client
 	postmanInsightsVerificationToken := os.Getenv(POSTMAN_INSIGHTS_VERIFICATION_TOKEN)
+	telemetryDomain := os.Getenv(POSTMAN_INSIGHTS_TELEMETRY_DOMAIN)
+	if telemetryDomain == "" {
+		telemetryDomain = rest.Domain
+	}
 	frontClient := rest.NewFrontClient(
-		rest.Domain,
+		telemetryDomain,
 		telemetry.GetClientID(),
 		rest.DaemonsetAuthHandler(postmanInsightsVerificationToken),
 		nil,
 	)
+	if viper.GetBool("test_only_disable_telemetry_https") {
+		frontClient.UseInsecureScheme()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
 
 	// Send initial telemetry
 	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
+	agentID := akid.String(telemetry.GetClientID())
+	runID := uuid.NewString()
+	coverage := NewCoverageTracker(agentID, runID, 1000)
 	if clusterName == "" && args.DiscoveryMode {
 		return errors.New(
 			"discovery mode requires a cluster name: set POSTMAN_INSIGHTS_CLUSTER_NAME env var",
 		)
 	}
 	telemetryInterval := DefaultTelemetryInterval
+	if viper.GetBool("test_only_disable_https") || viper.GetBool("test_only_disable_telemetry_https") {
+		telemetryInterval = DevelopmentTelemetryInterval
+	}
+	// Single source of sequence numbers for this run, shared by the startup event
+	// and every subsequent heartbeat and counter flush.
+	var telemetrySequence uint64
 	if clusterName == "" {
 		printer.Infof(
 			"The cluster name is missing. Telemetry will not be sent from this agent, " +
@@ -201,8 +239,20 @@ func StartDaemonset(args DaemonsetArgs) error {
 		)
 		telemetryInterval = 0
 	} else {
-		// Send Initial telemetry
-		err := frontClient.PostDaemonsetAgentTelemetry(ctx, clusterName)
+		// Send Initial telemetry. Sequence comes from the same counter the
+		// heartbeat uses so the two cannot collide; no targets exist yet, so the
+		// snapshot is deliberately omitted rather than sent as an empty array.
+		err := frontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
+			Type:    rest.TelemetryTypeEvents,
+			Event:   "agent_started",
+			AgentID: agentID, RunID: runID,
+			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
+			SchemaVersion:     "v1",
+			KubernetesCluster: clusterName,
+			Environment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+			AgentVersion:      version.ReleaseVersion().String(),
+			GitVersion:        version.GitVersion(),
+		})
 		if err != nil {
 			printer.Errorf("Failed to send initial daemonset agent telemetry: %v\n", err)
 			printer.Infof(
@@ -216,6 +266,22 @@ func StartDaemonset(args DaemonsetArgs) error {
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
 		return errors.Wrap(err, "failed to create kube client")
+	}
+	if clusterName != "" {
+		kubeClientCtx, kubeClientCancel := context.WithTimeout(context.Background(), apiContextTimeout)
+		err := frontClient.PostDaemonsetAgentTelemetry(kubeClientCtx, rest.DaemonsetTelemetryRequest{
+			Type:    rest.TelemetryTypeEvents,
+			Event:   "kubernetes_client_ready",
+			AgentID: agentID, RunID: runID,
+			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
+			SchemaVersion:     "v1",
+			KubernetesCluster: clusterName,
+			Environment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+		})
+		kubeClientCancel()
+		if err != nil {
+			printer.Errorf("Failed to send kubernetes_client_ready telemetry: %v\n", err)
+		}
 	}
 
 	criClient, err := cri_apis.NewCRIClient()
@@ -239,6 +305,13 @@ func StartDaemonset(args DaemonsetArgs) error {
 		HTTPSBodySizeCap:         args.HTTPSBodySizeCap,
 		HTTPSCBPFExcludePort:     args.HTTPSCBPFExcludePort,
 		HTTPSNoThermostat:        args.HTTPSNoThermostat,
+		Coverage:                 coverage,
+		AgentID:                  agentID,
+		RunID:                    runID,
+		telemetrySequence:        telemetrySequence,
+		telemetryWindowStart:     time.Now().UTC(),
+		agentState:               rest.AgentStateHealthy,
+		agentStateSince:          time.Now().UTC(),
 	}
 
 	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
@@ -388,8 +461,39 @@ func (d *Daemonset) Run() error {
 	printer.Debugf("Stopping all apidump processes...\n")
 	d.StopAllApiDumpProcesses()
 
+	d.sendAgentStopped()
+
 	printer.Infof("Exiting daemonset agent...\n")
 	return nil
+}
+
+// sendAgentStopped flushes any counters accumulated since the last heartbeat
+// and reports a terminal agent_stopped event, so a graceful shutdown leaves a
+// clear end-of-run marker instead of just going quiet until the next
+// heartbeat would have been due.
+func (d *Daemonset) sendAgentStopped() {
+	if d.ClusterName == "" {
+		return
+	}
+	d.flushTelemetryEvents(d.Coverage.Snapshot())
+
+	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
+	defer cancel()
+	err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
+		Type:              rest.TelemetryTypeEvents,
+		Event:             "agent_stopped",
+		AgentID:           d.AgentID,
+		RunID:             d.RunID,
+		Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
+		SchemaVersion:     "v1",
+		KubernetesCluster: d.ClusterName,
+		Environment:       d.InsightsEnvironment,
+		AgentVersion:      version.ReleaseVersion().String(),
+		GitVersion:        version.GitVersion(),
+	})
+	if err != nil {
+		printer.Errorf("Failed to send agent_stopped telemetry: %v\n", err)
+	}
 }
 
 // getPodArgsFromMap retrieves the PodArgs associated with the given podUID from the PodArgsByNameMap.
@@ -453,6 +557,9 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to get pods in node")
 	}
+	for _, pod := range pods {
+		d.observeCoverage(pod, CoveragePodDiscovered, "", "")
+	}
 
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
@@ -466,9 +573,11 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		if d.DiscoveryMode && d.PodFilter != nil {
 			result := d.PodFilter.Evaluate(pod)
 			if !result.ShouldCapture {
+				d.observeCoverage(pod, CoverageDiscoveryFilterRejected, result.Reason, "")
 				printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
 				continue
 			}
+			d.observeCoverage(pod, CoverageDiscoveryFilterPassed, "passed_filters", result.ServiceName)
 			printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
 		}
 
@@ -476,6 +585,8 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 		args := NewPodArgs(pod.Name)
 		err := d.inspectPodForEnvVars(pod, args)
 		if err != nil {
+			d.observeCoverage(pod, CoveragePodConfigurationFailed, "configuration_error", "")
+			d.observeCoverageError(pod, err)
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())
@@ -486,6 +597,10 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 			}
 			continue
 		}
+		d.observeCoverage(pod, CoveragePodConfigured, "configured", "")
+		if d.Coverage != nil {
+			d.Coverage.SetProjectInfo(string(pod.UID), akid.String(args.InsightsProjectID), args.WorkspaceID)
+		}
 
 		err = d.addPodArgsToMap(pod.UID, args, PodRunning)
 		if err != nil {
@@ -495,8 +610,11 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
+			d.observeCoverage(pod, CoverageApidumpStarted, "apidump_start_failed", "")
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
+			continue
 		}
+		d.observeCoverage(pod, CoverageApidumpStarted, "started", "")
 	}
 
 	return nil

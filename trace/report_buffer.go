@@ -137,6 +137,11 @@ func (buf *reportBuffer) Flush() error {
 		defer cancel()
 
 		err := buf.collector.learnClient.AsyncReportsUpload(ctx, learnSessions, report)
+
+		// Report the outcome before rewriting the error below, so the
+		// classification is based on the original error and not on wrapping.
+		buf.collector.reportUpload(time.Now(), ClassifyUploadError(err))
+
 		if err != nil {
 			switch e := err.(type) {
 			case rest.HTTPError:

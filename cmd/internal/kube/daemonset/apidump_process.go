@@ -53,6 +53,13 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				printer.Infof("Apidump process ended for pod %s\n", podArgs.PodName)
 			}
 
+			if nextState == TrafficMonitoringFailed {
+				// The pod itself may still be running -- this is the capture
+				// process failing underneath it, not a Kubernetes-reported
+				// deletion or pod failure. See CoveragePodFailed.
+				d.observeCoverageByUID(string(podUID), CoveragePodFailed, "apidump_process_failed")
+			}
+
 			// Move monitoring state to final apidump processing state
 			err = podArgs.changePodTrafficMonitorState(nextState,
 				TrafficMonitoringRunning, PodSucceeded, PodFailed, PodTerminated, DaemonSetShutdown)
@@ -94,6 +101,11 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			}
 		}
 
+		// Capture-liveness handle for this target. Written by the capture path via
+		// atomics and read by the coverage tracker when it builds a snapshot.
+		activity := &TargetActivity{}
+		d.Coverage.AttachActivity(string(podUID), activity)
+
 		apidumpArgs := apidump.Args{
 			ClientID:                akid.GenerateClientID(),
 			Domain:                  rest.Domain,
@@ -126,6 +138,14 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				APIKey:                    podArgs.PodCreds.InsightsAPIKey,
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
+				ReportTelemetryEvent:      func(event string) { d.recordTelemetryEvent(string(podUID), event) },
+				SetFailureCategory:        func(category string) { d.Coverage.SetDiagnostics(string(podUID), category, nil, nil) },
+				SetResolvedService:        func(serviceID, serviceName string) { d.Coverage.SetResolvedService(string(podUID), serviceID, serviceName) },
+				SetTrackingUser:           func(userID, teamID string) { d.Coverage.SetTrackingUser(string(podUID), userID, teamID) },
+				SetCaptureMode:            func(mode string) { d.Coverage.SetCaptureMode(string(podUID), mode) },
+				RecordPcapMessage:         activity.RecordPcapMessage,
+				RecordEBPFMessage:         activity.RecordEBPFMessage,
+				UploadReporter:            targetUploadReporter{coverage: d.Coverage, podUID: string(podUID)},
 			}),
 		}
 
@@ -134,7 +154,6 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		}
 		return funcErr
 	}()
-
 	return nil
 }
 

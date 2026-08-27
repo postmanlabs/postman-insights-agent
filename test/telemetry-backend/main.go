@@ -5,6 +5,7 @@ import (
 	"github.com/nxtcoder17/fastlog"
 	"github.com/nxtcoder17/ivy"
 	ivyLogger "github.com/nxtcoder17/ivy/middleware/logger"
+	"log/slog"
 	"net/http"
 	"os"
 )
@@ -17,6 +18,7 @@ func main() {
 
 	logger := fastlog.New().DebugMode(*debug).Colors(true).Console()
 	fastlog.SetDefaultLogger(logger)
+	slog.SetDefault(logger.Slog())
 
 	store, err := openStore(*dbPath)
 	if err != nil {
@@ -25,16 +27,22 @@ func main() {
 	}
 	defer store.Close()
 
-	router := ivy.NewRouter()
-	router.Use(ivyLogger.New())
-	router.Get("/healthz", func(c *ivy.Context) error {
-		return c.JSON(map[string]any{"message": "OK"})
-	})
-	router.Post("/v2/agent/daemonset/telemetry", store.handleTelemetry)
-	router.Get("/inspect/telemetry", store.inspectTelemetry)
+	router := newRouter(store)
 
 	logger.Info("Starting HTTP Server", "addr", *addr)
 	if err := http.ListenAndServe(*addr, router); err != nil {
 		panic(err)
 	}
+}
+
+func newRouter(store *store) *ivy.Router {
+	router := ivy.NewRouter()
+	router.Use(ivyLogger.New())
+	router.Get("/healthz", func(c *ivy.Context) error {
+		return c.JSON(map[string]any{"message": "OK"})
+	})
+	router.Get("/ui", telemetryDashboard)
+	router.Post("/v2/agent/daemonset/telemetry", store.handleTelemetry)
+	router.Get("/inspect/telemetry", store.inspectTelemetry)
+	return router
 }
