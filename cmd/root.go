@@ -31,6 +31,7 @@ import (
 var (
 	// Test only flags
 	testOnlyUseHTTPSFlag                bool
+	testOnlyDisableTelemetryHTTPSFlag   bool
 	testOnlyDisableGitHubTeamsCheckFlag bool
 	dogfoodFlag                         bool
 	debugFlag                           bool
@@ -156,6 +157,10 @@ func printFlagsWarning(cmd *cobra.Command) {
 		testingFlags["test_only_disable_https"] = "This is only for debugging and testing in local environment."
 	}
 
+	if testOnlyDisableTelemetryHTTPSFlag {
+		testingFlags["test_only_disable_telemetry_https"] = "This is only for debugging and testing in local environment."
+	}
+
 	if liveProfileAddress != "" {
 		testingFlags["live-profile"] = "The profiler server can run on an unsecured HTTP port without authentication, which could expose sensitive process information to unauthorized users."
 	}
@@ -234,6 +239,10 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&testOnlyUseHTTPSFlag, "test_only_disable_https", false, "TEST ONLY - whether to use HTTPS when communicating with backend")
 	rootCmd.PersistentFlags().MarkHidden("test_only_disable_https")
 	viper.BindPFlag("test_only_disable_https", rootCmd.PersistentFlags().Lookup("test_only_disable_https"))
+
+	rootCmd.PersistentFlags().BoolVar(&testOnlyDisableTelemetryHTTPSFlag, "test_only_disable_telemetry_https", false, "TEST ONLY - whether to use HTTPS when sending DaemonSet telemetry")
+	rootCmd.PersistentFlags().MarkHidden("test_only_disable_telemetry_https")
+	viper.BindPFlag("test_only_disable_telemetry_https", rootCmd.PersistentFlags().Lookup("test_only_disable_telemetry_https"))
 
 	rootCmd.PersistentFlags().BoolVar(&dogfoodFlag, "dogfood", false, "Capture HTTP traffic to Postman services that would ordinarily be filtered, and enable assertions")
 	rootCmd.PersistentFlags().MarkHidden("dogfood")

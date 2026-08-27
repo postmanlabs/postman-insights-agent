@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insights Agent Telemetry</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style type="text/tailwindcss">
+@layer components {
+  .widget { @apply rounded-lg border border-slate-800 bg-slate-900/70 p-4; }
+  .panel { @apply rounded-lg border border-slate-800 bg-slate-900/70 p-4; }
+  .label { @apply text-xs font-medium uppercase tracking-wider text-slate-500; }
+  .kpi { @apply mt-2 text-3xl font-semibold tracking-tight text-white; }
+  .hint { @apply mt-1 text-xs text-slate-500; }
+  .panel-title { @apply mb-4 flex items-center justify-between gap-3; }
+  .panel-title h2 { @apply text-sm font-semibold text-slate-200; }
+  .badge { @apply inline-flex rounded border border-slate-700 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-400; }
+  .badge-ok { @apply border-emerald-800 text-emerald-300; }
+  .badge-warn { @apply border-amber-800 text-amber-300; }
+  .badge-bad { @apply border-red-800 text-red-300; }
+  .metric { @apply rounded border border-slate-800 bg-slate-950/50 p-3; }
+  .metric b { @apply block text-xl text-cyan-300; }
+  .metric span { @apply text-xs text-slate-500; }
+  .tab { @apply whitespace-nowrap border-b-2 border-transparent px-3 py-3 text-sm text-slate-400 hover:text-white; }
+  .tab-active { @apply border-cyan-400 text-white; }
+}
+</style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+<main class="mx-auto max-w-[1600px] p-4 sm:p-6 lg:p-8">
+
+  <header class="mb-6 flex flex-col gap-4 border-b border-slate-800 pb-5 lg:flex-row lg:items-start lg:justify-between">
+    <div>
+      <p class="font-mono text-xs font-bold uppercase tracking-[.22em] text-cyan-400">Insights Agent / Local SIM</p>
+      <h1 id="pageTitle" class="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">Fleet Health</h1>
+      <p class="mt-2 max-w-3xl text-sm text-slate-400">Reflects the current daemonset telemetry contract: one <code>snapshot</code> heartbeat carrying the full target list, plus bounded <code>events</code> counter rows per lifecycle transition.</p>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <button id="testLabButton" class="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-300 hover:border-cyan-600 hover:text-white">Open Test Lab</button>
+      <span id="connection" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-300"><i class="h-2 w-2 rounded-full bg-slate-500"></i> connecting</span>
+    </div>
+  </header>
+
+  <section class="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+    <span class="mr-2 font-mono text-[10px] uppercase tracking-widest text-slate-500">Filters</span>
+    <select id="clusterFilter" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"><option value="">All clusters</option></select>
+    <select id="envFilter" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"><option value="">All environments</option></select>
+    <select id="serviceIdFilter" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"><option value="">All services</option></select>
+    <select id="workspaceIdFilter" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300"><option value="">All workspaces</option></select>
+    <span class="ml-auto text-xs text-slate-500">Auto-refresh 5s</span>
+  </section>
+
+  <nav class="mb-5 flex gap-1 overflow-x-auto border-b border-slate-800" aria-label="Telemetry dashboards">
+    <button class="tab tab-active" data-dashboard="fleet">Fleet Health</button>
+    <button class="tab" data-dashboard="coverage">Target Coverage</button>
+    <button class="tab" data-dashboard="funnel">Funnel</button>
+    <button class="tab" data-dashboard="queue">Troubleshooting Queue</button>
+    <button class="tab" data-dashboard="release">Release Health</button>
+  </nav>
+
+  <!-- Fleet -->
+  <section id="dashboard-fleet" class="dashboard space-y-4">
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="widget"><p class="label">Agents reporting</p><p id="agents" class="kpi">0</p><p id="agentHint" class="hint">No heartbeats yet</p></div>
+      <div class="widget"><p class="label">Heartbeat freshness</p><p id="freshness" class="kpi">-</p><p id="updated" class="hint">Waiting for update</p></div>
+      <div class="widget"><p class="label">Runs observed</p><p id="runs" class="kpi">0</p><p class="hint">Distinct run IDs</p></div>
+      <div class="widget"><p class="label">Latest sequence</p><p id="sequence" class="kpi">-</p><p class="hint">Most recent heartbeat</p></div>
+    </div>
+    <div class="grid gap-4 lg:grid-cols-3">
+      <div class="panel lg:col-span-2">
+        <div class="panel-title"><h2>Heartbeat volume</h2><span class="badge">snapshots, most recent 24</span></div>
+        <div id="heartbeatChart" class="flex h-40 items-end gap-1 border-b border-l border-slate-800 p-3"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title"><h2>Fleet signals</h2><span class="badge">per agent, latest heartbeat each</span></div>
+        <div class="grid grid-cols-3 gap-3">
+          <div class="metric"><b id="fleetHealthy">0</b><span>healthy</span></div>
+          <div class="metric"><b id="fleetDegraded">0</b><span>degraded</span></div>
+          <div class="metric"><b id="fleetStale">0</b><span>stale (&gt;5m)</span></div>
+          <div class="metric"><b id="fleetVersions">0</b><span>versions</span></div>
+          <div class="metric"><b id="coverageDrops">0</b><span>truncated targets</span></div>
+          <div class="metric"><b id="fleetRestarts">0</b><span>agent_started (scope)</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Agent roster</h2><span class="badge">one row per agent, latest heartbeat</span></div>
+      <div id="agentRoster" class="overflow-x-auto"></div>
+    </div>
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="panel">
+        <div class="panel-title"><h2>Top failure categories</h2><span class="badge">by cluster, current targets</span></div>
+        <div id="failureCategoryTable" class="overflow-x-auto"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title"><h2>All telemetry events</h2><span class="badge">observed vs missing in current sample</span></div>
+        <p class="mb-4 text-sm text-slate-400">Click a tile to inspect the raw payloads received for that event. Retired events are not shown here (see Test Lab for their replacements).</p>
+        <div id="eventCoverage" class="grid gap-2 sm:grid-cols-2"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Coverage -->
+  <section id="dashboard-coverage" class="dashboard hidden space-y-4">
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="widget"><p class="label">Targets observed</p><p id="targets" class="kpi">0</p><p class="hint">Latest heartbeat snapshot</p></div>
+      <div class="widget"><p class="label">Producing traffic</p><p id="coverage" class="kpi">0%</p><p class="hint">Have a recent pcap/eBPF message</p></div>
+      <div class="widget"><p class="label">Truncated targets</p><p id="coverageDrops2" class="kpi">0</p><p class="hint">Tracker capacity drops (D8)</p></div>
+      <div class="widget"><p class="label">Clusters</p><p id="clusters" class="kpi">0</p><p class="hint">Selected filter scope</p></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Target coverage</h2><span id="targetMeta" class="text-xs text-slate-500">0 targets</span></div>
+      <div id="coverageBars" class="mb-5 space-y-3"></div>
+      <div id="targetTable" class="overflow-x-auto"></div>
+    </div>
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="panel">
+        <div class="panel-title"><h2>Coverage by service / workspace</h2><span class="badge">producing traffic %</span></div>
+        <div id="coverageByService" class="overflow-x-auto"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title"><h2>Dropped targets by reason</h2><span class="badge">failure_category on current targets</span></div>
+        <div id="droppedByReason" class="overflow-x-auto"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Funnel -->
+  <section id="dashboard-funnel" class="dashboard hidden space-y-4">
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="widget"><p class="label">Discovered</p><p id="fDiscovered" class="kpi">0</p><p class="hint">Top of target funnel</p></div>
+      <div class="widget"><p class="label">Apidump started</p><p id="fApidump" class="kpi">0</p><p class="hint">apidump_started event, in scope</p></div>
+      <div class="widget"><p class="label">Producing traffic</p><p id="fCapture" class="kpi">0</p><p class="hint">last_message_at within 5m</p></div>
+      <div class="widget"><p class="label">Largest gap</p><p id="largestLoss" class="kpi text-lg">-</p><p class="hint">Adjacent-stage gap, point-in-time</p></div>
+    </div>
+    <div class="grid gap-4 lg:grid-cols-3">
+      <div class="panel lg:col-span-2">
+        <div class="panel-title"><h2>Target funnel (emission order)</h2><span class="badge">● stage &nbsp;◆ event &nbsp;▲ liveness</span></div>
+        <div id="pipeline" class="flex min-h-64 items-end gap-2 overflow-x-auto p-3"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title"><h2>Rejection / failure reasons</h2></div>
+        <div id="reasonList" class="space-y-2"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Funnel interpretation</h2></div>
+      <p class="text-sm text-slate-400">Bars are ordered by when the agent actually emits each one, not by an idealized pipeline, and mix two data sources -- read the marker before comparing bars:</p>
+      <ul class="mt-2 space-y-1 text-sm text-slate-400">
+        <li><b class="text-cyan-400">●&nbsp;stage</b> &mdash; <code>discovered</code> / <code>eligible</code> / <code>configured</code>: a live snapshot read off each target's <code>current_stage</code>/<code>transitions</code>. Reflects the fleet's current state, not "ever happened."</li>
+        <li><b class="text-violet-400">◆&nbsp;event</b> &mdash; <code>service resolved</code> / <code>apidump started</code> / <code>capture started</code>: none of these is a coverage stage a target record can hold, so they're counted from events-type counter rows instead (distinct target IDs that ever emitted the event, within the currently retained window). <code>apidump started</code> intentionally ignores the target's own <code>CoverageApidumpStarted</code> transition, which fires synchronously right after handing the pod to <code>StartApiDumpProcess</code> and always "succeeds" regardless of what the background capture goroutine does &mdash; see D15 in the events matrix.</li>
+        <li><b class="text-emerald-400">▲&nbsp;liveness</b> &mdash; <code>producing traffic</code>: derived from <code>last_message_at</code>, not a discrete event.</li>
+      </ul>
+      <p class="mt-2 text-sm text-slate-400"><code>eligible</code> and <code>service resolved</code> are Discovery Mode only &mdash; they read 0 in Workspace Mode by design (there is no filter to evaluate), not because targets are being dropped. There is no <code>capturing</code>/<code>uploading</code> coverage stage in the current schema (removed in favor of liveness timestamps); "uploaded" state is derived from <code>last_upload_at</code>/<code>last_upload_status</code>. Packet-level interval counters were retired (R3); capture liveness is a timestamp, not a count.</p>
+    </div>
+  </section>
+
+  <!-- Queue -->
+  <section id="dashboard-queue" class="dashboard hidden space-y-4">
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="widget"><p class="label">Targets needing action</p><p id="problemTargets" class="kpi">0</p><p class="hint">Not yet producing traffic</p></div>
+      <div class="widget"><p class="label">Invalid configuration</p><p id="configProblems" class="kpi">0</p><p class="hint">failure_category = missing_required_config</p></div>
+      <div class="widget"><p class="label">Apidump start failed</p><p id="apidumpStartFailed" class="kpi">0</p><p class="hint">reason = apidump_start_failed</p></div>
+      <div class="widget"><p class="label">No telemetry</p><p id="noTelemetry" class="kpi">0</p><p class="hint">No records in scope</p></div>
+    </div>
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div class="widget"><p class="label">Capture active, no packets</p><p id="captureStalled" class="kpi">0</p><p class="hint">Reached apidump_started/capturing, never produced a message</p></div>
+      <div class="widget"><p class="label">Packets seen, upload failing</p><p id="uploadFailing" class="kpi">0</p><p class="hint">last_upload_status is an error status</p></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Prioritized operator queue</h2><span class="badge">most affected services first</span></div>
+      <div id="queueTable" class="overflow-x-auto"></div>
+    </div>
+  </section>
+
+  <!-- Release -->
+  <section id="dashboard-release" class="dashboard hidden space-y-4">
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="widget"><p class="label">Agent versions</p><p id="releaseVersions" class="kpi">0</p><p class="hint">Versions in current sample</p></div>
+      <div class="widget"><p class="label">Environments</p><p id="environments" class="kpi">0</p><p class="hint">Distinct environments</p></div>
+      <div class="widget"><p class="label">Latest version</p><p id="latestVersion" class="kpi text-lg">-</p><p class="hint">Most recent heartbeat</p></div>
+      <div class="widget"><p class="label">Run signals</p><p id="restartSignals" class="kpi">0</p><p class="hint">Distinct run IDs</p></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Version distribution</h2><span class="badge">sampled heartbeat records</span></div>
+      <div id="versionBars" class="space-y-3"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Failure rate by agent version</h2><span class="badge">per agent, latest heartbeat each</span></div>
+      <div id="versionFailureTable" class="overflow-x-auto"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title"><h2>Release correlation</h2></div>
+      <p class="text-sm text-slate-400">Deployment markers, feature flags, capture mode, and before/after rollout comparisons still require those fields to be added to the heartbeat envelope (still <code>todo</code> in the event matrix).</p>
+    </div>
+  </section>
+</main>
+
+<div id="testLab" class="fixed inset-0 z-20 hidden bg-slate-950/80 p-4 backdrop-blur-sm">
+  <div class="mx-auto max-h-[calc(100vh-2rem)] max-w-5xl overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+    <div class="sticky top-0 flex items-center justify-between border-b border-slate-800 bg-slate-900 p-5">
+      <div><p class="font-mono text-xs uppercase tracking-widest text-cyan-400">Test Lab</p><h2 class="mt-1 text-xl font-semibold">Event / signal catalog</h2></div>
+      <button id="closeTestLab" class="rounded border border-slate-700 px-3 py-1 text-slate-400 hover:text-white">Close</button>
+    </div>
+    <div class="grid gap-5 p-5 lg:grid-cols-[1.4fr_.9fr]">
+      <div><p class="mb-3 text-sm text-slate-400">Click any signal to see its trigger and expected evidence. Retired events are marked and point at their replacement.</p><div id="eventCatalog" class="space-y-2"></div></div>
+      <div><h3 class="mb-3 text-sm font-semibold">Action checklist</h3><div id="actionChecklist" class="space-y-2"></div></div>
+    </div>
+  </div>
+</div>
+<div id="eventDetails" class="fixed inset-0 z-30 hidden bg-slate-950/80 p-4 backdrop-blur-sm">
+  <div class="mx-auto mt-12 max-w-xl rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+    <div class="flex items-start justify-between">
+      <div><p id="detailStatus" class="font-mono text-xs uppercase tracking-widest text-cyan-400"></p><h2 id="detailTitle" class="mt-2 text-xl font-semibold"></h2></div>
+      <button id="closeDetails" class="text-slate-400 hover:text-white">Close</button>
+    </div>
+    <dl class="mt-5 space-y-4 text-sm">
+      <div><dt class="text-xs uppercase tracking-widest text-slate-500">What it means</dt><dd id="detailDescription" class="mt-1 text-slate-300"></dd></div>
+      <div><dt class="text-xs uppercase tracking-widest text-slate-500">How to trigger</dt><dd id="detailTrigger" class="mt-1 text-slate-300"></dd></div>
+      <div><dt class="text-xs uppercase tracking-widest text-slate-500">Expected evidence</dt><dd id="detailEvidence" class="mt-1 text-slate-300"></dd></div>
+    </dl>
+  </div>
+</div>
+<div id="eventPayloads" class="fixed inset-0 z-30 hidden bg-slate-950/80 p-4 backdrop-blur-sm">
+  <div class="mx-auto max-h-[calc(100vh-2rem)] max-w-4xl overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+    <div class="sticky top-0 flex items-center justify-between border-b border-slate-800 bg-slate-900 p-5">
+      <div><p class="font-mono text-xs uppercase tracking-widest text-cyan-400">Received payloads</p><h2 id="eventPayloadsTitle" class="mt-1 text-xl font-semibold"></h2></div>
+      <button id="closeEventPayloads" class="rounded border border-slate-700 px-3 py-1 text-slate-400 hover:text-white">Close</button>
+    </div>
+    <div class="p-5">
+      <p id="eventPayloadsMeta" class="mb-3 text-sm text-slate-400"></p>
+      <div id="eventPayloadsList" class="space-y-3"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// Real CoverageStage values, reached in sequence on the target record's
+// `current_stage`/`transitions`. `discovery_filter_passed` and
+// `pod_already_instrumented` both mean "cleared to proceed" (one via a
+// Discovery Mode filter match, one via already having the sidecar in
+// Workspace Mode); `discovery_filter_rejected` is the terminal opposite of
+// `discovery_filter_passed` and is deliberately tracked separately so a
+// rejected pod cannot inflate the same funnel gauge as a passed one (this was
+// D3 when both outcomes shared one `eligible` stage). `service_resolved`,
+// `apidump_started`, and `capture_started` are deliberately NOT here -- they
+// are event names, not stages a target record can represent (see
+// FUNNEL_STEPS below).
+const STAGES = ['pod_discovered', 'discovery_filter_passed', 'pod_already_instrumented', 'discovery_filter_rejected', 'pod_configured'];
+const STAGE_LABELS = {
+  pod_discovered: 'discovered',
+  discovery_filter_passed: 'discovery filter: passed',
+  discovery_filter_rejected: 'discovery filter: rejected',
+  pod_already_instrumented: 'already instrumented',
+  pod_configured: 'configured',
+  service_resolved: 'service resolved',
+  apidump_started: 'apidump started',
+  capture_started: 'capture started',
+};
+
+// The funnel in the order the agent actually emits it, mixing two different
+// data sources on purpose (each step says which): `discovered`/`eligible`/
+// `configured` are a live snapshot read off the target record's current
+// stage (`eligible` here is `discovery_filter_passed` +
+// `pod_already_instrumented` combined -- forward progress only, rejected
+// pods are excluded rather than counted toward it); `service_resolved`/
+// `apidump_started`/`capture_started` are read off events-type counter rows
+// instead, because none of the three is a CoverageStage the target record
+// can hold today (`service_resolved` is piggybacked onto the
+// `discovery_filter_passed` transition rather than being its own stage;
+// `apidump_started` intentionally ignores the target's own
+// CoverageApidumpStarted transition, which fires synchronously and always
+// "succeeds" regardless of what the background capture goroutine actually
+// does -- see D15 in the events matrix). `eligible` and `service_resolved`
+// are Discovery Mode only and read 0 in Workspace Mode by design, not by bug.
+const FUNNEL_STEPS = [
+  { key: 'discovered', label: 'discovered', source: 'stage' },
+  { key: 'eligible', label: 'eligible', source: 'stage', note: 'Discovery Mode only' },
+  { key: 'service_resolved', label: 'service resolved', source: 'event', note: 'Discovery Mode only' },
+  { key: 'configured', label: 'configured', source: 'stage' },
+  { key: 'apidump_started', label: 'apidump started', source: 'event' },
+  { key: 'capture_started', label: 'capture started', source: 'event' },
+  { key: 'producing_traffic', label: 'producing traffic', source: 'liveness' },
+];
+
+// Events retired on this branch (see matrix "Landed" table) and what replaced
+// them. Kept here so Test Lab can explain why they will never appear again
+// instead of leaving a stale reproduction recipe in place.
+const RETIRED_EVENTS = {
+  packet_received: 'last_pcap_message_at / last_ebpf_message_at on the target record',
+  packet_processed: 'last_message_at on the target record',
+  telemetry_uploaded: 'last_upload_at on the target record',
+  backend_acknowledged: 'last_upload_status on the target record (HTTP response is the ack)',
+};
+
+const UPLOAD_STATUS_CLASS = {
+  success: 'badge-ok',
+  throttled: 'badge-warn',
+  client_error: 'badge-bad',
+  server_error: 'badge-bad',
+  network_error: 'badge-bad',
+};
+
+const LIVENESS_WINDOW_MS = 5 * 60 * 1000;
+const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+
+const EVENT_CATALOG = [
+  ['agent_started', 'Agent process starts up', 'Restart the daemonset pod.', 'events-type counter row for agent_started, carrying agent_version and git_version.'],
+  ['agent_heartbeat', 'Agent process reports a heartbeat snapshot', 'Keep cluster name and verification token configured; run through one interval.', 'New snapshot row with agent ID, run ID, sequence, full target list, and agent_state.'],
+  ['kubernetes_client_ready', 'Kubernetes API client initialized', 'Restart the daemonset pod with valid in-cluster/kubeconfig access.', 'events-type counter row, sent once right after kube_apis.NewKubeClient() succeeds.'],
+  ['agent_state', 'Self-reported health on every heartbeat', 'Exceed the coverage tracker cap, or break telemetry delivery, then restore it.', 'agent_state=degraded with agent_state_since on the heartbeat; healthy once the condition clears.'],
+  ['agent_stopped', 'Agent shuts down gracefully', 'Send SIGINT/SIGTERM to the daemonset process (e.g. kubectl delete pod).', 'events-type counter row for agent_stopped, sent after pending counters are flushed.'],
+  ['pod_discovered', 'Pod enters the watcher inventory', 'Create, restart, or reschedule a pod on the watched node.', 'events-type counter row for pod_discovered. Fires in both Workspace and Discovery Mode -- this is the funnel denominator, not a Discovery Mode concept.'],
+  ['discovery_filter_passed', 'Pod matches Discovery Mode\'s namespace/label filters', 'Use discovery mode with include/exclude namespace or label filters.', 'events-type counter row. Discovery Mode only (`d.DiscoveryMode && d.PodFilter != nil`) -- reads 0 in Workspace Mode by design, not a bug.'],
+  ['discovery_filter_rejected', 'Pod fails Discovery Mode\'s namespace/label filters', 'Use discovery mode with a filter that excludes the pod.', 'events-type counter row, terminal for this pod. Split out from discovery_filter_passed so a reject can no longer inflate the same funnel gauge as a pass (was D3, fixed).'],
+  ['pod_already_instrumented', 'Pod already has the agent sidecar', 'Have another process (e.g. the webhook injector) add the sidecar before the daemonset sees the pod.', 'events-type counter row. Not a discovery-filter outcome -- can occur in either mode, previously mislabeled as `eligible` alongside the filter cases.'],
+  ['pod_configured', 'Required target configuration is validated', 'Remove or restore API/project/workspace variables.', 'events-type counter row; reason=configured or configuration_error. Still conflates pass/reject under one stage (tracked, not yet split).'],
+  ['service_resolved', 'Filter derives a service name for the target', 'Run discovery mode with a matching filter.', 'events-type counter row, emitted from the discovery filter (D4: not yet a real backend-resolved ID).'],
+  ['apidump_started', 'Per-target apidump start observed', 'Restore valid target configuration and runtime access.', 'events-type counter row with reason=started or apidump_start_failed.'],
+  ['capture_started', 'Capture goroutines launched for a target', 'Run a valid target with pcap/eBPF capture enabled.', 'events-type counter row (fires unconditionally past service lookup today, see R6).'],
+  ['last_pcap_message_at / last_ebpf_message_at', 'Capture pipeline is seeing HTTP messages', 'Generate HTTP and HTTPS traffic against a valid target.', 'Timestamp field updates on the target record in the next heartbeat.'],
+  ['last_upload_at / last_upload_status', 'A witness-report upload batch completed', 'Generate traffic with valid identity and backend access; then break connectivity.', 'Timestamp plus one of success / throttled / client_error / server_error / network_error.'],
+  ['missing_required_config', 'Required environment variables are absent', 'Remove POSTMAN_INSIGHTS_API_KEY or POSTMAN_INSIGHTS_PROJECT_ID.', 'failure_category=missing_required_config plus missing_attributes on the target record.'],
+  ['apidump_start_failed', 'Apidump cannot start after validation', 'Break runtime or namespace permission after configuration passes.', 'events-type counter row for apidump_started with reason=apidump_start_failed.'],
+];
+
+const $ = (id) => document.querySelector('#' + id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const stageTitle = (s) => STAGE_LABELS[s] || s;
+const fmtTime = (v) => (v ? new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-');
+const isFresh = (v, windowMs) => !!v && Date.now() - new Date(v).getTime() <= windowMs;
+
+function payloadOf(record) {
+  try {
+    return typeof record.payload === 'string' ? JSON.parse(record.payload) : record.payload || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+let allRecords = [];
+
+// The most recent stored row is frequently an `events`-type counter row
+// (those are flushed as separate POSTs right after the heartbeat), which
+// carries no `targets` field. Target-scoped views must anchor on the most
+// recent `snapshot`-type row instead, or they intermittently render empty.
+function latestSnapshot(records) {
+  return records.find((r) => payloadOf(r).type === 'snapshot' || payloadOf(r).event === 'agent_heartbeat');
+}
+
+function stageReachCounts(targets) {
+  const counts = Object.fromEntries(STAGES.map((s) => [s, 0]));
+  targets.forEach((t) => {
+    const reached = new Set((t.transitions || []).map((x) => String(x.stage)));
+    reached.add(String(t.current_stage));
+    STAGES.forEach((s) => {
+      if (reached.has(s)) counts[s]++;
+    });
+  });
+  return counts;
+}
+
+function filteredRecords() {
+  const cluster = $('clusterFilter').value;
+  const env = $('envFilter').value;
+  return allRecords.filter((r) => (!cluster || r.cluster === cluster) && (!env || r.environment === env));
+}
+
+// service_id / workspace_id live per-target inside a snapshot's targets array,
+// not as top-level record columns, so they filter the target list rather than
+// the record list.
+function filteredTargets(targets) {
+  const serviceId = $('serviceIdFilter').value;
+  const workspaceId = $('workspaceIdFilter').value;
+  return targets.filter((t) => (!serviceId || t.service_id === serviceId) && (!workspaceId || t.workspace_id === workspaceId));
+}
+
+function allTargets(records) {
+  return records
+    .filter((r) => payloadOf(r).type === 'snapshot' || payloadOf(r).event === 'agent_heartbeat')
+    .flatMap((r) => payloadOf(r).targets || []);
+}
+
+// Distinct pod UIDs that have ever had `eventName` recorded as an events-type
+// counter row in `records`. This is the only truthful source for
+// service_resolved/apidump_started/capture_started -- see FUNNEL_STEPS.
+function distinctTargetsForEvent(records, eventName) {
+  const ids = new Set();
+  records.forEach((r) => {
+    const p = payloadOf(r);
+    if (p.event === eventName && p.target_id) ids.add(p.target_id);
+  });
+  return ids;
+}
+
+// Fleet-wide health (healthy/degraded/stale counts, version distribution) must
+// be judged per agent, not off a single "most recent row across the whole
+// fleet" -- otherwise a fleet of N agents always reports as if it were 1.
+// `records` is assumed newest-first (the backend serves rows ORDER BY id DESC),
+// so the first snapshot/heartbeat row seen per agent_id is that agent's latest.
+function latestPerAgent(records) {
+  const byAgent = new Map();
+  records.forEach((r) => {
+    const p = payloadOf(r);
+    if (!r.agent_id || !(p.type === 'snapshot' || p.event === 'agent_heartbeat')) return;
+    if (!byAgent.has(r.agent_id)) byAgent.set(r.agent_id, r);
+  });
+  return [...byAgent.values()];
+}
+
+function render() {
+  const filtered = filteredRecords();
+  const latest = latestSnapshot(filtered);
+  const data = latest ? payloadOf(latest) : {};
+  const targets = filteredTargets(data.targets || []);
+  const producing = targets.filter((t) => isFresh(t.last_message_at, LIVENESS_WINDOW_MS));
+  const stageCounts = stageReachCounts(targets);
+  const reasons = {};
+  targets.forEach((t) => {
+    if (t.reason && !['started', 'configured', 'passed_filters'].includes(t.reason)) {
+      reasons[t.reason] = (reasons[t.reason] || 0) + 1;
+    }
+  });
+  const reasonRows = Object.entries(reasons).sort((a, b) => b[1] - a[1]);
+  const problems = targets.filter((t) => !isFresh(t.last_message_at, LIVENESS_WINDOW_MS));
+  const configProblems = targets.filter((t) => t.failure_category === 'missing_required_config').length;
+  const apidumpStartFailed = targets.filter((t) => t.reason === 'apidump_start_failed').length;
+  const uploadFailing = targets.filter((t) => t.last_message_at && t.last_upload_status && t.last_upload_status !== 'success' && t.last_upload_status !== 'throttled').length;
+  const heartbeats = filtered.filter((r) => payloadOf(r).type === 'snapshot' || payloadOf(r).event === 'agent_heartbeat');
+
+  // service_resolved/apidump_started/capture_started are never a CoverageStage
+  // on the target record -- service_resolved is piggybacked onto the
+  // `eligible` transition rather than being its own stage, and apidump_started
+  // deliberately is NOT read from the target's own CoverageApidumpStarted
+  // transition: that transition is set synchronously right after handing the
+  // pod to StartApiDumpProcess, which always returns nil for its background
+  // goroutine, so it cannot distinguish a real start from one about to fail
+  // (see D15 in the events matrix). The only truthful count for these three is
+  // "how many currently-in-scope targets have ever had this event recorded",
+  // read off the events-type counter rows by target_id.
+  const targetUIDs = new Set(targets.map((t) => t.pod_uid).filter(Boolean));
+  const countForEvent = (eventName) => {
+    let n = 0;
+    distinctTargetsForEvent(filtered, eventName).forEach((id) => { if (targetUIDs.has(id)) n++; });
+    return n;
+  };
+  const apidumpStartedCount = countForEvent('apidump_started');
+  const funnelValues = {
+    discovered: stageCounts.pod_discovered,
+    // Forward progress only: passed the discovery filter or was already
+    // instrumented. Rejected pods are excluded, not summed in -- they show up
+    // in the rejection/failure reasons panel instead (D3 fix).
+    eligible: stageCounts.discovery_filter_passed + stageCounts.pod_already_instrumented,
+    service_resolved: countForEvent('service_resolved'),
+    configured: stageCounts.pod_configured,
+    apidump_started: apidumpStartedCount,
+    capture_started: countForEvent('capture_started'),
+    producing_traffic: producing.length,
+  };
+  const apidumpStartedIds = distinctTargetsForEvent(filtered, 'apidump_started');
+  // "Capture active, no packets": the target has a real apidump_started event
+  // (not just the synchronous stage) but has never recorded a pcap/eBPF
+  // message -- distinct from merely stale, since it never produced anything.
+  const captureStalled = targets.filter((t) => t.pod_uid && apidumpStartedIds.has(t.pod_uid) && !t.last_message_at).length;
+
+  // Health/version distribution is a per-agent judgment: each agent's own
+  // latest heartbeat decides whether it counts as healthy, degraded, or
+  // stale, so a fleet of N agents isn't collapsed into a single fleet-wide
+  // row (see latestPerAgent doc comment).
+  const perAgent = latestPerAgent(filtered);
+  const fleetDegradedAgents = perAgent.filter((r) => payloadOf(r).agent_state === 'degraded');
+  const fleetStaleAgents = perAgent.filter((r) => !isFresh(r.received_at, HEARTBEAT_STALE_MS));
+  const fleetHealthyAgents = perAgent.filter((r) => isFresh(r.received_at, HEARTBEAT_STALE_MS) && payloadOf(r).agent_state !== 'degraded');
+
+  const kv = {
+    agents: new Set(filtered.map((r) => r.agent_id).filter(Boolean)).size,
+    runs: new Set(filtered.map((r) => r.run_id).filter(Boolean)).size,
+    sequence: latest?.sequence ?? '-',
+    targets: targets.length,
+    coverage: targets.length ? Math.round((producing.length / targets.length) * 100) + '%' : '0%',
+    coverageDrops: data.truncated_targets || 0,
+    coverageDrops2: data.truncated_targets || 0,
+    clusters: new Set(filtered.map((r) => r.cluster).filter(Boolean)).size,
+    fleetHealthy: fleetHealthyAgents.length,
+    fleetDegraded: fleetDegradedAgents.length,
+    fleetStale: fleetStaleAgents.length,
+    fleetVersions: new Set(perAgent.map((r) => r.version).filter(Boolean)).size,
+    fleetRestarts: filtered.filter((r) => payloadOf(r).event === 'agent_started').length,
+    problemTargets: problems.length,
+    configProblems,
+    apidumpStartFailed,
+    captureStalled,
+    uploadFailing,
+    noTelemetry: filtered.length ? 0 : 1,
+    fDiscovered: funnelValues.discovered,
+    fApidump: apidumpStartedCount,
+    fCapture: producing.length,
+    largestLoss: (() => {
+      const gaps = FUNNEL_STEPS.slice(0, -1)
+        .map((s, i) => ({ name: s.label + ' -> ' + FUNNEL_STEPS[i + 1].label, gap: Math.max(0, funnelValues[s.key] - funnelValues[FUNNEL_STEPS[i + 1].key]) }))
+        .sort((a, b) => b.gap - a.gap);
+      return gaps[0]?.gap ? gaps[0].name : '-';
+    })(),
+    releaseVersions: new Set(perAgent.map((r) => r.version).filter(Boolean)).size,
+    environments: new Set(filtered.map((r) => r.environment).filter(Boolean)).size,
+    latestVersion: latest?.version || '-',
+    restartSignals: new Set(filtered.map((r) => r.run_id).filter(Boolean)).size,
+  };
+  Object.entries(kv).forEach(([id, v]) => {
+    if ($(id)) $(id).textContent = v;
+  });
+
+  $('freshness').textContent = latest ? fmtTime(latest.received_at) : '-';
+  $('agentHint').textContent = latest?.cluster || 'No heartbeats yet';
+  $('updated').textContent = latest ? 'updated ' + fmtTime(latest.received_at) : 'Waiting for update';
+  $('targetMeta').textContent = targets.length + ' targets';
+
+  $('heartbeatChart').innerHTML = heartbeats
+    .slice(0, 24)
+    .reverse()
+    .map((r) => `<div class="min-w-2 flex-1 rounded-t bg-cyan-500/70" title="${fmtTime(r.received_at)} · sequence ${r.sequence ?? '-'}" style="height:${Math.max(8, Math.min(100, (r.target_count || 0) * 4))}%"></div>`)
+    .join('');
+
+  const funnelMax = Math.max(1, funnelValues.discovered);
+  const SOURCE_BADGE = { stage: '●', event: '◆', liveness: '▲' };
+  const SOURCE_CLASS = { stage: 'bg-cyan-500/70', event: 'bg-violet-500/70', liveness: 'bg-emerald-500/70' };
+  $('pipeline').innerHTML = FUNNEL_STEPS.map((step, i) => {
+    const count = funnelValues[step.key];
+    const prev = i === 0 ? null : funnelValues[FUNNEL_STEPS[i - 1].key];
+    // Conversion is relative to the previous step in the funnel, not the top
+    // (discovered) -- that is what "where is this step bleeding targets"
+    // requires; the top-relative number is already implied by the bar height.
+    const conversion = prev === null ? null : prev ? Math.round((count / prev) * 100) : 0;
+    return `<div class="flex min-w-20 flex-1 flex-col justify-end gap-2" title="${esc(step.source)} count${step.note ? ' -- ' + esc(step.note) : ''}">
+      <div class="text-center font-mono text-xs text-slate-400">${count}${conversion !== null ? `<br><span class="text-[10px] ${conversion < 70 ? 'text-amber-400' : 'text-slate-600'}">${conversion}%</span>` : ''}</div>
+      <div class="rounded-t ${SOURCE_CLASS[step.source]}" style="height:${Math.max(8, (count / funnelMax) * 190)}px"></div>
+      <div class="text-center text-[10px] text-slate-500">${SOURCE_BADGE[step.source]} ${esc(step.label)}${step.note ? `<br><span class="text-slate-700">(${esc(step.note)})</span>` : ''}</div>
+    </div>`;
+  }).join('');
+
+  $('coverageBars').innerHTML = STAGES.concat(['producing_traffic']).map((s) => {
+    const count = s === 'producing_traffic' ? producing.length : stageCounts[s];
+    const label = s === 'producing_traffic' ? 'producing traffic' : stageTitle(s);
+    return `<div><div class="mb-1 flex justify-between text-xs"><span class="text-slate-400">${esc(label)}</span><b>${count}</b></div><div class="h-2 rounded bg-slate-800"><div class="h-2 rounded bg-cyan-500" style="width:${targets.length ? (count / targets.length) * 100 : 0}%"></div></div></div>`;
+  }).join('');
+
+  $('reasonList').innerHTML = reasonRows.length
+    ? reasonRows.map(([r, c]) => `<div class="flex justify-between rounded border border-slate-800 bg-slate-950/50 p-2 text-sm"><span>${esc(r)}</span><b class="text-amber-300">${c}</b></div>`).join('')
+    : '<p class="text-sm text-slate-500">No normalized drop reasons.</p>';
+
+  const targetRow = (t) => {
+    const uploadClass = UPLOAD_STATUS_CLASS[t.last_upload_status] || 'badge';
+    return `<tr class="border-t border-slate-800">
+      <td class="p-2"><b>${esc(t.service || t.pod_name || 'unnamed')}</b><br><small class="text-slate-500">${esc(t.namespace || '')}${t.service_id ? ' · service ' + esc(t.service_id) : ''}${t.workspace_id ? ' · workspace ' + esc(t.workspace_id) : ''}</small></td>
+      <td class="p-2"><span class="badge">${esc(stageTitle(t.current_stage))}</span></td>
+      <td class="p-2 text-slate-400">${esc([t.reason, t.missing_attributes?.length ? 'missing: ' + t.missing_attributes.join(', ') : ''].filter(Boolean).join(' / ') || '-')}</td>
+      <td class="p-2 text-slate-400">${t.last_message_at ? fmtTime(t.last_message_at) : '<span class="text-slate-600">never</span>'}</td>
+      <td class="p-2">${t.last_upload_status ? `<span class="badge ${uploadClass}">${esc(t.last_upload_status)}</span>` : '<span class="text-slate-600">never</span>'}</td>
+    </tr>`;
+  };
+  $('targetTable').innerHTML = targets.length
+    ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Target</th><th class="p-2">Stage</th><th class="p-2">Reason</th><th class="p-2">Last message</th><th class="p-2">Last upload</th></tr></thead><tbody>${targets.map(targetRow).join('')}</tbody></table>`
+    : '<p class="text-sm text-slate-500">No target records in scope.</p>';
+
+  // Group problem targets by affected service so the busiest service surfaces
+  // first, with first/last detected pulled from the target's own transition
+  // history rather than "now" -- an operator needs to know how long an issue
+  // has been open, not just that it exists in this sample.
+  const serviceGroups = new Map();
+  problems.forEach((t) => {
+    const key = t.service || t.service_id || t.pod_name || 'unnamed';
+    if (!serviceGroups.has(key)) serviceGroups.set(key, []);
+    serviceGroups.get(key).push(t);
+  });
+  const serviceRows = [...serviceGroups.entries()].map(([service, ts]) => {
+    const times = ts.flatMap((t) => (t.transitions || []).map((x) => x.observed_at)).concat(ts.map((t) => t.observed_at)).filter(Boolean).sort();
+    const reasonCounts = {};
+    ts.forEach((t) => { const r = t.reason || 'inspect target configuration'; reasonCounts[r] = (reasonCounts[r] || 0) + 1; });
+    const topReason = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+    return { service, count: ts.length, topReason, first: times[0], last: times[times.length - 1] };
+  }).sort((a, b) => b.count - a.count);
+
+  $('queueTable').innerHTML = serviceRows.length
+    ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Service</th><th class="p-2">Affected targets</th><th class="p-2">Most common reason</th><th class="p-2">First detected</th><th class="p-2">Last detected</th></tr></thead><tbody>${serviceRows.map((r) => `<tr class="border-t border-slate-800">
+        <td class="p-2"><b>${esc(r.service)}</b></td>
+        <td class="p-2 text-amber-300">${r.count}</td>
+        <td class="p-2 text-slate-400">${esc(r.topReason || '-')}</td>
+        <td class="p-2 text-slate-400">${r.first ? fmtTime(r.first) : '-'}</td>
+        <td class="p-2 text-slate-400">${r.last ? fmtTime(r.last) : '-'}</td>
+      </tr>`).join('')}</tbody></table>`
+    : '<p class="text-sm text-emerald-300">No target issues detected.</p>';
+
+  // Version distribution counts agents, not heartbeat rows -- otherwise an
+  // agent with a shorter heartbeat interval would visually dominate one with
+  // a longer interval despite the fleet having the same number of each.
+  const versions = {};
+  perAgent.forEach((r) => {
+    if (r.version) versions[r.version] = (versions[r.version] || 0) + 1;
+  });
+  const versionRows = Object.entries(versions).sort((a, b) => b[1] - a[1]);
+  const versionMax = versionRows[0]?.[1] || 1;
+  $('versionBars').innerHTML = versionRows.length
+    ? versionRows.map(([v, c]) => `<div><div class="mb-1 flex justify-between text-xs"><span>${esc(v)}</span><b>${c}</b></div><div class="h-3 rounded bg-slate-800"><div class="h-3 rounded bg-blue-400" style="width:${(c / versionMax) * 100}%"></div></div></div>`).join('')
+    : '<p class="text-sm text-slate-500">No version metadata received.</p>';
+
+  renderAgentRoster(perAgent);
+  renderFailureCategories(targets);
+  renderCoveragePanels(targets);
+  renderVersionFailureRates(perAgent);
+  renderEventCoverage(filtered);
+  renderCatalog(filtered);
+}
+
+function renderAgentRoster(perAgent) {
+  const el = $('agentRoster');
+  if (!el) return;
+  const rows = perAgent
+    .slice()
+    .sort((a, b) => new Date(b.received_at) - new Date(a.received_at))
+    .map((r) => {
+      const p = payloadOf(r);
+      const fresh = isFresh(r.received_at, HEARTBEAT_STALE_MS);
+      const state = p.agent_state === 'degraded' ? 'degraded' : fresh ? 'healthy' : 'stale';
+      const stateClass = state === 'degraded' ? 'badge-warn' : state === 'healthy' ? 'badge-ok' : 'badge-bad';
+      return `<tr class="border-t border-slate-800">
+        <td class="p-2 font-mono text-xs">${esc(r.agent_id || '-')}</td>
+        <td class="p-2 text-slate-400">${esc(r.cluster || '-')}</td>
+        <td class="p-2 text-slate-400">${esc(r.environment || '-')}</td>
+        <td class="p-2 text-slate-400">${esc(r.version || '-')}</td>
+        <td class="p-2 text-slate-400">${fmtTime(r.received_at)}</td>
+        <td class="p-2"><span class="badge ${stateClass}">${state}</span></td>
+      </tr>`;
+    });
+  el.innerHTML = rows.length
+    ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Agent ID</th><th class="p-2">Cluster</th><th class="p-2">Environment</th><th class="p-2">Version</th><th class="p-2">Last heartbeat</th><th class="p-2">State</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
+    : '<p class="text-sm text-slate-500">No agents reporting in scope.</p>';
+}
+
+function renderFailureCategories(targets) {
+  const el = $('failureCategoryTable');
+  if (!el) return;
+  const byCluster = new Map();
+  targets.filter((t) => t.failure_category).forEach((t) => {
+    // Targets are already scoped to the selected cluster filter (they come
+    // from a single record's snapshot), so this reduces to "count by
+    // category" today; grouping by cluster is here so the shape holds once
+    // this pulls from all clusters' latest snapshots rather than one.
+    const cluster = $('clusterFilter').value || 'all clusters';
+    const key = cluster + '/' + t.failure_category;
+    byCluster.set(key, (byCluster.get(key) || 0) + 1);
+  });
+  const rows = [...byCluster.entries()].sort((a, b) => b[1] - a[1]);
+  el.innerHTML = rows.length
+    ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Cluster / category</th><th class="p-2">Count</th></tr></thead><tbody>${rows.map(([k, c]) => `<tr class="border-t border-slate-800"><td class="p-2">${esc(k)}</td><td class="p-2 text-amber-300">${c}</td></tr>`).join('')}</tbody></table>`
+    : '<p class="text-sm text-emerald-300">No failure categories in scope.</p>';
+}
+
+function renderCoveragePanels(targets) {
+  const el = $('coverageByService');
+  if (!el) return;
+  const groups = new Map();
+  targets.forEach((t) => {
+    const key = t.service_id || t.service || t.pod_name || 'unnamed';
+    if (!groups.has(key)) groups.set(key, { total: 0, producing: 0, workspaceId: t.workspace_id });
+    const g = groups.get(key);
+    g.total++;
+    if (isFresh(t.last_message_at, LIVENESS_WINDOW_MS)) g.producing++;
+  });
+  const rows = [...groups.entries()].map(([key, g]) => ({ key, ...g, pct: g.total ? Math.round((g.producing / g.total) * 100) : 0 })).sort((a, b) => a.pct - b.pct);
+  el.innerHTML = rows.length
+    ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Service</th><th class="p-2">Workspace</th><th class="p-2">Producing / total</th><th class="p-2">Coverage</th></tr></thead><tbody>${rows.map((r) => `<tr class="border-t border-slate-800">
+        <td class="p-2 font-mono text-xs">${esc(r.key)}</td>
+        <td class="p-2 font-mono text-xs text-slate-500">${esc(r.workspaceId || '-')}</td>
+        <td class="p-2 text-slate-400">${r.producing} / ${r.total}</td>
+        <td class="p-2"><b class="${r.pct < 50 ? 'text-amber-300' : 'text-emerald-300'}">${r.pct}%</b></td>
+      </tr>`).join('')}</tbody></table>`
+    : '<p class="text-sm text-slate-500">No targets in scope.</p>';
+
+  const droppedEl = $('droppedByReason');
+  if (droppedEl) {
+    const reasonCounts = {};
+    targets.filter((t) => t.failure_category).forEach((t) => { reasonCounts[t.failure_category] = (reasonCounts[t.failure_category] || 0) + 1; });
+    const reasonRows2 = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]);
+    droppedEl.innerHTML = reasonRows2.length
+      ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Reason</th><th class="p-2">Targets</th></tr></thead><tbody>${reasonRows2.map(([r, c]) => `<tr class="border-t border-slate-800"><td class="p-2">${esc(r)}</td><td class="p-2 text-amber-300">${c}</td></tr>`).join('')}</tbody></table>`
+      : '<p class="text-sm text-emerald-300">No dropped targets in scope.</p>';
+  }
+}
+
+function renderVersionFailureRates(perAgent) {
+  const el = $('versionFailureTable');
+  if (!el) return;
+  const byVersion = new Map();
+  perAgent.forEach((r) => {
+    const v = r.version || 'unknown';
+    const p = payloadOf(r);
+    const agentTargets = p.targets || [];
+    const failing = agentTargets.filter((t) => t.failure_category || (t.reason && t.reason !== 'started' && t.reason !== 'configured' && t.reason !== 'passed_filters')).length;
+    if (!byVersion.has(v)) byVersion.set(v, { agents: 0, targets: 0, failing: 0 });
+    const g = byVersion.get(v);
+    g.agents++;
+    g.targets += agentTargets.length;
+    g.failing += failing;
+  });
+  // A simple "is this the newest version seen" flag -- not full semver
+  // ordering, just enough to call out fleets still running an old build.
+  const versionList = [...byVersion.keys()];
+  const newest = versionList.slice().sort().at(-1);
+  const rows = [...byVersion.entries()].sort((a, b) => b[1].agents - a[1].agents);
+  el.innerHTML = rows.length
+    ? `<table class="min-w-full text-left text-sm"><thead class="text-xs uppercase tracking-wider text-slate-500"><tr><th class="p-2">Version</th><th class="p-2">Agents</th><th class="p-2">Targets w/ issues</th><th class="p-2">Failure rate</th><th class="p-2">Status</th></tr></thead><tbody>${rows.map(([v, g]) => `<tr class="border-t border-slate-800">
+        <td class="p-2 font-mono text-xs">${esc(v)}</td>
+        <td class="p-2 text-slate-400">${g.agents}</td>
+        <td class="p-2 text-slate-400">${g.failing} / ${g.targets}</td>
+        <td class="p-2">${g.targets ? Math.round((g.failing / g.targets) * 100) + '%' : '-'}</td>
+        <td class="p-2">${v === newest ? '<span class="badge badge-ok">newest seen</span>' : '<span class="badge badge-warn">older</span>'}</td>
+      </tr>`).join('')}</tbody></table>`
+    : '<p class="text-sm text-slate-500">No version metadata received.</p>';
+}
+
+function renderEventCoverage(filtered) {
+  const counts = {};
+  const lastSeen = {};
+  filtered.forEach((r) => {
+    const p = payloadOf(r);
+    if (p.event) {
+      counts[p.event] = (counts[p.event] || 0) + (p.count || 1);
+      lastSeen[p.event] = r.received_at;
+    }
+  });
+  // agent_state is a field on every heartbeat, not a discrete counter event --
+  // same category as last_pcap_message_at/last_upload_status, so it's shown as
+  // a current value below rather than forced into this "missing" vs count grid.
+  const shown = EVENT_CATALOG.filter(([name]) => !RETIRED_EVENTS[name] && !name.includes('/') && name !== 'agent_state');
+  const tiles = shown.map(([name]) => {
+    const count = counts[name] || 0;
+    return `<div data-event="${esc(name)}" class="cursor-pointer rounded border ${count ? 'border-emerald-900 bg-emerald-950/20 hover:border-emerald-600' : 'border-slate-800 bg-slate-950/40 hover:border-slate-600'} p-3">
+      <div class="flex items-center justify-between gap-2"><span class="font-mono text-xs ${count ? 'text-emerald-300' : 'text-slate-500'}">${esc(name)}</span><b class="text-sm ${count ? 'text-emerald-300' : 'text-slate-600'}">${count || 'missing'}</b></div>
+      <p class="mt-1 text-[10px] text-slate-600">${count ? 'last received ' + fmtTime(lastSeen[name]) : 'not received in sample'}</p>
+    </div>`;
+  });
+
+  const latest = latestSnapshot(filtered);
+  const state = latest ? payloadOf(latest).agent_state : null;
+  const stateClass = state === 'degraded' ? 'text-amber-300' : state ? 'text-emerald-300' : 'text-slate-600';
+  const stateBorder = state === 'degraded' ? 'border-amber-900 bg-amber-950/20' : state ? 'border-emerald-900 bg-emerald-950/20' : 'border-slate-800 bg-slate-950/40';
+  tiles.push(`<div data-event="agent_state" class="cursor-pointer rounded border ${stateBorder} hover:border-slate-600 p-3">
+    <div class="flex items-center justify-between gap-2"><span class="font-mono text-xs ${state ? stateClass : 'text-slate-500'}">agent_state</span><b class="text-sm ${stateClass}">${state || 'missing'}</b></div>
+    <p class="mt-1 text-[10px] text-slate-600">${state ? 'field on latest heartbeat, since ' + fmtTime(payloadOf(latest).agent_state_since) : 'not received in sample'}</p>
+  </div>`);
+
+  $('eventCoverage').innerHTML = tiles.join('');
+}
+
+// Records matching a given event tile: agent_state is a field on every
+// heartbeat/snapshot row rather than its own discrete event, so it maps back
+// to the same rows agent_heartbeat does; everything else matches by the
+// `event` field the counter/lifecycle rows carry.
+function recordsForEvent(records, eventName) {
+  return records
+    .filter((r) => {
+      const p = payloadOf(r);
+      if (eventName === 'agent_state' || eventName === 'agent_heartbeat') {
+        return p.type === 'snapshot' || p.event === 'agent_heartbeat';
+      }
+      return p.event === eventName;
+    })
+    .sort((a, b) => new Date(b.received_at) - new Date(a.received_at));
+}
+
+function showEventPayloads(eventName) {
+  const matches = recordsForEvent(filteredRecords(), eventName);
+  $('eventPayloadsTitle').textContent = eventName;
+  $('eventPayloadsMeta').textContent = matches.length
+    ? `${matches.length} record${matches.length === 1 ? '' : 's'} in current filter scope, most recent first.`
+    : 'No records for this event in the current filter scope.';
+  $('eventPayloadsList').innerHTML = matches.map((r) => {
+    const p = payloadOf(r);
+    return `<div class="rounded border border-slate-800 bg-slate-950/50 p-3">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+        <span class="font-mono text-slate-200">${esc(fmtTime(r.received_at))}</span>
+        ${r.cluster ? `<span>cluster <b class="text-slate-300">${esc(r.cluster)}</b></span>` : ''}
+        ${r.environment ? `<span>env <b class="text-slate-300">${esc(r.environment)}</b></span>` : ''}
+        ${r.agent_id ? `<span>agent <b class="text-slate-300">${esc(r.agent_id)}</b></span>` : ''}
+        ${r.run_id ? `<span>run <b class="text-slate-300">${esc(r.run_id)}</b></span>` : ''}
+        ${r.sequence != null ? `<span>seq <b class="text-slate-300">${esc(String(r.sequence))}</b></span>` : ''}
+      </div>
+      <pre class="mt-2 max-h-96 overflow-auto rounded bg-slate-950 p-2 text-[11px] leading-snug text-cyan-100">${esc(JSON.stringify(p, null, 2))}</pre>
+    </div>`;
+  }).join('');
+  $('eventPayloads').classList.remove('hidden');
+}
+
+$('eventCoverage').addEventListener('click', (e) => {
+  const tile = e.target.closest('[data-event]');
+  if (tile) showEventPayloads(tile.dataset.event);
+});
+$('closeEventPayloads').onclick = () => $('eventPayloads').classList.add('hidden');
+
+function renderCatalog(records) {
+  const seen = new Set();
+  records.forEach((r) => {
+    const p = payloadOf(r);
+    if (p.event) seen.add(p.event);
+    if (p.agent_state) seen.add('agent_state');
+    (p.targets || []).forEach((t) => {
+      (t.transitions || []).forEach((x) => seen.add(x.stage));
+      if (t.failure_category) seen.add(t.failure_category);
+      if (t.last_pcap_message_at || t.last_ebpf_message_at) seen.add('last_pcap_message_at / last_ebpf_message_at');
+      if (t.last_upload_status) seen.add('last_upload_at / last_upload_status');
+    });
+  });
+  $('eventCatalog').innerHTML = EVENT_CATALOG.map(([name, desc, trigger, evidence]) => {
+    const retired = RETIRED_EVENTS[name];
+    const observed = seen.has(name);
+    const badge = retired ? '<span class="badge badge-bad">retired</span>' : observed ? '<span class="badge badge-ok">observed</span>' : '<span class="badge">not observed</span>';
+    return `<button class="block w-full rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-left hover:border-cyan-700" data-event="${esc(name)}">
+      <div class="flex items-center justify-between gap-3"><span class="font-mono text-xs text-slate-200">${esc(name)}</span>${badge}</div>
+      <p class="mt-1 text-xs text-slate-500">${esc(desc)}</p>
+      ${retired ? `<p class="mt-1 text-[10px] text-amber-400">Retired &mdash; replaced by ${esc(retired)}.</p>` : ''}
+    </button>`;
+  }).join('');
+  document.querySelectorAll('[data-event]').forEach((b) => {
+    b.onclick = () => {
+      const entry = EVENT_CATALOG.find((e) => e[0] === b.dataset.event);
+      showDetails(entry, seen.has(entry[0]), RETIRED_EVENTS[entry[0]]);
+    };
+  });
+}
+
+function showDetails(event, observed, retired) {
+  $('detailStatus').textContent = retired ? 'Retired on this branch' : observed ? 'Observed in current sample' : 'Not observed in current sample';
+  $('detailStatus').className = 'font-mono text-xs uppercase tracking-widest ' + (retired ? 'text-amber-400' : observed ? 'text-emerald-400' : 'text-slate-500');
+  $('detailTitle').textContent = event[0];
+  $('detailDescription').textContent = event[1];
+  $('detailTrigger').textContent = event[2];
+  $('detailEvidence').textContent = retired ? `Replaced by ${retired}.` : event[3];
+  $('eventDetails').classList.remove('hidden');
+}
+
+function populateFilters(records) {
+  for (const [id, key, label] of [['clusterFilter', 'cluster', 'clusters'], ['envFilter', 'environment', 'environments']]) {
+    const select = $(id);
+    const value = select.value;
+    select.innerHTML = '<option value="">All ' + label + '</option>' +
+      [...new Set(records.map((r) => r[key]).filter(Boolean))].sort().map((v) => `<option>${esc(v)}</option>`).join('');
+    select.value = value;
+  }
+
+  const targets = allTargets(records);
+  for (const [id, key, label] of [['serviceIdFilter', 'service_id', 'services'], ['workspaceIdFilter', 'workspace_id', 'workspaces']]) {
+    const select = $(id);
+    const value = select.value;
+    select.innerHTML = '<option value="">All ' + label + '</option>' +
+      [...new Set(targets.map((t) => t[key]).filter(Boolean))].sort().map((v) => `<option>${esc(v)}</option>`).join('');
+    select.value = value;
+  }
+}
+
+async function refresh() {
+  try {
+    const response = await fetch('/inspect/telemetry?limit=1000', { cache: 'no-store' });
+    if (!response.ok) throw new Error(String(response.status));
+    allRecords = await response.json();
+    populateFilters(allRecords);
+    render();
+    $('connection').innerHTML = '<i class="h-2 w-2 rounded-full bg-emerald-400"></i> live / sqlite';
+  } catch (_) {
+    $('connection').innerHTML = '<i class="h-2 w-2 rounded-full bg-red-400"></i> backend unavailable';
+  }
+}
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach((x) => x.classList.remove('tab-active'));
+    tab.classList.add('tab-active');
+    document.querySelectorAll('.dashboard').forEach((x) => x.classList.add('hidden'));
+    $('dashboard-' + tab.dataset.dashboard).classList.remove('hidden');
+    $('pageTitle').textContent = tab.textContent;
+  };
+});
+['clusterFilter', 'envFilter', 'serviceIdFilter', 'workspaceIdFilter'].forEach((id) => ($(id).onchange = render));
+
+$('testLabButton').onclick = () => {
+  renderCatalog(filteredRecords());
+  $('testLab').classList.remove('hidden');
+};
+$('closeTestLab').onclick = () => $('testLab').classList.add('hidden');
+$('closeDetails').onclick = () => $('eventDetails').classList.add('hidden');
+
+$('actionChecklist').innerHTML = [
+  ['heartbeat', 'Start agent with cluster name and verification token.'],
+  ['discovered', 'Create or restart a pod on the watched node.'],
+  ['eligible', 'Run discovery filters with matching and excluded pods.'],
+  ['config', 'Remove a required API/project/workspace variable.'],
+  ['resolved', 'Run a matching discovery filter to derive a service name.'],
+  ['apidump', 'Restore valid target configuration and runtime access.'],
+  ['traffic', 'Generate HTTP/HTTPS traffic; watch last_message_at update.'],
+  ['upload', 'Break backend connectivity to observe a non-success last_upload_status.'],
+  ['shutdown', 'Delete a target and gracefully stop the agent.'],
+].map(([id, text]) => `<label class="flex gap-2 rounded border border-slate-800 p-2 text-xs text-slate-400"><input type="checkbox" data-check="${id}" class="mt-0.5 accent-cyan-400">${text}</label>`).join('');
+document.querySelectorAll('[data-check]').forEach((c) => {
+  c.checked = localStorage.getItem('telemetry-check-' + c.dataset.check) === '1';
+  c.onchange = () => localStorage.setItem('telemetry-check-' + c.dataset.check, c.checked ? '1' : '0');
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

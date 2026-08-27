@@ -18,6 +18,7 @@ const (
 	POSTMAN_INSIGHTS_ENV                = "POSTMAN_ENV" // This is same as root POSTMAN_ENV
 	POSTMAN_INSIGHTS_VERIFICATION_TOKEN = "POSTMAN_INSIGHTS_VERIFICATION_TOKEN"
 	POSTMAN_INSIGHTS_CLUSTER_NAME       = "POSTMAN_INSIGHTS_CLUSTER_NAME"
+	POSTMAN_INSIGHTS_TELEMETRY_DOMAIN   = "POSTMAN_INSIGHTS_TELEMETRY_DOMAIN"
 
 	// Discovery mode environment variables
 	POSTMAN_INSIGHTS_DISCOVERY_MODE     = "POSTMAN_INSIGHTS_DISCOVERY_MODE"
@@ -32,5 +33,6 @@ const (
 
 	// Workers intervals
 	DefaultTelemetryInterval      = 5 * time.Minute
+	DevelopmentTelemetryInterval  = 10 * time.Second
 	DefaultPodHealthCheckInterval = 5 * time.Minute
 )

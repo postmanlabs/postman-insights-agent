@@ -2,11 +2,14 @@ package trace
 
 import (
 	"math"
+	"net/http"
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/OneOfOne/xxhash"
+	"github.com/pkg/errors"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
@@ -18,6 +21,46 @@ import (
 type SuccessTelemetry struct {
 	Channel chan struct{}
 	Once    sync.Once
+}
+
+// UploadStatus is a bounded classification of a witness-report upload outcome.
+// The set is closed on purpose: it is reported as a telemetry dimension, so an
+// open-ended string would let backend error text drive cardinality.
+type UploadStatus string
+
+const (
+	UploadSuccess      UploadStatus = "success"
+	UploadThrottled    UploadStatus = "throttled"
+	UploadClientError  UploadStatus = "client_error"
+	UploadServerError  UploadStatus = "server_error"
+	UploadNetworkError UploadStatus = "network_error"
+)
+
+// ClassifyUploadError maps an upload error to an UploadStatus. It reports the
+// class only; the error text is never propagated to telemetry.
+func ClassifyUploadError(err error) UploadStatus {
+	if err == nil {
+		return UploadSuccess
+	}
+
+	var httpErr rest.HTTPError
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.StatusCode == http.StatusTooManyRequests:
+			return UploadThrottled
+		case httpErr.StatusCode >= 500:
+			return UploadServerError
+		case httpErr.StatusCode >= 400:
+			return UploadClientError
+		}
+	}
+	return UploadNetworkError
+}
+
+// UploadReporter receives the outcome of each witness-report upload attempt. It
+// is called once per upload batch (not per witness), so a plain lock is fine.
+type UploadReporter interface {
+	RecordUpload(at time.Time, status UploadStatus)
 }
 
 type Collector interface {
@@ -113,6 +156,19 @@ type PacketCountCollector struct {
 	PacketCounts     PacketCountConsumer
 	Collector        Collector
 	SuccessTelemetry *SuccessTelemetry
+
+	// RecordHTTPMessage, if set, is called for every HTTP request or response
+	// that reaches this collector. It exists so a supervising process can tell
+	// whether a capture target is producing usable traffic; it is not a packet
+	// counter (PacketCounts already serves that purpose).
+	//
+	// It runs on the capture path for every message, so implementations must not
+	// block, allocate, or take a lock. An atomic store is the intended shape.
+	//
+	// Note that this collector sits inside sampling, rate limiting, and the
+	// host/path filters, so this reports traffic that survived admission rather
+	// than traffic that arrived at the interface.
+	RecordHTTPMessage func(observedAt time.Time)
 }
 
 // Don't record self-generated traffic in the breakdown by hostname,
@@ -127,6 +183,7 @@ func (pc *PacketCountCollector) IncludeHostName(tlsName string) bool {
 func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	switch c := t.Content.(type) {
 	case akinet.HTTPRequest:
+		pc.recordHTTPMessage(t)
 		pc.PacketCounts.Update(client_telemetry.PacketCounts{
 			Interface:     t.Interface,
 			DstHost:       c.Host,
@@ -139,6 +196,7 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		// TODO(cns): There's no easy way to get the host here to count HTTP
 		//    responses.  Revisit this if we ever add a pass to pair HTTP
 		//    requests and responses independently of the backend collector.
+		pc.recordHTTPMessage(t)
 		pc.PacketCounts.Update(client_telemetry.PacketCounts{
 			Interface:      t.Interface,
 			SrcPort:        t.SrcPort,
@@ -211,6 +269,20 @@ func (pc *PacketCountCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		pc.SendSuccessTelemetry()
 	}
 	return pc.Collector.Process(t)
+}
+
+// recordHTTPMessage reports capture liveness for one HTTP message. Deliberately
+// not tied to the downstream Process result: the sink returns nil for traffic it
+// could not parse, so a nil error is not evidence that anything was processed.
+func (pc *PacketCountCollector) recordHTTPMessage(t akinet.ParsedNetworkTraffic) {
+	if pc.RecordHTTPMessage == nil {
+		return
+	}
+	observedAt := t.ObservationTime
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	pc.RecordHTTPMessage(observedAt)
 }
 
 func (pc *PacketCountCollector) SendSuccessTelemetry() {

@@ -1,0 +1,140 @@
+package daemonset
+
+import (
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/postmanlabs/postman-insights-agent/trace"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+func TestCoverageTrackerRecordsStableTransitions(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "api-abc", Namespace: "prod", UID: "uid-1"}}
+	tracker.Observe(pod, CoveragePodDiscovered, "", "")
+	tracker.Observe(pod, CoverageDiscoveryFilterPassed, "passed_filters", "prod/api")
+
+	snapshot := tracker.Snapshot()
+	if snapshot.AgentID != "agent-1" || snapshot.RunID != "run-1" {
+		t.Fatalf("snapshot identity = %+v", snapshot)
+	}
+	if len(snapshot.Targets) != 1 {
+		t.Fatalf("target count = %d, want 1", len(snapshot.Targets))
+	}
+	target := snapshot.Targets[0]
+	if target.CurrentStage != CoverageDiscoveryFilterPassed || target.ServiceNameHint != "prod/api" {
+		t.Fatalf("target = %+v", target)
+	}
+	if len(target.Transitions) != 2 || target.Transitions[0].Stage != CoveragePodDiscovered {
+		t.Fatalf("transitions = %+v", target.Transitions)
+	}
+}
+
+func TestCoverageTrackerIsBounded(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 1)
+	tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}, CoveragePodDiscovered, "", "")
+	tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-2"}}, CoveragePodDiscovered, "", "")
+
+	snapshot := tracker.Snapshot()
+	if len(snapshot.Targets) != 1 || snapshot.TruncatedTargets != 1 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+// Re-observing the same stage and reason is a replay, not a transition. The
+// informer replays its cache on registration and on every resync, so counting
+// these would inflate the funnel's denominator.
+func TestCoverageTrackerTreatsRepeatObservationAsReplay(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
+
+	if changed := tracker.Observe(pod, CoveragePodDiscovered, "", ""); !changed {
+		t.Fatal("first observation reported no change")
+	}
+	if changed := tracker.Observe(pod, CoveragePodDiscovered, "", ""); changed {
+		t.Fatal("replayed observation reported a change")
+	}
+	if changed := tracker.Observe(pod, CoveragePodConfigured, "configured", ""); !changed {
+		t.Fatal("stage change reported no change")
+	}
+	// A new reason at the same stage is a real transition, not a replay.
+	if changed := tracker.Observe(pod, CoveragePodConfigured, "reconfigured", ""); !changed {
+		t.Fatal("reason change reported no change")
+	}
+
+	target := tracker.Snapshot().Targets[0]
+	if len(target.Transitions) != 3 {
+		t.Fatalf("transitions = %+v, want 3", target.Transitions)
+	}
+}
+
+func TestCoverageTrackerConcurrentObserveAndSnapshot(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 100)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
+	var wg sync.WaitGroup
+	var reason atomic.Int64
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				// Distinct reasons so every call is a real transition and the
+				// per-target cap is what bounds the list.
+				tracker.Observe(pod, CoverageCapturing, strconv.FormatInt(reason.Add(1), 10), "")
+				_ = tracker.Snapshot()
+			}
+		}()
+	}
+	wg.Wait()
+	if got := len(tracker.Snapshot().Targets[0].Transitions); got != maxCoverageTransitionsPerTarget {
+		t.Fatalf("transition count = %d, want %d", got, maxCoverageTransitionsPerTarget)
+	}
+}
+
+func TestCoverageTrackerReportsCaptureAndUploadLiveness(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
+	tracker.Observe(pod, CoveragePodDiscovered, "", "")
+
+	// Before an apidump process exists there is no activity handle, so the
+	// liveness fields must be absent rather than zero-valued.
+	if target := tracker.Snapshot().Targets[0]; target.LastMessageAt != nil || target.LastUploadAt != nil {
+		t.Fatalf("target reported liveness before capture started: %+v", target)
+	}
+
+	activity := &TargetActivity{}
+	tracker.AttachActivity("uid-1", activity)
+
+	pcapAt := time.Unix(1700000000, 0).UTC()
+	ebpfAt := pcapAt.Add(time.Minute)
+	activity.RecordPcapMessage(pcapAt)
+	activity.RecordEBPFMessage(ebpfAt)
+	tracker.RecordUpload("uid-1", ebpfAt, trace.UploadThrottled)
+
+	target := tracker.Snapshot().Targets[0]
+	if target.LastPcapMessageAt == nil || !target.LastPcapMessageAt.Equal(pcapAt) {
+		t.Fatalf("last pcap message = %v, want %v", target.LastPcapMessageAt, pcapAt)
+	}
+	if target.LastEBPFMessageAt == nil || !target.LastEBPFMessageAt.Equal(ebpfAt) {
+		t.Fatalf("last eBPF message = %v, want %v", target.LastEBPFMessageAt, ebpfAt)
+	}
+	// LastMessageAt is the later of the two pipelines.
+	if target.LastMessageAt == nil || !target.LastMessageAt.Equal(ebpfAt) {
+		t.Fatalf("last message = %v, want %v", target.LastMessageAt, ebpfAt)
+	}
+	if target.LastUploadStatus != trace.UploadThrottled {
+		t.Fatalf("last upload status = %q, want %q", target.LastUploadStatus, trace.UploadThrottled)
+	}
+	if target.LastUploadAt == nil || !target.LastUploadAt.Equal(ebpfAt) {
+		t.Fatalf("last upload at = %v, want %v", target.LastUploadAt, ebpfAt)
+	}
+
+	// The live handle must never leak into the serialized snapshot.
+	if target.activity != nil {
+		t.Fatal("snapshot leaked the activity handle")
+	}
+}

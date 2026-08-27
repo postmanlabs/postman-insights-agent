@@ -230,6 +230,7 @@ func podFromDeleteEvent(obj interface{}) (*coreV1.Pod, bool) {
 // 2. In discovery mode, apply pod filter; skip if the pod doesn't pass.
 // 3. Adds the pod arguments to a map and change state to PodPending.
 func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
+	d.observeCoverage(pod, CoveragePodDiscovered, "", "")
 	// Informer handler registration replays objects already in the cache. Do not
 	// recreate state for pods reconciled before the handlers were registered.
 	if _, loaded := d.PodArgsByNameMap.Load(pod.UID); loaded {
@@ -243,6 +244,12 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 		return
 	}
 	if len(podsWithoutAgentSidecar) == 0 {
+		// Not observed as a coverage stage: this daemonset is never deployed
+		// alongside a sidecar agent, and the two watch paths that could hit
+		// this branch (this one and StartProcessInExistingPods) disagreed on
+		// when they'd see a sidecar-bearing pod, producing an unstable
+		// pod_already_instrumented count for no real signal (D16). Filtering
+		// still happens; it's just no longer reported as telemetry.
 		printer.Infof("Pod already has agent sidecar container, skipping, podUID: %s\n", pod.UID)
 		return
 	}
@@ -251,9 +258,11 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 	if d.DiscoveryMode && d.PodFilter != nil {
 		result := d.PodFilter.Evaluate(pod)
 		if !result.ShouldCapture {
+			d.observeCoverage(pod, CoverageDiscoveryFilterRejected, result.Reason, "")
 			printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
 			return
 		}
+		d.observeCoverage(pod, CoverageDiscoveryFilterPassed, "passed_filters", result.ServiceName)
 		printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
 	}
 
@@ -295,11 +304,14 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 	switch pod.Status.Phase {
 	case coreV1.PodSucceeded:
 		podStatus = PodSucceeded
+		d.observeCoverage(pod, CoveragePodStopped, "succeeded", "")
 	case coreV1.PodFailed:
 		podStatus = PodFailed
+		d.observeCoverage(pod, CoveragePodFailed, "pod_phase_failed", "")
 	default:
 		printer.Errorf("Pod status is in unknown state, pod name: %s, status: %s\n", podArgs.PodName, pod.Status.Phase)
 		podStatus = PodTerminated
+		d.observeCoverage(pod, CoveragePodStopped, "terminated", "")
 	}
 
 	err = podArgs.changePodTrafficMonitorState(podStatus, TrafficMonitoringRunning)
@@ -334,6 +346,8 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		printer.Debugf("Pod is running, starting api dump process, pod name: %s\n", podArgs.PodName)
 		err := d.inspectPodForEnvVars(pod, podArgs)
 		if err != nil {
+			d.observeCoverage(pod, CoveragePodConfigurationFailed, "configuration_error", "")
+			d.observeCoverageError(pod, err)
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())
@@ -347,6 +361,10 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 			d.PodArgsByNameMap.Delete(pod.UID)
 			return
 		}
+		d.observeCoverage(pod, CoveragePodConfigured, "configured", "")
+		if d.Coverage != nil {
+			d.Coverage.SetProjectInfo(string(pod.UID), akid.String(podArgs.InsightsProjectID), podArgs.WorkspaceID)
+		}
 
 		err = podArgs.changePodTrafficMonitorState(PodRunning, PodPending)
 		if err != nil {
@@ -358,8 +376,11 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		// Start monitoring the pod
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
+			d.observeCoverage(pod, CoverageApidumpStarted, "apidump_start_failed", "")
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
+			return
 		}
+		d.observeCoverage(pod, CoverageApidumpStarted, "started", "")
 	}
 }
 

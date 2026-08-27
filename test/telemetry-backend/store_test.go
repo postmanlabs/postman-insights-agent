@@ -66,6 +66,25 @@ func TestHandleTelemetrySequenceIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInspectTelemetryFiltersByEvent(t *testing.T) {
+	s := testStore(t)
+	postTelemetry(t, s, `{"agent_id":"agent-1","sequence":1,"event":"agent_heartbeat"}`)
+	postTelemetry(t, s, `{"agent_id":"agent-1","sequence":2,"event":"apidump_start_failed","target_id":"pod-1","count":1}`)
+
+	response := httptest.NewRecorder()
+	newRouter(s).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/inspect/telemetry?event=apidump_start_failed", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	var records []telemetryRecord
+	if err := json.Unmarshal(response.Body.Bytes(), &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || !bytes.Contains(records[0].Payload, []byte(`"target_id":"pod-1"`)) {
+		t.Fatalf("records = %+v, want filtered failure event", records)
+	}
+}
+
 func TestHandleTelemetryRejectsUnsupportedSchema(t *testing.T) {
 	s := testStore(t)
 	response := postTelemetry(t, s, `{"schema_version":"v2"}`)
@@ -88,5 +107,17 @@ func TestHandleTelemetryRequiresConfiguredToken(t *testing.T) {
 	newRouter(s).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("authenticated status = %d, want 200", response.Code)
+	}
+}
+
+func TestTelemetryDashboardIsServed(t *testing.T) {
+	response := httptest.NewRecorder()
+	newRouter(testStore(t)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("Fleet Health")) ||
+		!bytes.Contains(response.Body.Bytes(), []byte("Open Test Lab")) {
+		t.Fatal("dashboard HTML was not served")
 	}
 }

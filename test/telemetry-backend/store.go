@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -13,15 +14,32 @@ import (
 )
 
 type telemetryRequest struct {
-	AgentID     string            `json:"agent_id,omitempty"`
-	RunID       string            `json:"run_id,omitempty"`
-	Sequence    *int64            `json:"sequence,omitempty"`
-	Schema      string            `json:"schema_version,omitempty"`
-	Version     string            `json:"version,omitempty"`
-	Cluster     string            `json:"cluster,omitempty"`
-	Environment string            `json:"environment,omitempty"`
-	K8sCluster  string            `json:"kubernetes_cluster,omitempty"`
-	Targets     []json.RawMessage `json:"targets,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Event    string `json:"event,omitempty"`
+	AgentID  string `json:"agent_id,omitempty"`
+	RunID    string `json:"run_id,omitempty"`
+	Sequence *int64 `json:"sequence,omitempty"`
+	Schema   string `json:"schema_version,omitempty"`
+	Version  string `json:"version,omitempty"`
+	// AgentVersion is the field name the real agent actually sends
+	// (DaemonsetTelemetryRequest.AgentVersion in rest/models.go); Version
+	// above only exists for older/manual test payloads. insert() prefers
+	// AgentVersion so the version column reflects real traffic.
+	AgentVersion string            `json:"agent_version,omitempty"`
+	Cluster      string            `json:"cluster,omitempty"`
+	Environment  string            `json:"environment,omitempty"`
+	K8sCluster   string            `json:"kubernetes_cluster,omitempty"`
+	Targets      []json.RawMessage `json:"targets,omitempty"`
+	TargetID     string            `json:"target_id,omitempty"`
+	Count        uint64            `json:"count,omitempty"`
+
+	// Counter-window metadata. Present on `type: events` rows only; a counter
+	// without these cannot be interpreted, so surface them for inspection.
+	CounterType string     `json:"counter_type,omitempty"`
+	WindowStart *time.Time `json:"window_start,omitempty"`
+	WindowEnd   *time.Time `json:"window_end,omitempty"`
+
+	TruncatedTargets uint64 `json:"truncated_targets,omitempty"`
 }
 
 type telemetryRecord struct {
@@ -82,10 +100,14 @@ func (s *store) insert(req telemetryRequest, payload []byte) (telemetryRecord, b
 	if cluster == "" {
 		cluster = req.K8sCluster
 	}
+	version := req.Version
+	if version == "" {
+		version = req.AgentVersion
+	}
 	result, err := s.db.Exec(`INSERT OR IGNORE INTO telemetry_events
 (received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UTC().Format(time.RFC3339Nano), agentID,
-		req.RunID, req.Sequence, req.Schema, req.Version, cluster, req.Environment, len(req.Targets), string(payload))
+		req.RunID, req.Sequence, req.Schema, version, cluster, req.Environment, len(req.Targets), string(payload))
 	if err != nil {
 		return telemetryRecord{}, false, err
 	}
@@ -102,18 +124,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UTC().Format(time.RFC3339Nano
 	}
 	var r telemetryRecord
 	var received string
-	var runID, schema, version, environment sql.NullString
+	var runID, schema, storedVersion, environment sql.NullString
 	var sequence sql.NullInt64
 	var payloadText string
 	if err := s.db.QueryRow(query, args...).Scan(&r.ID, &received, &r.AgentID, &runID, &sequence, &schema,
-		&version, &r.Cluster, &environment, &r.TargetCount, &payloadText); err != nil {
+		&storedVersion, &r.Cluster, &environment, &r.TargetCount, &payloadText); err != nil {
 		return telemetryRecord{}, duplicate, err
 	}
 	r.ReceivedAt, err = time.Parse(time.RFC3339Nano, received)
 	if err != nil {
 		return telemetryRecord{}, duplicate, err
 	}
-	r.RunID, r.Schema, r.Version, r.Environment = runID.String, schema.String, version.String, environment.String
+	r.RunID, r.Schema, r.Version, r.Environment = runID.String, schema.String, storedVersion.String, environment.String
 	r.Payload = json.RawMessage(payloadText)
 	if sequence.Valid {
 		r.Sequence = &sequence.Int64
@@ -152,7 +174,29 @@ func (s *store) inspectTelemetry(c *ivy.Context) error {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id, received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload FROM telemetry_events ORDER BY id DESC LIMIT ?`, limit)
+	query := `SELECT id, received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload FROM telemetry_events`
+	conditions := []string{}
+	args := []any{}
+	for _, filter := range []struct{ name, expression string }{
+		{"type", "json_extract(payload, '$.type') = ?"},
+		{"event", "json_extract(payload, '$.event') = ?"},
+		{"target_id", "json_extract(payload, '$.target_id') = ?"},
+		{"agent_id", "agent_id = ?"},
+		{"run_id", "run_id = ?"},
+		{"cluster", "cluster = ?"},
+		{"environment", "environment = ?"},
+	} {
+		if value := c.QueryParam(filter.name); value != "" {
+			conditions = append(conditions, filter.expression)
+			args = append(args, value)
+		}
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return c.Status(500).JSON(map[string]string{"error": err.Error()})
 	}
