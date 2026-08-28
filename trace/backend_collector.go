@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
@@ -28,6 +29,61 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
+
+// Pairing outcomes for witnesses leaving the pair cache. Together these account
+// for every witness we upload, so they reconcile directly against the back end's
+// witness_pipeline drop reasons without a cross-system join.
+var (
+	// Witnesses uploaded with both halves.
+	CountWitnessesPaired uint64
+
+	// Witnesses uploaded with only a request, because no response ever arrived
+	// before pairCacheExpiration. The back end drops these as
+	// missing_status_code.
+	CountUnpairedRequestsFlushed uint64
+
+	// Witnesses uploaded with only a response, because no request ever arrived.
+	// The back end drops these as missing_latency.
+	CountUnpairedResponsesFlushed uint64
+
+	// Times two requests, or two responses, collided on the same pair key and we
+	// merged them into one witness. The result has two request halves and no
+	// response, so it is also dropped as missing_status_code. A non-zero value
+	// here means pair keys are colliding, which happens when more than one
+	// request is in flight on a connection.
+	CountSameDirectionMerges uint64
+)
+
+// Negative processing latency means we computed a response that started before
+// its request finished. Bucketing by magnitude separates the causes, which is
+// why we count rather than silently clamp:
+//
+//   - Under 1ms: the two halves are effectively simultaneous. Timestamp
+//     granularity or a response that overlaps the tail of the request.
+//   - 1ms to 1s: plausibly real. A server may answer before the client has
+//     finished uploading (an early 4xx, or a 100-continue flow), in which case
+//     the response genuinely starts first and processing latency is not a
+//     meaningful quantity.
+//   - Over 1s: almost certainly a mispairing. We attached a response to a
+//     request it does not belong to, so the timestamps come from unrelated
+//     exchanges. Expect this to move together with CountSameDirectionMerges.
+var (
+	CountNegativeLatencyUnder1ms uint64
+	CountNegativeLatencyUnder1s  uint64
+	CountNegativeLatencyOver1s   uint64
+)
+
+// recordNegativeLatency buckets a negative processing latency, in milliseconds.
+func recordNegativeLatency(latency_ms float32) {
+	switch {
+	case latency_ms > -1.0:
+		atomic.AddUint64(&CountNegativeLatencyUnder1ms, 1)
+	case latency_ms > -1000.0:
+		atomic.AddUint64(&CountNegativeLatencyUnder1s, 1)
+	default:
+		atomic.AddUint64(&CountNegativeLatencyOver1s, 1)
+	}
+}
 
 const (
 	// We stop trying to pair partial witnesses older than pairCacheExpiration.
@@ -104,6 +160,7 @@ func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 
 func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
 	if w.isRequest == isRequest {
+		atomic.AddUint64(&CountSameDirectionMerges, 1)
 		if isRequest {
 			printer.Debugln("Skipping latency calculation. Matched 2 requests together.")
 		} else {
@@ -131,6 +188,7 @@ func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.Pars
 
 	latency := float32(responseStart.Sub(requestEnd).Microseconds()) / 1000.0
 	if latency < 0.0 {
+		recordNegativeLatency(latency)
 		printer.Debugf("Negative latency calculation: %v\n", latency)
 	}
 
@@ -287,6 +345,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 				pair.srcPort, pair.dstPort = pair.dstPort, pair.srcPort
 			}
 
+			atomic.AddUint64(&CountWitnessesPaired, 1)
 			c.queueUpload(pair)
 			printer.Debugf("Completed witness %v direction=%s at %v -- %v\n",
 				partial.PairKey, pair.direction, t.ObservationTime, t.FinalPacketTime)
@@ -462,6 +521,17 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 			e.witnessMutex.Lock()
 			defer e.witnessMutex.Unlock()
 
+			// This witness never found its other half, and we are about to upload
+			// it anyway. Record which half is missing: the back end will drop a
+			// request-only witness as missing_status_code and a response-only one
+			// as missing_latency, so these two counters are the agent-side
+			// equivalents of those drop reasons.
+			if e.isRequest {
+				atomic.AddUint64(&CountUnpairedRequestsFlushed, 1)
+			} else {
+				atomic.AddUint64(&CountUnpairedResponsesFlushed, 1)
+			}
+
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
 
@@ -470,4 +540,9 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		totalWitnesses += 1
 		return true
 	})
+
+	if flushedWitnesses > 0 {
+		printer.Debugf("Flushed %d unpaired witnesses, %d still waiting for a pair\n",
+			flushedWitnesses, totalWitnesses-flushedWitnesses)
+	}
 }

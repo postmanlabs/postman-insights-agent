@@ -3,6 +3,7 @@ package trace
 import (
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -10,6 +11,13 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
 )
+
+// Number of HTTP responses we parsed successfully and then discarded because we
+// could not match them to a request. Every one of these leaves a witness with a
+// request and no response, so this counter distinguishes "the response was never
+// parsed" from "the response was parsed and then thrown away here" -- which have
+// completely different fixes.
+var CountResponsesDroppedNoMatchingRequest uint64
 
 const (
 	// One sample is collected per epoch
@@ -260,6 +268,23 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 		if _, ok := r.RequestArrivalTimes[key]; ok {
 			delete(r.RequestArrivalTimes, key)
 			r.NextCollector.Process(pnt)
+		} else {
+			// We parsed this response but are throwing it away, because we cannot
+			// match it to a request we admitted. Its request has already gone
+			// downstream, so this becomes a witness with no response half, which
+			// the back end drops as missing_status_code.
+			//
+			// Three ways to get here:
+			//   - The request was rate limited, so we never recorded its key. Also
+			//     counted as HTTPRequestsRateLimited.
+			//   - expireRequests dropped the key on an epoch boundary before the
+			//     response arrived.
+			//   - The response's key does not match its request's key at all. Both
+			//     keys come from TCP numbers -- the request uses the ack of its
+			//     first segment, the response uses the seq of its first segment --
+			//     which are only equal if nothing else was in flight on the
+			//     connection. See akinet/http/parser.go.
+			atomic.AddUint64(&CountResponsesDroppedNoMatchingRequest, 1)
 		}
 	default:
 		if r.RateLimit.AllowOther() {

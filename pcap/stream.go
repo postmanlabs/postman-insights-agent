@@ -139,6 +139,14 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				} else {
 					atomic.AddUint64(&CountBadAssemblerContextType, 1)
 				}
+
+				// Also record which half of the exchange we just threw away. The
+				// counters above are shared by both directions, so on their own they
+				// cannot tell us whether we are losing requests or responses --
+				// which is the question, since a lost response leaves a witness with
+				// no response half while a lost request leaves no witness at all.
+				countDiscardedByParserKind(fact.Name())
+
 				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
 				return
 			}
