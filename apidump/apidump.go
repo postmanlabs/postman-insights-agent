@@ -157,11 +157,11 @@ func (a Args) setCaptureMode(mode string) {
 
 // captureLivenessHooks returns the DaemonSet-supplied capture-liveness hooks, or
 // nils when running outside DaemonSet mode.
-func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter) {
+func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter, reportEvent func(string)) {
 	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok {
-		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter
+		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter, daemonsetArgs.ReportTelemetryEvent
 	}
-	return nil, nil, nil
+	return nil, nil, nil, nil
 }
 
 // HTTPSCaptureArgs groups all configuration for the eBPF HTTPS capture
@@ -1142,7 +1142,7 @@ func (a *apidump) Run() error {
 
 	// DaemonSet-supplied capture-liveness hooks. Nil outside DaemonSet mode, and
 	// the collectors treat nil as "not reporting".
-	recordPcapMessage, recordEBPFMessage, uploadReporter := args.captureLivenessHooks()
+	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryEvent := args.captureLivenessHooks()
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
@@ -1206,8 +1206,11 @@ func (a *apidump) Run() error {
 					toRotate = append(toRotate, lsc)
 				}
 
-				if bc, ok := backendCollector.(*trace.BackendCollector); ok && uploadReporter != nil {
-					bc.SetUploadReporter(uploadReporter)
+				if bc, ok := backendCollector.(*trace.BackendCollector); ok {
+					if uploadReporter != nil {
+						bc.SetUploadReporter(uploadReporter)
+					}
+					bc.SetTelemetryEventReporter(reportTelemetryEvent)
 				}
 			}
 
@@ -1301,6 +1304,7 @@ func (a *apidump) Run() error {
 					pool,
 					apidumpTelemetry,
 					a.captureStats,
+					reportTelemetryEvent,
 				); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
@@ -1339,8 +1343,11 @@ func (a *apidump) Run() error {
 		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 			toRotate = append(toRotate, lsc)
 		}
-		if bc, ok := httpsCollector.(*trace.BackendCollector); ok && uploadReporter != nil {
-			bc.SetUploadReporter(uploadReporter)
+		if bc, ok := httpsCollector.(*trace.BackendCollector); ok {
+			if uploadReporter != nil {
+				bc.SetUploadReporter(uploadReporter)
+			}
+			bc.SetTelemetryEventReporter(reportTelemetryEvent)
 		}
 		httpsCollector = &trace.PacketCountCollector{
 			PacketCounts:      httpsSummary,

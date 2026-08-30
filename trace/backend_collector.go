@@ -2,6 +2,8 @@ package trace
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"regexp"
@@ -69,6 +71,8 @@ type witnessWithInfo struct {
 	witnessFlushed bool
 
 	witness *pb.Witness
+
+	telemetryEventReporter func(string)
 }
 
 func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
@@ -111,6 +115,7 @@ func (w *witnessWithInfo) computeProcessingLatency(stats *capturestats.Stats, is
 		} else {
 			printer.Debugln("Skipping latency calculation. Matched 2 responses together.")
 		}
+		w.reportTelemetryEvent("latency_anomaly_mismatched_pair_type")
 		return
 	}
 
@@ -135,6 +140,7 @@ func (w *witnessWithInfo) computeProcessingLatency(stats *capturestats.Stats, is
 	if latency < 0.0 {
 		stats.RecordNegativeLatency(latency)
 		printer.Debugf("Negative latency calculation: %v\n", latency)
+		w.reportTelemetryEvent("latency_anomaly_negative_latency")
 	}
 
 	// HTTPMethodMetadata only for now
@@ -169,8 +175,10 @@ type BackendCollector struct {
 	// passed to the constructor, which already takes more arguments than is
 	// comfortable. Guarded by uploadReporterMutex because Flush runs the upload
 	// in its own goroutine.
-	uploadReporter      UploadReporter
-	uploadReporterMutex sync.Mutex
+	uploadReporter         UploadReporter
+	uploadReporterMutex    sync.Mutex
+	telemetryReporter      func(string)
+	telemetryReporterMutex sync.Mutex
 
 	// Channel controlling periodic cache flush
 	flushDone chan struct{}
@@ -283,6 +291,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		// for it.
 		c.stats.IncrWitnessParseFailed()
 		c.telemetry.RateLimitError("parse HTTP", parseHTTPErr)
+		c.reportTelemetryEvent("http_parse_failed_" + messageDirection(isRequest) + "_" + classifyParseHTTPError(parseHTTPErr))
 		printer.Debugf("Failed to parse HTTP, skipping: %v\n", parseHTTPErr)
 		return nil
 	}
@@ -324,17 +333,18 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		// Store the partial witness for now, waiting for its pair or a
 		// flush timeout.
 		w := &witnessWithInfo{
-			netInterface:    t.Interface,
-			srcIP:           t.SrcIP,
-			srcPort:         uint16(t.SrcPort),
-			dstIP:           t.DstIP,
-			dstPort:         uint16(t.DstPort),
-			witness:         partial.Witness,
-			observationTime: t.ObservationTime,
-			finalPacketTime: t.FinalPacketTime,
-			id:              partial.PairKey,
-			isRequest:       isRequest,
-			direction:       t.Direction,
+			netInterface:           t.Interface,
+			srcIP:                  t.SrcIP,
+			srcPort:                uint16(t.SrcPort),
+			dstIP:                  t.DstIP,
+			dstPort:                uint16(t.DstPort),
+			witness:                partial.Witness,
+			observationTime:        t.ObservationTime,
+			finalPacketTime:        t.FinalPacketTime,
+			id:                     partial.PairKey,
+			isRequest:              isRequest,
+			direction:              t.Direction,
+			telemetryEventReporter: c.reportTelemetryEvent,
 		}
 		c.pairCache.Store(partial.PairKey, w)
 		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",
@@ -342,6 +352,12 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 
 	}
 	return nil
+}
+
+func (w *witnessWithInfo) reportTelemetryEvent(event string) {
+	if w.telemetryEventReporter != nil {
+		w.telemetryEventReporter(event)
+	}
 }
 
 func (c *BackendCollector) processTCPConnection(packet akinet.ParsedNetworkTraffic, tcp akinet.TCPConnectionMetadata) error {
@@ -521,6 +537,7 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 				c.stats.IncrUnpairedResponsesFlushed()
 			}
 
+			c.reportTelemetryEvent("witness_pair_expired_" + missingHalf(e.isRequest))
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
 
@@ -534,4 +551,50 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		printer.Debugf("Flushed %d unpaired witnesses, %d still waiting for a pair\n",
 			flushedWitnesses, totalWitnesses-flushedWitnesses)
 	}
+}
+
+func (c *BackendCollector) SetTelemetryEventReporter(reporter func(string)) {
+	c.telemetryReporterMutex.Lock()
+	defer c.telemetryReporterMutex.Unlock()
+	c.telemetryReporter = reporter
+}
+
+func (c *BackendCollector) reportTelemetryEvent(event string) {
+	c.telemetryReporterMutex.Lock()
+	reporter := c.telemetryReporter
+	c.telemetryReporterMutex.Unlock()
+	if reporter != nil {
+		reporter(event)
+	}
+}
+
+func messageDirection(isRequest bool) string {
+	if isRequest {
+		return "request"
+	}
+	return "response"
+}
+
+func missingHalf(isRequest bool) string {
+	if isRequest {
+		return "response"
+	}
+	return "request"
+}
+
+// classifyParseHTTPError returns a closed set and never exposes the error text.
+func classifyParseHTTPError(err error) string {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "truncated"
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+		return "malformed"
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "unsupported compression") || strings.Contains(message, "unsupported charset") || strings.Contains(message, "unrecognized compression") {
+		return "unsupported_encoding"
+	}
+	return "other"
 }

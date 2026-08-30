@@ -89,6 +89,7 @@ type NetworkTrafficParser struct {
 	pcap        pcapWrapper
 	clock       clockWrapper
 	observer    NetworkTrafficObserver // This function is called for every packet.
+	telemetryEventReporter func(string)
 	bufferShare float32
 	telemetry   telemetry.Tracker
 
@@ -117,6 +118,11 @@ func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]st
 // ParseFromInterface.
 func (p *NetworkTrafficParser) InstallObserver(observer NetworkTrafficObserver) {
 	p.observer = observer
+}
+
+// InstallTelemetryEventReporter installs the target-scoped event callback.
+func (p *NetworkTrafficParser) InstallTelemetryEventReporter(reporter func(string)) {
+	p.telemetryEventReporter = reporter
 }
 
 // Parses network traffic from an interface.
@@ -228,11 +234,21 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 					printer.Debugf("TCP reassembly gap: flushed %d stream(s) early because expected data never arrived\n", flushed)
 					p.stats.AddReassemblyGapFlushed(uint64(flushed))
 				}
+
+				for i := 0; i < flushed; i++ {
+					p.reportTelemetryEvent("capture_gap_truncated_flushed")
+				}
 			}
 		}
 	}()
 
 	return out, nil
+}
+
+func (p *NetworkTrafficParser) reportTelemetryEvent(event string) {
+	if p.telemetryEventReporter != nil {
+		p.telemetryEventReporter(event)
+	}
 }
 
 func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.ParsedNetworkTraffic, assembler *reassembly.Assembler, packet gopacket.Packet) {

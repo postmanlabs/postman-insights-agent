@@ -265,6 +265,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
+		sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "kubernetes_client_init_failed")
 		return errors.Wrap(err, "failed to create kube client")
 	}
 	if clusterName != "" {
@@ -286,6 +287,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
+		sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "cri_client_init_failed")
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
@@ -318,6 +320,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 	if args.DiscoveryMode {
 		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
 		if apiKey == "" {
+			sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "discovery_api_key_missing")
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
 		daemonsetRun.InsightsAPIKey = apiKey
@@ -329,6 +332,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 			args.ExcludeLabels,
 		)
 		if err != nil {
+			sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "pod_filter_init_failed")
 			return errors.Wrap(err, "failed to create pod filter")
 		}
 		daemonsetRun.PodFilter = podFilter
@@ -422,6 +426,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
+		sendAgentFailed(d.FrontClient, d.AgentID, d.RunID, d.ClusterName, &d.telemetrySequence, "informer_registration_failed")
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
@@ -430,6 +435,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
+		sendAgentFailed(d.FrontClient, d.AgentID, d.RunID, d.ClusterName, &d.telemetrySequence, "pod_reconciliation_failed")
 		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
 	}
 
@@ -493,6 +499,32 @@ func (d *Daemonset) sendAgentStopped() {
 	})
 	if err != nil {
 		printer.Errorf("Failed to send agent_stopped telemetry: %v\n", err)
+	}
+}
+
+// sendAgentFailed reports a terminal, agent-scope startup/runtime failure with
+// a normalized category. Used both before the Daemonset struct exists (early
+// StartDaemonset failures) and from within Run(), so it takes its telemetry
+// coordinates directly rather than a *Daemonset receiver.
+func sendAgentFailed(frontClient rest.FrontClient, agentID, runID, clusterName string, sequence *uint64, category string) {
+	if clusterName == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
+	defer cancel()
+	err := frontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
+		Type:              rest.TelemetryTypeEvents,
+		Event:             "agent_failed",
+		AgentID:           agentID,
+		RunID:             runID,
+		Sequence:          atomic.AddUint64(sequence, 1),
+		SchemaVersion:     "v1",
+		KubernetesCluster: clusterName,
+		Environment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+		FailureCategory:   category,
+	})
+	if err != nil {
+		printer.Errorf("Failed to send agent_failed telemetry: %v\n", err)
 	}
 }
 
