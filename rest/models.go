@@ -128,6 +128,10 @@ type DaemonsetTelemetryRequest struct {
 	AgentState      AgentState `json:"agent_state,omitempty"`
 	AgentStateSince *time.Time `json:"agent_state_since,omitempty"`
 
+	// FailureCategory is a normalized, bounded category for a terminal
+	// agent-scope failure. Present only on agent_failed.
+	FailureCategory string `json:"failure_category,omitempty"`
+
 	// Snapshot fields.
 	Targets          any            `json:"targets,omitempty"`
 	TruncatedTargets uint64         `json:"truncated_targets,omitempty"`

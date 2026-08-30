@@ -81,13 +81,14 @@ func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP,
 type NetworkTrafficObserver func(gopacket.Packet)
 
 type NetworkTrafficParser struct {
-	serviceID   akid.ServiceID
-	traceTags   map[tags.Key]string
-	pcap        pcapWrapper
-	clock       clockWrapper
-	observer    NetworkTrafficObserver // This function is called for every packet.
-	bufferShare float32
-	telemetry   telemetry.Tracker
+	serviceID              akid.ServiceID
+	traceTags              map[tags.Key]string
+	pcap                   pcapWrapper
+	clock                  clockWrapper
+	observer               NetworkTrafficObserver // This function is called for every packet.
+	telemetryEventReporter func(string)
+	bufferShare            float32
+	telemetry              telemetry.Tracker
 }
 
 func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32, telemetry telemetry.Tracker) *NetworkTrafficParser {
@@ -106,6 +107,11 @@ func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]st
 // ParseFromInterface.
 func (p *NetworkTrafficParser) InstallObserver(observer NetworkTrafficObserver) {
 	p.observer = observer
+}
+
+// InstallTelemetryEventReporter installs the target-scoped event callback.
+func (p *NetworkTrafficParser) InstallTelemetryEventReporter(reporter func(string)) {
+	p.telemetryEventReporter = reporter
 }
 
 // Parses network traffic from an interface.
@@ -213,11 +219,20 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				if flushed != 0 || closed != 0 {
 					printer.Debugf("%d flushed, %d closed\n", flushed, closed)
 				}
+				for i := 0; i < flushed; i++ {
+					p.reportTelemetryEvent("capture_gap_truncated_flushed")
+				}
 			}
 		}
 	}()
 
 	return out, nil
+}
+
+func (p *NetworkTrafficParser) reportTelemetryEvent(event string) {
+	if p.telemetryEventReporter != nil {
+		p.telemetryEventReporter(event)
+	}
 }
 
 func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.ParsedNetworkTraffic, assembler *reassembly.Assembler, packet gopacket.Packet) {
