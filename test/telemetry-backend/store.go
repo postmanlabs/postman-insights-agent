@@ -40,6 +40,13 @@ type telemetryRequest struct {
 	WindowEnd   *time.Time `json:"window_end,omitempty"`
 
 	TruncatedTargets uint64 `json:"truncated_targets,omitempty"`
+
+	// Events batches additional, independent events/counters into this same
+	// POST (D1) -- e.g. the interval-delta counters flushed alongside a
+	// heartbeat. Each element omits identity fields (agent_id, cluster,
+	// etc.) on the wire, since they apply to the whole batch; handleTelemetry
+	// inherits them from the parent before storing each one as its own row.
+	Events []json.RawMessage `json:"events,omitempty"`
 }
 
 type telemetryRecord struct {
@@ -166,7 +173,54 @@ func (s *store) handleTelemetry(c *ivy.Context) error {
 	if err != nil {
 		return c.Status(500).JSON(map[string]string{"error": err.Error()})
 	}
+
+	// D1: events batched onto this POST are stored as their own independent
+	// rows, so they stay individually queryable via /inspect/telemetry
+	// exactly as if each had arrived as its own request -- batching is a
+	// transport optimization, not a change in how these events are recorded.
+	// Skipped on a duplicate POST: the events were already flattened and
+	// stored the first time this exact (agent_id, sequence) was received.
+	if !duplicate {
+		s.insertBatchedEvents(telemetry)
+	}
+
 	return c.JSON(map[string]any{"accepted": true, "duplicate": duplicate, "id": record.ID})
+}
+
+// insertBatchedEvents flattens telemetry.Events into independent rows. Each
+// element omits identity fields on the wire (they apply to the whole batch),
+// so they are inherited from the parent before storing. A per-event sequence
+// is synthesized from the parent's own sequence and the event's position in
+// the batch, so each event is still its own dedup-able row under this
+// table's (agent_id, sequence) UNIQUE constraint on a retried POST, without
+// requiring a schema change for this local dev tool. A malformed individual
+// event is logged and skipped rather than failing the whole batch.
+func (s *store) insertBatchedEvents(telemetry telemetryRequest) {
+	for i, raw := range telemetry.Events {
+		var event telemetryRequest
+		if err := json.Unmarshal(raw, &event); err != nil {
+			fmt.Fprintf(os.Stderr, "skipping malformed batched event at index %d: %v\n", i, err)
+			continue
+		}
+		event.AgentID = telemetry.AgentID
+		event.RunID = telemetry.RunID
+		event.Schema = telemetry.Schema
+		event.Cluster = telemetry.Cluster
+		event.K8sCluster = telemetry.K8sCluster
+		event.Environment = telemetry.Environment
+		if telemetry.Sequence != nil {
+			itemSeq := *telemetry.Sequence*1_000_000 + int64(i+1)
+			event.Sequence = &itemSeq
+		}
+		eventPayload, err := json.Marshal(event)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skipping unmarshalable batched event at index %d: %v\n", i, err)
+			continue
+		}
+		if _, _, err := s.insert(event, eventPayload); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to store batched event at index %d: %v\n", i, err)
+		}
+	}
 }
 
 func (s *store) inspectTelemetry(c *ivy.Context) error {

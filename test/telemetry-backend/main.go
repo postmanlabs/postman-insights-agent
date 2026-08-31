@@ -44,5 +44,9 @@ func newRouter(store *store) *ivy.Router {
 	router.Get("/ui", telemetryDashboard)
 	router.Post("/v2/agent/daemonset/telemetry", store.handleTelemetry)
 	router.Get("/inspect/telemetry", store.inspectTelemetry)
+	router.Get("/api/summary", store.apiSummary)
+	router.Get("/api/agents", store.apiAgents)
+	router.Get("/api/targets", store.apiTargets)
+	router.Get("/api/drop-reasons", store.apiDropReasons)
 	return router
 }

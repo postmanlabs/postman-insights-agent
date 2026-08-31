@@ -118,7 +118,7 @@ type DaemonsetTelemetryRequest struct {
 	RunID             string        `json:"run_id,omitempty"`
 	Sequence          uint64        `json:"sequence,omitempty"`
 	SchemaVersion     string        `json:"schema_version,omitempty"`
-	KubernetesCluster string        `json:"kubernetes_cluster"`
+	KubernetesCluster string        `json:"kubernetes_cluster,omitempty"`
 	Environment       string        `json:"environment,omitempty"`
 
 	// Agent-scope metadata. Present on agent_started, agent_heartbeat, and
@@ -143,4 +143,16 @@ type DaemonsetTelemetryRequest struct {
 	CounterType CounterType `json:"counter_type,omitempty"`
 	WindowStart *time.Time  `json:"window_start,omitempty"`
 	WindowEnd   *time.Time  `json:"window_end,omitempty"`
+
+	// Events batches additional, independent events/counters into this same
+	// POST (D1). Every heartbeat interval used to flush its counter map as
+	// one HTTP request per (event, target) pair -- 40 pods x ~6 events could
+	// mean ~240 requests per interval. Events carries exactly those rows
+	// inline instead: each element is a self-contained
+	// DaemonsetTelemetryRequest (its own Type/Event/TargetID/Count/etc.), and
+	// the outer request's identity fields (AgentID, RunID, KubernetesCluster,
+	// Sequence, ...) apply to the whole batch, not repeated per element. A
+	// consumer that has never seen this field simply ignores it and still
+	// gets the outer request's own event -- additive, not breaking.
+	Events []DaemonsetTelemetryRequest `json:"events,omitempty"`
 }

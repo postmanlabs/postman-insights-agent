@@ -72,6 +72,63 @@ func TestCoverageTrackerTreatsRepeatObservationAsReplay(t *testing.T) {
 	}
 }
 
+// The informer replays its cache on every resync, which re-fires
+// CoveragePodDiscovered for pods it already knows about -- including ones
+// that have long since advanced further. Observe must not let that replay
+// regress an already-advanced target back to an earlier stage.
+func TestCoverageTrackerIgnoresResyncRegression(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
+
+	tracker.Observe(pod, CoveragePodDiscovered, "", "")
+	tracker.Observe(pod, CoveragePodConfigured, "configured", "")
+
+	if changed := tracker.Observe(pod, CoveragePodDiscovered, "", ""); changed {
+		t.Fatal("resync re-discovery reported a change")
+	}
+
+	target := tracker.Snapshot().Targets[0]
+	if target.CurrentStage != CoveragePodConfigured {
+		t.Fatalf("current_stage = %q, want pod_configured to survive the resync replay", target.CurrentStage)
+	}
+	if len(target.Transitions) != 2 {
+		t.Fatalf("transitions = %+v, want the resync replay to add no new transition", target.Transitions)
+	}
+
+	// Terminal stages are exempt from the rank guard: a pod can fail from any
+	// stage, and that is always a real fact worth recording.
+	if changed := tracker.Observe(pod, CoveragePodFailed, "pod_phase_failed", ""); !changed {
+		t.Fatal("terminal transition from a non-terminal stage reported no change")
+	}
+}
+
+// StartProcessInExistingPods and handlePodAddEvent both re-walk every pod
+// they already know about on each reconcile/resync, unconditionally
+// re-observing CoveragePodConfigured -- even for a target that has already
+// resolved its service via SetResolvedService (which runs inside the
+// target's own capture goroutine, independently of the watcher's reconcile
+// loop). The rank guard must reject that stale replay rather than regress an
+// already-service_resolved target back to pod_configured.
+func TestCoverageTrackerIgnoresPodConfiguredReplayAfterServiceResolved(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
+
+	tracker.Observe(pod, CoveragePodDiscovered, "", "")
+	tracker.Observe(pod, CoveragePodConfigured, "configured", "")
+	tracker.SetResolvedService("uid-1", "svc-1", "svc-name")
+
+	// A later reconcile re-walks the pod and re-fires the same observation it
+	// always does, unconditionally.
+	if changed := tracker.Observe(pod, CoveragePodConfigured, "configured", ""); changed {
+		t.Fatal("reconcile re-observing pod_configured reported a change")
+	}
+
+	target := tracker.Snapshot().Targets[0]
+	if target.CurrentStage != CoverageServiceResolved {
+		t.Fatalf("current_stage = %q, want service_resolved to survive the reconcile replay", target.CurrentStage)
+	}
+}
+
 func TestCoverageTrackerConcurrentObserveAndSnapshot(t *testing.T) {
 	tracker := NewCoverageTracker("agent-1", "run-1", 100)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}

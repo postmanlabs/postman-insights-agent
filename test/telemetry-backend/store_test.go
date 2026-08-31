@@ -85,6 +85,63 @@ func TestInspectTelemetryFiltersByEvent(t *testing.T) {
 	}
 }
 
+// D1: a heartbeat POST carrying batched events must store each event as its
+// own independent, individually queryable row -- not just the heartbeat
+// itself -- so the raw log experience is unchanged by the transport
+// optimization.
+func TestHandleTelemetryFlattensBatchedEvents(t *testing.T) {
+	s := testStore(t)
+	payload := `{"agent_id":"agent-1","run_id":"run-1","sequence":5,"schema_version":"v1",` +
+		`"kubernetes_cluster":"local","event":"agent_heartbeat","type":"snapshot","targets":[{}],` +
+		`"events":[` +
+		`{"type":"events","event":"pod_discovered","target_id":"pod-a","count":1,"counter_type":"interval_delta"},` +
+		`{"type":"events","event":"pod_configured","target_id":"pod-a","count":1,"counter_type":"interval_delta"}` +
+		`]}`
+	response := postTelemetry(t, s, payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+
+	var records []telemetryRecord
+	getResponse := httptest.NewRecorder()
+	newRouter(s).ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/inspect/telemetry?limit=10", nil))
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("records = %+v, want 3 rows (1 heartbeat + 2 flattened events)", records)
+	}
+
+	var podDiscovered, podConfigured *telemetryRecord
+	for i := range records {
+		if bytes.Contains(records[i].Payload, []byte(`"event":"pod_discovered"`)) {
+			podDiscovered = &records[i]
+		}
+		if bytes.Contains(records[i].Payload, []byte(`"event":"pod_configured"`)) {
+			podConfigured = &records[i]
+		}
+	}
+	if podDiscovered == nil || podConfigured == nil {
+		t.Fatalf("records = %+v, want both batched events flattened into their own rows", records)
+	}
+	// Inherited identity fields, not present on the wire per-event.
+	if podDiscovered.AgentID != "agent-1" || podDiscovered.Cluster != "local" {
+		t.Fatalf("podDiscovered = %+v, want inherited agent_id/cluster from the parent envelope", podDiscovered)
+	}
+
+	// Retrying the exact same POST must not duplicate the flattened events.
+	postTelemetry(t, s, payload)
+	getResponse = httptest.NewRecorder()
+	newRouter(s).ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/inspect/telemetry?limit=10", nil))
+	records = nil
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("records after retry = %+v, want still 3 rows (retry deduplicated)", records)
+	}
+}
+
 func TestHandleTelemetryRejectsUnsupportedSchema(t *testing.T) {
 	s := testStore(t)
 	response := postTelemetry(t, s, `{"schema_version":"v2"}`)
@@ -117,7 +174,7 @@ func TestTelemetryDashboardIsServed(t *testing.T) {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("Fleet Health")) ||
-		!bytes.Contains(response.Body.Bytes(), []byte("Open Test Lab")) {
+		!bytes.Contains(response.Body.Bytes(), []byte("Coverage funnel")) {
 		t.Fatal("dashboard HTML was not served")
 	}
 }
