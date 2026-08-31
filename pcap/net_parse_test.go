@@ -16,6 +16,7 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/gopacket"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
@@ -98,7 +99,7 @@ func makeUDPPackets(split int, ms ...*testMessage) []gopacket.Packet {
 }
 
 func setupParseFromInterface(pcap pcapWrapper, signalClose <-chan struct{}, facts ...akinet.TCPParserFactory) (<-chan akinet.ParsedNetworkTraffic, error) {
-	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0, telemetry.Default())
+	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0, telemetry.Default(), capturestats.New())
 	p.pcap = pcap
 	p.clock = &fakeClock{testTime}
 	rawOut, err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose, facts...)

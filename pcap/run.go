@@ -15,11 +15,18 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
+// Collect captures and parses traffic from one interface. It is called once
+// per interface within a single apidump.Run() call, so stats should be the
+// same *capturestats.Stats shared across all of those calls -- see
+// capturestats.Stats for why a shared, per-session instance (rather than a
+// package-level counter) is what keeps its numbers scoped to one monitored
+// pod.
 func Collect(
 	serviceID akid.ServiceID,
 	traceTags map[tags.Key]string,
@@ -33,6 +40,7 @@ func Collect(
 	packetCount trace.PacketCountConsumer,
 	pool buffer_pool.BufferPool,
 	telemetry telemetry.Tracker,
+	stats *capturestats.Stats,
 ) error {
 	defer proc.Close()
 
@@ -48,7 +56,7 @@ func Collect(
 		)
 	}
 
-	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry)
+	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry, stats)
 
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))

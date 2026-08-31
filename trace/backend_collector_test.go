@@ -23,6 +23,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -150,6 +151,7 @@ func TestRedact(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
+		capturestats.New(),
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -501,6 +503,7 @@ func TestTiming(t *testing.T) {
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
+				capturestats.New(),
 			)
 			for _, pnt := range test.PNTs {
 				assert.NoError(t, col.Process(pnt))
@@ -543,6 +546,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
+		capturestats.New(),
 	)
 
 	var wg sync.WaitGroup
@@ -695,6 +699,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
+		capturestats.New(),
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -866,6 +871,7 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
+		capturestats.New(),
 	)
 	assert.NoError(t, col.Process(reqWithCapturePayloadPath))
 	assert.NoError(t, col.Process(respWithCapturePayloadPath))
@@ -1687,6 +1693,7 @@ func TestRedactionConfigs(t *testing.T) {
 			nil,
 			apispec.DefaultMaxWintessUploadBuffers,
 			telemetry.Default(),
+			capturestats.New(),
 		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))

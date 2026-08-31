@@ -12,6 +12,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 )
 
 var (
@@ -84,7 +85,7 @@ func runTCPFlowTestCase(c tcpFlowTestCase) error {
 		princeParserFactory{},
 		pineappleParserFactory{},
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs)
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New())
 
 	for i, input := range c.inputs {
 		sg.data = memview.New([]byte(input))

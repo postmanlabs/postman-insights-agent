@@ -6,8 +6,8 @@ import (
 
 	"github.com/akitasoftware/akita-libs/client_telemetry"
 	"github.com/akitasoftware/go-utils/math"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/env"
-	"github.com/postmanlabs/postman-insights-agent/pcap"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/trace"
 	"github.com/spf13/viper"
@@ -32,6 +32,12 @@ type Summary struct {
 	// HTTPSCaptureEnabled is true when --enable-https-capture is in effect,
 	// which changes the end-of-trace warning for detected HTTPS traffic.
 	HTTPSCaptureEnabled bool
+
+	// Capture-diagnostics counters for this session, shared with the same
+	// *capturestats.Stats passed to the collectors below PrintWarnings reads
+	// from it instead of a package-level counter, so a value read here
+	// belongs to this session alone. See capturestats.Stats.
+	stats *capturestats.Stats
 }
 
 func NewSummary(
@@ -42,6 +48,7 @@ func NewSummary(
 	filterSummary *trace.PacketCounter,
 	prefilterSummary *trace.PacketCounter,
 	negationSummary *trace.PacketCounter,
+	stats *capturestats.Stats,
 ) *Summary {
 	return &Summary{
 		CapturingNegation: capturingNegation,
@@ -51,6 +58,7 @@ func NewSummary(
 		FilterSummary:     filterSummary,
 		PrefilterSummary:  prefilterSummary,
 		NegationSummary:   negationSummary,
+		stats:             stats,
 	}
 }
 
@@ -276,17 +284,18 @@ func (s *Summary) printHostHighlights(top *client_telemetry.PacketCountSummary) 
 // any packets, capturing packets but failing to parse them, etc.
 func (s *Summary) PrintWarnings() {
 	// Report on recoverable error counts during trace
-	if pcap.CountNilAssemblerContext > 0 ||
-		pcap.CountNilAssemblerContextAfterParse > 0 ||
-		pcap.CountBadAssemblerContextType > 0 ||
-		pcap.CountZeroValuePacketTimestamp > 0 ||
-		pcap.CountLastPacketBeforeFirstPacket > 0 {
+	snap := s.stats.Snapshot()
+	if snap.NilAssemblerContext > 0 ||
+		snap.NilAssemblerContextAfterParse > 0 ||
+		snap.BadAssemblerContextType > 0 ||
+		snap.ZeroValuePacketTimestamp > 0 ||
+		snap.LastPacketBeforeFirstPacket > 0 {
 		printer.Stderr.Infof("Detected packet assembly context problems during capture: %v empty, %v bad type, %v empty after parse, %v zero timestamp, %v last before first timestamp. ",
-			pcap.CountNilAssemblerContext,
-			pcap.CountBadAssemblerContextType,
-			pcap.CountNilAssemblerContextAfterParse,
-			pcap.CountZeroValuePacketTimestamp,
-			pcap.CountLastPacketBeforeFirstPacket)
+			snap.NilAssemblerContext,
+			snap.BadAssemblerContextType,
+			snap.NilAssemblerContextAfterParse,
+			snap.ZeroValuePacketTimestamp,
+			snap.LastPacketBeforeFirstPacket)
 		printer.Stderr.Infof("These errors may cause some packets to be missing from the trace.\n")
 	}
 

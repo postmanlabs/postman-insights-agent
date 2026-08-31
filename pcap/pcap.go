@@ -11,6 +11,7 @@ import (
 	_ "github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
@@ -21,7 +22,7 @@ const (
 )
 
 type pcapWrapper interface {
-	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error)
+	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats) (<-chan gopacket.Packet, error)
 	getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
@@ -30,7 +31,7 @@ type pcapImpl struct {
 	TraceTags map[tags.Key]string
 }
 
-func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
+func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats) (<-chan gopacket.Packet, error) {
 	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, targetNetworkNamespaceOpt)
 	if err != nil {
 		return nil, err
@@ -54,7 +55,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 	statsStopped := make(chan struct{})
 	go func() {
 		defer close(statsStopped)
-		pollPcapStats(handle, interfaceName, statsDone)
+		pollPcapStats(handle, interfaceName, stats, statsDone)
 	}()
 
 	// TODO: tune the packet channel buffer

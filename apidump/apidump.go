@@ -21,6 +21,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/ci"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
@@ -296,6 +297,17 @@ type apidump struct {
 	startTime        time.Time
 	dumpSummary      *Summary
 	successTelemetry *trace.SuccessTelemetry
+
+	// Capture-diagnostics counters for this session, created once at the top
+	// of Run(). See capturestats.Stats.
+	captureStats *capturestats.Stats
+
+	// The trace tags collectTraceTags produced for this session, including
+	// the monitored pod name merged in from DaemonsetArgs.TraceTags in the
+	// Kubernetes DaemonSet path. Args.Tags does not carry that merge -- only
+	// this field does -- so logCaptureDiagnostics must read from here, not
+	// Args.Tags, to report the pod a diagnostics line belongs to.
+	traceTags map[tags.Key]string
 }
 
 // Start a new apidump session based on the given arguments.
@@ -834,6 +846,10 @@ func (a *apidump) Run() error {
 	}
 
 	traceTags := collectTraceTags(args)
+	// Args.Tags does not receive the DaemonsetArgs.TraceTags merge above, so
+	// logCaptureDiagnostics needs its own reference to find the monitored pod
+	// name (tags.XAkitaKubernetesPod).
+	a.traceTags = traceTags
 
 	// Build path filters.
 	pathExclusions, err := compileRegexps(args.PathExclusions, "path exclusion")
@@ -922,10 +938,18 @@ func (a *apidump) Run() error {
 	numUserFilters := len(pathExclusions) + len(hostExclusions) + len(pathAllowlist) + len(hostAllowlist)
 	prefilterSummary := trace.NewPacketCounter()
 
+	// Capture-diagnostics counters for this session. Created once per Run()
+	// call and threaded into everything below that can lose a request or
+	// response, so its numbers describe exactly this pod -- see
+	// capturestats.Stats for why that must be a value passed in, not a
+	// package-level counter: the Kubernetes DaemonSet runs one Run() call per
+	// monitored pod, all as goroutines in a single process.
+	a.captureStats = capturestats.New()
+
 	// Initialized shared rate object, if we are configured with a rate limit
 	var rateLimit *trace.SharedRateLimit
 	if args.WitnessesPerMinute != 0.0 {
-		rateLimit = trace.NewRateLimit(args.WitnessesPerMinute)
+		rateLimit = trace.NewRateLimit(args.WitnessesPerMinute, a.captureStats)
 		defer rateLimit.Stop()
 	}
 
@@ -940,6 +964,7 @@ func (a *apidump) Run() error {
 		filterSummary,
 		prefilterSummary,
 		negationSummary,
+		a.captureStats,
 	)
 	a.dumpSummary.HTTPSCaptureEnabled = args.HTTPS.Enabled
 
@@ -1028,6 +1053,7 @@ func (a *apidump) Run() error {
 						args.Plugins,
 						args.MaxWitnessUploadBuffers,
 						apidumpTelemetry,
+						a.captureStats,
 					)
 
 					collector = backendCollector
@@ -1129,6 +1155,7 @@ func (a *apidump) Run() error {
 					summary,
 					pool,
 					apidumpTelemetry,
+					a.captureStats,
 				); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
@@ -1161,6 +1188,7 @@ func (a *apidump) Run() error {
 			args.Plugins,
 			args.MaxWitnessUploadBuffers,
 			apidumpTelemetry,
+			a.captureStats,
 		)
 		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 			toRotate = append(toRotate, lsc)
