@@ -36,8 +36,8 @@ func captureDiagnosticsEnabled() bool {
 //
 // The line is prefixed with the client ID and the monitored pod name so it
 // can be attributed. That matters because the agent runs as a DaemonSet with
-// one apidump process per monitored pod, all as goroutines inside a single
-// OS process (see cmd/internal/kube/daemonset/apidump_process.go), so a
+// one apidump session (one apidump.Run() goroutine) per monitored pod inside a
+// single OS process (see cmd/internal/kube/daemonset/apidump_process.go), so a
 // node's logs interleave several sessions -- and client_id is the only
 // pod-level identifier that reaches the back end, since the pod name is sent
 // once at startup and then discarded there. Without this prefix there would
