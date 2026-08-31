@@ -724,6 +724,7 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 				windowDuration := int(now.Sub(windowStart) / time.Second)
 				lastReport = time.Now()
 				a.SendPacketTelemetry(observationDuration, windowStart, windowDuration)
+				a.logCaptureDiagnostics()
 				subsequentTelemetrySent = true
 			case <-a.successTelemetry.Channel:
 				if !subsequentTelemetrySent {
@@ -1083,8 +1084,14 @@ func (a *apidump) Run() error {
 				}
 			}
 
-			// Count packets before user filters for diagnostics
-			if filterState == matchedFilter && numUserFilters > 0 {
+			// Count packets before user filters for diagnostics.
+			//
+			// This used to be installed only when the user had configured filters.
+			// It is now unconditional, because the difference between this counter
+			// and the post-filter one is what attributes a missing response to the
+			// collector chain (filters, rate limiting) rather than to parsing.
+			// Without both, the two are indistinguishable. See LogCaptureDiagnostics.
+			if filterState == matchedFilter {
 				collector = &trace.PacketCountCollector{
 					PacketCounts: prefilterSummary,
 					Collector:    collector,

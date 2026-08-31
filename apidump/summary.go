@@ -145,9 +145,13 @@ func (s *Summary) printPortHighlights(top *client_telemetry.PacketCountSummary) 
 			continue
 		}
 
-		// If we saw HTTP traffic but it was filtered, give the pre-filter statistics
+		// If we saw HTTP traffic but it was filtered, give the pre-filter statistics.
+		//
+		// Gated on NumUserFilters because the pre-filter counters are now always
+		// collected, for capture diagnostics. This message talks about "the
+		// filters you gave", so it must not appear when the user gave none.
 		preFilter := s.PrefilterSummary.TotalOnPort(p)
-		if preFilter.HTTPRequests+preFilter.HTTPResponses > 0 {
+		if s.NumUserFilters > 0 && preFilter.HTTPRequests+preFilter.HTTPResponses > 0 {
 			printer.Stderr.Infof("TCP port %5d: %5d packets (%d%% of total), no HTTP requests or responses satisfied all the filters you gave, but %d HTTP requests and %d HTTP responses were seen before your path and host filters were applied.\n",
 				p, thisPort.TCPPackets, pct, preFilter.HTTPRequests, preFilter.HTTPResponses)
 			continue
@@ -245,9 +249,11 @@ func (s *Summary) printHostHighlights(top *client_telemetry.PacketCountSummary) 
 			continue
 		}
 
-		// If we saw HTTP traffic but it was filtered, give the pre-filter statistics.
+		// If we saw HTTP traffic but it was filtered, give the pre-filter
+		// statistics. Gated on NumUserFilters for the same reason as the
+		// per-port message above.
 		preFilter := s.PrefilterSummary.TotalOnHost(h)
-		if preFilter.HTTPRequests+preFilter.HTTPResponses > 0 {
+		if s.NumUserFilters > 0 && preFilter.HTTPRequests+preFilter.HTTPResponses > 0 {
 			printer.Stderr.Infof("%s no HTTP requests satisfied all the filters you gave, but %d HTTP requests were seen before your path and host filters were applied.\n",
 				label, preFilter.HTTPRequests)
 			continue

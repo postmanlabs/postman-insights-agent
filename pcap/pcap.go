@@ -48,6 +48,15 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	pktChan := packetSource.Packets()
 
+	// Watch libpcap's own capture counters, which tell us whether the kernel is
+	// discarding packets before we ever see them. See capture_stats.go.
+	statsDone := make(chan struct{})
+	statsStopped := make(chan struct{})
+	go func() {
+		defer close(statsStopped)
+		pollPcapStats(handle, interfaceName, statsDone)
+	}()
+
 	// TODO: tune the packet channel buffer
 	wrappedChan := make(chan gopacket.Packet, 10)
 	go func() {
@@ -56,6 +65,13 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 		// wait for the handle to close in this goroutine.
 		defer func() {
 			close(wrappedChan)
+
+			// Wait for the stats poller to return before closing the handle:
+			// pcap_stats dereferences the handle without locking, so a sample in
+			// flight during Close is a use-after-free.
+			close(statsDone)
+			<-statsStopped
+
 			handle.Close()
 		}()
 
