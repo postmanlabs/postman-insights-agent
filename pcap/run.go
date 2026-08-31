@@ -57,6 +57,7 @@ func Collect(
 	}
 
 	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry, stats)
+	parser.useSyntheticPairing = syntheticTCPPairingEnabled()
 
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
