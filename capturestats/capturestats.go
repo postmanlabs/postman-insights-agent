@@ -255,8 +255,8 @@ func (s *Stats) RecordNegativeLatency(latencyMs float32) {
 	}
 }
 
-// Snapshot is a plain-value copy of Stats for safe, consistent reading (avoids
-// reading fields one at a time while they are still being incremented).
+// Snapshot is a plain-value copy of Stats for safe reading/formatting.
+// It loads each counter atomically to avoid data races with concurrent increments.
 type Snapshot struct {
 	PcapPacketsReceived, PcapPacketsDropped, PcapPacketsIfDropped uint64
 
