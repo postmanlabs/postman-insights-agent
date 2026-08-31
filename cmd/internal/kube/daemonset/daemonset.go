@@ -476,12 +476,13 @@ func (d *Daemonset) Run() error {
 // sendAgentStopped flushes any counters accumulated since the last heartbeat
 // and reports a terminal agent_stopped event, so a graceful shutdown leaves a
 // clear end-of-run marker instead of just going quiet until the next
-// heartbeat would have been due.
+// heartbeat would have been due. The flushed counters ride along as Events on
+// this same POST (D1), rather than as separate requests.
 func (d *Daemonset) sendAgentStopped() {
 	if d.ClusterName == "" {
 		return
 	}
-	d.flushTelemetryEvents(d.Coverage.Snapshot())
+	events := d.drainTelemetryEvents(time.Now().UTC())
 
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
@@ -496,6 +497,7 @@ func (d *Daemonset) sendAgentStopped() {
 		Environment:       d.InsightsEnvironment,
 		AgentVersion:      version.ReleaseVersion().String(),
 		GitVersion:        version.GitVersion(),
+		Events:            events,
 	})
 	if err != nil {
 		printer.Errorf("Failed to send agent_stopped telemetry: %v\n", err)
@@ -642,11 +644,15 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
-			d.observeCoverage(pod, CoverageApidumpStarted, "apidump_start_failed", "")
+			// StartApiDumpProcess only fails on a local bookkeeping error
+			// (missing pod args, or a pod-state-machine violation) before the
+			// capture goroutine is even launched -- this pod will never be
+			// monitored from this attempt, which is what CoveragePodFailed
+			// means, not a transient step on the way to capturing.
+			d.observeCoverage(pod, CoveragePodFailed, "apidump_start_failed", "")
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", pod.Name, err)
 			continue
 		}
-		d.observeCoverage(pod, CoverageApidumpStarted, "started", "")
 	}
 
 	return nil

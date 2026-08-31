@@ -54,8 +54,20 @@ const (
 	// successful one.
 	CoveragePodConfigurationFailed CoverageStage = "pod_configuration_failed"
 
+	// CoverageServiceResolved is the first real, backend-confirmed signal from
+	// inside the target's own capture goroutine (via apidump.LookupService).
+	// There used to be a CoverageApidumpStarted stage set the instant the
+	// goroutine was launched, from the daemonset/watcher side -- removed
+	// (D18): that only meant "the goroutine was launched", not "capture is
+	// running", since every real setup checkpoint (interface enumeration,
+	// buffer pool, collector setup, ...) still lay ahead of it. It was the
+	// same premature-signal defect D2 fixed for the apidump_started *event*,
+	// just reintroduced one field over as a coverage *stage*. The real
+	// "capture pipelines are up" fact is still reported -- as the
+	// apidump_started telemetry event from inside apidump.go's Run(), which
+	// intentionally never touches CurrentStage (see the removed
+	// CoverageApidumpStarted's history and D15(b)).
 	CoverageServiceResolved CoverageStage = "service_resolved"
-	CoverageApidumpStarted  CoverageStage = "apidump_started"
 	CoverageCapturing       CoverageStage = "capturing"
 	CoverageUploading       CoverageStage = "uploading"
 
@@ -147,9 +159,9 @@ type CoverageTarget struct {
 	Service         string `json:"service,omitempty"`
 	ServiceNameHint string `json:"service_name_hint,omitempty"`
 
-	Workload          string               `json:"workload,omitempty"`
-	ServiceID         string               `json:"service_id,omitempty"`
-	WorkspaceID       string               `json:"workspace_id,omitempty"`
+	Workload    string `json:"workload,omitempty"`
+	ServiceID   string `json:"service_id,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
 
 	// UserID and TeamID identify the Postman user/team associated with this
 	// target's API key. Target-scoped, not agent-scoped: each target's
@@ -223,6 +235,27 @@ type CoverageTracker struct {
 }
 
 const maxCoverageTransitionsPerTarget = 32
+
+// coverageStageRank orders the non-terminal funnel stages so Observe can tell
+// a real transition from an informer replay/resync regressing an
+// already-advanced target. handlePodAddEvent calls observeCoverage(pod,
+// CoveragePodDiscovered, ...) unconditionally on every Add event, including
+// the cache replays the informer issues on handler registration and on every
+// resync -- for a pod that has already reached, say, CoverageServiceResolved,
+// that is not a new fact, just the watcher re-confirming a pod it already
+// knows about. Terminal stages (CoveragePodStopped, CoveragePodFailed) are
+// intentionally absent: they are real, always-forward-moving facts regardless
+// of the target's current stage, so they are never blocked by rank.
+var coverageStageRank = map[CoverageStage]int{
+	CoveragePodDiscovered:           0,
+	CoverageDiscoveryFilterPassed:   1,
+	CoverageDiscoveryFilterRejected: 1,
+	CoveragePodConfigured:           2,
+	CoveragePodConfigurationFailed:  2,
+	CoverageServiceResolved:         3,
+	CoverageCapturing:               4,
+	CoverageUploading:               5,
+}
 
 func (d *Daemonset) observeCoverage(pod corev1.Pod, stage CoverageStage, reason, service string) {
 	// Only emit a lifecycle event when the target actually moved. The informer
@@ -364,6 +397,20 @@ func (t *CoverageTracker) Observe(pod corev1.Pod, stage CoverageStage, reason, s
 	if exists && target.CurrentStage == stage && target.Reason == reason {
 		target.ObservedAt = now
 		return false
+	}
+
+	// A lower-ranked stage than the target's current one is also a replay/
+	// resync artifact, not a transition -- see coverageStageRank's doc comment.
+	// Without this guard, every informer resync fires CoveragePodDiscovered
+	// again for pods long past it, silently erasing their progress (a pod
+	// already uploading witnesses would revert to "pod_discovered").
+	if exists {
+		if newRank, ok := coverageStageRank[stage]; ok {
+			if curRank, ok2 := coverageStageRank[target.CurrentStage]; ok2 && newRank < curRank {
+				target.ObservedAt = now
+				return false
+			}
+		}
 	}
 
 	target.CurrentStage = stage

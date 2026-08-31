@@ -47,6 +47,14 @@ func (d *Daemonset) sendTelemetry() {
 	}
 	agentStateSince := d.agentStateSince
 
+	// D1: the counter map accumulated since the last flush rides along as
+	// Events on this same heartbeat POST, instead of one HTTP request per
+	// (event, target) pair -- 40 pods x ~6 events used to mean ~240 requests
+	// per interval. drainTelemetryEvents resets the window unconditionally
+	// (see its own comment), so a delivery failure below still drops exactly
+	// one window's counters rather than silently growing the buffer forever.
+	events := d.drainTelemetryEvents(time.Now().UTC())
+
 	err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
 		Type:              rest.TelemetryTypeSnapshot,
 		Event:             "agent_heartbeat",
@@ -63,18 +71,12 @@ func (d *Daemonset) sendTelemetry() {
 		Targets:           snapshot.Targets,
 		TruncatedTargets:  snapshot.TruncatedTargets,
 		StageCounts:       stageCounts,
+		Events:            events,
 	})
 	d.lastTelemetryFailed = err != nil
 	if err != nil {
 		printer.Errorf("Failed to send telemetry: %v\n", err)
 	}
-
-	// Flush counters regardless of the heartbeat result. Gating the flush on a
-	// successful heartbeat means the counter window silently extends across
-	// failures, and any counter describing delivery can then only ever be
-	// recorded when delivery worked -- which makes it unable to report the
-	// failure it exists to report.
-	d.flushTelemetryEvents(snapshot)
 }
 
 func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
@@ -92,45 +94,39 @@ func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
 	d.telemetryEvents[event][targetID]++
 }
 
-func (d *Daemonset) flushTelemetryEvents(snapshot CoverageSnapshot) {
-	windowEnd := time.Now().UTC()
-
+// drainTelemetryEvents empties the in-memory counter buffer accumulated
+// since the last flush and returns it as inline batch events (D1) for a
+// caller to attach to whatever single request it is about to send (the
+// periodic heartbeat, or the terminal agent_stopped event). The window is
+// reset unconditionally, before the caller's POST is even attempted: gating
+// the reset on a successful send would let the counter window silently
+// extend across failures, and any counter describing delivery could then
+// only ever be recorded when delivery worked -- unable to report the
+// failure it exists to report. A dropped window is visible via the sequence
+// gap; a silently merged one is not visible at all.
+func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time) []rest.DaemonsetTelemetryRequest {
 	d.telemetryEventsMu.Lock()
-	events := d.telemetryEvents
+	pending := d.telemetryEvents
 	windowStart := d.telemetryWindowStart
 	d.telemetryEvents = make(map[string]map[string]uint64)
 	d.telemetryWindowStart = windowEnd
 	d.telemetryEventsMu.Unlock()
 
-	// The window is reset above even when the sends below fail, so a delivery
-	// failure loses one window of counters rather than silently merging it into
-	// the next one. Dropping a window is visible via the sequence gap; a merged
-	// window is not visible at all. Bounded local buffering with replay is
-	// tracked separately as phase-3 work.
-	for event, targets := range events {
+	var events []rest.DaemonsetTelemetryRequest
+	for event, targets := range pending {
 		for targetID, count := range targets {
-			ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
-			err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
-				Type:              rest.TelemetryTypeEvents,
-				Event:             event,
-				AgentID:           snapshot.AgentID,
-				RunID:             snapshot.RunID,
-				Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
-				SchemaVersion:     "v1",
-				KubernetesCluster: d.ClusterName,
-				Environment:       d.InsightsEnvironment,
-				TargetID:          targetID,
-				Count:             count,
-				CounterType:       rest.CounterTypeIntervalDelta,
-				WindowStart:       &windowStart,
-				WindowEnd:         &windowEnd,
+			events = append(events, rest.DaemonsetTelemetryRequest{
+				Type:        rest.TelemetryTypeEvents,
+				Event:       event,
+				TargetID:    targetID,
+				Count:       count,
+				CounterType: rest.CounterTypeIntervalDelta,
+				WindowStart: &windowStart,
+				WindowEnd:   &windowEnd,
 			})
-			cancel()
-			if err != nil {
-				printer.Errorf("Failed to send telemetry event %q: %v\n", event, err)
-			}
 		}
 	}
+	return events
 }
 
 // dumpPodsApiDumpProcessState logs the current state of active pods.

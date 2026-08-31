@@ -376,11 +376,13 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		// Start monitoring the pod
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
-			d.observeCoverage(pod, CoverageApidumpStarted, "apidump_start_failed", "")
+			// See the identical comment at StartProcessInExistingPods's call
+			// site: this is a local bookkeeping failure before the capture
+			// goroutine launches, not a transient step towards capturing.
+			d.observeCoverage(pod, CoveragePodFailed, "apidump_start_failed", "")
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
 			return
 		}
-		d.observeCoverage(pod, CoverageApidumpStarted, "started", "")
 	}
 }
 
