@@ -3,21 +3,14 @@ package trace
 import (
 	"math/rand"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
 )
-
-// Number of HTTP responses we parsed successfully and then discarded because we
-// could not match them to a request. Every one of these leaves a witness with a
-// request and no response, so this counter distinguishes "the response was never
-// parsed" from "the response was parsed and then thrown away here" -- which have
-// completely different fixes.
-var CountResponsesDroppedNoMatchingRequest uint64
 
 const (
 	// One sample is collected per epoch
@@ -66,6 +59,13 @@ type SharedRateLimit struct {
 	children []*rateLimitCollector
 
 	lock sync.Mutex
+
+	// Capture-diagnostics counters for the apidump session that owns this
+	// rate limit. One SharedRateLimit is created per apidump.Run() call, so
+	// stats being a field here (rather than a package-level counter) is what
+	// keeps a response we drop -- see the else branch in Process below --
+	// attributed to the pod it actually belongs to.
+	stats *capturestats.Stats
 }
 
 func (r *SharedRateLimit) startInterval(start time.Time) {
@@ -284,7 +284,7 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			//     first segment, the response uses the seq of its first segment --
 			//     which are only equal if nothing else was in flight on the
 			//     connection. See akinet/http/parser.go.
-			atomic.AddUint64(&CountResponsesDroppedNoMatchingRequest, 1)
+			r.RateLimit.stats.IncrResponsesDroppedNoMatchingRequest()
 		}
 	default:
 		if r.RateLimit.AllowOther() {
@@ -321,7 +321,7 @@ func (r *rateLimitCollector) expireRequests(threshold time.Time) {
 	printer.Debugf("Expired %v old requests\n", expired)
 }
 
-func NewRateLimit(witnessesPerMinute float64) *SharedRateLimit {
+func NewRateLimit(witnessesPerMinute float64, stats *capturestats.Stats) *SharedRateLimit {
 	witnessLimit := witnessesPerMinute * viper.GetDuration(RateLimitEpochTime).Minutes()
 	if witnessLimit < 1 {
 		printer.Warningln("Witnesses per minute rate is too low; rounding up to 1 per 5 minutes.")
@@ -332,6 +332,7 @@ func NewRateLimit(witnessesPerMinute float64) *SharedRateLimit {
 		WitnessesPerEpoch:  int(witnessLimit),
 		FirstEstimate:      true,
 		done:               make(chan struct{}),
+		stats:              stats,
 	}
 
 	// Start the first epoch.

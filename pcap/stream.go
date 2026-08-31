@@ -3,7 +3,6 @@ package pcap
 import (
 	"encoding/binary"
 	"net"
-	"sync/atomic"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
@@ -13,31 +12,10 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
-
-// These error counters don't seem to have a comfortable home, can we somehow get them back up to the
-// normal packet counter?  They can't go in tcpFlow because that's ephemeral.
-
-// Nunmber of times we got a nil assembler context; this can happen when the payload
-// resides in a page other than the first in the reassembly buffer.
-var CountNilAssemblerContext uint64
-
-// or when we flush old data?
-var CountNilAssemblerContextAfterParse uint64
-
-// Number of times we got an assembler context of the wrong type; this probably shouldn't
-// happen at all.
-var CountBadAssemblerContextType uint64
-
-// Number of times we got parsed network traffic where either the firstPacket or lastPacket
-// timestamp is the default zero value.
-var CountZeroValuePacketTimestamp uint64
-
-// Number of times we got parsed network traffic where the firstPacket timestamp
-// is before the lastPacket timestamp.
-var CountLastPacketBeforeFirstPacket uint64
 
 // tcpFlow represents a uni-directional flow of TCP segments along with a
 // bidirectional ID that identifies the tcpFlow in the opposite direction.
@@ -56,6 +34,13 @@ type tcpFlow struct {
 
 	factorySelector akinet.TCPParserFactorySelector
 
+	// Capture-diagnostics counters for the apidump session this flow belongs
+	// to. Shared across every flow in that session (there is one NewCollector
+	// call, and so one capturestats.Stats, per apidump.Run() call), which is
+	// what keeps these numbers scoped to one monitored pod instead of the
+	// whole node -- see capturestats.Stats.
+	stats *capturestats.Stats
+
 	// Non-nil if there is an active parser for this flow.
 	currentParser akinet.TCPParser
 
@@ -70,7 +55,7 @@ type tcpFlow struct {
 	unusedAcceptBuf memview.MemView
 }
 
-func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector) *tcpFlow {
+func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats) *tcpFlow {
 	return &tcpFlow{
 		clock:           clock,
 		netFlow:         nf,
@@ -78,6 +63,7 @@ func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flo
 		bidiID:          bidiID,
 		outChan:         outChan,
 		factorySelector: fs,
+		stats:           stats,
 	}
 }
 
@@ -135,9 +121,9 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				// that we don't yet understand.
 				// So, track the error count but don't spam the log.
 				if acForFirstByte == nil {
-					atomic.AddUint64(&CountNilAssemblerContext, 1)
+					f.stats.IncrNilAssemblerContext()
 				} else {
-					atomic.AddUint64(&CountBadAssemblerContextType, 1)
+					f.stats.IncrBadAssemblerContextType()
 				}
 
 				// Also record which half of the exchange we just threw away. The
@@ -145,7 +131,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				// cannot tell us whether we are losing requests or responses --
 				// which is the question, since a lost response leaves a witness with
 				// no response half while a lost request leaves no witness at all.
-				countDiscardedByParserKind(fact.Name())
+				countDiscardedByParserKind(f.stats, fact.Name())
 
 				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
 				return
@@ -182,7 +168,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 			// probably be misleading.
 			// TODO: what else can we log here to help identify what's going on?
 			printer.V(6).Infof("AssemblerContext is nil for packet started at %v\n", parseStart)
-			atomic.AddUint64(&CountNilAssemblerContextAfterParse, 1)
+			f.stats.IncrNilAssemblerContextAfterParse()
 			parseEnd = parseStart
 		}
 		f.outChan <- f.toPNT(parseStart, parseEnd, pnc)
@@ -253,7 +239,7 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	if firstPacketTime.IsZero() || lastPacketTime.IsZero() {
 		now := f.clock.Now()
 		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. type: %v first: %v last: %v now: %v", pncType(), firstPacketTime, lastPacketTime, now)
-		atomic.AddUint64(&CountZeroValuePacketTimestamp, 1)
+		f.stats.IncrZeroValuePacketTimestamp()
 
 		if firstPacketTime.IsZero() {
 			firstPacketTime = now
@@ -264,7 +250,7 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	}
 	if lastPacketTime.Before(firstPacketTime) {
 		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. type: %v first: %v last: %v", pncType(), firstPacketTime, lastPacketTime)
-		atomic.AddUint64(&CountLastPacketBeforeFirstPacket, 1)
+		f.stats.IncrLastPacketBeforeFirstPacket()
 
 		lastPacketTime = firstPacketTime
 	}
@@ -319,15 +305,17 @@ type tcpStream struct {
 
 	factorySelector akinet.TCPParserFactorySelector
 	outChan         chan<- akinet.ParsedNetworkTraffic
+	stats           *capturestats.Stats
 }
 
-func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector) *tcpStream {
+func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats) *tcpStream {
 	return &tcpStream{
 		clock:           clock,
 		bidiID:          akinet.TCPBidiID(uuid.New()),
 		netFlow:         netFlow,
 		factorySelector: fs,
 		outChan:         outChan,
+		stats:           stats,
 	}
 }
 
@@ -347,8 +335,8 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 		// data from this tcpStream or it is garbage collected by the assembler
 		// after streamTimeout.
 		tf, _ := gopacket.FlowFromEndpoints(layers.NewTCPPortEndpoint(tcp.SrcPort), layers.NewTCPPortEndpoint(tcp.DstPort))
-		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector)
-		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector)
+		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector, c.stats)
+		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector, c.stats)
 		c.flows = map[reassembly.TCPFlowDirection]*tcpFlow{
 			dir:           s1,
 			dir.Reverse(): s2,

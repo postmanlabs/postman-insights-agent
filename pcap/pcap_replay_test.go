@@ -21,6 +21,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
@@ -150,7 +151,7 @@ func removeNonDeterministicField(p *akinet.ParsedNetworkTraffic) {
 // pcapWrapper backed by a pcap file.
 type filePcapWrapper string
 
-func (f filePcapWrapper) capturePackets(done <-chan struct{}, _, _ string, _ optionals.Optional[string]) (<-chan gopacket.Packet, error) {
+func (f filePcapWrapper) capturePackets(done <-chan struct{}, _, _ string, _ optionals.Optional[string], _ *capturestats.Stats) (<-chan gopacket.Packet, error) {
 	handle, err := pcap.OpenOffline(string(f))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to open %s", f)
@@ -179,7 +180,7 @@ func (filePcapWrapper) getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
 func readFromPcapFile(file string, pool buffer_pool.BufferPool) ([]akinet.ParsedNetworkTraffic, error) {
-	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0, telemetry.Default())
+	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0, telemetry.Default(), capturestats.New())
 	p.pcap = filePcapWrapper(file)
 
 	done := make(chan struct{})

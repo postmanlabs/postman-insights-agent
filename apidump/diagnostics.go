@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync/atomic"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/tags"
-	"github.com/postmanlabs/postman-insights-agent/pcap"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/trace"
 )
@@ -32,21 +31,29 @@ func captureDiagnosticsEnabled() bool {
 	return enabled
 }
 
-// logCaptureDiagnostics reports this session's capture counters. Called on each
-// telemetry tick.
+// logCaptureDiagnostics reports this session's capture counters. Called on
+// each telemetry tick.
 //
-// The line is prefixed with the client ID and the monitored pod name so it can
-// be attributed. That matters because the agent runs as a DaemonSet with one
-// apidump process per monitored pod, so a node's logs interleave several
-// processes, and because client_id is the only pod-level identifier that reaches
-// the back end -- the pod name is sent once at startup and then discarded there.
-// Without this prefix there is no way to tell which pod a counter belongs to.
+// The line is prefixed with the client ID and the monitored pod name so it
+// can be attributed. That matters because the agent runs as a DaemonSet with
+// one apidump process per monitored pod, all as goroutines inside a single
+// OS process (see cmd/internal/kube/daemonset/apidump_process.go), so a
+// node's logs interleave several sessions -- and client_id is the only
+// pod-level identifier that reaches the back end, since the pod name is sent
+// once at startup and then discarded there. Without this prefix there would
+// be no way to tell which pod a line belongs to.
+//
+// The pod name comes from a.traceTags, not a.Args.Tags: in the Kubernetes
+// DaemonSet path, tags.XAkitaKubernetesPod only ever reaches the trace tags
+// that collectTraceTags merges from DaemonsetArgs.TraceTags (see Run()) --
+// Args.Tags is never updated with that merge, so reading it here always
+// misses and reports pod=unknown.
 func (a *apidump) logCaptureDiagnostics() {
 	if a.dumpSummary == nil || !captureDiagnosticsEnabled() {
 		return
 	}
 
-	pod := a.Args.Tags[tags.XAkitaKubernetesPod]
+	pod := a.traceTags[tags.XAkitaKubernetesPod]
 	if pod == "" {
 		pod = "unknown"
 	}
@@ -55,85 +62,101 @@ func (a *apidump) logCaptureDiagnostics() {
 		akid.String(a.ClientID),
 		pod,
 		akid.String(a.backendSvc),
+		a.captureStats,
 		a.dumpSummary.PrefilterSummary,
 		a.dumpSummary.FilterSummary,
 	)
 }
 
-// LogCaptureDiagnostics writes the capture counters that we maintain but do not
-// send to the back end.
+// LogCaptureDiagnostics writes the capture counters that we maintain but do
+// not send to the back end.
 //
 // Every counter here sits on a path that can silently lose one half of a
 // request/response pair. Because we upload a witness for the request either
-// way, that loss surfaces only at the back end, as a missing_status_code drop,
-// with no way to tell from there which layer lost it. Printing these
-// periodically makes the layer visible in `kubectl logs` for a running agent.
+// way, that loss surfaces only at the back end, as a missing_status_code
+// drop, with no way to tell from there which layer lost it. Printing these
+// periodically makes the layer visible in `kubectl logs` for a running
+// agent.
 //
-// PrintWarnings covers some of the same ground, but it only runs when a capture
-// ends, which for a long-lived DaemonSet is never.
+// PrintWarnings covers some of the same ground, but it only runs when a
+// capture ends, which for a long-lived DaemonSet is never.
 //
-// prefilter and postfilter are the request/response counts from either side of
-// the collector chain's filtering and rate limiting. They are the pair that
-// matters most: if prefilter responses roughly match prefilter requests but
-// postfilter responses do not, the response reached us and something in the
-// chain discarded it. If neither matches, we never parsed the response at all.
-func LogCaptureDiagnostics(clientID, podName, serviceID string, prefilter, postfilter *trace.PacketCounter) {
+// stats must be the same *capturestats.Stats passed to this session's
+// pcap.Collect, trace.NewRateLimit, and trace.NewBackendCollector calls --
+// see capturestats.Stats for why a shared, per-session value (rather than a
+// package-level counter) is what keeps every number below scoped to the one
+// pod this session is monitoring.
+//
+// prefilter and postfilter are the request/response counts from either side
+// of the collector chain's filtering and rate limiting. They are the pair
+// that matters most: if prefilter responses roughly match prefilter requests
+// but postfilter responses do not, the response reached us and something in
+// the chain discarded it. If neither matches, we never parsed the response
+// at all.
+func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturestats.Stats, prefilter, postfilter *trace.PacketCounter) {
+	snap := stats.Snapshot()
+
 	printer.Stderr.Infof(
 		"Capture diagnostics: client=%s pod=%s service=%s "+
 			"kernel[recv=%d drop=%d ifdrop=%d] "+
 			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d reassembly_gap_flushed=%d] "+
 			"discarded[req=%d resp=%d other=%d] "+
 			"chain[resp_no_request=%d] "+
-			"pair[ok=%d req_only=%d resp_only=%d same_dir_merge=%d] "+
+			"pair[ok=%d req_only=%d resp_only=%d same_dir_merge=%d parse_failed=%d] "+
 			"neg_latency[sub_ms=%d sub_s=%d over_s=%d]%s\n",
 
-		// Identify which apidump process this line came from. A node runs one
+		// Identify which apidump session this line came from. A node runs one
 		// per monitored pod, so the logs interleave.
 		clientID, podName, serviceID,
 
 		// Packets the kernel gave us, and packets it threw away because we could
 		// not keep up. A drop in the middle of a response usually costs us the
 		// whole response while sparing the request.
-		atomic.LoadUint64(&pcap.CountPcapPacketsReceived),
-		atomic.LoadUint64(&pcap.CountPcapPacketsDropped),
-		atomic.LoadUint64(&pcap.CountPcapPacketsIfDropped),
+		snap.PcapPacketsReceived,
+		snap.PcapPacketsDropped,
+		snap.PcapPacketsIfDropped,
 
 		// Messages we refused to parse. nil_ctx and bad_ctx are the cases where
 		// the first byte carried no TCP sequence number, so we discarded the
-		// message rather than parsing it.
-		atomic.LoadUint64(&pcap.CountNilAssemblerContext),
-		atomic.LoadUint64(&pcap.CountBadAssemblerContextType),
-		atomic.LoadUint64(&pcap.CountNilAssemblerContextAfterParse),
-		atomic.LoadUint64(&pcap.CountZeroValuePacketTimestamp),
-		atomic.LoadUint64(&pcap.CountLastPacketBeforeFirstPacket),
+		// message rather than parsing it. reassembly_gap_flushed counts TCP
+		// streams the reassembler force-flushed because a sequence-number gap
+		// sat unfilled past its timeout -- usually the downstream consequence
+		// of a kernel packet drop.
+		snap.NilAssemblerContext,
+		snap.BadAssemblerContextType,
+		snap.NilAssemblerContextAfterParse,
+		snap.ZeroValuePacketTimestamp,
+		snap.LastPacketBeforeFirstPacket,
+		snap.ReassemblyGapFlushed,
 
-		// TCP streams the reassembler force-flushed because a sequence-number
-		// gap sat unfilled past its timeout -- the local counterpart of the
-		// capture_gap_truncated_flushed telemetry event.
-		atomic.LoadUint64(&pcap.CountReassemblyGapFlushed),
-
-		// The same failures as nil_ctx and bad_ctx, but split by which half we
-		// threw away. This is the pair to read for the "response starts in a
-		// later reassembly page" theory.
-		atomic.LoadUint64(&pcap.CountDiscardedRequests),
-		atomic.LoadUint64(&pcap.CountDiscardedResponses),
-		atomic.LoadUint64(&pcap.CountDiscardedOther),
+		// The same nil_ctx/bad_ctx failures, but split by which half we threw
+		// away. This is the pair to read for the "response starts in a later
+		// reassembly page" theory.
+		snap.DiscardedRequests,
+		snap.DiscardedResponses,
+		snap.DiscardedOther,
 
 		// Responses we parsed and then dropped for want of a matching request.
-		atomic.LoadUint64(&trace.CountResponsesDroppedNoMatchingRequest),
+		snap.ResponsesDroppedNoMatchingRequest,
 
-		// How witnesses left the pair cache.
-		atomic.LoadUint64(&trace.CountWitnessesPaired),
-		atomic.LoadUint64(&trace.CountUnpairedRequestsFlushed),
-		atomic.LoadUint64(&trace.CountUnpairedResponsesFlushed),
-		atomic.LoadUint64(&trace.CountSameDirectionMerges),
+		// How witnesses left the pair cache, plus parse_failed: a request or
+		// response that reached the backend collector -- so it already passed
+		// prefilter, filters, rate limiting, and sampling, and postfilter
+		// already counted it -- but failed to parse into a witness. That
+		// failure is invisible to the prefilter/postfilter comparison, since
+		// postfilter counted it before the parse was attempted.
+		snap.WitnessesPaired,
+		snap.UnpairedRequestsFlushed,
+		snap.UnpairedResponsesFlushed,
+		snap.SameDirectionMerges,
+		snap.WitnessParseFailed,
 
 		// Negative processing latency, bucketed by size. Small values can be
 		// genuine (a server answering before the request body finished); large
 		// ones mean we paired a response with the wrong request.
-		atomic.LoadUint64(&trace.CountNegativeLatencyUnder1ms),
-		atomic.LoadUint64(&trace.CountNegativeLatencyUnder1s),
-		atomic.LoadUint64(&trace.CountNegativeLatencyOver1s),
+		snap.NegativeLatencyUnder1ms,
+		snap.NegativeLatencyUnder1s,
+		snap.NegativeLatencyOver1s,
 
 		formatFilterCounts(prefilter, postfilter),
 	)

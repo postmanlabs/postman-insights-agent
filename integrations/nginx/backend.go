@@ -13,6 +13,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/env"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
@@ -197,6 +198,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		args.Plugins,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
+		capturestats.New(),
 	)
 
 	// TODO: rate-limit

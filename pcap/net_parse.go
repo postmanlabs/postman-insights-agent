@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
-	"sync/atomic"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
@@ -15,6 +14,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
@@ -63,18 +63,20 @@ type tcpStreamFactory struct {
 	clock   clockWrapper
 	fs      akinet.TCPParserFactorySelector
 	outChan chan<- akinet.ParsedNetworkTraffic
+	stats   *capturestats.Stats
 }
 
-func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector) *tcpStreamFactory {
+func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats) *tcpStreamFactory {
 	return &tcpStreamFactory{
 		clock:   clock,
 		fs:      fs,
 		outChan: outChan,
+		stats:   stats,
 	}
 }
 
 func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP, _ reassembly.AssemblerContext) reassembly.Stream {
-	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs)
+	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats)
 }
 
 // NetworkTrafficObserver is the callback function type for observing
@@ -89,9 +91,16 @@ type NetworkTrafficParser struct {
 	observer    NetworkTrafficObserver // This function is called for every packet.
 	bufferShare float32
 	telemetry   telemetry.Tracker
+
+	// Capture-diagnostics counters for this parser's session. One
+	// NetworkTrafficParser is created per apidump.Run() call, so stats being a
+	// field here (rather than a package-level counter) is what keeps its
+	// numbers scoped to the one pod that session is monitoring -- see
+	// capturestats.Stats for why that distinction matters.
+	stats *capturestats.Stats
 }
 
-func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32, telemetry telemetry.Tracker) *NetworkTrafficParser {
+func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32, telemetry telemetry.Tracker, stats *capturestats.Stats) *NetworkTrafficParser {
 	return &NetworkTrafficParser{
 		serviceID:   serviceID,
 		traceTags:   traceTags,
@@ -100,6 +109,7 @@ func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]st
 		observer:    func(gopacket.Packet) {},
 		bufferShare: bufferShare,
 		telemetry:   telemetry,
+		stats:       stats,
 	}
 }
 
@@ -122,14 +132,14 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 	fs ...akinet.TCPParserFactory,
 ) (<-chan akinet.ParsedNetworkTraffic, error) {
 	// Read in packets, pass to assembler
-	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt)
+	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt, p.stats)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed begin capturing packets from %s", interfaceName)
 	}
 
 	// Set up assembly
 	out := make(chan akinet.ParsedNetworkTraffic, 100)
-	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs))
+	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats)
 	streamPool := reassembly.NewStreamPool(streamFactory)
 	assembler := reassembly.NewAssembler(streamPool)
 
@@ -216,7 +226,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				}
 				if flushed != 0 {
 					printer.Debugf("TCP reassembly gap: flushed %d stream(s) early because expected data never arrived\n", flushed)
-					atomic.AddUint64(&CountReassemblyGapFlushed, uint64(flushed))
+					p.stats.AddReassemblyGapFlushed(uint64(flushed))
 				}
 			}
 		}

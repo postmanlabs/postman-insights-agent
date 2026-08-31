@@ -14,6 +14,7 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/reassembly"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 )
 
 var (
@@ -26,7 +27,7 @@ var (
 
 type fakePcap []gopacket.Packet
 
-func (f fakePcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
+func (f fakePcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats) (<-chan gopacket.Packet, error) {
 	outChan := make(chan gopacket.Packet)
 	go func() {
 		defer close(outChan)
@@ -49,7 +50,7 @@ func (f fakePcap) getInterfaceAddrs(interfaceName string) ([]net.IP, error) {
 // cancelled.
 type forceCancelPcap []gopacket.Packet
 
-func (f forceCancelPcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string]) (<-chan gopacket.Packet, error) {
+func (f forceCancelPcap) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats) (<-chan gopacket.Packet, error) {
 	outChan := make(chan gopacket.Packet)
 	go func() {
 		defer close(outChan)

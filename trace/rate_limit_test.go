@@ -9,6 +9,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/spf13/viper"
 )
 
@@ -43,7 +44,7 @@ func TestRateLimit_FirstSample(t *testing.T) {
 
 	start := time.Now()
 	cc := &countingCollector{}
-	rl := NewRateLimit(1.0)
+	rl := NewRateLimit(1.0, capturestats.New())
 	pc := NewPacketCounter()
 	c := rl.NewCollector(cc, pc).(*rateLimitCollector)
 

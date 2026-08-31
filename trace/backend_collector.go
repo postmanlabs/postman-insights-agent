@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
@@ -22,6 +21,7 @@ import (
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/learn"
 	"github.com/postmanlabs/postman-insights-agent/plugin"
@@ -29,61 +29,6 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
-
-// Pairing outcomes for witnesses leaving the pair cache. Together these account
-// for every witness we upload, so they reconcile directly against the back end's
-// witness_pipeline drop reasons without a cross-system join.
-var (
-	// Witnesses uploaded with both halves.
-	CountWitnessesPaired uint64
-
-	// Witnesses uploaded with only a request, because no response ever arrived
-	// before pairCacheExpiration. The back end drops these as
-	// missing_status_code.
-	CountUnpairedRequestsFlushed uint64
-
-	// Witnesses uploaded with only a response, because no request ever arrived.
-	// The back end drops these as missing_latency.
-	CountUnpairedResponsesFlushed uint64
-
-	// Times two requests, or two responses, collided on the same pair key and we
-	// merged them into one witness. The result has two request halves and no
-	// response, so it is also dropped as missing_status_code. A non-zero value
-	// here means pair keys are colliding, which happens when more than one
-	// request is in flight on a connection.
-	CountSameDirectionMerges uint64
-)
-
-// Negative processing latency means we computed a response that started before
-// its request finished. Bucketing by magnitude separates the causes, which is
-// why we count rather than silently clamp:
-//
-//   - Under 1ms: the two halves are effectively simultaneous. Timestamp
-//     granularity or a response that overlaps the tail of the request.
-//   - 1ms to 1s: plausibly real. A server may answer before the client has
-//     finished uploading (an early 4xx, or a 100-continue flow), in which case
-//     the response genuinely starts first and processing latency is not a
-//     meaningful quantity.
-//   - Over 1s: almost certainly a mispairing. We attached a response to a
-//     request it does not belong to, so the timestamps come from unrelated
-//     exchanges. Expect this to move together with CountSameDirectionMerges.
-var (
-	CountNegativeLatencyUnder1ms uint64
-	CountNegativeLatencyUnder1s  uint64
-	CountNegativeLatencyOver1s   uint64
-)
-
-// recordNegativeLatency buckets a negative processing latency, in milliseconds.
-func recordNegativeLatency(latency_ms float32) {
-	switch {
-	case latency_ms > -1.0:
-		atomic.AddUint64(&CountNegativeLatencyUnder1ms, 1)
-	case latency_ms > -1000.0:
-		atomic.AddUint64(&CountNegativeLatencyUnder1s, 1)
-	default:
-		atomic.AddUint64(&CountNegativeLatencyOver1s, 1)
-	}
-}
 
 const (
 	// We stop trying to pair partial witnesses older than pairCacheExpiration.
@@ -158,9 +103,9 @@ func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 	}, nil
 }
 
-func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.ParsedNetworkTraffic) {
+func (w *witnessWithInfo) computeProcessingLatency(stats *capturestats.Stats, isRequest bool, t akinet.ParsedNetworkTraffic) {
 	if w.isRequest == isRequest {
-		atomic.AddUint64(&CountSameDirectionMerges, 1)
+		stats.IncrSameDirectionMerges()
 		if isRequest {
 			printer.Debugln("Skipping latency calculation. Matched 2 requests together.")
 		} else {
@@ -188,7 +133,7 @@ func (w *witnessWithInfo) computeProcessingLatency(isRequest bool, t akinet.Pars
 
 	latency := float32(responseStart.Sub(requestEnd).Microseconds()) / 1000.0
 	if latency < 0.0 {
-		recordNegativeLatency(latency)
+		stats.RecordNegativeLatency(latency)
 		printer.Debugf("Negative latency calculation: %v\n", latency)
 	}
 
@@ -238,6 +183,14 @@ type BackendCollector struct {
 	redactor *data_masks.Redactor
 
 	telemetry telemetry.Tracker
+
+	// Capture-diagnostics counters for the apidump session this collector
+	// belongs to. One BackendCollector is created per apidump.Run() call (two
+	// if HTTPS capture is also enabled), so stats being a field here -- rather
+	// than a package-level counter -- is what keeps pairing outcomes and
+	// negative-latency counts scoped to the pod this collector is uploading
+	// witnesses for, instead of every pod the node happens to monitor.
+	stats *capturestats.Stats
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -255,6 +208,7 @@ func NewBackendCollector(
 	plugins []plugin.AkitaPlugin,
 	uploadReportBuffers int,
 	telemetry telemetry.Tracker,
+	stats *capturestats.Stats,
 ) Collector {
 	// Compile the regexps for the always capture payloads.
 	alwaysCapturePayloadsPathsRegex := []*regexp.Regexp{}
@@ -280,6 +234,7 @@ func NewBackendCollector(
 		alwaysCapturePayloadsPathsRegex: alwaysCapturePayloadsPathsRegex,
 		redactor:                        redactor,
 		telemetry:                       telemetry,
+		stats:                           stats,
 	}
 
 	col.uploadReportBatch = batcher.NewInMemory(
@@ -312,6 +267,14 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	}
 
 	if parseHTTPErr != nil {
+		// This message already passed prefilter, filters, rate limiting, and
+		// sampling -- postfilter's PacketCountCollector counted it as a
+		// request or response before we ever got here -- so this failure is
+		// invisible to the prefilter/postfilter comparison. It is the other
+		// half of the request or response we are about to silently drop:
+		// whichever side of the pair this was, no witness will be produced
+		// for it.
+		c.stats.IncrWitnessParseFailed()
 		c.telemetry.RateLimitError("parse HTTP", parseHTTPErr)
 		printer.Debugf("Failed to parse HTTP, skipping: %v\n", parseHTTPErr)
 		return nil
@@ -329,7 +292,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			// Combine the pair, merging the result into the existing item
 			// rather than the new partial.
 			learn.MergeWitness(pair.witness, partial.Witness)
-			pair.computeProcessingLatency(isRequest, t)
+			pair.computeProcessingLatency(c.stats, isRequest, t)
 
 			// Backfill direction if the first-seen half didn't carry one. Both
 			// halves of an eBPF pair report the same direction, so this is a
@@ -345,7 +308,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 				pair.srcPort, pair.dstPort = pair.dstPort, pair.srcPort
 			}
 
-			atomic.AddUint64(&CountWitnessesPaired, 1)
+			c.stats.IncrWitnessesPaired()
 			c.queueUpload(pair)
 			printer.Debugf("Completed witness %v direction=%s at %v -- %v\n",
 				partial.PairKey, pair.direction, t.ObservationTime, t.FinalPacketTime)
@@ -527,9 +490,9 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 			// as missing_latency, so these two counters are the agent-side
 			// equivalents of those drop reasons.
 			if e.isRequest {
-				atomic.AddUint64(&CountUnpairedRequestsFlushed, 1)
+				c.stats.IncrUnpairedRequestsFlushed()
 			} else {
-				atomic.AddUint64(&CountUnpairedResponsesFlushed, 1)
+				c.stats.IncrUnpairedResponsesFlushed()
 			}
 
 			c.queueUpload(e)
