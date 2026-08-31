@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
@@ -212,6 +213,10 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 
 				if flushed != 0 || closed != 0 {
 					printer.Debugf("%d flushed, %d closed\n", flushed, closed)
+				}
+				if flushed != 0 {
+					printer.Debugf("TCP reassembly gap: flushed %d stream(s) early because expected data never arrived\n", flushed)
+					atomic.AddUint64(&CountReassemblyGapFlushed, uint64(flushed))
 				}
 			}
 		}

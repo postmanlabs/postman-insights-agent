@@ -81,7 +81,7 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, prefilter, postf
 	printer.Stderr.Infof(
 		"Capture diagnostics: client=%s pod=%s service=%s "+
 			"kernel[recv=%d drop=%d ifdrop=%d] "+
-			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d] "+
+			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d reassembly_gap_flushed=%d] "+
 			"discarded[req=%d resp=%d other=%d] "+
 			"chain[resp_no_request=%d] "+
 			"pair[ok=%d req_only=%d resp_only=%d same_dir_merge=%d] "+
@@ -106,6 +106,11 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, prefilter, postf
 		atomic.LoadUint64(&pcap.CountNilAssemblerContextAfterParse),
 		atomic.LoadUint64(&pcap.CountZeroValuePacketTimestamp),
 		atomic.LoadUint64(&pcap.CountLastPacketBeforeFirstPacket),
+
+		// TCP streams the reassembler force-flushed because a sequence-number
+		// gap sat unfilled past its timeout -- the local counterpart of the
+		// capture_gap_truncated_flushed telemetry event.
+		atomic.LoadUint64(&pcap.CountReassemblyGapFlushed),
 
 		// The same failures as nil_ctx and bad_ctx, but split by which half we
 		// threw away. This is the pair to read for the "response starts in a

@@ -103,6 +103,14 @@ var (
 	CountDiscardedOther     uint64
 )
 
+// CountReassemblyGapFlushed counts TCP streams the reassembler force-flushed
+// because a sequence-number gap sat unfilled past its timeout -- i.e. bytes we
+// expected never arrived and we gave up waiting for them. Whatever the stream
+// was mid-message when this happens gets truncated, which is the same event
+// telemetry reports upstream as capture_gap_truncated_flushed; this is the
+// local, always-on counterpart surfaced in the capture diagnostics log.
+var CountReassemblyGapFlushed uint64
+
 // Names reported by the akinet HTTP parser factories.
 const (
 	httpRequestParserFactoryName  = "HTTP/1.x Request Parser Factory"
