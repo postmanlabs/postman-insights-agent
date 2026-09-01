@@ -13,13 +13,13 @@ import (
 )
 
 func TestCoverageTrackerRecordsStableTransitions(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	tracker := NewCoverageTracker("agent-1", 10)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "api-abc", Namespace: "prod", UID: "uid-1"}}
 	tracker.Observe(pod, CoveragePodDiscovered, "", "")
 	tracker.Observe(pod, CoverageDiscoveryFilterPassed, "passed_filters", "prod/api")
 
 	snapshot := tracker.Snapshot()
-	if snapshot.AgentID != "agent-1" || snapshot.RunID != "run-1" {
+	if snapshot.AgentID != "agent-1" {
 		t.Fatalf("snapshot identity = %+v", snapshot)
 	}
 	if len(snapshot.Targets) != 1 {
@@ -35,7 +35,7 @@ func TestCoverageTrackerRecordsStableTransitions(t *testing.T) {
 }
 
 func TestCoverageTrackerIsBounded(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 1)
+	tracker := NewCoverageTracker("agent-1", 1)
 	tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}, CoveragePodDiscovered, "", "")
 	tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-2"}}, CoveragePodDiscovered, "", "")
 
@@ -49,7 +49,7 @@ func TestCoverageTrackerIsBounded(t *testing.T) {
 // informer replays its cache on registration and on every resync, so counting
 // these would inflate the funnel's denominator.
 func TestCoverageTrackerTreatsRepeatObservationAsReplay(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	tracker := NewCoverageTracker("agent-1", 10)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
 
 	if changed := tracker.Observe(pod, CoveragePodDiscovered, "", ""); !changed {
@@ -77,7 +77,7 @@ func TestCoverageTrackerTreatsRepeatObservationAsReplay(t *testing.T) {
 // that have long since advanced further. Observe must not let that replay
 // regress an already-advanced target back to an earlier stage.
 func TestCoverageTrackerIgnoresResyncRegression(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	tracker := NewCoverageTracker("agent-1", 10)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
 
 	tracker.Observe(pod, CoveragePodDiscovered, "", "")
@@ -110,7 +110,7 @@ func TestCoverageTrackerIgnoresResyncRegression(t *testing.T) {
 // loop). The rank guard must reject that stale replay rather than regress an
 // already-service_resolved target back to pod_configured.
 func TestCoverageTrackerIgnoresPodConfiguredReplayAfterServiceResolved(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	tracker := NewCoverageTracker("agent-1", 10)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
 
 	tracker.Observe(pod, CoveragePodDiscovered, "", "")
@@ -130,7 +130,7 @@ func TestCoverageTrackerIgnoresPodConfiguredReplayAfterServiceResolved(t *testin
 }
 
 func TestCoverageTrackerConcurrentObserveAndSnapshot(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 100)
+	tracker := NewCoverageTracker("agent-1", 100)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
 	var wg sync.WaitGroup
 	var reason atomic.Int64
@@ -153,7 +153,7 @@ func TestCoverageTrackerConcurrentObserveAndSnapshot(t *testing.T) {
 }
 
 func TestCoverageTrackerReportsCaptureAndUploadLiveness(t *testing.T) {
-	tracker := NewCoverageTracker("agent-1", "run-1", 10)
+	tracker := NewCoverageTracker("agent-1", 10)
 	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "uid-1"}}
 	tracker.Observe(pod, CoveragePodDiscovered, "", "")
 

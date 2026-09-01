@@ -16,7 +16,7 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 
 	d := &Daemonset{
 		ClusterName: "test-cluster",
-		Coverage:    NewCoverageTracker("agent-1", "run-1", 10),
+		Coverage:    NewCoverageTracker("agent-1", 10),
 		FrontClient: mockClient,
 	}
 	d.recordTelemetryEvent("pod-a", "pod_discovered")

@@ -94,8 +94,6 @@ type CounterType string
 const (
 	// CounterTypeIntervalDelta is activity within [WindowStart, WindowEnd).
 	CounterTypeIntervalDelta CounterType = "interval_delta"
-	// CounterTypeRunTotal is monotonic within a run ID and resets on restart.
-	CounterTypeRunTotal CounterType = "run_total"
 )
 
 // AgentState is a self-reported summary of whether the DaemonSet agent
@@ -115,7 +113,6 @@ type DaemonsetTelemetryRequest struct {
 	Type              TelemetryType `json:"type,omitempty"`
 	Event             string        `json:"event,omitempty"`
 	AgentID           string        `json:"agent_id,omitempty"`
-	RunID             string        `json:"run_id,omitempty"`
 	Sequence          uint64        `json:"sequence,omitempty"`
 	SchemaVersion     string        `json:"schema_version,omitempty"`
 	KubernetesCluster string        `json:"kubernetes_cluster,omitempty"`
@@ -160,7 +157,7 @@ type DaemonsetTelemetryRequest struct {
 	// mean ~240 requests per interval. Events carries exactly those rows
 	// inline instead: each element is a self-contained
 	// DaemonsetTelemetryRequest (its own Type/Event/TargetID/Count/etc.), and
-	// the outer request's identity fields (AgentID, RunID, KubernetesCluster,
+	// the outer request's identity fields (AgentID, KubernetesCluster,
 	// Sequence, ...) apply to the whole batch, not repeated per element. A
 	// consumer that has never seen this field simply ignores it and still
 	// gets the outer request's own event -- additive, not breaking.

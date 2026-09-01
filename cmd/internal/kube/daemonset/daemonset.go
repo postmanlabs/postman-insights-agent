@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
@@ -93,7 +92,6 @@ type Daemonset struct {
 	PodFilter         *PodFilter
 	Coverage          *CoverageTracker
 	AgentID           string
-	RunID             string
 	telemetrySequence uint64
 
 	// telemetryEventsMu guards both the pending counters and the start of the
@@ -217,8 +215,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 	// Send initial telemetry
 	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
 	agentID := akid.String(telemetry.GetClientID())
-	runID := uuid.NewString()
-	coverage := NewCoverageTracker(agentID, runID, 1000)
+	coverage := NewCoverageTracker(agentID, 1000)
 	if clusterName == "" && args.DiscoveryMode {
 		return errors.New(
 			"discovery mode requires a cluster name: set POSTMAN_INSIGHTS_CLUSTER_NAME env var",
@@ -243,9 +240,9 @@ func StartDaemonset(args DaemonsetArgs) error {
 		// heartbeat uses so the two cannot collide; no targets exist yet, so the
 		// snapshot is deliberately omitted rather than sent as an empty array.
 		err := frontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
-			Type:    rest.TelemetryTypeEvents,
-			Event:   "agent_started",
-			AgentID: agentID, RunID: runID,
+			Type:              rest.TelemetryTypeEvents,
+			Event:             "agent_started",
+			AgentID:           agentID,
 			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
 			SchemaVersion:     "v1",
 			KubernetesCluster: clusterName,
@@ -265,15 +262,15 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
-		sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "kubernetes_client_init_failed")
+		sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "kubernetes_client_init_failed")
 		return errors.Wrap(err, "failed to create kube client")
 	}
 	if clusterName != "" {
 		kubeClientCtx, kubeClientCancel := context.WithTimeout(context.Background(), apiContextTimeout)
 		err := frontClient.PostDaemonsetAgentTelemetry(kubeClientCtx, rest.DaemonsetTelemetryRequest{
-			Type:    rest.TelemetryTypeEvents,
-			Event:   "kubernetes_client_ready",
-			AgentID: agentID, RunID: runID,
+			Type:              rest.TelemetryTypeEvents,
+			Event:             "kubernetes_client_ready",
+			AgentID:           agentID,
 			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
 			SchemaVersion:     "v1",
 			KubernetesCluster: clusterName,
@@ -287,7 +284,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
-		sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "cri_client_init_failed")
+		sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "cri_client_init_failed")
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
@@ -309,7 +306,6 @@ func StartDaemonset(args DaemonsetArgs) error {
 		HTTPSNoThermostat:        args.HTTPSNoThermostat,
 		Coverage:                 coverage,
 		AgentID:                  agentID,
-		RunID:                    runID,
 		telemetrySequence:        telemetrySequence,
 		telemetryWindowStart:     time.Now().UTC(),
 		agentState:               rest.AgentStateHealthy,
@@ -320,7 +316,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 	if args.DiscoveryMode {
 		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
 		if apiKey == "" {
-			sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "discovery_api_key_missing")
+			sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "discovery_api_key_missing")
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
 		daemonsetRun.InsightsAPIKey = apiKey
@@ -332,7 +328,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 			args.ExcludeLabels,
 		)
 		if err != nil {
-			sendAgentFailed(frontClient, agentID, runID, clusterName, &telemetrySequence, "pod_filter_init_failed")
+			sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "pod_filter_init_failed")
 			return errors.Wrap(err, "failed to create pod filter")
 		}
 		daemonsetRun.PodFilter = podFilter
@@ -426,7 +422,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
-		sendAgentFailed(d.FrontClient, d.AgentID, d.RunID, d.ClusterName, &d.telemetrySequence, "informer_registration_failed")
+		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, &d.telemetrySequence, "informer_registration_failed")
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
@@ -435,7 +431,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
-		sendAgentFailed(d.FrontClient, d.AgentID, d.RunID, d.ClusterName, &d.telemetrySequence, "pod_reconciliation_failed")
+		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, &d.telemetrySequence, "pod_reconciliation_failed")
 		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
 	}
 
@@ -490,7 +486,6 @@ func (d *Daemonset) sendAgentStopped() {
 		Type:              rest.TelemetryTypeEvents,
 		Event:             "agent_stopped",
 		AgentID:           d.AgentID,
-		RunID:             d.RunID,
 		Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
 		SchemaVersion:     "v1",
 		KubernetesCluster: d.ClusterName,
@@ -508,7 +503,7 @@ func (d *Daemonset) sendAgentStopped() {
 // a normalized category. Used both before the Daemonset struct exists (early
 // StartDaemonset failures) and from within Run(), so it takes its telemetry
 // coordinates directly rather than a *Daemonset receiver.
-func sendAgentFailed(frontClient rest.FrontClient, agentID, runID, clusterName string, sequence *uint64, category string) {
+func sendAgentFailed(frontClient rest.FrontClient, agentID, clusterName string, sequence *uint64, category string) {
 	if clusterName == "" {
 		return
 	}
@@ -518,7 +513,6 @@ func sendAgentFailed(frontClient rest.FrontClient, agentID, runID, clusterName s
 		Type:              rest.TelemetryTypeEvents,
 		Event:             "agent_failed",
 		AgentID:           agentID,
-		RunID:             runID,
 		Sequence:          atomic.AddUint64(sequence, 1),
 		SchemaVersion:     "v1",
 		KubernetesCluster: clusterName,

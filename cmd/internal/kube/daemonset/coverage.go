@@ -204,7 +204,6 @@ type CoverageTarget struct {
 
 type CoverageSnapshot struct {
 	AgentID string           `json:"agent_id"`
-	RunID   string           `json:"run_id"`
 	Targets []CoverageTarget `json:"targets"`
 
 	// TruncatedTargets counts targets the tracker refused to admit because it was
@@ -228,7 +227,6 @@ type CoverageSnapshot struct {
 type CoverageTracker struct {
 	mu               sync.RWMutex
 	agentID          string
-	runID            string
 	maxTargets       int
 	targets          map[string]*CoverageTarget
 	truncatedTargets uint64
@@ -336,13 +334,12 @@ func (d *Daemonset) observeCoverageError(pod corev1.Pod, err error) {
 	}
 }
 
-func NewCoverageTracker(agentID, runID string, maxTargets int) *CoverageTracker {
+func NewCoverageTracker(agentID string, maxTargets int) *CoverageTracker {
 	if maxTargets <= 0 {
 		maxTargets = 1000
 	}
 	return &CoverageTracker{
 		agentID:    agentID,
-		runID:      runID,
 		maxTargets: maxTargets,
 		targets:    make(map[string]*CoverageTarget),
 	}
@@ -667,7 +664,6 @@ func (t *CoverageTracker) Snapshot() CoverageSnapshot {
 	}
 	return CoverageSnapshot{
 		AgentID:          t.agentID,
-		RunID:            t.runID,
 		Targets:          targets,
 		TruncatedTargets: t.truncatedTargets,
 		StageCounts:      stageCounts,

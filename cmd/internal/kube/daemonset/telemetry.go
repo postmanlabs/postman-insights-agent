@@ -59,7 +59,6 @@ func (d *Daemonset) sendTelemetry() {
 		Type:              rest.TelemetryTypeSnapshot,
 		Event:             "agent_heartbeat",
 		AgentID:           snapshot.AgentID,
-		RunID:             snapshot.RunID,
 		Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
 		SchemaVersion:     "v1",
 		KubernetesCluster: d.ClusterName,
