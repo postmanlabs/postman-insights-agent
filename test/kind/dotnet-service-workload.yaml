@@ -1,0 +1,44 @@
+# ASP.NET Core combined test workload: REST HTTPS (:8443) + gRPC-TLS (:8446).
+#
+# Capture: postman-insights-agent DaemonSet → apidump-ebpf (libssl uprobes).
+# Models customer ASP.NET Core + OpenSSL self-signed cert on 8443.
+#
+# Deploy: ./test/kind/deploy-dotnet-service.sh
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dotnet-service
+  namespace: test-apps
+  labels:
+    app: dotnet-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dotnet-service
+  template:
+    metadata:
+      labels:
+        app: dotnet-service
+    spec:
+      containers:
+      - name: app
+        image: pia-dotnet-service:test
+        imagePullPolicy: Never
+        command: ["sh", "-c"]
+        args: ["dotnet DotnetService.dll"]
+        env:
+        - name: EXTERNAL_HTTPS_BASE
+          value: "https://node-service:8443"
+        ports:
+        - containerPort: 8443
+        - containerPort: 8446
+        volumeMounts:
+        - name: tls
+          mountPath: /tls
+          readOnly: true
+      volumes:
+      - name: tls
+        configMap:
+          name: test-apps-tls
