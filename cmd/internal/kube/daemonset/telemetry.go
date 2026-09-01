@@ -115,10 +115,21 @@ func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time) []rest.DaemonsetTe
 	var events []rest.DaemonsetTelemetryRequest
 	for event, targets := range pending {
 		for targetID, count := range targets {
+			// Best-effort as of drain time, not as of when each increment
+			// happened: a target discovered mid-window resolves its service
+			// partway through, so a window's total can end up attributed to
+			// a service the target settled on only near the end of it. That
+			// is the same imprecision StageCounts already has (a
+			// point-in-time gauge, not a per-increment attribution), and
+			// resolving it exactly would mean stamping identity on every
+			// single recordTelemetryEvent call instead of once per window.
+			serviceID, teamID := d.Coverage.TargetIdentity(targetID)
 			events = append(events, rest.DaemonsetTelemetryRequest{
 				Type:        rest.TelemetryTypeEvents,
 				Event:       event,
 				TargetID:    targetID,
+				ServiceID:   serviceID,
+				TeamID:      teamID,
 				Count:       count,
 				CounterType: rest.CounterTypeIntervalDelta,
 				WindowStart: &windowStart,

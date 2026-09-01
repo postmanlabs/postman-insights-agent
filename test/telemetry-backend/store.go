@@ -33,6 +33,14 @@ type telemetryRequest struct {
 	TargetID     string            `json:"target_id,omitempty"`
 	Count        uint64            `json:"count,omitempty"`
 
+	// ServiceID/TeamID are a counter/coverage event's own target-scoped
+	// identity (rest.DaemonsetTelemetryRequest.ServiceID/TeamID). Present
+	// only on rows with a TargetID -- agent-scope rows (agent_started,
+	// agent_heartbeat, agent_stopped, agent_failed) never carry these, which
+	// is exactly the split the two dashboard sections below key off of.
+	ServiceID string `json:"service_id,omitempty"`
+	TeamID    string `json:"team_id,omitempty"`
+
 	// Counter-window metadata. Present on `type: events` rows only; a counter
 	// without these cannot be interpreted, so surface them for inspection.
 	CounterType string     `json:"counter_type,omitempty"`
@@ -235,6 +243,8 @@ func (s *store) inspectTelemetry(c *ivy.Context) error {
 		{"type", "json_extract(payload, '$.type') = ?"},
 		{"event", "json_extract(payload, '$.event') = ?"},
 		{"target_id", "json_extract(payload, '$.target_id') = ?"},
+		{"service_id", "json_extract(payload, '$.service_id') = ?"},
+		{"team_id", "json_extract(payload, '$.team_id') = ?"},
 		{"agent_id", "agent_id = ?"},
 		{"run_id", "run_id = ?"},
 		{"cluster", "cluster = ?"},
@@ -244,6 +254,17 @@ func (s *store) inspectTelemetry(c *ivy.Context) error {
 			conditions = append(conditions, filter.expression)
 			args = append(args, value)
 		}
+	}
+	// scope mirrors the two-table split on the real backend
+	// (daemonset_agent_lifecycle_events vs daemonset_agent_counters):
+	// agent-scope rows never carry a target_id, every counter/coverage row
+	// always does. There is no dedicated column for this locally, so it is
+	// derived from the same payload field the target_id filter above reads.
+	switch c.QueryParam("scope") {
+	case "agent":
+		conditions = append(conditions, "(json_extract(payload, '$.target_id') IS NULL OR json_extract(payload, '$.target_id') = '')")
+	case "pod":
+		conditions = append(conditions, "(json_extract(payload, '$.target_id') IS NOT NULL AND json_extract(payload, '$.target_id') != '')")
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -255,7 +276,12 @@ func (s *store) inspectTelemetry(c *ivy.Context) error {
 		return c.Status(500).JSON(map[string]string{"error": err.Error()})
 	}
 	defer rows.Close()
-	var records []telemetryRecord
+	// []telemetryRecord{}, not a nil var: a filter with no matches is the
+	// normal case for the per-view raw logs now that scope/team_id/
+	// service_id narrow things down, and the dashboard JS calls
+	// records.length on the result -- a JSON `null` response would throw
+	// there instead of rendering an empty table.
+	records := []telemetryRecord{}
 	for rows.Next() {
 		var record telemetryRecord
 		var received string

@@ -9,7 +9,7 @@ require (
 	github.com/OneOfOne/xxhash v1.2.8
 	github.com/Pallinder/go-randomdata v1.2.0
 	github.com/akitasoftware/akita-ir v0.0.0-20250819204808-cf56d019e1b4
-	github.com/akitasoftware/akita-libs v0.0.0-20260831154642-f4caa0314a89
+	github.com/akitasoftware/akita-libs v0.0.0-20260901100018-e75c9d3b5b1e
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1
@@ -126,3 +126,7 @@ require (
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 )
+
+// Merging google/gopacket into akitasoftware/gopacket does not
+// bring along any tags, such as the v1.1.19 release.
+replace github.com/google/gopacket v1.1.19 => github.com/akitasoftware/gopacket v1.1.18-0.20240820200020-7289ae956f70

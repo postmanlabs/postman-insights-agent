@@ -48,5 +48,12 @@ func newRouter(store *store) *ivy.Router {
 	router.Get("/api/agents", store.apiAgents)
 	router.Get("/api/targets", store.apiTargets)
 	router.Get("/api/drop-reasons", store.apiDropReasons)
+	router.Get("/api/drop-reasons/by-cluster", store.apiDropReasonsByCluster)
+	router.Get("/api/failure-breakdown", store.apiFailureBreakdown)
+	router.Get("/api/agent-lifecycle", store.apiAgentLifecycle)
+	router.Get("/api/version-adoption", store.apiVersionAdoption)
+	router.Get("/api/cluster-inventory", store.apiClusterInventory)
+	router.Get("/api/sequence-gaps", store.apiSequenceGaps)
+	router.Get("/api/window-gaps", store.apiWindowGaps)
 	return router
 }
