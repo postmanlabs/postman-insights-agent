@@ -92,5 +92,5 @@ func (p *pairSequencer) pairSeqForFactory(factory akinet.TCPParserFactory) reass
 }
 
 func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {
-	return factory.Name() == "HTTP/1.x Request Parser Factory"
+	return factory.Name() == httpRequestParserFactoryName
 }

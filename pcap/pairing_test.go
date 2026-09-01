@@ -21,7 +21,7 @@ import (
 // can be tested in isolation from real HTTP parsing.
 type fakeHTTPRequestFactory struct{}
 
-func (fakeHTTPRequestFactory) Name() string { return "HTTP/1.x Request Parser Factory" }
+func (fakeHTTPRequestFactory) Name() string { return httpRequestParserFactoryName }
 
 func (fakeHTTPRequestFactory) Accepts(input memview.MemView, isEnd bool) (akinet.AcceptDecision, int64) {
 	return akinet.Reject, 0
@@ -89,6 +89,11 @@ func setupPairingTestParser(useSyntheticPairing bool, pkts []gopacket.Packet, si
 			switch pkt.Content.(type) {
 			case akinet.HTTPRequest, akinet.HTTPResponse:
 				out <- pkt
+			default:
+				// e.g. TCPPacketMetadata today; release on principle so this
+				// doesn't start leaking if a content type that does hold a
+				// buffer gets added to the filter's default case later.
+				pkt.Content.ReleaseBuffers()
 			}
 		}
 	}()
