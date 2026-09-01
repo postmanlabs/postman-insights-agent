@@ -62,6 +62,24 @@ func CreatePacketWithSeq(src, dst net.IP, srcPort, dstPort int, payload []byte, 
 	return gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
 }
 
+// CreatePacketWithSeqAndAck is like CreatePacketWithSeq but also sets the
+// ACK number explicitly, needed to construct packets that exercise TCP
+// seq/ack-based HTTP pairing (see pairing_test.go).
+func CreatePacketWithSeqAndAck(src, dst net.IP, srcPort, dstPort int, payload []byte, seq, ack uint32) gopacket.Packet {
+	ethernetLayer, ipLayer, tcpLayer := createPacketLayers(src, dst, srcPort, dstPort, seq)
+	tcpLayer.ACK = true
+	tcpLayer.Ack = ack
+	buffer := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true}
+	gopacket.SerializeLayers(buffer, opts,
+		ethernetLayer,
+		ipLayer,
+		tcpLayer,
+		gopacket.Payload(payload),
+	)
+	return gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+}
+
 func CreateUDPPacket(src, dst net.IP, srcPort, dstPort int, payload []byte) gopacket.Packet {
 	ethernetLayer := &layers.Ethernet{
 		EthernetType: layers.EthernetTypeIPv4,

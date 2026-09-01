@@ -57,6 +57,17 @@ func Collect(
 	}
 
 	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry, stats)
+	parser.useSyntheticPairing = syntheticTCPPairingEnabled()
+
+	podName, ok := traceTags[tags.XAkitaKubernetesPod]
+	if !ok {
+		podName = "unknown"
+	}
+	if parser.useSyntheticPairing {
+		printer.Infof("HTTP/1.x request/response pairing: using synthetic per-connection FIFO ordinal (POSTMAN_INSIGHTS_AGENT_SYNTHETIC_TCP_PAIRING=true), interface=%s svc=%v pod=%v\n", intf, serviceID, podName)
+	} else {
+		printer.Infof("HTTP/1.x request/response pairing: using TCP seq/ack (default), interface=%s svc=%v pod=%v\n", intf, serviceID, podName)
+	}
 
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
