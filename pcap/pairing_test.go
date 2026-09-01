@@ -148,6 +148,13 @@ func TestSyntheticTCPPairingFixesKeepAliveMismatch(t *testing.T) {
 		}
 	}
 
+	// collect does not release buffers itself: HTTPRequest/HTTPResponse's
+	// buffer field is an interface (buffer_pool.Buffer), so releasing it
+	// affects every copy of the struct that shares it, including the ones
+	// returned here. Releasing before the caller's assertions run would make
+	// any field beyond Seq (an independent int, unaffected by the buffer
+	// pool) unsafe to read. Callers must release via releasePairingTestTraffic
+	// once they're done with the returned values.
 	collect := func(useSyntheticPairing bool) (reqs []akinet.HTTPRequest, resps []akinet.HTTPResponse) {
 		closeChan := make(chan struct{})
 		defer close(closeChan)
@@ -164,13 +171,14 @@ func TestSyntheticTCPPairingFixesKeepAliveMismatch(t *testing.T) {
 			case akinet.HTTPResponse:
 				resps = append(resps, c)
 			}
-			pkt.Content.ReleaseBuffers()
 		}
 		return reqs, resps
 	}
 
 	t.Run("existing seq/ack pairing: second exchange mismatches", func(t *testing.T) {
 		reqs, resps := collect(false)
+		defer releasePairingTestTraffic(reqs, resps)
+
 		if len(reqs) != 2 || len(resps) != 2 {
 			t.Fatalf("expected 2 requests and 2 responses, got %d requests and %d responses", len(reqs), len(resps))
 		}
@@ -184,6 +192,8 @@ func TestSyntheticTCPPairingFixesKeepAliveMismatch(t *testing.T) {
 
 	t.Run("synthetic pairing: both exchanges match", func(t *testing.T) {
 		reqs, resps := collect(true)
+		defer releasePairingTestTraffic(reqs, resps)
+
 		if len(reqs) != 2 || len(resps) != 2 {
 			t.Fatalf("expected 2 requests and 2 responses, got %d requests and %d responses", len(reqs), len(resps))
 		}
@@ -194,4 +204,13 @@ func TestSyntheticTCPPairingFixesKeepAliveMismatch(t *testing.T) {
 			t.Errorf("expected second exchange to MATCH under synthetic pairing (this is the fix), but request.Seq=%d != response.Seq=%d", reqs[1].Seq, resps[1].Seq)
 		}
 	})
+}
+
+func releasePairingTestTraffic(reqs []akinet.HTTPRequest, resps []akinet.HTTPResponse) {
+	for _, r := range reqs {
+		r.ReleaseBuffers()
+	}
+	for _, r := range resps {
+		r.ReleaseBuffers()
+	}
 }

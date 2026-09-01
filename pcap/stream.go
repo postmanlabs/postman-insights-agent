@@ -143,11 +143,17 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
 				return
 			}
-			if f.pairSeq != nil {
-				// Synthetic pairing enabled: ignore the real TCP seq/ack and use a
-				// shared per-connection FIFO ordinal instead, mirroring
+			if f.pairSeq != nil && isHTTPParserFactory(fact) {
+				// Synthetic pairing enabled, and this is an HTTP/1.x request or
+				// response: ignore the real TCP seq/ack and use a shared
+				// per-connection FIFO ordinal instead, mirroring
 				// ebpf/events/adapter.go's tlsConnState.pairSeqForFactory. See
 				// pairing.go for why the real numbers are unreliable here.
+				//
+				// Scoped to HTTP only -- TLS/HTTP2-preface/etc. keep the real
+				// seq/ack, even when the flag is on, since this fix only concerns
+				// HTTP/1.x pairing and other factories have no reason to see
+				// substituted values.
 				synthSeq := f.pairSeq.pairSeqForFactory(fact)
 				f.currentParser = fact.CreateParser(f.bidiID, synthSeq, synthSeq)
 			} else {

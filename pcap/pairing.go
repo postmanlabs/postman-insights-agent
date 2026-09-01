@@ -58,12 +58,12 @@ func syntheticTCPPairingEnabled() bool {
 // only ever touched by the single goroutine that drives TCP reassembly for
 // the interface owning this connection (see NetworkTrafficParser.ParseFromInterface).
 //
-// Non-HTTP-request factories (HTTP response, TLS handshake, HTTP/2 preface)
-// all fall into the "pop" branch below. That's harmless for TLS and HTTP/2
-// preface: pcap never extracts HTTP witnesses from those (TLS-encrypted
-// traffic is opaque to pcap, and the HTTP/2 preface parser is a one-time
-// sink), so the one counter value they consume is never compared against
-// anything.
+// Only reached for HTTP/1.x request/response factories -- see
+// isHTTPParserFactory and its call site in tcpFlow.reassembled. TLS,
+// HTTP/2-preface, and any other factory keep the real ctx.seq/ctx.ack
+// unconditionally, even when synthetic pairing is enabled, since this fix
+// only concerns HTTP/1.x pairing and those factories' CreateParser
+// implementations don't use their seq/ack params at all today.
 type pairSequencer struct {
 	nextPairIdx       int
 	unmatchedRequests []int
@@ -93,4 +93,14 @@ func (p *pairSequencer) pairSeqForFactory(factory akinet.TCPParserFactory) reass
 
 func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {
 	return factory.Name() == httpRequestParserFactoryName
+}
+
+// isHTTPParserFactory reports whether factory is the HTTP/1.x request or
+// response parser factory -- the only two whose pairing key
+// (akinet/http/parser.go's newHTTPParser) is derived from seq/ack. This
+// gates which factories get the synthetic ordinal substituted in for
+// ctx.seq/ctx.ack at pairSequencer's call site in tcpFlow.reassembled.
+func isHTTPParserFactory(factory akinet.TCPParserFactory) bool {
+	name := factory.Name()
+	return name == httpRequestParserFactoryName || name == httpResponseParserFactoryName
 }
