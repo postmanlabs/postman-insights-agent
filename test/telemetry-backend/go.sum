@@ -1,6 +1,0 @@
-github.com/mattn/go-sqlite3 v1.14.24 h1:tpSp2G2KyMnnQu99ngJ47EIkWVmliIizyZBfPrBWDRM=
-github.com/mattn/go-sqlite3 v1.14.24/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
-github.com/nxtcoder17/fastlog v0.0.0-20260627152536-8a7ba81411c1 h1:w6du+SGOWA/F1/t+8Q44RMgBcYdNvhgICbqV50ZDNOU=
-github.com/nxtcoder17/fastlog v0.0.0-20260627152536-8a7ba81411c1/go.mod h1:7c4hiLHr818voNoAD7+y/MbdFW8eqbhIzRh5C0qDXqc=
-github.com/nxtcoder17/ivy v0.0.0-20260811180309-ab4aa0450f5d h1:LjEL1xDXN4+tsJurGJWidVdLGikwleNe9/+eh4jOrdQ=
-github.com/nxtcoder17/ivy v0.0.0-20260811180309-ab4aa0450f5d/go.mod h1:JLP+9W8NkN2qxIiolJRTMDFFjFOcI2CMqAlC1Dqp2LI=
