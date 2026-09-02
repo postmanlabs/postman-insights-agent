@@ -28,12 +28,12 @@ const (
 	// failing silently. They replace the single CoverageEligible stage, which
 	// used to share one `current_stage` value between "passed" and "rejected"
 	// outcomes; that conflation made a rejected pod count toward the same
-	// funnel gauge as a passed one (D3 in the events matrix).
+	// funnel gauge as a passed one.
 	CoverageDiscoveryFilterPassed   CoverageStage = "discovery_filter_passed"
 	CoverageDiscoveryFilterRejected CoverageStage = "discovery_filter_rejected"
 
 	// CoveragePodAlreadyInstrumented was the "this pod already has the agent
-	// sidecar, so the daemonset defers to it" coverage stage. Removed (D16):
+	// sidecar, so the daemonset defers to it" coverage stage. Removed because
 	// this daemonset is never deployed alongside a sidecar agent, and the two
 	// watch paths that could reach this case (this file's caller and
 	// StartProcessInExistingPods) disagreed on when they'd observe a
@@ -46,7 +46,7 @@ const (
 	CoveragePodConfigured CoverageStage = "pod_configured"
 
 	// CoveragePodConfigurationFailed is the failed `inspectPodForEnvVars`
-	// outcome. Split out from CoveragePodConfigured (D3): the two used to share
+	// outcome. Split out from CoveragePodConfigured: the two used to share
 	// one stage/event distinguished only by `reason`, the same pass/reject
 	// conflation already fixed for the discovery-filter case via
 	// CoverageDiscoveryFilterPassed/CoverageDiscoveryFilterRejected. A shared
@@ -58,15 +58,15 @@ const (
 	// inside the target's own capture goroutine (via apidump.LookupService).
 	// There used to be a CoverageApidumpStarted stage set the instant the
 	// goroutine was launched, from the daemonset/watcher side -- removed
-	// (D18): that only meant "the goroutine was launched", not "capture is
+	// because that only meant "the goroutine was launched", not "capture is
 	// running", since every real setup checkpoint (interface enumeration,
-	// buffer pool, collector setup, ...) still lay ahead of it. It was the
-	// same premature-signal defect D2 fixed for the apidump_started *event*,
+	// buffer pool, collector setup, ...) still lay ahead of it. It was the same
+	// premature-signal defect already fixed for the apidump_started *event*,
 	// just reintroduced one field over as a coverage *stage*. The real
 	// "capture pipelines are up" fact is still reported -- as the
 	// apidump_started telemetry event from inside apidump.go's Run(), which
 	// intentionally never touches CurrentStage (see the removed
-	// CoverageApidumpStarted's history and D15(b)).
+	// CoverageApidumpStarted's history).
 	CoverageServiceResolved CoverageStage = "service_resolved"
 	CoverageCapturing       CoverageStage = "capturing"
 	CoverageUploading       CoverageStage = "uploading"
@@ -153,8 +153,8 @@ type CoverageTarget struct {
 
 	// Service and ServiceID are backend-confirmed values, set only by
 	// SetResolvedService once apidump.LookupService actually resolves a
-	// service (D4). ServiceNameHint is the discovery filter's guess at a
-	// service name, made before any backend call -- kept separate (R5) so a
+	// service. ServiceNameHint is the discovery filter's guess at a
+	// service name, made before any backend call -- kept separate so a
 	// consumer can never mistake a hint for a confirmed identity.
 	Service         string `json:"service,omitempty"`
 	ServiceNameHint string `json:"service_name_hint,omitempty"`
@@ -275,7 +275,7 @@ func (d *Daemonset) observeCoverage(pod corev1.Pod, stage CoverageStage, reason,
 }
 
 func coverageEventName(stage CoverageStage) string {
-	// D4: this used to special-case CoverageDiscoveryFilterPassed with a
+	// This used to special-case CoverageDiscoveryFilterPassed with a
 	// non-empty service into "service_resolved" -- firing that event off the
 	// discovery filter's guessed name, before any backend call. service_resolved
 	// now only ever comes from apidump.LookupService via SetResolvedService, so
@@ -383,7 +383,7 @@ func (t *CoverageTracker) Observe(pod corev1.Pod, stage CoverageStage, reason, s
 	}
 	if service != "" {
 		// A guess, never a confirmed identity -- see ServiceNameHint's doc
-		// comment and D4/R5 in the events matrix. Real Service/ServiceID only
+		// comment. Real Service/ServiceID only
 		// come from SetResolvedService.
 		target.ServiceNameHint = service
 	}
@@ -536,7 +536,7 @@ func (t *CoverageTracker) SetProjectInfo(podUID, serviceID, workspaceID string) 
 }
 
 // SetResolvedService records the backend-confirmed service ID and name for a
-// target, once apidump.LookupService actually resolves them (D4), and
+// target, once apidump.LookupService actually resolves them, and
 // transitions the target to CoverageServiceResolved so the coverage gauges
 // reflect it. Unlike SetProjectInfo (set at configuration time, before any
 // backend call, from whatever project/workspace ID the pod was configured

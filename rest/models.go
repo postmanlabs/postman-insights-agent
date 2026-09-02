@@ -167,7 +167,7 @@ type DaemonsetTelemetryRequest struct {
 	TeamID string `json:"team_id,omitempty"`
 
 	// Events batches additional, independent events/counters into this same
-	// POST (D1). Every heartbeat interval used to flush its counter map as
+	// POST. Every heartbeat interval used to flush its counter map as
 	// one HTTP request per (event, target) pair -- 40 pods x ~6 events could
 	// mean ~240 requests per interval. Events carries exactly those rows
 	// inline instead: each element is a self-contained

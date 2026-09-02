@@ -248,7 +248,7 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 		// alongside a sidecar agent, and the two watch paths that could hit
 		// this branch (this one and StartProcessInExistingPods) disagreed on
 		// when they'd see a sidecar-bearing pod, producing an unstable
-		// pod_already_instrumented count for no real signal (D16). Filtering
+		// pod_already_instrumented count for no real signal. Filtering
 		// still happens; it's just no longer reported as telemetry.
 		printer.Infof("Pod already has agent sidecar container, skipping, podUID: %s\n", pod.UID)
 		return

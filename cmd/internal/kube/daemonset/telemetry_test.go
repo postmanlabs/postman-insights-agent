@@ -7,7 +7,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/rest"
 )
 
-// D1: a heartbeat interval with counters accumulated for multiple targets
+// A heartbeat interval with counters accumulated for multiple targets
 // must produce exactly one HTTP POST, with the counters attached as Events
 // on that same request -- not one POST per (event, target) pair.
 func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {

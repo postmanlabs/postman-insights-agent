@@ -47,7 +47,7 @@ func (d *Daemonset) sendTelemetry() {
 	}
 	agentStateSince := d.agentStateSince
 
-	// D1: the counter map accumulated since the last flush rides along as
+	// The counter map accumulated since the last flush rides along as
 	// Events on this same heartbeat POST, instead of one HTTP request per
 	// (event, target) pair -- 40 pods x ~6 events used to mean ~240 requests
 	// per interval. drainTelemetryEvents resets the window unconditionally
@@ -95,7 +95,7 @@ func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
 }
 
 // drainTelemetryEvents empties the in-memory counter buffer accumulated
-// since the last flush and returns it as inline batch events (D1) for a
+// since the last flush and returns it as inline batch events for a
 // caller to attach to whatever single request it is about to send (the
 // periodic heartbeat, or the terminal agent_stopped event). The window is
 // reset unconditionally, before the caller's POST is even attempted: gating

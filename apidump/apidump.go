@@ -98,14 +98,14 @@ type DaemonsetArgs struct {
 
 	// SetFailureCategory records a normalized, bounded category for the setup
 	// checkpoint in progress when Run() returned before capture started. Called
-	// at most once, from the same defer that fires apidump_start_failed -- see
-	// D15 in the events matrix: apidump_start_failed was previously gated
-	// correctly but every early-setup failure landed in one bucket with no way
-	// to tell a service-lookup failure from a redactor-init failure.
+	// at most once, from the same defer that fires apidump_start_failed. That
+	// event was already gated correctly, but every early-setup failure landed
+	// in one bucket with no way to tell a service-lookup failure from a
+	// redactor-init failure.
 	SetFailureCategory func(category string) `json:"-"`
 
 	// SetResolvedService records the backend-confirmed service ID and name once
-	// LookupService actually resolves them (D4). Every path through
+	// LookupService actually resolves them. Every path through
 	// LookupService that reaches this point has made a real backend call
 	// (RegisterDiscoveredService, CreateApplication, or a service lookup by ID),
 	// so this is the one place a `service_resolved` value is allowed to come
@@ -558,7 +558,7 @@ func (a *apidump) LookupService() error {
 
 	// service_resolved fires exactly once, here -- after every branch above has
 	// returned successfully with a real backend-confirmed service ID. Never
-	// derived from workload/pod metadata or a discovery-filter guess (D4).
+	// derived from workload/pod metadata or a discovery-filter guess.
 	a.reportTelemetryEvent("service_resolved")
 	a.setResolvedService(akid.String(a.backendSvc), a.backendSvcName)
 
@@ -889,7 +889,7 @@ func (a *apidump) Run() error {
 	// LookupService failing is one of many ways setup can fail (interface
 	// enumeration, redactor init, output-location validation, discovery TTL
 	// already expired, ...), and treating it as the only one silently drops
-	// every other startup failure from telemetry (D2 in the events matrix).
+	// every other startup failure from telemetry.
 	// startupSucceeded flips to true exactly once, right before capture begins;
 	// the deferred check below fires apidump_start_failed for every other
 	// return path in this function, and does nothing once startup has passed.
@@ -1392,7 +1392,7 @@ func (a *apidump) Run() error {
 	startupSucceeded = true
 	args.reportTelemetryEvent("apidump_started")
 
-	// R6: gate capture_started on a real pipeline, not just "did setup finish".
+	// Gate capture_started on a real pipeline, not just "did setup finish".
 	// numCollectors counts pcap goroutines actually launched above -- it is 0
 	// whenever the interface/filter loop had nothing to iterate over, which
 	// len(interfaces) > 0 does not catch (e.g. filters failed to build for

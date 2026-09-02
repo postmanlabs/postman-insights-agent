@@ -491,7 +491,7 @@ func (d *Daemonset) Run() error {
 // and reports a terminal agent_stopped event, so a graceful shutdown leaves a
 // clear end-of-run marker instead of just going quiet until the next
 // heartbeat would have been due. The flushed counters ride along as Events on
-// this same POST (D1), rather than as separate requests.
+// this same POST, rather than as separate requests.
 func (d *Daemonset) sendAgentStopped() {
 	if d.ClusterName == "" {
 		return
