@@ -31,8 +31,8 @@ const (
 	AnnotationOptIn  = "postman.com/insights-enabled"
 	AnnotationOptOut = "postman.com/insights-disabled"
 
-	// Workers intervals
-	DefaultTelemetryInterval      = 5 * time.Minute
+	// Workers intervals.
+	DefaultTelemetryInterval      = 2 * time.Minute
 	DevelopmentTelemetryInterval  = 10 * time.Second
 	DefaultPodHealthCheckInterval = 5 * time.Minute
 )
