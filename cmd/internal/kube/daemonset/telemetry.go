@@ -62,7 +62,8 @@ func (d *Daemonset) sendTelemetry() {
 		Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
 		SchemaVersion:     "v1",
 		KubernetesCluster: d.ClusterName,
-		Environment:       d.InsightsEnvironment,
+		UserID:            d.InsightsUserID,
+		TeamID:            d.InsightsTeamID,
 		AgentVersion:      version.ReleaseVersion().String(),
 		GitVersion:        version.GitVersion(),
 		AgentState:        d.agentState,
@@ -122,12 +123,13 @@ func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time) []rest.DaemonsetTe
 			// point-in-time gauge, not a per-increment attribution), and
 			// resolving it exactly would mean stamping identity on every
 			// single recordTelemetryEvent call instead of once per window.
-			serviceID, teamID := d.Coverage.TargetIdentity(targetID)
+			serviceID, userID, teamID := d.Coverage.TargetIdentity(targetID)
 			events = append(events, rest.DaemonsetTelemetryRequest{
 				Type:        rest.TelemetryTypeEvents,
 				Event:       event,
 				TargetID:    targetID,
 				ServiceID:   serviceID,
+				UserID:      userID,
 				TeamID:      teamID,
 				Count:       count,
 				CounterType: rest.CounterTypeIntervalDelta,

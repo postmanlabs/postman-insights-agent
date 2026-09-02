@@ -583,23 +583,27 @@ func (t *CoverageTracker) SetTrackingUser(podUID, userID, teamID string) {
 	target.TeamID = teamID
 }
 
-// TargetIdentity returns the Postman service (Insights project) and team a
-// target is currently known to belong to, for attaching to telemetry events
-// recorded against this target. Either return value can be empty if the
-// target hasn't reached the relevant stage yet (e.g. SetProjectInfo/
-// SetTrackingUser haven't run) -- that is a real, reportable "not yet
-// resolved" state, not an error, so callers must not treat it as one.
-func (t *CoverageTracker) TargetIdentity(podUID string) (serviceID, teamID string) {
+// TargetIdentity returns the Postman service (Insights project), user, and
+// team a target is currently known to belong to, for attaching to telemetry
+// events recorded against this target. Since the backend treats the
+// agent-reported user/team as the sole tenancy attribution for a row, these
+// are what make a counter attributable to a customer at all.
+//
+// Any return value can be empty if the target hasn't reached the relevant
+// stage yet (e.g. SetProjectInfo/SetTrackingUser haven't run) -- that is a
+// real, reportable "not yet resolved" state, not an error, so callers must
+// not treat it as one.
+func (t *CoverageTracker) TargetIdentity(podUID string) (serviceID, userID, teamID string) {
 	if t == nil || podUID == "" {
-		return "", ""
+		return "", "", ""
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	target, ok := t.targets[podUID]
 	if !ok {
-		return "", ""
+		return "", "", ""
 	}
-	return target.ServiceID, target.TeamID
+	return target.ServiceID, target.UserID, target.TeamID
 }
 
 // SetCaptureMode records this target's capture mode ("pcap", "ebpf", or

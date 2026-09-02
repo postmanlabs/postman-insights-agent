@@ -57,6 +57,16 @@ type Daemonset struct {
 	InsightsReproModeEnabled bool
 	InsightsRateLimit        float64
 
+	// InsightsUserID and InsightsTeamID are this agent's own Postman identity,
+	// resolved once at startup from the DaemonSet-level API key and stamped on
+	// every agent-scope telemetry event. They are the only tenancy the backend
+	// records for those rows, so when they are empty (no DaemonSet-level API
+	// key, or the lookup failed) agent lifecycle events are unattributed.
+	// Per-pod counters carry their own target-scoped identity instead; see
+	// CoverageTracker.TargetIdentity.
+	InsightsUserID string
+	InsightsTeamID string
+
 	// HTTPS capture config, propagated from DaemonsetArgs.
 	EnableHTTPSCapture   bool
 	HTTPSRateCapPerSec   uint32
@@ -212,6 +222,10 @@ func StartDaemonset(args DaemonsetArgs) error {
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
 
+	// Resolve this agent's own Postman identity before the first telemetry
+	// event, so agent_started carries it like every later agent-scope event.
+	agentUserID, agentTeamID := resolveAgentIdentity(telemetryDomain)
+
 	// Send initial telemetry
 	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
 	agentID := akid.String(telemetry.GetClientID())
@@ -246,7 +260,8 @@ func StartDaemonset(args DaemonsetArgs) error {
 			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
 			SchemaVersion:     "v1",
 			KubernetesCluster: clusterName,
-			Environment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+			UserID:            agentUserID,
+			TeamID:            agentTeamID,
 			AgentVersion:      version.ReleaseVersion().String(),
 			GitVersion:        version.GitVersion(),
 		})
@@ -262,7 +277,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
-		sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "kubernetes_client_init_failed")
+		sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "kubernetes_client_init_failed")
 		return errors.Wrap(err, "failed to create kube client")
 	}
 	if clusterName != "" {
@@ -274,7 +289,8 @@ func StartDaemonset(args DaemonsetArgs) error {
 			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
 			SchemaVersion:     "v1",
 			KubernetesCluster: clusterName,
-			Environment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+			UserID:            agentUserID,
+			TeamID:            agentTeamID,
 		})
 		kubeClientCancel()
 		if err != nil {
@@ -284,13 +300,15 @@ func StartDaemonset(args DaemonsetArgs) error {
 
 	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
-		sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "cri_client_init_failed")
+		sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "cri_client_init_failed")
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
 		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
+		InsightsUserID:           agentUserID,
+		InsightsTeamID:           agentTeamID,
 		InsightsReproModeEnabled: args.ReproMode,
 		InsightsRateLimit:        args.RateLimit,
 		KubeClient:               kubeClient,
@@ -316,7 +334,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 	if args.DiscoveryMode {
 		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
 		if apiKey == "" {
-			sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "discovery_api_key_missing")
+			sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "discovery_api_key_missing")
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
 		daemonsetRun.InsightsAPIKey = apiKey
@@ -328,7 +346,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 			args.ExcludeLabels,
 		)
 		if err != nil {
-			sendAgentFailed(frontClient, agentID, clusterName, &telemetrySequence, "pod_filter_init_failed")
+			sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "pod_filter_init_failed")
 			return errors.Wrap(err, "failed to create pod filter")
 		}
 		daemonsetRun.PodFilter = podFilter
@@ -422,7 +440,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
-		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, &d.telemetrySequence, "informer_registration_failed")
+		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, d.InsightsUserID, d.InsightsTeamID, &d.telemetrySequence, "informer_registration_failed")
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
@@ -431,7 +449,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
-		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, &d.telemetrySequence, "pod_reconciliation_failed")
+		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, d.InsightsUserID, d.InsightsTeamID, &d.telemetrySequence, "pod_reconciliation_failed")
 		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
 	}
 
@@ -489,7 +507,8 @@ func (d *Daemonset) sendAgentStopped() {
 		Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
 		SchemaVersion:     "v1",
 		KubernetesCluster: d.ClusterName,
-		Environment:       d.InsightsEnvironment,
+		UserID:            d.InsightsUserID,
+		TeamID:            d.InsightsTeamID,
 		AgentVersion:      version.ReleaseVersion().String(),
 		GitVersion:        version.GitVersion(),
 		Events:            events,
@@ -499,11 +518,60 @@ func (d *Daemonset) sendAgentStopped() {
 	}
 }
 
+// resolveAgentIdentity looks up the Postman user and team that own this
+// agent's DaemonSet-level API key, for stamping on agent-scope telemetry.
+// Since the backend takes the agent-reported user/team as the sole tenancy
+// attribution for a row, this is what makes agent lifecycle events
+// attributable to a customer at all.
+//
+// Best-effort by design: only discovery mode requires a DaemonSet-level API
+// key, so a workspace-mode agent legitimately has none and reports empty
+// identity rather than failing to start. Telemetry attribution is not worth
+// blocking traffic capture over -- per-pod counters still carry their own
+// target-scoped identity from each pod's own key. A lookup failure is logged
+// and treated the same way.
+func resolveAgentIdentity(telemetryDomain string) (userID, teamID string) {
+	apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
+	if apiKey == "" {
+		printer.Debugf(
+			"No DaemonSet-level API key set; agent-scope telemetry will be sent without a " +
+				"user or team and cannot be attributed to a Postman team.\n",
+		)
+		return "", ""
+	}
+
+	identityClient := rest.NewFrontClient(
+		telemetryDomain,
+		telemetry.GetClientID(),
+		rest.ApiDumpDaemonsetAuthHandler(apiKey, os.Getenv(POSTMAN_INSIGHTS_ENV)),
+		nil,
+	)
+	if viper.GetBool("test_only_disable_telemetry_https") {
+		identityClient.UseInsecureScheme()
+	}
+
+	trackingUser, err := telemetry.GetTrackingUserAssociatedWithAPIKey(identityClient)
+	if err != nil {
+		printer.Debugf(
+			"Failed to resolve the agent's Postman identity: %v. Agent-scope telemetry will "+
+				"be sent without a user or team.\n",
+			err,
+		)
+		return "", ""
+	}
+	return trackingUser.UserID, trackingUser.TeamID
+}
+
 // sendAgentFailed reports a terminal, agent-scope startup/runtime failure with
 // a normalized category. Used both before the Daemonset struct exists (early
 // StartDaemonset failures) and from within Run(), so it takes its telemetry
 // coordinates directly rather than a *Daemonset receiver.
-func sendAgentFailed(frontClient rest.FrontClient, agentID, clusterName string, sequence *uint64, category string) {
+func sendAgentFailed(
+	frontClient rest.FrontClient,
+	agentID, clusterName, userID, teamID string,
+	sequence *uint64,
+	category string,
+) {
 	if clusterName == "" {
 		return
 	}
@@ -516,7 +584,8 @@ func sendAgentFailed(frontClient rest.FrontClient, agentID, clusterName string, 
 		Sequence:          atomic.AddUint64(sequence, 1),
 		SchemaVersion:     "v1",
 		KubernetesCluster: clusterName,
-		Environment:       os.Getenv(POSTMAN_INSIGHTS_ENV),
+		UserID:            userID,
+		TeamID:            teamID,
 		FailureCategory:   category,
 	})
 	if err != nil {

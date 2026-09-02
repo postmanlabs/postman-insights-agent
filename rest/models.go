@@ -116,7 +116,6 @@ type DaemonsetTelemetryRequest struct {
 	Sequence          uint64        `json:"sequence,omitempty"`
 	SchemaVersion     string        `json:"schema_version,omitempty"`
 	KubernetesCluster string        `json:"kubernetes_cluster,omitempty"`
-	Environment       string        `json:"environment,omitempty"`
 
 	// Agent-scope metadata. Present on agent_started, agent_heartbeat, and
 	// agent_stopped.
@@ -141,15 +140,31 @@ type DaemonsetTelemetryRequest struct {
 	WindowStart *time.Time  `json:"window_start,omitempty"`
 	WindowEnd   *time.Time  `json:"window_end,omitempty"`
 
-	// ServiceID and TeamID identify the Insights project and Postman team a
-	// counter's TargetID currently resolves to. Target-scoped like TargetID
-	// itself, not agent-scoped: a single DaemonSet agent can watch pods
-	// belonging to different projects and teams, so there is no one value
-	// that applies to the whole request. Empty on rows without a TargetID,
-	// and can legitimately be empty even on a counter row if that target
-	// hasn't resolved a service yet.
+	// ServiceID identifies the Insights project a counter's TargetID
+	// currently resolves to. Target-scoped like TargetID itself, not
+	// agent-scoped: a single DaemonSet agent can watch pods belonging to
+	// different projects, so there is no one value that applies to the whole
+	// request. Empty on rows without a TargetID, and can legitimately be
+	// empty even on a counter row if that target hasn't resolved yet.
 	ServiceID string `json:"service_id,omitempty"`
-	TeamID    string `json:"team_id,omitempty"`
+
+	// UserID and TeamID are the agent-reported Postman identity, and the only
+	// tenancy the backend records -- it stores what we send here rather than
+	// deriving a team from the verification token. Getting them wrong or
+	// leaving them empty means the row cannot be attributed to a customer, so
+	// populate them wherever an identity is known.
+	//
+	// Scope follows the row. On the top-level request they are agent-scope,
+	// resolved once at startup from the DaemonSet's own API key. On an Events
+	// element they are target-scope, resolved from that pod's own API key --
+	// which can belong to a different team than the one that installed the
+	// agent.
+	//
+	// Both can legitimately be empty: a target that hasn't reached
+	// SetTrackingUser, or an agent with no DaemonSet-level API key (only
+	// discovery mode requires one).
+	UserID string `json:"user_id,omitempty"`
+	TeamID string `json:"team_id,omitempty"`
 
 	// Events batches additional, independent events/counters into this same
 	// POST (D1). Every heartbeat interval used to flush its counter map as
