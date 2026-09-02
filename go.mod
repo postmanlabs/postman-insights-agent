@@ -9,7 +9,7 @@ require (
 	github.com/OneOfOne/xxhash v1.2.8
 	github.com/Pallinder/go-randomdata v1.2.0
 	github.com/akitasoftware/akita-ir v0.0.0-20250819204808-cf56d019e1b4
-	github.com/akitasoftware/akita-libs v0.0.0-20260901100018-e75c9d3b5b1e
+	github.com/akitasoftware/akita-libs v0.0.0-20260902045933-fee02da7d3eb
 	github.com/akitasoftware/go-utils v0.0.0-20240213133309-b95d4ace8803
 	github.com/andybalholm/brotli v1.0.1
 	github.com/aws/aws-sdk-go-v2 v1.17.1
