@@ -87,13 +87,27 @@ const (
 	CoveragePodFailed CoverageStage = "pod_failed"
 )
 
-// terminalTargetRetention bounds how long a target record survives in the
+// terminalRetention bounds how long a target record survives in the
 // tracker after reaching a terminal stage. Without this the tracker grows
 // without bound across pod churn (deploys, HPA scale-down, evictions) since
-// nothing else ever removes an entry. Kept short: the record only needs to
-// outlive one heartbeat interval so the terminal event and its snapshot
-// co-occur in stored telemetry at least once.
-const terminalTargetRetention = 15 * time.Minute
+// nothing else ever removes an entry.
+//
+// Derived from the heartbeat rather than fixed, because the only thing the
+// record has to outlive is one heartbeat: EvictTerminalTargets runs at the
+// top of sendTelemetry, just before Snapshot, so a target that turns terminal
+// right after one snapshot must still be present at the next one for its
+// terminal state to be reported at all. Two intervals gives that one full interval of
+// slack for ticker jitter and a slow POST; one interval exactly would sit on
+// the boundary and lose the target to any delay. A fixed duration got this
+// wrong in both directions -- 15 minutes was 3 heartbeats in production but 90
+// of them at the 10s development interval, holding slots far longer than
+// anything needed them.
+func terminalRetention(heartbeat time.Duration) time.Duration {
+	if heartbeat <= 0 {
+		return 2 * DefaultTelemetryInterval
+	}
+	return 2 * heartbeat
+}
 
 type CoverageTransition struct {
 	Stage      CoverageStage `json:"stage"`
@@ -359,7 +373,8 @@ func (t *CoverageTracker) Observe(pod corev1.Pod, stage CoverageStage, reason, s
 
 	target, exists := t.targets[string(pod.UID)]
 	if !exists {
-		if len(t.targets) >= t.maxTargets {
+		// At the cap, reclaim a finished target before giving up on this one.
+		if len(t.targets) >= t.maxTargets && !t.evictOldestTerminalTargetLocked() {
 			t.truncatedTargets++
 			// Warn once. Silently capping coverage makes the snapshot read as
 			// "these are all the targets" when it is not, and the count alone is
@@ -452,13 +467,40 @@ func (t *CoverageTracker) ObserveByUID(podUID string, stage CoverageStage, reaso
 	return true
 }
 
-// EvictTerminal removes targets that reached a terminal stage
-// (CoveragePodStopped or CoveragePodFailed) more than retention ago. Called
-// once per heartbeat, before Snapshot, so a terminal target is retained for at
-// least one heartbeat interval -- long enough for its terminal event and a
-// snapshot row to both land in stored telemetry -- without the tracker growing
-// without bound across pod churn.
-func (t *CoverageTracker) EvictTerminal(retention time.Duration) {
+// isTerminalStage reports whether a target at this stage will never advance
+// again, making its record safe to evict once it has been reported.
+//
+// The two pod_* stages are the natural end of a monitored target's lifecycle.
+// The other two matter just as much for eviction even though they sit early in
+// the funnel: a pod rejected by the discovery filter or one whose env-var
+// inspection failed is never added to PodArgsByNameMap, so
+// handlePodDeleteEvent bails before it can mark the target pod_stopped.
+// Without treating them as terminal here, nothing ever removes them and each
+// one holds a maxTargets slot for the life of the agent process -- in
+// discovery mode, where rejection is the common case, that starves real
+// monitored pods out of the cap.
+func isTerminalStage(stage CoverageStage) bool {
+	switch stage {
+	case CoveragePodStopped, CoveragePodFailed,
+		CoverageDiscoveryFilterRejected, CoveragePodConfigurationFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// EvictTerminalTargets removes targets that reached a terminal stage (see
+// isTerminalStage) more than retention ago. Called once per heartbeat, before
+// Snapshot, so a terminal target is retained for at least one heartbeat
+// interval -- long enough for its terminal event and a snapshot row to both
+// land in stored telemetry -- without the tracker growing without bound across
+// pod churn.
+//
+// Evicting a still-existing rejected pod is harmless: the informer's next
+// resync re-observes it and it is re-admitted. The point is that the tracker's
+// occupancy becomes proportional to the pods currently on the node rather than
+// to every pod it has ever seen since the process started.
+func (t *CoverageTracker) EvictTerminalTargets(retention time.Duration) {
 	if t == nil {
 		return
 	}
@@ -466,13 +508,43 @@ func (t *CoverageTracker) EvictTerminal(retention time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for uid, target := range t.targets {
-		if target.CurrentStage != CoveragePodStopped && target.CurrentStage != CoveragePodFailed {
+		if !isTerminalStage(target.CurrentStage) {
 			continue
 		}
 		if target.ObservedAt.Before(cutoff) {
 			delete(t.targets, uid)
 		}
 	}
+}
+
+// evictOldestTerminalTargetLocked frees one slot by dropping the terminal target
+// that has been terminal longest, and reports whether it freed one. Caller
+// must hold t.mu.
+//
+// This is what keeps a burst of never-monitored pods from locking out real
+// ones between heartbeats: EvictTerminalTargets only runs once per heartbeat, so
+// without this a node that churns through the cap inside a single interval
+// would truncate live targets while finished ones still held slots. A target
+// that has not yet been through a heartbeat may be dropped here, which is the
+// deliberate trade -- reporting a real target beats reporting a finished one.
+func (t *CoverageTracker) evictOldestTerminalTargetLocked() bool {
+	var (
+		oldestUID string
+		oldestAt  time.Time
+	)
+	for uid, target := range t.targets {
+		if !isTerminalStage(target.CurrentStage) {
+			continue
+		}
+		if oldestUID == "" || target.ObservedAt.Before(oldestAt) {
+			oldestUID, oldestAt = uid, target.ObservedAt
+		}
+	}
+	if oldestUID == "" {
+		return false
+	}
+	delete(t.targets, oldestUID)
+	return true
 }
 
 // targetUploadReporter adapts the coverage tracker to trace.UploadReporter for

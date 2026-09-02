@@ -654,14 +654,19 @@ func (d *Daemonset) StartProcessInExistingPods() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to get pods in node")
 	}
-	for _, pod := range pods {
-		d.observeCoverage(pod, CoveragePodDiscovered, "", "")
-	}
-
 	// Filter out pods that do not have the agent sidecar container
 	podsWithoutAgentSidecar, err := d.KubeClient.FilterPodsByContainerImage(pods, agentImage, true)
 	if err != nil {
 		return errors.Wrap(err, "failed to filter pods by container image")
+	}
+
+	// Discovery is observed after the sidecar filter, matching
+	// handlePodAddEvent: a pod carrying the agent sidecar belongs to that
+	// sidecar's funnel, not this one, and entering it here would strand it at
+	// pod_discovered holding a maxTargets slot forever (see the filter branch
+	// in handlePodAddEvent for why it can never become evictable).
+	for _, pod := range podsWithoutAgentSidecar {
+		d.observeCoverage(pod, CoveragePodDiscovered, "", "")
 	}
 
 	// Iterate over each pod without the agent sidecar

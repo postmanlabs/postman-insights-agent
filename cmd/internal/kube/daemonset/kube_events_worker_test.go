@@ -597,3 +597,30 @@ func TestApplyDiscoveryModeConfig_ExplicitIDs_PerPodOverrides(t *testing.T) {
 	assert.False(t, podArgs.ReproMode)
 	assert.Equal(t, 200.0, podArgs.AgentRateLimit)
 }
+
+// A pod carrying the agent sidecar is that sidecar's target, not this
+// daemonset's, so it must not enter the coverage tracker at all -- not even as
+// pod_discovered. Such a pod never reaches PodArgsByNameMap, so
+// handlePodDeleteEvent cannot mark it terminal and EvictTerminalTargets can never
+// reclaim it; observing it would burn a maxTargets slot for the life of the
+// process. Running the daemonset alongside sidecar-injected deployments is
+// supported (docs/discovery-mode.md), so this is a real configuration.
+func TestHandlePodAddEventDoesNotTrackSidecarPods(t *testing.T) {
+	d := &Daemonset{Coverage: NewCoverageTracker("agent-1", 10)}
+
+	sidecarPod := coreV1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{Name: "already-instrumented", Namespace: "prod", UID: "uid-sidecar"},
+		Spec: coreV1.PodSpec{
+			Containers: []coreV1.Container{
+				{Name: "app", Image: "example.com/app:1.0"},
+				{Name: "postman-insights-agent", Image: agentImage},
+			},
+		},
+	}
+
+	d.handlePodAddEvent(sidecarPod)
+
+	snapshot := d.Coverage.Snapshot()
+	assert.Empty(t, snapshot.Targets, "sidecar-bearing pod entered the coverage tracker")
+	assert.Zero(t, snapshot.TruncatedTargets)
+}

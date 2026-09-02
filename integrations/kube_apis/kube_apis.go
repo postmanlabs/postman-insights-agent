@@ -135,16 +135,30 @@ func (kc *KubeClient) GetPodsByUIDs(podUIDs []types.UID) ([]coreV1.Pod, error) {
 	return filteredPods, nil
 }
 
-// FilterPodsByContainerImage filters a list of pods by the container image name
+// FilterPodsByContainerImage filters a list of pods by the container image
+// name. With negate false it returns the pods that run containerImage in at
+// least one container; with negate true it returns the pods that do not run it
+// at all.
+//
+// The match is decided per pod, not per container. Testing negate against each
+// container in turn instead means a pod is selected the moment any single
+// container disagrees with the image -- so with negate true, an
+// app-plus-sidecar pod matched on its app container and was reported as not
+// running the sidecar. Only a pod whose every container is containerImage was
+// excluded, which in practice is nothing this is ever asked about.
 func (kc *KubeClient) FilterPodsByContainerImage(pods []coreV1.Pod, containerImage string, negate bool) ([]coreV1.Pod, error) {
 	var filteredPods []coreV1.Pod
 
 	for _, pod := range pods {
+		runsImage := false
 		for _, container := range pod.Spec.Containers {
-			if isImageEqual(containerImage, container.Image) != negate {
-				filteredPods = append(filteredPods, pod)
+			if isImageEqual(containerImage, container.Image) {
+				runsImage = true
 				break
 			}
+		}
+		if runsImage != negate {
+			filteredPods = append(filteredPods, pod)
 		}
 	}
 

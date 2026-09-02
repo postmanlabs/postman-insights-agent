@@ -230,7 +230,6 @@ func podFromDeleteEvent(obj interface{}) (*coreV1.Pod, bool) {
 // 2. In discovery mode, apply pod filter; skip if the pod doesn't pass.
 // 3. Adds the pod arguments to a map and change state to PodPending.
 func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
-	d.observeCoverage(pod, CoveragePodDiscovered, "", "")
 	// Informer handler registration replays objects already in the cache. Do not
 	// recreate state for pods reconciled before the handlers were registered.
 	if _, loaded := d.PodArgsByNameMap.Load(pod.UID); loaded {
@@ -244,15 +243,21 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 		return
 	}
 	if len(podsWithoutAgentSidecar) == 0 {
-		// Not observed as a coverage stage: this daemonset is never deployed
-		// alongside a sidecar agent, and the two watch paths that could hit
-		// this branch (this one and StartProcessInExistingPods) disagreed on
-		// when they'd see a sidecar-bearing pod, producing an unstable
-		// pod_already_instrumented count for no real signal. Filtering
-		// still happens; it's just no longer reported as telemetry.
+		// Deliberately not entered into the coverage tracker at all, not even
+		// as pod_discovered. A pod carrying the agent sidecar is that
+		// sidecar's target, not this daemonset's, so it does not belong in
+		// this funnel -- and running the agent alongside sidecar-injected
+		// deployments is supported (see docs/discovery-mode.md), so these are
+		// not hypothetical. Observing them here would strand them at
+		// pod_discovered forever: they never reach PodArgsByNameMap, so
+		// handlePodDeleteEvent cannot mark them terminal, and a non-terminal
+		// target is never evicted -- each one would hold a maxTargets slot for
+		// the life of the process.
 		printer.Infof("Pod already has agent sidecar container, skipping, podUID: %s\n", pod.UID)
 		return
 	}
+
+	d.observeCoverage(pod, CoveragePodDiscovered, "", "")
 
 	// In discovery mode, apply pod filter before adding to the map.
 	if d.DiscoveryMode && d.PodFilter != nil {

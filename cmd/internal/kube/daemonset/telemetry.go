@@ -21,7 +21,7 @@ func (d *Daemonset) sendTelemetry() {
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
 
-	d.Coverage.EvictTerminal(terminalTargetRetention)
+	d.Coverage.EvictTerminalTargets(terminalRetention(d.TelemetryInterval))
 	snapshot := d.Coverage.Snapshot()
 
 	// rest.DaemonsetTelemetryRequest keeps its fields opaque to DaemonSet

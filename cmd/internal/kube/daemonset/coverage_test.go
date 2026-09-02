@@ -10,6 +10,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/trace"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestCoverageTrackerRecordsStableTransitions(t *testing.T) {
@@ -194,4 +195,116 @@ func TestCoverageTrackerReportsCaptureAndUploadLiveness(t *testing.T) {
 	if target.activity != nil {
 		t.Fatal("snapshot leaked the activity handle")
 	}
+}
+
+// Stages that mean "this pod will never be monitored" must be evictable.
+// Such pods never enter PodArgsByNameMap, so handlePodDeleteEvent bails before
+// it can mark them pod_stopped; if they are not terminal here, nothing ever
+// removes them and each holds a maxTargets slot for the life of the process.
+func TestEvictTerminalReclaimsNeverMonitoredTargets(t *testing.T) {
+	cases := []struct {
+		name   string
+		stage  CoverageStage
+		reason string
+	}{
+		{"filter_rejected", CoverageDiscoveryFilterRejected, "namespace_excluded"},
+		{"config_failed", CoveragePodConfigurationFailed, "configuration_error"},
+		{"pod_stopped", CoveragePodStopped, "terminated"},
+		{"pod_failed", CoveragePodFailed, "pod_phase_failed"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := NewCoverageTracker("agent-1", 2)
+			pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "dead-1"}}
+			tracker.Observe(pod, tc.stage, tc.reason, "")
+			ageTarget(tracker, "dead-1", 2*time.Hour)
+
+			tracker.EvictTerminalTargets(terminalRetention(DefaultTelemetryInterval))
+
+			if got := len(tracker.Snapshot().Targets); got != 0 {
+				t.Fatalf("target at %s survived eviction: %d remain", tc.stage, got)
+			}
+		})
+	}
+}
+
+// In-flight stages must survive eviction however long they sit there: a pod
+// mid-onboarding, or one capturing steadily, only refreshes ObservedAt when it
+// transitions, so age alone does not mean it is finished.
+func TestEvictTerminalKeepsInFlightTargets(t *testing.T) {
+	for _, stage := range []CoverageStage{
+		CoveragePodDiscovered,
+		CoverageDiscoveryFilterPassed,
+		CoveragePodConfigured,
+		CoverageCapturing,
+	} {
+		t.Run(string(stage), func(t *testing.T) {
+			tracker := NewCoverageTracker("agent-1", 2)
+			tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "live-1"}}, stage, "", "")
+			ageTarget(tracker, "live-1", 2*time.Hour)
+
+			tracker.EvictTerminalTargets(terminalRetention(DefaultTelemetryInterval))
+
+			if got := len(tracker.Snapshot().Targets); got != 1 {
+				t.Fatalf("in-flight target at %s was evicted", stage)
+			}
+		})
+	}
+}
+
+// The cap must be spendable on pods we actually monitor: a churn of rejected
+// pods that fills it must not lock out a real target before the next
+// heartbeat's EvictTerminalTargets gets a chance to run.
+func TestObserveReclaimsTerminalSlotAtCap(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", 3)
+	for i := 0; i < 3; i++ {
+		uid := "rejected-" + strconv.Itoa(i)
+		tracker.Observe(
+			corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID(uid)}},
+			CoverageDiscoveryFilterRejected, "namespace_excluded", "",
+		)
+	}
+
+	real := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "real-1"}}
+	if !tracker.Observe(real, CoveragePodDiscovered, "", "") {
+		t.Fatal("real target rejected while finished ones held every slot")
+	}
+	if snap := tracker.Snapshot(); snap.TruncatedTargets != 0 {
+		t.Fatalf("truncated %d real targets", snap.TruncatedTargets)
+	}
+}
+
+// A cap held entirely by in-flight targets must still truncate -- reclamation
+// is only ever allowed to take a slot from a finished target.
+func TestObserveStillTruncatesWhenNothingIsTerminal(t *testing.T) {
+	tracker := NewCoverageTracker("agent-1", 1)
+	tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "live-1"}}, CoverageCapturing, "", "")
+
+	if tracker.Observe(corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "new-1"}}, CoveragePodDiscovered, "", "") {
+		t.Fatal("admitted a target by evicting a live one")
+	}
+	snap := tracker.Snapshot()
+	if len(snap.Targets) != 1 || snap.TruncatedTargets != 1 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+}
+
+// Retention is derived from the heartbeat so a terminal target always spans at
+// least one snapshot, with slack for ticker jitter, at any interval.
+func TestTerminalTargetRetentionTracksHeartbeat(t *testing.T) {
+	for _, hb := range []time.Duration{DefaultTelemetryInterval, DevelopmentTelemetryInterval} {
+		if got := terminalRetention(hb); got <= hb {
+			t.Fatalf("retention %v for heartbeat %v leaves no slack", got, hb)
+		}
+	}
+	if got := terminalRetention(0); got <= 0 {
+		t.Fatalf("retention %v for unset heartbeat", got)
+	}
+}
+
+func ageTarget(t *CoverageTracker, uid string, by time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.targets[uid].ObservedAt = time.Now().UTC().Add(-by)
 }
