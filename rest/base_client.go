@@ -65,6 +65,14 @@ func NewBaseClient(rawHost string, cli akid.ClientID, authHandler AuthHandler, a
 	return &c
 }
 
+// UseInsecureScheme switches this one client to plain HTTP. Scoped to a
+// single client so pointing one client at a plaintext local test backend does
+// not also downgrade other clients still talking to the real HTTPS backend.
+func (c *BaseClient) UseInsecureScheme() {
+	fmt.Fprintf(os.Stderr, "WARNING: using telemetry test backend without SSL\n")
+	c.scheme = "http"
+}
+
 // Report an error to the APIErrorHandler.
 func (c *BaseClient) reportError(method string, path string, e error) {
 	if c.apiErrorHandler != nil {

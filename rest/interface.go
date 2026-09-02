@@ -86,7 +86,7 @@ type FrontClient interface {
 	LongPollActiveTracesForService(context context.Context, daemonName string, serviceID akid.ServiceID, currentTraces []akid.LearnSessionID) (daemon.ActiveTraceDiff, error)
 
 	// Post telemetry for the agent running as daemonset mode.
-	PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error
+	PostDaemonsetAgentTelemetry(ctx context.Context, req DaemonsetTelemetryRequest) error
 
 	// CreateApplication creates or retrieves an Application for the given workspace ID and system environment.
 	// This is used for API Catalog integration - allows agents to onboard at scale.

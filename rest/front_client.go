@@ -5,7 +5,6 @@ import (
 	"path"
 
 	"github.com/akitasoftware/akita-libs/akid"
-	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/daemon"
 )
 
@@ -90,12 +89,13 @@ func (c *frontClientImpl) CreateService(ctx context.Context, serviceName string,
 	return resp, err
 }
 
-func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, clusterName string) error {
-	req := api_schema.PostDaemonsetTelemetryRequest{
-		KubernetesCluster: clusterName,
-	}
+func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, req DaemonsetTelemetryRequest) error {
 	path := "/v2/agent/daemonset/telemetry"
 	var resp struct{}
+	// DaemonsetTelemetryRequest serializes `kubernetes_cluster` with the same tag
+	// and no omitempty as the legacy api_schema.PostDaemonsetTelemetryRequest,
+	// whose only field that is, so this payload is a strict superset of what
+	// older backends expect.
 	return c.Post(ctx, path, req, &resp)
 }
 

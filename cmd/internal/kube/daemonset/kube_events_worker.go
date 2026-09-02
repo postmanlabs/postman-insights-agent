@@ -243,17 +243,31 @@ func (d *Daemonset) handlePodAddEvent(pod coreV1.Pod) {
 		return
 	}
 	if len(podsWithoutAgentSidecar) == 0 {
+		// Deliberately not entered into the coverage tracker at all, not even
+		// as pod_discovered. A pod carrying the agent sidecar is that
+		// sidecar's target, not this daemonset's, so it does not belong in
+		// this funnel -- and running the agent alongside sidecar-injected
+		// deployments is supported (see docs/discovery-mode.md), so these are
+		// not hypothetical. Observing them here would strand them at
+		// pod_discovered forever: they never reach PodArgsByNameMap, so
+		// handlePodDeleteEvent cannot mark them terminal, and a non-terminal
+		// target is never evicted -- each one would hold a maxTargets slot for
+		// the life of the process.
 		printer.Infof("Pod already has agent sidecar container, skipping, podUID: %s\n", pod.UID)
 		return
 	}
+
+	d.observeCoverage(pod, CoveragePodDiscovered, "", "")
 
 	// In discovery mode, apply pod filter before adding to the map.
 	if d.DiscoveryMode && d.PodFilter != nil {
 		result := d.PodFilter.Evaluate(pod)
 		if !result.ShouldCapture {
+			d.observeCoverage(pod, CoverageDiscoveryFilterRejected, result.Reason, "")
 			printer.Debugf("Pod %s/%s skipped by discovery filter: %s\n", pod.Namespace, pod.Name, result.Reason)
 			return
 		}
+		d.observeCoverage(pod, CoverageDiscoveryFilterPassed, "passed_filters", result.ServiceName)
 		printer.Debugf("Pod %s/%s passed discovery filter, service: %s\n", pod.Namespace, pod.Name, result.ServiceName)
 	}
 
@@ -295,11 +309,14 @@ func (d *Daemonset) handlePodDeleteEvent(pod coreV1.Pod) {
 	switch pod.Status.Phase {
 	case coreV1.PodSucceeded:
 		podStatus = PodSucceeded
+		d.observeCoverage(pod, CoveragePodStopped, "succeeded", "")
 	case coreV1.PodFailed:
 		podStatus = PodFailed
+		d.observeCoverage(pod, CoveragePodFailed, "pod_phase_failed", "")
 	default:
 		printer.Errorf("Pod status is in unknown state, pod name: %s, status: %s\n", podArgs.PodName, pod.Status.Phase)
 		podStatus = PodTerminated
+		d.observeCoverage(pod, CoveragePodStopped, "terminated", "")
 	}
 
 	err = podArgs.changePodTrafficMonitorState(podStatus, TrafficMonitoringRunning)
@@ -334,6 +351,8 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		printer.Debugf("Pod is running, starting api dump process, pod name: %s\n", podArgs.PodName)
 		err := d.inspectPodForEnvVars(pod, podArgs)
 		if err != nil {
+			d.observeCoverage(pod, CoveragePodConfigurationFailed, "configuration_error", "")
+			d.observeCoverageError(pod, err)
 			switch e := err.(type) {
 			case *allRequiredEnvVarsAbsentError:
 				printer.Debugf(e.Error())
@@ -347,6 +366,10 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 			d.PodArgsByNameMap.Delete(pod.UID)
 			return
 		}
+		d.observeCoverage(pod, CoveragePodConfigured, "configured", "")
+		if d.Coverage != nil {
+			d.Coverage.SetProjectInfo(string(pod.UID), akid.String(podArgs.InsightsProjectID), podArgs.WorkspaceID)
+		}
 
 		err = podArgs.changePodTrafficMonitorState(PodRunning, PodPending)
 		if err != nil {
@@ -358,7 +381,12 @@ func (d *Daemonset) handlePodModifyEvent(pod coreV1.Pod) {
 		// Start monitoring the pod
 		err = d.StartApiDumpProcess(pod.UID)
 		if err != nil {
+			// See the identical comment at StartProcessInExistingPods's call
+			// site: this is a local bookkeeping failure before the capture
+			// goroutine launches, not a transient step towards capturing.
+			d.observeCoverage(pod, CoveragePodFailed, "apidump_start_failed", "")
 			printer.Errorf("Failed to start api dump process, pod name: %s, error: %v\n", podArgs.PodName, err)
+			return
 		}
 	}
 }

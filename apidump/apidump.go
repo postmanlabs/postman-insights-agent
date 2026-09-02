@@ -85,6 +85,83 @@ type DaemonsetArgs struct {
 	APIKey                    string
 	Environment               string
 	TraceTags                 tags.SingletonTags
+	ReportTelemetryEvent      func(string) `json:"-"`
+
+	// RecordPcapMessage and RecordEBPFMessage report capture liveness for this
+	// target, one call per HTTP message on the respective pipeline. They run on
+	// the capture path, so implementations must be non-blocking.
+	RecordPcapMessage func(time.Time) `json:"-"`
+	RecordEBPFMessage func(time.Time) `json:"-"`
+
+	// UploadReporter observes witness-upload outcomes for this target.
+	UploadReporter trace.UploadReporter `json:"-"`
+
+	// SetFailureCategory records a normalized, bounded category for the setup
+	// checkpoint in progress when Run() returned before capture started. Called
+	// at most once, from the same defer that fires apidump_start_failed. That
+	// event was already gated correctly, but every early-setup failure landed
+	// in one bucket with no way to tell a service-lookup failure from a
+	// redactor-init failure.
+	SetFailureCategory func(category string) `json:"-"`
+
+	// SetResolvedService records the backend-confirmed service ID and name once
+	// LookupService actually resolves them. Every path through
+	// LookupService that reaches this point has made a real backend call
+	// (RegisterDiscoveredService, CreateApplication, or a service lookup by ID),
+	// so this is the one place a `service_resolved` value is allowed to come
+	// from -- never a guess derived from workload/pod metadata.
+	SetResolvedService func(serviceID, serviceName string) `json:"-"`
+
+	// SetTrackingUser records the Postman user/team associated with this
+	// target's API key. This is target-scoped, not agent-scoped: APIKey above
+	// is podArgs.PodCreds.InsightsAPIKey, a per-pod credential, so different
+	// targets on the same daemonset can resolve to different teams.
+	SetTrackingUser func(userID, teamID string) `json:"-"`
+
+	// SetCaptureMode records this target's capture mode ("pcap", "ebpf", or
+	// "pcap_and_ebpf") once capture_started fires. Target-scoped because
+	// different pods on the same daemonset can run different capture modes
+	// (e.g. HTTPS capture enabled on some pods, not others).
+	SetCaptureMode func(mode string) `json:"-"`
+}
+
+func (a Args) reportTelemetryEvent(event string) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.ReportTelemetryEvent != nil {
+		daemonsetArgs.ReportTelemetryEvent(event)
+	}
+}
+
+func (a Args) setFailureCategory(category string) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.SetFailureCategory != nil {
+		daemonsetArgs.SetFailureCategory(category)
+	}
+}
+
+func (a Args) setResolvedService(serviceID, serviceName string) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.SetResolvedService != nil {
+		daemonsetArgs.SetResolvedService(serviceID, serviceName)
+	}
+}
+
+func (a Args) setTrackingUser(userID, teamID string) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.SetTrackingUser != nil {
+		daemonsetArgs.SetTrackingUser(userID, teamID)
+	}
+}
+
+func (a Args) setCaptureMode(mode string) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.SetCaptureMode != nil {
+		daemonsetArgs.SetCaptureMode(mode)
+	}
+}
+
+// captureLivenessHooks returns the DaemonSet-supplied capture-liveness hooks, or
+// nils when running outside DaemonSet mode.
+func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter, reportEvent func(string)) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok {
+		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter, daemonsetArgs.ReportTelemetryEvent
+	}
+	return nil, nil, nil, nil
 }
 
 // HTTPSCaptureArgs groups all configuration for the eBPF HTTPS capture
@@ -348,12 +425,20 @@ func (a *apidump) LookupService() error {
 			return err
 		}
 		apidumpTelemetry = telemetry.NewScoped(trackingUser)
+		a.setTrackingUser(trackingUser.UserID, trackingUser.TeamID)
 	} else {
 		apidumpTelemetry = telemetry.Default()
 	}
 
 	// Initialize new front client with telemetry APIError handler.
 	frontClient := rest.NewFrontClient(a.Domain, a.ClientID, authHandler, apidumpTelemetry.APIError)
+
+	// Every branch below makes exactly one real backend call to resolve a
+	// service (RegisterDiscoveredService, CreateApplication, or a lookup by
+	// ID) -- there is no branch past this point that resolves a service
+	// without one. That is what makes it safe to bracket all of them with a
+	// single service_resolution_started here.
+	a.reportTelemetryEvent("service_resolution_started")
 
 	if a.DiscoveryMode {
 		// Validate required fields before calling the backend, which returns
@@ -470,6 +555,12 @@ func (a *apidump) LookupService() error {
 			a.backendSvcName = serviceName
 		}
 	}
+
+	// service_resolved fires exactly once, here -- after every branch above has
+	// returned successfully with a real backend-confirmed service ID. Never
+	// derived from workload/pod metadata or a discovery-filter guess.
+	a.reportTelemetryEvent("service_resolved")
+	a.setResolvedService(akid.String(a.backendSvc), a.backendSvcName)
 
 	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler, apidumpTelemetry.APIError)
 	return nil
@@ -756,6 +847,16 @@ type interfaceError struct {
 	err           error
 }
 
+func captureMode(hasPcap, hasEBPF bool) string {
+	if hasEBPF && hasPcap {
+		return "pcap_and_ebpf"
+	}
+	if hasEBPF {
+		return "ebpf"
+	}
+	return "pcap"
+}
+
 // Captures packets from the network and adds them to a trace. The trace is
 // created if it doesn't already exist.
 func Run(args Args) error {
@@ -783,13 +884,36 @@ func Run(args Args) error {
 func (a *apidump) Run() error {
 	var args *Args = a.Args
 
-	// Lookup service *first* (if we are remote) so that we can
-	// send telemetry even before starting packet capture.
-	// This means "sudo" problems will occur after authentication or project-name
+	// apidump_started/apidump_start_failed must reflect whether capture actually
+	// began, not just whether the first setup step (service lookup) succeeded --
+	// LookupService failing is one of many ways setup can fail (interface
+	// enumeration, redactor init, output-location validation, discovery TTL
+	// already expired, ...), and treating it as the only one silently drops
+	// every other startup failure from telemetry.
+	// startupSucceeded flips to true exactly once, right before capture begins;
+	// the deferred check below fires apidump_start_failed for every other
+	// return path in this function, and does nothing once startup has passed.
+	startupSucceeded := false
+	// lastCheckpoint names the setup phase about to be attempted. If Run()
+	// returns before startupSucceeded flips, whatever phase was in flight is
+	// the one that failed -- coarse-grained on purpose, so a handful of
+	// checkpoint updates categorize every early-return site without having to
+	// annotate each one individually.
+	lastCheckpoint := "service_lookup"
+	defer func() {
+		if !startupSucceeded {
+			args.reportTelemetryEvent("apidump_start_failed")
+			args.setFailureCategory(lastCheckpoint)
+		}
+	}()
+
+	// Lookup service *first* (if we are remote), so identity/auth failures
+	// surface before we touch packet capture.
 	err := a.LookupService()
 	if err != nil {
 		return err
 	}
+	lastCheckpoint = "interface_enumeration"
 
 	// During debugging, capture packets not matching the user's filters so we can
 	// report statistics on those packets.
@@ -823,6 +947,7 @@ func (a *apidump) Run() error {
 		a.SendErrorTelemetry(api_schema.ApidumpError_InvalidFilters, err)
 		return err
 	}
+	lastCheckpoint = "filter_setup"
 
 	// When HTTPS-via-eBPF capture is active, drop the TLS port from the cBPF
 	// filter so the libpcap path doesn't double-count handshake bytes already
@@ -873,6 +998,8 @@ func (a *apidump) Run() error {
 		return err
 	}
 
+	lastCheckpoint = "output_validation"
+
 	// Validate args.Out and fill in any missing defaults.
 	if uri := args.Out.AkitaURI; uri != nil {
 		if uri.ObjectType == nil {
@@ -902,11 +1029,15 @@ func (a *apidump) Run() error {
 		buffer_pool.CheckInvariants = true
 	}
 
+	lastCheckpoint = "buffer_pool"
+
 	// Create a buffer pool for storing HTTP payloads.
 	pool, err := buffer_pool.MakeBufferPool(20*1024*1024, 4*1024)
 	if err != nil {
 		return errors.Wrapf(err, "Unable to create buffer pool")
 	}
+
+	lastCheckpoint = "trace_creation"
 
 	// If the output is targeted at the backend, create a shared backend
 	// learn session.
@@ -976,6 +1107,8 @@ func (a *apidump) Run() error {
 
 	// If a discovery traffic TTL was provided by the backend, start a timer that
 	// will stop capture when the window elapses.
+	lastCheckpoint = "discovery_ttl_check"
+
 	var discoveryTTLExpired <-chan time.Time
 	if a.trafficExpiresAt != nil {
 		remaining := time.Until(*a.trafficExpiresAt)
@@ -999,10 +1132,17 @@ func (a *apidump) Run() error {
 		go a.TelemetryWorker(stop)
 	}
 
+	lastCheckpoint = "redactor_init"
+
 	redactor, err := data_masks.NewRedactor(a.backendSvc, a.learnClient)
 	if err != nil {
 		return errors.Wrapf(err, "unable to instantiate redactor for %s", a.backendSvc)
 	}
+	lastCheckpoint = "collector_setup"
+
+	// DaemonSet-supplied capture-liveness hooks. Nil outside DaemonSet mode, and
+	// the collectors treat nil as "not reporting".
+	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryEvent := args.captureLivenessHooks()
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
@@ -1065,6 +1205,13 @@ func (a *apidump) Run() error {
 				if lsc, ok := backendCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 					toRotate = append(toRotate, lsc)
 				}
+
+				if bc, ok := backendCollector.(*trace.BackendCollector); ok {
+					if uploadReporter != nil {
+						bc.SetUploadReporter(uploadReporter)
+					}
+					bc.SetTelemetryEventReporter(reportTelemetryEvent)
+				}
 			}
 
 			// Statistics.
@@ -1073,9 +1220,10 @@ func (a *apidump) Run() error {
 			// trace is empty or not.)  In the future we could add columns for both
 			// pre- and post-filtering.
 			collector = &trace.PacketCountCollector{
-				PacketCounts:     summary,
-				Collector:        collector,
-				SuccessTelemetry: a.successTelemetry,
+				PacketCounts:      summary,
+				Collector:         collector,
+				SuccessTelemetry:  a.successTelemetry,
+				RecordHTTPMessage: recordPcapMessage,
 			}
 
 			// Subsampling.
@@ -1156,6 +1304,7 @@ func (a *apidump) Run() error {
 					pool,
 					apidumpTelemetry,
 					a.captureStats,
+					reportTelemetryEvent,
 				); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
@@ -1172,7 +1321,8 @@ func (a *apidump) Run() error {
 	// TCP packet trackers (the eBPF path delivers already-decrypted HTTP, not
 	// TLS handshake or raw TCP). Redaction, rate limiting, path/host filters
 	// and the backend sink are all reused unchanged.
-	if args.HTTPS.Enabled && args.Out.AkitaURI != nil {
+	ebpfRequested := args.HTTPS.Enabled && args.Out.AkitaURI != nil
+	if ebpfRequested {
 		httpsSummary := trace.NewPacketCounter()
 		a.dumpSummary.HTTPSSummary = httpsSummary
 		var httpsCollector trace.Collector = trace.NewBackendCollector(
@@ -1193,10 +1343,17 @@ func (a *apidump) Run() error {
 		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 			toRotate = append(toRotate, lsc)
 		}
+		if bc, ok := httpsCollector.(*trace.BackendCollector); ok {
+			if uploadReporter != nil {
+				bc.SetUploadReporter(uploadReporter)
+			}
+			bc.SetTelemetryEventReporter(reportTelemetryEvent)
+		}
 		httpsCollector = &trace.PacketCountCollector{
-			PacketCounts:     httpsSummary,
-			Collector:        httpsCollector,
-			SuccessTelemetry: a.successTelemetry,
+			PacketCounts:      httpsSummary,
+			Collector:         httpsCollector,
+			SuccessTelemetry:  a.successTelemetry,
+			RecordHTTPMessage: recordEBPFMessage,
 		}
 		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector)
 		if rateLimit != nil {
@@ -1226,6 +1383,34 @@ func (a *apidump) Run() error {
 	} else if args.HTTPS.Enabled {
 		printer.Stderr.Warningf(
 			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")
+	}
+
+	// All configured capture pipelines have been started -- this is the first
+	// point where "started" is true, so it is also where apidump_started must
+	// fire: everything above this line is setup, and any return path above it
+	// is caught by the startupSucceeded defer as apidump_start_failed instead.
+	startupSucceeded = true
+	args.reportTelemetryEvent("apidump_started")
+
+	// Gate capture_started on a real pipeline, not just "did setup finish".
+	// numCollectors counts pcap goroutines actually launched above -- it is 0
+	// whenever the interface/filter loop had nothing to iterate over, which
+	// len(interfaces) > 0 does not catch (e.g. filters failed to build for
+	// every interface). ebpfRequested is still only "eBPF capture was
+	// configured and asked to start", not a confirmed uprobe attach --
+	// startHTTPSeBPFCapture does not yet report attach success synchronously,
+	// so a fully confirmed eBPF signal remains separate P2 work (node-scope
+	// eBPF collector health).
+	if numCollectors > 0 || ebpfRequested {
+		// Keep this event bounded and free of interface names, service
+		// credentials, or payload data.
+		mode := captureMode(numCollectors > 0, ebpfRequested)
+		apidumpTelemetry.WorkflowStep("capture_started", mode)
+		args.reportTelemetryEvent("capture_started")
+		args.setCaptureMode(mode)
+	} else {
+		printer.Stderr.Warningf(
+			"No capture pipelines were started (no interfaces produced a collector, and HTTPS capture is not configured); skipping capture_started telemetry.\n")
 	}
 
 	if len(toRotate) > 0 && args.LearnSessionLifetime != time.Duration(0) {
