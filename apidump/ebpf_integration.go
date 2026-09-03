@@ -61,6 +61,7 @@ func httpsTelemetryWorker(
 	mgr *uprobes.Manager,
 	adapter *events.Adapter,
 	tracker telemetry.Tracker,
+	reportCount func(string, uint64),
 ) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -75,9 +76,10 @@ func httpsTelemetryWorker(
 		}
 		if adapter != nil {
 			s.FlowsActive, _ = adapter.Snapshot()
-			s.MessagesEmitted = adapter.MessagesEmitted
-			s.FlowsDropped = adapter.FlowsDropped
-			s.H2HPACKDesyncs = adapter.H2HPACKDesyncs
+			adapterStats := adapter.Stats()
+			s.MessagesEmitted = adapterStats.MessagesEmitted
+			s.FlowsDropped = adapterStats.FlowsDropped
+			s.H2HPACKDesyncs = adapterStats.H2HPACKDesyncs
 		}
 		if ldr != nil {
 			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
@@ -100,12 +102,18 @@ func httpsTelemetryWorker(
 		return s
 	}
 
+	var previous HTTPSCaptureStats
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 			s := read()
+			if reportCount != nil {
+				reportCount("ebpf_flow_dropped", counterDelta(s.FlowsDropped, previous.FlowsDropped))
+				reportCount("ebpf_h2_hpack_desync", counterDelta(s.H2HPACKDesyncs, previous.H2HPACKDesyncs))
+			}
+			previous = s
 			printer.Stderr.Infof("ebpf-stats: %s\n", s.String())
 			if tracker != nil {
 				tracker.WorkflowStep("ebpf_capture_stats", s.String())
@@ -250,7 +258,7 @@ func startHTTPSeBPFCapture(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker)
+			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker, args.reportTelemetryCount)
 		}()
 	}
 

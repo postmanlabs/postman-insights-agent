@@ -29,7 +29,7 @@ const pcapStatsPollInterval = 15 * time.Second
 //
 // The caller must not close handle until this function has returned: pcap_stats
 // dereferences the handle without taking a lock.
-func pollPcapStats(handle *pcap.Handle, interfaceName string, stats *capturestats.Stats, done <-chan struct{}) {
+func pollPcapStats(handle *pcap.Handle, interfaceName string, stats *capturestats.Stats, done <-chan struct{}, telemetryCountReporter func(string, uint64)) {
 	ticker := time.NewTicker(pcapStatsPollInterval)
 	defer ticker.Stop()
 
@@ -46,13 +46,19 @@ func pollPcapStats(handle *pcap.Handle, interfaceName string, stats *capturestat
 		// Guard each delta separately: libpcap resets these counters on some
 		// platforms, and a reset must not underflow the exported total.
 		if s.PacketsReceived >= prev.PacketsReceived {
-			stats.AddPcapPacketsReceived(uint64(s.PacketsReceived - prev.PacketsReceived))
+			received := uint64(s.PacketsReceived - prev.PacketsReceived)
+			stats.AddPcapPacketsReceived(received)
+			reportPcapCounter(telemetryCountReporter, "pcap_packets_received", received)
 		}
 		if s.PacketsDropped >= prev.PacketsDropped {
-			stats.AddPcapPacketsDropped(uint64(s.PacketsDropped - prev.PacketsDropped))
+			dropped := uint64(s.PacketsDropped - prev.PacketsDropped)
+			stats.AddPcapPacketsDropped(dropped)
+			reportPcapCounter(telemetryCountReporter, "pcap_packets_dropped", dropped)
 		}
 		if s.PacketsIfDropped >= prev.PacketsIfDropped {
-			stats.AddPcapPacketsIfDropped(uint64(s.PacketsIfDropped - prev.PacketsIfDropped))
+			dropped := uint64(s.PacketsIfDropped - prev.PacketsIfDropped)
+			stats.AddPcapPacketsIfDropped(dropped)
+			reportPcapCounter(telemetryCountReporter, "pcap_interface_packets_dropped", dropped)
 		}
 		prev = *s
 	}
@@ -66,6 +72,12 @@ func pollPcapStats(handle *pcap.Handle, interfaceName string, stats *capturestat
 		case <-ticker.C:
 			sample()
 		}
+	}
+}
+
+func reportPcapCounter(reporter func(string, uint64), event string, count uint64) {
+	if reporter != nil && count > 0 {
+		reporter(event, count)
 	}
 }
 

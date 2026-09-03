@@ -39,7 +39,8 @@ type tcpFlow struct {
 	// call, and so one capturestats.Stats, per apidump.Run() call), which is
 	// what keeps these numbers scoped to one monitored pod instead of the
 	// whole node -- see capturestats.Stats.
-	stats *capturestats.Stats
+	stats                  *capturestats.Stats
+	telemetryEventReporter func(string)
 
 	// Shared with the tcpFlow in the opposite direction of this flow (both
 	// flows of one tcpStream point at the same pairSequencer). Non-nil only
@@ -61,16 +62,17 @@ type tcpFlow struct {
 	unusedAcceptBuf memview.MemView
 }
 
-func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer) *tcpFlow {
+func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer, telemetryEventReporter func(string)) *tcpFlow {
 	return &tcpFlow{
-		clock:           clock,
-		netFlow:         nf,
-		tcpFlow:         tf,
-		bidiID:          bidiID,
-		outChan:         outChan,
-		factorySelector: fs,
-		stats:           stats,
-		pairSeq:         pairSeq,
+		clock:                  clock,
+		netFlow:                nf,
+		tcpFlow:                tf,
+		bidiID:                 bidiID,
+		outChan:                outChan,
+		factorySelector:        fs,
+		stats:                  stats,
+		pairSeq:                pairSeq,
+		telemetryEventReporter: telemetryEventReporter,
 	}
 }
 
@@ -139,6 +141,12 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				// which is the question, since a lost response leaves a witness with
 				// no response half while a lost request leaves no witness at all.
 				countDiscardedByParserKind(f.stats, fact.Name())
+				switch fact.Name() {
+				case httpRequestParserFactoryName:
+					f.reportTelemetryEvent("parser_discarded_request")
+				case httpResponseParserFactoryName:
+					f.reportTelemetryEvent("parser_discarded_response")
+				}
 
 				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
 				return
@@ -215,6 +223,12 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 		// Parsing not done, resume after new reassembled data becomes available.
 		// No need to call sg.KeepFrom because all the bytes are held by the parser
 		// and returned to us later if the parser runs into an error.
+	}
+}
+
+func (f *tcpFlow) reportTelemetryEvent(event string) {
+	if f.telemetryEventReporter != nil {
+		f.telemetryEventReporter(event)
 	}
 }
 
@@ -325,28 +339,30 @@ type tcpStream struct {
 	// flows is populated upon seeing the first packet.
 	flows map[reassembly.TCPFlowDirection]*tcpFlow
 
-	factorySelector akinet.TCPParserFactorySelector
-	outChan         chan<- akinet.ParsedNetworkTraffic
-	stats           *capturestats.Stats
+	factorySelector        akinet.TCPParserFactorySelector
+	outChan                chan<- akinet.ParsedNetworkTraffic
+	stats                  *capturestats.Stats
+	telemetryEventReporter func(string)
 
 	// Shared by both flows of this connection when synthetic TCP pairing is
 	// enabled; nil otherwise. See pairing.go.
 	pairSeq *pairSequencer
 }
 
-func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool) *tcpStream {
+func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, telemetryEventReporter func(string)) *tcpStream {
 	var pairSeq *pairSequencer
 	if useSyntheticPairing {
 		pairSeq = newPairSequencer()
 	}
 	return &tcpStream{
-		clock:           clock,
-		bidiID:          akinet.TCPBidiID(uuid.New()),
-		netFlow:         netFlow,
-		factorySelector: fs,
-		outChan:         outChan,
-		stats:           stats,
-		pairSeq:         pairSeq,
+		clock:                  clock,
+		bidiID:                 akinet.TCPBidiID(uuid.New()),
+		netFlow:                netFlow,
+		factorySelector:        fs,
+		outChan:                outChan,
+		stats:                  stats,
+		pairSeq:                pairSeq,
+		telemetryEventReporter: telemetryEventReporter,
 	}
 }
 
@@ -366,8 +382,8 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 		// data from this tcpStream or it is garbage collected by the assembler
 		// after streamTimeout.
 		tf, _ := gopacket.FlowFromEndpoints(layers.NewTCPPortEndpoint(tcp.SrcPort), layers.NewTCPPortEndpoint(tcp.DstPort))
-		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector, c.stats, c.pairSeq)
-		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector, c.stats, c.pairSeq)
+		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector, c.stats, c.pairSeq, c.telemetryEventReporter)
+		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector, c.stats, c.pairSeq, c.telemetryEventReporter)
 		c.flows = map[reassembly.TCPFlowDirection]*tcpFlow{
 			dir:           s1,
 			dir.Reverse(): s2,

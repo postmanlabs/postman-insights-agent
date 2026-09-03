@@ -1,6 +1,8 @@
 package trace
 
 import (
+	"net/url"
+	"regexp"
 	"testing"
 
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -111,5 +113,43 @@ func TestPacketCounterRequiresMatchingProtocolPair(t *testing.T) {
 
 	if packetCounts.HasRequestAndResponse() {
 		t.Fatal("expected mixed HTTP/HTTPS counts without a matching pair to remain incomplete")
+	}
+}
+
+func TestRequestFilterReportsBothDirections(t *testing.T) {
+	var events []string
+	collector := NewHTTPPathFilterCollector([]*regexp.Regexp{regexp.MustCompile("^/private")}, noopCollector{}, func(event string) {
+		events = append(events, event)
+	})
+	streamID := uuid.New()
+
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
+		StreamID: streamID, Seq: 1, URL: &url.URL{Path: "/private"},
+	}})
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPResponse{
+		StreamID: streamID, Seq: 1,
+	}})
+
+	if len(events) != 2 || events[0] != "request_filtered" || events[1] != "response_filtered" {
+		t.Fatalf("unexpected filter events: %v", events)
+	}
+}
+
+func TestSamplingReportsHTTPDirections(t *testing.T) {
+	var events []string
+	collector := NewSamplingCollector(0, noopCollector{}, func(event string) {
+		events = append(events, event)
+	})
+	streamID := uuid.New()
+
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
+		StreamID: streamID, Seq: 1,
+	}})
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPResponse{
+		StreamID: streamID, Seq: 1,
+	}})
+
+	if len(events) != 2 || events[0] != "request_sampled_out" || events[1] != "response_sampled_out" {
+		t.Fatalf("unexpected sampling events: %v", events)
 	}
 }

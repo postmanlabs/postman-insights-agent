@@ -87,6 +87,7 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 	witnessReport, err := w.toReport()
 	if err != nil {
 		printer.Warningf("Failed to convert witness to report: %v\n", err)
+		w.reportTelemetryEvent("witness_dropped_conversion_error")
 		return
 	}
 
@@ -101,6 +102,7 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 			witnessReport, err = w.toReport()
 			if err != nil {
 				printer.Warningf("Failed to convert obfuscated witness to report: %v\n", err)
+				w.reportTelemetryEvent("witness_dropped_conversion_error")
 				return
 			}
 		}
@@ -116,6 +118,7 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 			DstPort:            int(w.dstPort),
 			OversizedWitnesses: 1,
 		})
+		w.reportTelemetryEvent("witness_dropped_oversized")
 		return
 	}
 
@@ -140,7 +143,14 @@ func (buf *reportBuffer) Flush() error {
 
 		// Report the outcome before rewriting the error below, so the
 		// classification is based on the original error and not on wrapping.
-		buf.collector.reportUpload(time.Now(), ClassifyUploadError(err))
+		status := ClassifyUploadError(err)
+		buf.collector.reportUpload(time.Now(), status)
+
+		// Count the witnesses this batch carried, so a failed upload is
+		// attributable. Without it, agent telemetry stops at witness_paired and
+		// the backend's view starts at ingestion, leaving the batch that never
+		// arrived invisible on both sides. Must precede report.Clear() below.
+		buf.collector.reportTelemetryCount("witness_upload_"+string(status), uint64(len(report.Witnesses)))
 
 		if err != nil {
 			switch e := err.(type) {

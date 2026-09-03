@@ -139,13 +139,16 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
 				ReportTelemetryEvent:      func(event string) { d.recordTelemetryEvent(string(podUID), event) },
+				ReportTelemetryCount:      func(event string, count uint64) { d.recordTelemetryCount(string(podUID), event, count) },
 				SetFailureCategory:        func(category string) { d.Coverage.SetDiagnostics(string(podUID), category, nil, nil) },
-				SetResolvedService:        func(serviceID, serviceName string) { d.Coverage.SetResolvedService(string(podUID), serviceID, serviceName) },
-				SetTrackingUser:           func(userID, teamID string) { d.Coverage.SetTrackingUser(string(podUID), userID, teamID) },
-				SetCaptureMode:            func(mode string) { d.Coverage.SetCaptureMode(string(podUID), mode) },
-				RecordPcapMessage:         activity.RecordPcapMessage,
-				RecordEBPFMessage:         activity.RecordEBPFMessage,
-				UploadReporter:            targetUploadReporter{coverage: d.Coverage, podUID: string(podUID)},
+				SetResolvedService: func(serviceID, serviceName string) {
+					d.Coverage.SetResolvedService(string(podUID), serviceID, serviceName)
+				},
+				SetTrackingUser:   func(userID, teamID string) { d.Coverage.SetTrackingUser(string(podUID), userID, teamID) },
+				SetCaptureMode:    func(mode string) { d.Coverage.SetCaptureMode(string(podUID), mode) },
+				RecordPcapMessage: activity.RecordPcapMessage,
+				RecordEBPFMessage: activity.RecordEBPFMessage,
+				UploadReporter:    targetUploadReporter{coverage: d.Coverage, podUID: string(podUID)},
 			}),
 		}
 
