@@ -66,10 +66,6 @@ type SharedRateLimit struct {
 	// keeps a response we drop -- see the else branch in Process below --
 	// attributed to the pod it actually belongs to.
 	stats *capturestats.Stats
-
-	// Optional observer for capture-diagnostic events. Set before collectors
-	// start processing traffic.
-	telemetryEventReporter func(string)
 }
 
 func (r *SharedRateLimit) startInterval(start time.Time) {
@@ -221,15 +217,24 @@ type rateLimitCollector struct {
 
 	// Packet counter
 	packetCount PacketCountConsumer
+
+	stats                  *capturestats.Stats
+	telemetryEventReporter func(string)
 }
 
-func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer) Collector {
+// NewCollector creates a collector that shares this rate limit but records its
+// diagnostics and events against one capture source. stats and reporter are
+// per-source rather than taken from the SharedRateLimit, because one rate limit
+// is shared by the pcap and eBPF chains while their counters must not be.
+func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer, stats *capturestats.Stats, reporter func(string)) Collector {
 	c := &rateLimitCollector{
-		RateLimit:           r,
-		NextCollector:       next,
-		RequestArrivalTimes: make(map[requestKey]time.Time),
-		epochCh:             make(chan time.Time, 1),
-		packetCount:         packetCounts,
+		RateLimit:              r,
+		NextCollector:          next,
+		RequestArrivalTimes:    make(map[requestKey]time.Time),
+		epochCh:                make(chan time.Time, 1),
+		packetCount:            packetCounts,
+		stats:                  stats,
+		telemetryEventReporter: reporter,
 	}
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -288,8 +293,8 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			//     first segment, the response uses the seq of its first segment --
 			//     which are only equal if nothing else was in flight on the
 			//     connection. See akinet/http/parser.go.
-			r.RateLimit.stats.IncrResponsesDroppedNoMatchingRequest()
-			r.RateLimit.reportTelemetryEvent("response_dropped_no_matching_request")
+			r.stats.IncrResponsesDroppedNoMatchingRequest()
+			r.reportTelemetryEvent("response_dropped_no_matching_request")
 		}
 	default:
 		if r.RateLimit.AllowOther() {
@@ -306,6 +311,12 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 	}
 
 	return nil
+}
+
+func (r *rateLimitCollector) reportTelemetryEvent(event string) {
+	if r.telemetryEventReporter != nil {
+		r.telemetryEventReporter(event)
+	}
 }
 
 func (r *rateLimitCollector) Close() error {
@@ -345,15 +356,4 @@ func NewRateLimit(witnessesPerMinute float64, stats *capturestats.Stats) *Shared
 	r.CurrentEpochStart = time.Now()
 	go r.run()
 	return r
-}
-
-// SetTelemetryEventReporter installs the target-scoped event callback.
-func (r *SharedRateLimit) SetTelemetryEventReporter(reporter func(string)) {
-	r.telemetryEventReporter = reporter
-}
-
-func (r *SharedRateLimit) reportTelemetryEvent(event string) {
-	if r.telemetryEventReporter != nil {
-		r.telemetryEventReporter(event)
-	}
 }

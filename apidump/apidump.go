@@ -85,7 +85,8 @@ type DaemonsetArgs struct {
 	APIKey                    string
 	Environment               string
 	TraceTags                 tags.SingletonTags
-	ReportTelemetryEvent      func(string) `json:"-"`
+	ReportTelemetryEvent      func(string)         `json:"-"`
+	ReportTelemetryCount      func(string, uint64) `json:"-"`
 
 	// RecordPcapMessage and RecordEBPFMessage report capture liveness for this
 	// target, one call per HTTP message on the respective pipeline. They run on
@@ -131,6 +132,12 @@ func (a Args) reportTelemetryEvent(event string) {
 	}
 }
 
+func (a Args) reportTelemetryCount(event string, count uint64) {
+	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.ReportTelemetryCount != nil {
+		daemonsetArgs.ReportTelemetryCount(event, count)
+	}
+}
+
 func (a Args) setFailureCategory(category string) {
 	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.SetFailureCategory != nil {
 		daemonsetArgs.SetFailureCategory(category)
@@ -157,11 +164,32 @@ func (a Args) setCaptureMode(mode string) {
 
 // captureLivenessHooks returns the DaemonSet-supplied capture-liveness hooks, or
 // nils when running outside DaemonSet mode.
-func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter, reportEvent func(string)) {
+func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter, reportEvent func(string), reportCount func(string, uint64)) {
 	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok {
-		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter, daemonsetArgs.ReportTelemetryEvent
+		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter, daemonsetArgs.ReportTelemetryEvent, daemonsetArgs.ReportTelemetryCount
 	}
-	return nil, nil, nil, nil
+	return nil, nil, nil, nil, nil
+}
+
+func sourceTelemetryEventReporter(reporter func(string), source string) func(string) {
+	if reporter == nil {
+		return nil
+	}
+	return func(event string) {
+		reporter(source + "_" + event)
+	}
+}
+
+// sourceTelemetryCountReporter is the counted-callback counterpart of
+// sourceTelemetryEventReporter, for emitters that report a batch delta rather
+// than one event per item.
+func sourceTelemetryCountReporter(reporter func(string, uint64), source string) func(string, uint64) {
+	if reporter == nil {
+		return nil
+	}
+	return func(event string, count uint64) {
+		reporter(source+"_"+event, count)
+	}
 }
 
 // HTTPSCaptureArgs groups all configuration for the eBPF HTTPS capture
@@ -377,7 +405,8 @@ type apidump struct {
 
 	// Capture-diagnostics counters for this session, created once at the top
 	// of Run(). See capturestats.Stats.
-	captureStats *capturestats.Stats
+	captureStats     *capturestats.Stats
+	ebpfCaptureStats *capturestats.Stats
 
 	// The trace tags collectTraceTags produced for this session, including
 	// the monitored pod name merged in from DaemonsetArgs.TraceTags in the
@@ -813,30 +842,37 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 	a.SendInitialTelemetry()
 
 	subsequentTelemetrySent := false
-	if a.TelemetryInterval > 0 {
-		ticker := time.NewTicker(time.Duration(a.TelemetryInterval) * time.Second)
+	var captureMetrics captureMetricsSnapshot
+	// Keep DaemonSet funnel counters ready for its next heartbeat instead of
+	// delaying them until this legacy five-minute telemetry interval elapses.
+	captureMetricsTicker := time.NewTicker(15 * time.Second)
+	defer captureMetricsTicker.Stop()
+	ticker := time.NewTicker(time.Duration(a.TelemetryInterval) * time.Second)
+	defer ticker.Stop()
 
-		lastReport := time.Now()
-		for {
-			select {
-			case <-done:
-				return
-			case now := <-ticker.C:
-				observationDuration := int(now.Sub(a.startTime) / time.Second)
+	lastReport := time.Now()
+	for {
+		select {
+		case <-done:
+			a.reportCaptureMetrics(&captureMetrics)
+			return
+		case now := <-ticker.C:
+			observationDuration := int(now.Sub(a.startTime) / time.Second)
+			windowStart := lastReport
+			windowDuration := int(now.Sub(windowStart) / time.Second)
+			lastReport = time.Now()
+			a.SendPacketTelemetry(observationDuration, windowStart, windowDuration)
+			a.logCaptureDiagnostics()
+			subsequentTelemetrySent = true
+		case <-captureMetricsTicker.C:
+			a.reportCaptureMetrics(&captureMetrics)
+		case <-a.successTelemetry.Channel:
+			if !subsequentTelemetrySent {
+				observationDuration := int(time.Since(a.startTime) / time.Second)
 				windowStart := lastReport
-				windowDuration := int(now.Sub(windowStart) / time.Second)
+				windowDuration := int(time.Since(windowStart) / time.Second)
 				lastReport = time.Now()
 				a.SendPacketTelemetry(observationDuration, windowStart, windowDuration)
-				a.logCaptureDiagnostics()
-				subsequentTelemetrySent = true
-			case <-a.successTelemetry.Channel:
-				if !subsequentTelemetrySent {
-					observationDuration := int(time.Since(a.startTime) / time.Second)
-					windowStart := lastReport
-					windowDuration := int(time.Since(windowStart) / time.Second)
-					lastReport = time.Now()
-					a.SendPacketTelemetry(observationDuration, windowStart, windowDuration)
-				}
 			}
 		}
 	}
@@ -1142,10 +1178,11 @@ func (a *apidump) Run() error {
 
 	// DaemonSet-supplied capture-liveness hooks. Nil outside DaemonSet mode, and
 	// the collectors treat nil as "not reporting".
-	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryEvent := args.captureLivenessHooks()
-	if rateLimit != nil {
-		rateLimit.SetTelemetryEventReporter(reportTelemetryEvent)
-	}
+	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryEvent, reportTelemetryCount := args.captureLivenessHooks()
+	pcapReportEvent := sourceTelemetryEventReporter(reportTelemetryEvent, "pcap")
+	ebpfReportEvent := sourceTelemetryEventReporter(reportTelemetryEvent, "ebpf")
+	pcapReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "pcap")
+	ebpfReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "ebpf")
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
@@ -1213,7 +1250,8 @@ func (a *apidump) Run() error {
 					if uploadReporter != nil {
 						bc.SetUploadReporter(uploadReporter)
 					}
-					bc.SetTelemetryEventReporter(reportTelemetryEvent)
+					bc.SetTelemetryEventReporter(pcapReportEvent)
+					bc.SetTelemetryCountReporter(pcapReportCount)
 				}
 			}
 
@@ -1230,23 +1268,23 @@ func (a *apidump) Run() error {
 			}
 
 			// Subsampling.
-			collector = trace.NewSamplingCollector(args.SampleRate, collector)
+			collector = trace.NewSamplingCollector(args.SampleRate, collector, pcapReportEvent)
 			if rateLimit != nil {
-				collector = rateLimit.NewCollector(collector, summary)
+				collector = rateLimit.NewCollector(collector, summary, a.captureStats, pcapReportEvent)
 			}
 
 			// Path and host filters.
 			if len(hostExclusions) > 0 {
-				collector = trace.NewHTTPHostFilterCollector(hostExclusions, collector)
+				collector = trace.NewHTTPHostFilterCollector(hostExclusions, collector, pcapReportEvent)
 			}
 			if len(pathExclusions) > 0 {
-				collector = trace.NewHTTPPathFilterCollector(pathExclusions, collector)
+				collector = trace.NewHTTPPathFilterCollector(pathExclusions, collector, pcapReportEvent)
 			}
 			if len(hostAllowlist) > 0 {
-				collector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, collector)
+				collector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, collector, pcapReportEvent)
 			}
 			if len(pathAllowlist) > 0 {
-				collector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, collector)
+				collector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, collector, pcapReportEvent)
 			}
 
 			// Eliminate Akita CLI traffic, unless --dogfood has been specified
@@ -1307,7 +1345,8 @@ func (a *apidump) Run() error {
 					pool,
 					apidumpTelemetry,
 					a.captureStats,
-					reportTelemetryEvent,
+					pcapReportEvent,
+					reportTelemetryCount,
 				); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
@@ -1327,7 +1366,10 @@ func (a *apidump) Run() error {
 	ebpfRequested := args.HTTPS.Enabled && args.Out.AkitaURI != nil
 	if ebpfRequested {
 		httpsSummary := trace.NewPacketCounter()
+		httpsPrefilterSummary := trace.NewPacketCounter()
 		a.dumpSummary.HTTPSSummary = httpsSummary
+		a.dumpSummary.HTTPSPrefilterSummary = httpsPrefilterSummary
+		a.ebpfCaptureStats = capturestats.New()
 		var httpsCollector trace.Collector = trace.NewBackendCollector(
 			a.backendSvc,
 			traceTags,
@@ -1341,7 +1383,7 @@ func (a *apidump) Run() error {
 			args.Plugins,
 			args.MaxWitnessUploadBuffers,
 			apidumpTelemetry,
-			a.captureStats,
+			a.ebpfCaptureStats,
 		)
 		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 			toRotate = append(toRotate, lsc)
@@ -1350,7 +1392,8 @@ func (a *apidump) Run() error {
 			if uploadReporter != nil {
 				bc.SetUploadReporter(uploadReporter)
 			}
-			bc.SetTelemetryEventReporter(reportTelemetryEvent)
+			bc.SetTelemetryEventReporter(ebpfReportEvent)
+			bc.SetTelemetryCountReporter(ebpfReportCount)
 		}
 		httpsCollector = &trace.PacketCountCollector{
 			PacketCounts:      httpsSummary,
@@ -1358,21 +1401,25 @@ func (a *apidump) Run() error {
 			SuccessTelemetry:  a.successTelemetry,
 			RecordHTTPMessage: recordEBPFMessage,
 		}
-		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector)
+		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector, ebpfReportEvent)
 		if rateLimit != nil {
-			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary)
+			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary, a.ebpfCaptureStats, ebpfReportEvent)
 		}
 		if len(hostExclusions) > 0 {
-			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector)
+			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector, ebpfReportEvent)
 		}
 		if len(pathExclusions) > 0 {
-			httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector)
+			httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector, ebpfReportEvent)
 		}
 		if len(hostAllowlist) > 0 {
-			httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector)
+			httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector, ebpfReportEvent)
 		}
 		if len(pathAllowlist) > 0 {
-			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector)
+			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector, ebpfReportEvent)
+		}
+		httpsCollector = &trace.PacketCountCollector{
+			PacketCounts: httpsPrefilterSummary,
+			Collector:    httpsCollector,
 		}
 
 		httpsCtx, httpsCancel := context.WithCancel(context.Background())

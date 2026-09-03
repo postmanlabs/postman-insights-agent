@@ -178,6 +178,7 @@ type BackendCollector struct {
 	uploadReporter         UploadReporter
 	uploadReporterMutex    sync.Mutex
 	telemetryReporter      func(string)
+	telemetryCountReporter func(string, uint64)
 	telemetryReporterMutex sync.Mutex
 
 	// Channel controlling periodic cache flush
@@ -434,6 +435,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	// is not retried on the next pair-cache flush. See dropOutboundWitnesses.
 	if dropOutboundWitnesses && w.direction == akinet.DirectionOutbound {
 		printer.Debugf("Dropping OUTBOUND witness %v (agent-side gate; backend does not yet support outbound direction)\n", w.id)
+		w.reportTelemetryEvent("witness_dropped_outbound")
 		return
 	}
 
@@ -444,6 +446,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		if err := p.Transform(w.witness.GetMethod()); err != nil {
 			// Only upload if plugins did not return error.
 			printer.Errorf("plugin %q returned error, skipping: %v", p.Name(), err)
+			w.reportTelemetryEvent("witness_dropped_plugin_error")
 			return
 		}
 	}
@@ -518,6 +521,12 @@ func (c *BackendCollector) periodicFlush() {
 func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	totalWitnesses := 0
 	flushedWitnesses := 0
+
+	// Accumulated across the whole sweep and reported once below. A single
+	// flush can expire thousands of witnesses (6,381 in one observed run), and
+	// each telemetry call takes a lock shared by every target on the node.
+	var expiredMissingResponse, expiredMissingRequest uint64
+
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
@@ -533,11 +542,12 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 			// equivalents of those drop reasons.
 			if e.isRequest {
 				c.stats.IncrUnpairedRequestsFlushed()
+				expiredMissingResponse++
 			} else {
 				c.stats.IncrUnpairedResponsesFlushed()
+				expiredMissingRequest++
 			}
 
-			c.reportTelemetryEvent("witness_pair_expired_" + missingHalf(e.isRequest))
 			c.queueUpload(e)
 			c.pairCache.Delete(k)
 
@@ -546,6 +556,11 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 		totalWitnesses += 1
 		return true
 	})
+
+	// Names match the half that is *missing*, not the half that expired: a
+	// request-only witness expired without ever seeing its response.
+	c.reportTelemetryCount("witness_pair_expired_response", expiredMissingResponse)
+	c.reportTelemetryCount("witness_pair_expired_request", expiredMissingRequest)
 
 	if flushedWitnesses > 0 {
 		printer.Debugf("Flushed %d unpaired witnesses, %d still waiting for a pair\n",
@@ -568,18 +583,33 @@ func (c *BackendCollector) reportTelemetryEvent(event string) {
 	}
 }
 
+// SetTelemetryCountReporter installs the target-scoped interval counter callback,
+// for outcomes that occur in batches. Emitting one event per item would take the
+// DaemonSet's node-wide telemetry lock once per item, which is worst during the
+// high-loss periods these counters exist to describe.
+func (c *BackendCollector) SetTelemetryCountReporter(reporter func(string, uint64)) {
+	c.telemetryReporterMutex.Lock()
+	defer c.telemetryReporterMutex.Unlock()
+	c.telemetryCountReporter = reporter
+}
+
+func (c *BackendCollector) reportTelemetryCount(event string, count uint64) {
+	if count == 0 {
+		return
+	}
+	c.telemetryReporterMutex.Lock()
+	reporter := c.telemetryCountReporter
+	c.telemetryReporterMutex.Unlock()
+	if reporter != nil {
+		reporter(event, count)
+	}
+}
+
 func messageDirection(isRequest bool) string {
 	if isRequest {
 		return "request"
 	}
 	return "response"
-}
-
-func missingHalf(isRequest bool) string {
-	if isRequest {
-		return "response"
-	}
-	return "request"
 }
 
 // classifyParseHTTPError returns a closed set and never exposes the error text.

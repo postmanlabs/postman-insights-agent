@@ -141,7 +141,10 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				// which is the question, since a lost response leaves a witness with
 				// no response half while a lost request leaves no witness at all.
 				countDiscardedByParserKind(f.stats, fact.Name())
-				if fact.Name() == httpResponseParserFactoryName {
+				switch fact.Name() {
+				case httpRequestParserFactoryName:
+					f.reportTelemetryEvent("parser_discarded_request")
+				case httpResponseParserFactoryName:
 					f.reportTelemetryEvent("parser_discarded_response")
 				}
 

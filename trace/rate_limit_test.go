@@ -44,9 +44,10 @@ func TestRateLimit_FirstSample(t *testing.T) {
 
 	start := time.Now()
 	cc := &countingCollector{}
-	rl := NewRateLimit(1.0, capturestats.New())
+	stats := capturestats.New()
+	rl := NewRateLimit(1.0, stats)
 	pc := NewPacketCounter()
-	c := rl.NewCollector(cc, pc).(*rateLimitCollector)
+	c := rl.NewCollector(cc, pc, stats, nil).(*rateLimitCollector)
 
 	// Sample packet from another test
 	streamID := uuid.New()
@@ -118,10 +119,9 @@ func TestRateLimit_ReportsUnmatchedResponse(t *testing.T) {
 	stats := capturestats.New()
 	var reported string
 	rl := NewRateLimit(1.0, stats)
-	rl.SetTelemetryEventReporter(func(event string) {
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, func(event string) {
 		reported = event
-	})
-	c := rl.NewCollector(&countingCollector{}, NewPacketCounter()).(*rateLimitCollector)
+	}).(*rateLimitCollector)
 	defer rl.Stop()
 
 	if err := c.Process(akinet.ParsedNetworkTraffic{

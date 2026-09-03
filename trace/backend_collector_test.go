@@ -2,6 +2,7 @@ package trace
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -25,15 +26,90 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/stretchr/testify/assert"
 )
 
+type failingPlugin struct{}
+
+var _ plugin.AkitaPlugin = failingPlugin{}
+
+func (failingPlugin) Name() string { return "failing" }
+
+func (failingPlugin) Transform(*pb.Method) error { return errors.New("transform failed") }
+
 var (
 	fakeSvc = akid.NewServiceID(uuid.Must(uuid.Parse("8b2cf196-87fe-4e53-a6b9-1452d7efb863")))
 	fakeLrn = akid.NewLearnSessionID(uuid.Must(uuid.Parse("2b5dd735-9fc0-4365-93e8-74bf86d3f853")))
 )
+
+func TestQueueUploadReportsOutboundDrop(t *testing.T) {
+	var event string
+	c := &BackendCollector{}
+	w := &witnessWithInfo{
+		direction: akinet.DirectionOutbound,
+		telemetryEventReporter: func(got string) {
+			event = got
+		},
+	}
+
+	c.queueUpload(w)
+
+	if event != "witness_dropped_outbound" {
+		t.Fatalf("event = %q, want witness_dropped_outbound", event)
+	}
+	if !w.witnessFlushed {
+		t.Fatal("outbound witness was not marked flushed")
+	}
+}
+
+func TestQueueUploadReportsPluginError(t *testing.T) {
+	var event string
+	c := &BackendCollector{plugins: []plugin.AkitaPlugin{failingPlugin{}}}
+	w := &witnessWithInfo{
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+		telemetryEventReporter: func(got string) {
+			event = got
+		},
+	}
+
+	c.queueUpload(w)
+
+	if event != "witness_dropped_plugin_error" {
+		t.Fatalf("event = %q, want witness_dropped_plugin_error", event)
+	}
+	if !w.witnessFlushed {
+		t.Fatal("plugin-error witness was not marked flushed")
+	}
+}
+
+func TestReportBufferReportsOversizedWitness(t *testing.T) {
+	var event string
+	buf := &reportBuffer{
+		collector:             &BackendCollector{},
+		packetCounts:          NewPacketCounter(),
+		maxWitnessSize_bytes:  optionals.Some(1),
+		witnessesHavePayloads: false,
+	}
+	w := &witnessWithInfo{
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+		telemetryEventReporter: func(got string) {
+			event = got
+		},
+	}
+
+	buf.addWitness(w)
+
+	if event != "witness_dropped_oversized" {
+		t.Fatalf("event = %q, want witness_dropped_oversized", event)
+	}
+}
 
 var redactionString = data_masks.RedactionString
 
@@ -1700,5 +1776,132 @@ func TestRedactionConfigs(t *testing.T) {
 		assert.NoError(t, col.Close())
 
 		rec.assertExpectedWitnesses(t, []*pb.Witness{testCase.expectedWitnesses})
+	}
+}
+
+// recordingCountReporter collects the counted-callback deltas emitted during a
+// test, keyed by event name.
+type recordingCountReporter struct {
+	mu     sync.Mutex
+	counts map[string]uint64
+	calls  int
+}
+
+func newRecordingCountReporter() *recordingCountReporter {
+	return &recordingCountReporter{counts: map[string]uint64{}}
+}
+
+func (r *recordingCountReporter) report(event string, count uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counts[event] += count
+	r.calls++
+}
+
+func (r *recordingCountReporter) snapshot() (map[string]uint64, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]uint64, len(r.counts))
+	for k, v := range r.counts {
+		out[k] = v
+	}
+	return out, r.calls
+}
+
+// A pair-cache flush must report one delta per direction, not one event per
+// expired witness: every call takes a lock shared by all targets on the node,
+// and a single sweep can expire thousands of witnesses.
+func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
+	counts := newRecordingCountReporter()
+	var events []string
+
+	c := &BackendCollector{stats: capturestats.New()}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetTelemetryEventReporter(func(event string) {
+		events = append(events, event)
+	})
+
+	// Two request-only partials (missing their responses) and one
+	// response-only partial (missing its request).
+	for i, isRequest := range []bool{true, true, false} {
+		id := akid.GenerateWitnessID()
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       isRequest,
+			observationTime: time.Now().Add(-time.Duration(i+1) * time.Minute),
+			// Already flushed, so queueUpload returns before it needs a
+			// redactor or an upload batch. Expiry accounting happens first.
+			witnessFlushed: true,
+		})
+	}
+
+	c.flushPairCache(time.Now())
+
+	got, calls := counts.snapshot()
+	assert.Equal(t, map[string]uint64{
+		"witness_pair_expired_response": 2,
+		"witness_pair_expired_request":  1,
+	}, got)
+	assert.Equal(t, 2, calls, "expected one counted call per direction, not one per witness")
+	assert.Empty(t, events, "expiry must not use the per-event callback")
+}
+
+// newUploadTestBuffer returns a buffer holding one witness, wired to mockClient.
+// reportBuffers is 1 so Flush blocks until its upload goroutine returns the
+// report to the channel, making the assertions deterministic.
+func newUploadTestBuffer(t *testing.T, mockClient *mockrest.MockLearnClient, counts *recordingCountReporter) *reportBuffer {
+	t.Helper()
+
+	c := &BackendCollector{learnClient: mockClient}
+	c.SetTelemetryCountReporter(counts.report)
+
+	buf := newReportBuffer(c, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, 1)
+	buf.addWitness(&witnessWithInfo{
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+	})
+	if buf.activeUploadReport.IsEmpty() {
+		t.Fatal("test setup: buffer has no witness to upload")
+	}
+	return buf
+}
+
+func TestFlushReportsUploadOutcome(t *testing.T) {
+	tests := []struct {
+		name      string
+		uploadErr error
+		wantEvent string
+	}{
+		{name: "success", uploadErr: nil, wantEvent: "witness_upload_success"},
+		{
+			name:      "throttled",
+			uploadErr: mockrest.HTTPError{StatusCode: http.StatusTooManyRequests},
+			wantEvent: "witness_upload_throttled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			mockClient.EXPECT().
+				AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(tt.uploadErr).
+				Times(1)
+
+			counts := newRecordingCountReporter()
+			buf := newUploadTestBuffer(t, mockClient, counts)
+
+			if err := buf.Flush(); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+
+			got, _ := counts.snapshot()
+			assert.Equal(t, map[string]uint64{tt.wantEvent: 1}, got,
+				"the batch's witness count must be attributed to its upload outcome")
+		})
 	}
 }

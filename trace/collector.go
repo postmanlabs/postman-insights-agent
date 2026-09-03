@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/OneOfOne/xxhash"
-	"github.com/pkg/errors"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/viper"
@@ -82,18 +82,21 @@ type SamplingCollector struct {
 	sampleThreshold float64
 
 	collector Collector
+
+	telemetryEventReporter func(string)
 }
 
 // Wraps a collector and performs sampling. Returns the collector itself if the
 // given sampleRate is 1.0.
-func NewSamplingCollector(sampleRate float64, collector Collector) Collector {
+func NewSamplingCollector(sampleRate float64, collector Collector, reporters ...func(string)) Collector {
 	if sampleRate == 1.0 {
 		return collector
 	}
 
 	return &SamplingCollector{
-		sampleThreshold: float64(math.MaxUint32) * sampleRate,
-		collector:       collector,
+		sampleThreshold:        float64(math.MaxUint32) * sampleRate,
+		collector:              collector,
+		telemetryEventReporter: firstTelemetryReporter(reporters),
 	}
 }
 
@@ -122,7 +125,19 @@ func (sc *SamplingCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	if sc.includeSample(key) {
 		return sc.collector.Process(t)
 	}
+	switch t.Content.(type) {
+	case akinet.HTTPRequest:
+		sc.reportTelemetryEvent("request_sampled_out")
+	case akinet.HTTPResponse:
+		sc.reportTelemetryEvent("response_sampled_out")
+	}
 	return nil
+}
+
+func (sc *SamplingCollector) reportTelemetryEvent(event string) {
+	if sc.telemetryEventReporter != nil {
+		sc.telemetryEventReporter(event)
+	}
 }
 
 func (sc *SamplingCollector) Close() error {

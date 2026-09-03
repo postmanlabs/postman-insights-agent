@@ -151,7 +151,7 @@ func removeNonDeterministicField(p *akinet.ParsedNetworkTraffic) {
 // pcapWrapper backed by a pcap file.
 type filePcapWrapper string
 
-func (f filePcapWrapper) capturePackets(done <-chan struct{}, _, _ string, _ optionals.Optional[string], _ *capturestats.Stats) (<-chan gopacket.Packet, error) {
+func (f filePcapWrapper) capturePackets(done <-chan struct{}, _, _ string, _ optionals.Optional[string], _ *capturestats.Stats, _ func(string, uint64)) (<-chan gopacket.Packet, error) {
 	handle, err := pcap.OpenOffline(string(f))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to open %s", f)

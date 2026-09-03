@@ -80,7 +80,13 @@ func (d *Daemonset) sendTelemetry() {
 }
 
 func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
-	if event == "" {
+	d.recordTelemetryCount(targetID, event, 1)
+}
+
+// recordTelemetryCount adds an interval delta without requiring one callback
+// invocation per observed packet or message.
+func (d *Daemonset) recordTelemetryCount(targetID, event string, count uint64) {
+	if event == "" || count == 0 {
 		return
 	}
 	d.telemetryEventsMu.Lock()
@@ -91,7 +97,7 @@ func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
 	if d.telemetryEvents[event] == nil {
 		d.telemetryEvents[event] = make(map[string]uint64)
 	}
-	d.telemetryEvents[event][targetID]++
+	d.telemetryEvents[event][targetID] += count
 }
 
 // drainTelemetryEvents empties the in-memory counter buffer accumulated

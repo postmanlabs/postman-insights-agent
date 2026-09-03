@@ -94,6 +94,7 @@ type NetworkTrafficParser struct {
 	clock                  clockWrapper
 	observer               NetworkTrafficObserver // This function is called for every packet.
 	telemetryEventReporter func(string)
+	telemetryCountReporter func(string, uint64)
 	bufferShare            float32
 	telemetry              telemetry.Tracker
 
@@ -134,6 +135,11 @@ func (p *NetworkTrafficParser) InstallTelemetryEventReporter(reporter func(strin
 	p.telemetryEventReporter = reporter
 }
 
+// InstallTelemetryCountReporter installs the target-scoped interval counter callback.
+func (p *NetworkTrafficParser) InstallTelemetryCountReporter(reporter func(string, uint64)) {
+	p.telemetryCountReporter = reporter
+}
+
 // Parses network traffic from an interface.
 // This function will attempt to parse the traffic with the highest level of
 // protocol details as possible. For instance, it will try to piece together
@@ -147,7 +153,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 	fs ...akinet.TCPParserFactory,
 ) (<-chan akinet.ParsedNetworkTraffic, error) {
 	// Read in packets, pass to assembler
-	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt, p.stats)
+	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt, p.stats, p.telemetryCountReporter)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed begin capturing packets from %s", interfaceName)
 	}
@@ -244,9 +250,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 					p.stats.AddReassemblyGapFlushed(uint64(flushed))
 				}
 
-				for i := 0; i < flushed; i++ {
-					p.reportTelemetryEvent("capture_gap_truncated_flushed")
-				}
+				p.reportTelemetryCount("pcap_reassembly_gap_flushed", uint64(flushed))
 			}
 		}
 	}()
@@ -257,6 +261,12 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 func (p *NetworkTrafficParser) reportTelemetryEvent(event string) {
 	if p.telemetryEventReporter != nil {
 		p.telemetryEventReporter(event)
+	}
+}
+
+func (p *NetworkTrafficParser) reportTelemetryCount(event string, count uint64) {
+	if p.telemetryCountReporter != nil && count > 0 {
+		p.telemetryCountReporter(event, count)
 	}
 }
 
