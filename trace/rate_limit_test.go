@@ -113,3 +113,30 @@ func TestRateLimit_FirstSample(t *testing.T) {
 		t.Errorf("Expected empty child list after close.")
 	}
 }
+
+func TestRateLimit_ReportsUnmatchedResponse(t *testing.T) {
+	stats := capturestats.New()
+	var reported string
+	rl := NewRateLimit(1.0, stats)
+	rl.SetTelemetryEventReporter(func(event string) {
+		reported = event
+	})
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter()).(*rateLimitCollector)
+	defer rl.Stop()
+
+	if err := c.Process(akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPResponse{
+			StreamID: uuid.New(),
+			Seq:      1203,
+		},
+	}); err != nil {
+		t.Fatalf("processing unmatched response: %v", err)
+	}
+
+	if got := stats.Snapshot().ResponsesDroppedNoMatchingRequest; got != 1 {
+		t.Fatalf("expected one unmatched response, got %d", got)
+	}
+	if reported != "response_dropped_no_matching_request" {
+		t.Fatalf("expected unmatched response telemetry, got %q", reported)
+	}
+}

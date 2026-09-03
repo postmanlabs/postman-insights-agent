@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
+	"github.com/akitasoftware/akita-libs/buffer_pool"
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -39,6 +41,7 @@ type fakeScatterGather struct {
 	saved, data memview.MemView
 	keepFrom    int
 	isEnd       bool
+	nilContext  bool
 }
 
 func (sg fakeScatterGather) Lengths() (int, int) {
@@ -60,6 +63,9 @@ func (sg fakeScatterGather) CaptureInfo(offset int) gopacket.CaptureInfo {
 }
 
 func (sg fakeScatterGather) AssemblerContext(offset int) reassembly.AssemblerContext {
+	if sg.nilContext {
+		return nil
+	}
 	return &assemblerCtxWithSeq{ci: sg.CaptureInfo(offset)}
 }
 
@@ -85,7 +91,7 @@ func runTCPFlowTestCase(c tcpFlowTestCase) error {
 		princeParserFactory{},
 		pineappleParserFactory{},
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil)
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil, nil)
 
 	for i, input := range c.inputs {
 		sg.data = memview.New([]byte(input))
@@ -208,5 +214,36 @@ func TestTCPFlow(t *testing.T) {
 		if err := runTCPFlowTestCase(c); err != nil {
 			t.Error(err)
 		}
+	}
+}
+
+func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
+	pool, err := buffer_pool.MakeBufferPool(1024*1024, 4*1024)
+	if err != nil {
+		t.Fatalf("creating buffer pool: %v", err)
+	}
+
+	stats := capturestats.New()
+	var reported string
+	out := make(chan akinet.ParsedNetworkTraffic, 10)
+	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
+		akihttp.NewHTTPResponseParserFactory(pool),
+	})
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, func(event string) {
+		reported = event
+	})
+	sg := &fakeScatterGather{
+		data:       memview.New([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")),
+		isEnd:      true,
+		nilContext: true,
+	}
+
+	f.reassembled(sg)
+
+	if got := stats.Snapshot().DiscardedResponses; got != 1 {
+		t.Fatalf("expected one discarded response, got %d", got)
+	}
+	if reported != "parser_discarded_response" {
+		t.Fatalf("expected parser discard telemetry, got %q", reported)
 	}
 }

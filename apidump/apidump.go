@@ -1143,6 +1143,9 @@ func (a *apidump) Run() error {
 	// DaemonSet-supplied capture-liveness hooks. Nil outside DaemonSet mode, and
 	// the collectors treat nil as "not reporting".
 	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryEvent := args.captureLivenessHooks()
+	if rateLimit != nil {
+		rateLimit.SetTelemetryEventReporter(reportTelemetryEvent)
+	}
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0

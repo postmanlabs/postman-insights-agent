@@ -66,6 +66,10 @@ type SharedRateLimit struct {
 	// keeps a response we drop -- see the else branch in Process below --
 	// attributed to the pod it actually belongs to.
 	stats *capturestats.Stats
+
+	// Optional observer for capture-diagnostic events. Set before collectors
+	// start processing traffic.
+	telemetryEventReporter func(string)
 }
 
 func (r *SharedRateLimit) startInterval(start time.Time) {
@@ -285,6 +289,7 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			//     which are only equal if nothing else was in flight on the
 			//     connection. See akinet/http/parser.go.
 			r.RateLimit.stats.IncrResponsesDroppedNoMatchingRequest()
+			r.RateLimit.reportTelemetryEvent("response_dropped_no_matching_request")
 		}
 	default:
 		if r.RateLimit.AllowOther() {
@@ -340,4 +345,15 @@ func NewRateLimit(witnessesPerMinute float64, stats *capturestats.Stats) *Shared
 	r.CurrentEpochStart = time.Now()
 	go r.run()
 	return r
+}
+
+// SetTelemetryEventReporter installs the target-scoped event callback.
+func (r *SharedRateLimit) SetTelemetryEventReporter(reporter func(string)) {
+	r.telemetryEventReporter = reporter
+}
+
+func (r *SharedRateLimit) reportTelemetryEvent(event string) {
+	if r.telemetryEventReporter != nil {
+		r.telemetryEventReporter(event)
+	}
 }
