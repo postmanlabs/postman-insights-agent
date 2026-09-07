@@ -266,17 +266,17 @@ func startHTTPSeBPFCapture(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			select {
-			case <-captureCtx.Done():
-				return
-			case pnt, ok := <-out:
-				if !ok {
-					return
-				}
-				if err := collector.Process(pnt); err != nil {
-					printer.Stderr.Warningf("ebpf: collector.Process: %v\n", err)
-				}
+		defer func() {
+			if err := collector.Close(); err != nil {
+				printer.Stderr.Warningf("ebpf: collector.Close: %v\n", err)
+			}
+		}()
+		// The producer closes out after cancellation. Drain it rather than
+		// returning on captureCtx.Done so already-adapted messages reach the
+		// collector before its pair cache and report buffer are closed.
+		for pnt := range out {
+			if err := collector.Process(pnt); err != nil {
+				printer.Stderr.Warningf("ebpf: collector.Process: %v\n", err)
 			}
 		}
 	}()

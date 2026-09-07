@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -1903,5 +1904,58 @@ func TestFlushReportsUploadOutcome(t *testing.T) {
 			assert.Equal(t, map[string]uint64{tt.wantEvent: 1}, got,
 				"the batch's witness count must be attributed to its upload outcome")
 		})
+	}
+}
+
+func TestReportBufferWaitsForAllInflightUploads(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	mockClient.EXPECT().
+		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, akid.LearnSessionID, *kgxapi.UploadReportsRequest) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		}).
+		Times(2)
+
+	c := &BackendCollector{learnClient: mockClient}
+	buf := newReportBuffer(c, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, 3)
+	for range 2 {
+		buf.addWitness(&witnessWithInfo{
+			witness: &pb.Witness{Method: &pb.Method{
+				Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+			}},
+		})
+		if err := buf.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("upload did not start")
+		}
+	}
+
+	waited := make(chan struct{})
+	go func() {
+		buf.WaitForUploads()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("WaitForUploads returned before uploads completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(time.Second):
+		t.Fatal("WaitForUploads did not wait for both uploads")
 	}
 }

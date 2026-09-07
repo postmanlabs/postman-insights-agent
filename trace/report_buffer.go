@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
@@ -35,6 +36,11 @@ type reportBuffer struct {
 	// payloads. If false, indicates that witnesses will have their payloads
 	// obfuscated before being sent to this buffer.
 	witnessesHavePayloads bool
+
+	// Tracks every asynchronous upload, including uploads that started before a
+	// free report buffer became available. BackendCollector.Close waits for this
+	// so terminal source metrics and upload outcomes share one boundary.
+	uploads sync.WaitGroup
 }
 
 var _ batcher.Buffer[rawReport] = (*reportBuffer)(nil)
@@ -134,7 +140,9 @@ func (buf *reportBuffer) Flush() error {
 	// If witness rate is very high, reading from the channel could still block.
 	report := buf.activeUploadReport
 	learnSessions := buf.collector.getLearnSession()
+	buf.uploads.Add(1)
 	go func() {
+		defer buf.uploads.Done()
 		// Upload to the back end.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -173,6 +181,12 @@ func (buf *reportBuffer) Flush() error {
 	buf.activeUploadReport = <-buf.uploadReports
 
 	return nil
+}
+
+// WaitForUploads waits for every upload started by Flush. It must be called
+// only after the batcher has stopped accepting and flushing new reports.
+func (buf *reportBuffer) WaitForUploads() {
+	buf.uploads.Wait()
 }
 
 // Determines whether the buffer is at or beyond capacity.

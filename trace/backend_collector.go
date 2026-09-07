@@ -170,6 +170,7 @@ type BackendCollector struct {
 
 	// Batch of reports (witnesses, TCP-connection reports, etc.) pending upload.
 	uploadReportBatch *batcher.InMemory[rawReport]
+	reportBuffer      *reportBuffer
 
 	// Optional observer of upload outcomes. Set via SetUploadReporter rather than
 	// passed to the constructor, which already takes more arguments than is
@@ -253,8 +254,9 @@ func NewBackendCollector(
 		stats:                           stats,
 	}
 
+	col.reportBuffer = newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads, uploadReportBuffers)
 	col.uploadReportBatch = batcher.NewInMemory(
-		newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads, uploadReportBuffers),
+		col.reportBuffer,
 		uploadBatchFlushDuration,
 	)
 
@@ -489,6 +491,7 @@ func (c *BackendCollector) Close() error {
 	close(c.flushDone)
 	c.flushPairCache(time.Now())
 	c.uploadReportBatch.Close()
+	c.reportBuffer.WaitForUploads()
 	return nil
 }
 

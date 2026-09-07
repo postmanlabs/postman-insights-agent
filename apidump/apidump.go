@@ -878,6 +878,25 @@ func (a *apidump) TelemetryWorker(done <-chan struct{}) {
 	}
 }
 
+// startTelemetryWorker starts the legacy telemetry worker and returns its
+// finalizer. The caller must invoke the finalizer only after capture collectors
+// have stopped, so its final source-funnel snapshot includes their last pairs,
+// pair-cache flushes, and uploads.
+func (a *apidump) startTelemetryWorker() func() {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.TelemetryWorker(done)
+	}()
+
+	return func() {
+		close(done)
+		wg.Wait()
+	}
+}
+
 type interfaceError struct {
 	interfaceName string
 	err           error
@@ -1140,6 +1159,7 @@ func (a *apidump) Run() error {
 	doneWG.Add(len(userFilters) + len(negationFilters))
 	errChan := make(chan interfaceError, len(userFilters)+len(negationFilters)) // buffered enough so it never blocks
 	stop := make(chan struct{})
+	var stopTelemetry func()
 
 	// If a discovery traffic TTL was provided by the backend, start a timer that
 	// will stop capture when the window elapses.
@@ -1157,15 +1177,17 @@ func (a *apidump) Run() error {
 		discoveryTTLExpired = t.C
 	}
 
-	// If we're sending traffic to the cloud, then start telemetry and stop
-	// when the main collection process does.
+	// If we're sending traffic to the cloud, start telemetry now but finalize it
+	// only when Run returns. The normal return path waits for collectors below,
+	// so the worker's final source-funnel snapshot cannot race their shutdown.
 	if a.TargetIsRemote() {
 		{
 			// Record the first usage immediately (sending delay = 0) since we want to include it in the success telemetry
 			go usage.Poll(stop, 0, time.Duration(a.ProcFSPollingInterval)*time.Second)
 		}
 
-		go a.TelemetryWorker(stop)
+		stopTelemetry = a.startTelemetryWorker()
+		defer stopTelemetry()
 	}
 
 	lastCheckpoint = "redactor_init"
