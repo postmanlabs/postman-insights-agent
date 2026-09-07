@@ -7,51 +7,32 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
 	"github.com/akitasoftware/akita-libs/buffer_pool"
-	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/akitasoftware/akita-libs/tags"
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/reassembly"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
-
-// fakeHTTPRequestFactory has the same Name() as akinet/http's real HTTP
-// request parser factory, without needing a buffer pool, so pairSeqForFactory
-// can be tested in isolation from real HTTP parsing.
-type fakeHTTPRequestFactory struct{}
-
-func (fakeHTTPRequestFactory) Name() string { return httpRequestParserFactoryName }
-
-func (fakeHTTPRequestFactory) Accepts(input memview.MemView, isEnd bool) (akinet.AcceptDecision, int64) {
-	return akinet.Reject, 0
-}
-
-func (fakeHTTPRequestFactory) CreateParser(id akinet.TCPBidiID, seq, ack reassembly.Sequence) akinet.TCPParser {
-	return nil
-}
 
 // TestPairSequencer exercises the FIFO pairing queue directly: requests push
 // an index, responses pop the oldest unmatched one, in order -- including
 // the pipelined case where two requests arrive before either response.
 func TestPairSequencer(t *testing.T) {
 	p := newPairSequencer()
-	req := fakeHTTPRequestFactory{}
-	notReq := princeParserFactory{} // any factory whose Name() isn't the HTTP request factory's
 
 	// Simple case: request then its response.
-	r0 := p.pairSeqForFactory(req)
-	s0 := p.pairSeqForFactory(notReq)
+	r0 := p.pairSeqForRequest()
+	s0 := p.pairSeqForResponse()
 	if r0 != s0 {
 		t.Errorf("expected first response to pair with first request: req=%v resp=%v", r0, s0)
 	}
 
 	// Pipelined case: two requests arrive before either response. FIFO
 	// ordering must still pair them correctly.
-	r1 := p.pairSeqForFactory(req)
-	r2 := p.pairSeqForFactory(req)
-	s1 := p.pairSeqForFactory(notReq)
-	s2 := p.pairSeqForFactory(notReq)
+	r1 := p.pairSeqForRequest()
+	r2 := p.pairSeqForRequest()
+	s1 := p.pairSeqForResponse()
+	s2 := p.pairSeqForResponse()
 
 	if r1 != s1 {
 		t.Errorf("expected second request to pair with first of the two pending responses: req=%v resp=%v", r1, s1)
@@ -212,5 +193,35 @@ func releasePairingTestTraffic(reqs []akinet.HTTPRequest, resps []akinet.HTTPRes
 	}
 	for _, r := range resps {
 		r.ReleaseBuffers()
+	}
+}
+
+// TestStampSyntheticPairSeq_OnlyEmittedMessagesConsumeFIFO guards the emit-time
+// contract: a request that is accepted but never emitted must not take a FIFO
+// slot. Skipping stamp models "Accept then fail"; the next real exchange must
+// still match.
+func TestStampSyntheticPairSeq_OnlyEmittedMessagesConsumeFIFO(t *testing.T) {
+	p := newPairSequencer()
+
+	req1, ok := p.stampSyntheticPairSeq(akinet.HTTPRequest{Seq: -1}).(akinet.HTTPRequest)
+	if !ok {
+		t.Fatalf("expected HTTPRequest")
+	}
+	resp1, ok := p.stampSyntheticPairSeq(akinet.HTTPResponse{Seq: -1}).(akinet.HTTPResponse)
+	if !ok {
+		t.Fatalf("expected HTTPResponse")
+	}
+	if req1.Seq != resp1.Seq {
+		t.Fatalf("first exchange: req.Seq=%d resp.Seq=%d, want equal", req1.Seq, resp1.Seq)
+	}
+
+	// No stamp here = failed/abandoned parse. Must not skew the next exchange.
+	req2, _ := p.stampSyntheticPairSeq(akinet.HTTPRequest{Seq: -1}).(akinet.HTTPRequest)
+	resp2, _ := p.stampSyntheticPairSeq(akinet.HTTPResponse{Seq: -1}).(akinet.HTTPResponse)
+	if req2.Seq != resp2.Seq {
+		t.Fatalf("second exchange after a non-emitted accept: req.Seq=%d resp.Seq=%d, want equal", req2.Seq, resp2.Seq)
+	}
+	if req2.Seq == req1.Seq {
+		t.Fatalf("expected distinct ordinals across exchanges, both %d", req2.Seq)
 	}
 }

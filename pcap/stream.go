@@ -143,22 +143,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
 				return
 			}
-			if f.pairSeq != nil && isHTTPParserFactory(fact) {
-				// Synthetic pairing enabled, and this is an HTTP/1.x request or
-				// response: ignore the real TCP seq/ack and use a shared
-				// per-connection FIFO ordinal instead, mirroring
-				// ebpf/events/adapter.go's tlsConnState.pairSeqForFactory. See
-				// pairing.go for why the real numbers are unreliable here.
-				//
-				// Scoped to HTTP only -- TLS/HTTP2-preface/etc. keep the real
-				// seq/ack, even when the flag is on, since this fix only concerns
-				// HTTP/1.x pairing and other factories have no reason to see
-				// substituted values.
-				synthSeq := f.pairSeq.pairSeqForFactory(fact)
-				f.currentParser = fact.CreateParser(f.bidiID, synthSeq, synthSeq)
-			} else {
-				f.currentParser = fact.CreateParser(f.bidiID, ctx.seq, ctx.ack)
-			}
+			f.currentParser = fact.CreateParser(f.bidiID, ctx.seq, ctx.ack)
 			f.currentParserCtx = ctx
 		default:
 			printer.Errorf("unsupported decision type %s, treating data as raw bytes\n", decision)
@@ -193,7 +178,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 			f.stats.IncrNilAssemblerContextAfterParse()
 			parseEnd = parseStart
 		}
-		f.outChan <- f.toPNT(parseStart, parseEnd, pnc)
+		f.emitParsed(parseStart, parseEnd, pnc)
 
 		f.currentParser = nil
 		f.currentParserCtx = nil
@@ -218,6 +203,16 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 	}
 }
 
+// emitParsed stamps a synthetic FIFO ordinal onto HTTP messages (when
+// enabled) and sends them downstream. Stamping happens here -- not at
+// CreateParser -- so a failed or abandoned parse never consumes a slot.
+func (f *tcpFlow) emitParsed(firstPacketTime, lastPacketTime time.Time, pnc akinet.ParsedNetworkContent) {
+	if f.pairSeq != nil {
+		pnc = f.pairSeq.stampSyntheticPairSeq(pnc)
+	}
+	f.outChan <- f.toPNT(firstPacketTime, lastPacketTime, pnc)
+}
+
 // Marks this flow as finished.
 func (f *tcpFlow) reassemblyComplete() {
 	if f.currentParser != nil {
@@ -228,7 +223,7 @@ func (f *tcpFlow) reassemblyComplete() {
 			f.handleUnparseable(t, numBytesConsumed)
 		} else if pnc != nil {
 			printer.V(6).Infof("ReassemblyComplete parsed additional network traffic with ts: %v", t)
-			f.outChan <- f.toPNT(t, t, pnc)
+			f.emitParsed(t, t, pnc)
 			f.handleUnparseable(t, unused.Len())
 		}
 		f.currentParser = nil
