@@ -3,6 +3,9 @@ package apidump
 import (
 	"net"
 	"testing"
+	"time"
+
+	"github.com/akitasoftware/go-utils/optionals"
 )
 
 func TestParseListenPortFromProcNetTCPLine(t *testing.T) {
@@ -55,5 +58,36 @@ func TestDefaultExcludedListenPortsIncludeEnvoy(t *testing.T) {
 	}
 	if shouldExcludeListenPort(1337, defaultExcludedListenPorts) {
 		t.Fatal("app port 1337 must not be excluded")
+	}
+}
+
+func TestProcRootAndPIDFromNSPath(t *testing.T) {
+	root, pid, ok := procRootAndPIDFromNSPath("/host/proc/12345/ns/net")
+	if !ok || root != "/host/proc" || pid != 12345 {
+		t.Fatalf("got root=%q pid=%d ok=%v", root, pid, ok)
+	}
+	root, pid, ok = procRootAndPIDFromNSPath("/proc/9/ns/net")
+	if !ok || root != "/proc" || pid != 9 {
+		t.Fatalf("got root=%q pid=%d ok=%v", root, pid, ok)
+	}
+	if _, _, ok := procRootAndPIDFromNSPath("/var/run/netns/foo"); ok {
+		t.Fatal("expected non-proc ns path to be rejected")
+	}
+}
+
+func TestApplyAutoInboundFiltersNoPortsDoesNotHang(t *testing.T) {
+	prevTotal, prevInterval := inboundDiscoveryRetryTotal, inboundDiscoveryRetryInterval
+	inboundDiscoveryRetryTotal = 0
+	inboundDiscoveryRetryInterval = time.Millisecond
+	defer func() {
+		inboundDiscoveryRetryTotal = prevTotal
+		inboundDiscoveryRetryInterval = prevInterval
+	}()
+
+	ifaces := map[string]interfaceInfo{"eth0": interfaceWrapper{}}
+	filters := map[string]string{"eth0": ""}
+	out, _ := applyAutoInboundFilters(ifaces, filters, optionals.None[string](), "")
+	if out["eth0"] != "" {
+		t.Fatalf("expected empty filter when no listen ports, got %q", out["eth0"])
 	}
 }

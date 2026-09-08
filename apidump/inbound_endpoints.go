@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
@@ -16,12 +19,23 @@ import (
 // TCP state LISTEN in /proc/net/tcp{,6}.
 const tcpListenState = "0A"
 
+// How long / how often to wait for application listen ports when discovery
+// initially finds none (app may bind after the container is Running).
+// Overridable in tests.
+var (
+	inboundDiscoveryRetryTotal    = 15 * time.Second
+	inboundDiscoveryRetryInterval = 500 * time.Millisecond
+)
+
 // Default ports excluded from auto inbound capture (mesh sidecars, admin).
 // Apps that listen only on these ports will not get an auto filter applied
 // for those ports; other listen ports in the same netns still apply.
 var defaultExcludedListenPorts = map[uint16]struct{}{
 	22: {}, // ssh
 }
+
+// Matches .../proc/<pid>/ns/net (DaemonSet uses /host/proc/<pid>/ns/net).
+var procNSPathRE = regexp.MustCompile(`^(.*)/proc/(\d+)/ns/net$`)
 
 // InboundEndpoints are local addresses and listen ports discovered in a
 // capture network namespace for building an inbound-only BPF filter.
@@ -30,16 +44,37 @@ type InboundEndpoints struct {
 	ListenPorts []uint16
 }
 
-func discoverInboundEndpointsInCurrentNS() (InboundEndpoints, error) {
-	ips, err := listLocalIPs()
-	if err != nil {
-		return InboundEndpoints{}, err
+// discoverListenPortsForNetNS lists LISTEN ports for the capture netns.
+// Prefer /proc/<pid>/net/tcp{,6} derived from a DaemonSet ns path so we do not
+// depend on /proc/net after setns (kernels have had stale /proc/net dcache
+// bugs after CLONE_NEWNET). When the ns path is not pid-scoped, the caller
+// must already be in the target netns and should pass nsPath="" to read
+// /proc/net/tcp{,6}.
+func discoverListenPortsForNetNS(nsPath string) (appPorts, rawPorts []uint16, err error) {
+	if procRoot, pid, ok := procRootAndPIDFromNSPath(nsPath); ok {
+		paths := []string{
+			filepath.Join(procRoot, strconv.Itoa(pid), "net", "tcp"),
+			filepath.Join(procRoot, strconv.Itoa(pid), "net", "tcp6"),
+		}
+		return listListenPortsFromProcFiles(paths, defaultExcludedListenPorts)
 	}
-	ports, err := listListenPorts(defaultExcludedListenPorts)
-	if err != nil {
-		return InboundEndpoints{}, err
+	return listListenPortsFromProcFiles(
+		[]string{"/proc/net/tcp", "/proc/net/tcp6"},
+		defaultExcludedListenPorts,
+	)
+}
+
+func procRootAndPIDFromNSPath(nsPath string) (procRoot string, pid int, ok bool) {
+	m := procNSPathRE.FindStringSubmatch(nsPath)
+	if m == nil {
+		return "", 0, false
 	}
-	return InboundEndpoints{LocalIPs: ips, ListenPorts: ports}, nil
+	pid64, err := strconv.ParseInt(m[2], 10, 32)
+	if err != nil || pid64 <= 0 {
+		return "", 0, false
+	}
+	procRoot = m[1] + "/proc"
+	return procRoot, int(pid64), true
 }
 
 func listLocalIPs() ([]net.IP, error) {
@@ -83,16 +118,16 @@ func listLocalIPs() ([]net.IP, error) {
 	return ips, nil
 }
 
-func listListenPorts(exclude map[uint16]struct{}) ([]uint16, error) {
-	seen := map[uint16]struct{}{}
-	var ports []uint16
-	for _, name := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		f, err := os.Open(name)
-		if err != nil {
-			if os.IsNotExist(err) {
+func listListenPortsFromProcFiles(paths []string, exclude map[uint16]struct{}) (appPorts, rawPorts []uint16, err error) {
+	seenRaw := map[uint16]struct{}{}
+	seenApp := map[uint16]struct{}{}
+	for _, name := range paths {
+		f, openErr := os.Open(name)
+		if openErr != nil {
+			if os.IsNotExist(openErr) {
 				continue
 			}
-			return nil, errors.Wrapf(err, "open %s", name)
+			return nil, nil, errors.Wrapf(openErr, "open %s", name)
 		}
 		sc := bufio.NewScanner(f)
 		first := true
@@ -109,22 +144,26 @@ func listListenPorts(exclude map[uint16]struct{}) ([]uint16, error) {
 			if !ok {
 				continue
 			}
+			if _, ok := seenRaw[port]; !ok {
+				seenRaw[port] = struct{}{}
+				rawPorts = append(rawPorts, port)
+			}
 			if shouldExcludeListenPort(port, exclude) {
 				continue
 			}
-			if _, ok := seen[port]; ok {
+			if _, ok := seenApp[port]; ok {
 				continue
 			}
-			seen[port] = struct{}{}
-			ports = append(ports, port)
+			seenApp[port] = struct{}{}
+			appPorts = append(appPorts, port)
 		}
-		err = sc.Err()
+		scanErr := sc.Err()
 		_ = f.Close()
-		if err != nil {
-			return nil, errors.Wrapf(err, "scan %s", name)
+		if scanErr != nil {
+			return nil, nil, errors.Wrapf(scanErr, "scan %s", name)
 		}
 	}
-	return ports, nil
+	return appPorts, rawPorts, nil
 }
 
 func shouldExcludeListenPort(port uint16, exclude map[uint16]struct{}) bool {
@@ -200,13 +239,21 @@ func applyAutoInboundFilters(
 		}
 	}
 
-	eps, err := DiscoverInboundEndpoints(targetNetworkNamespaceOpt)
+	eps, rawPorts, err := discoverInboundEndpointsWithRetry(targetNetworkNamespaceOpt)
 	if err != nil {
 		printer.Warningf("Auto inbound filter: endpoint discovery failed, capturing all traffic: %v\n", err)
 		return userFilters, nil
 	}
 	if len(eps.ListenPorts) == 0 {
-		printer.Infof("Auto inbound filter: no application listen ports found yet; capturing all traffic\n")
+		nsDesc := "current"
+		if nsPath, ok := targetNetworkNamespaceOpt.Get(); ok && nsPath != "" {
+			nsDesc = nsPath
+		}
+		if len(rawPorts) == 0 {
+			printer.Infof("Auto inbound filter: no TCP LISTEN sockets in netns %s; capturing all traffic\n", nsDesc)
+		} else {
+			printer.Infof("Auto inbound filter: only mesh/admin listen ports %v in netns %s (no application ports); capturing all traffic\n", rawPorts, nsDesc)
+		}
 		return userFilters, &eps
 	}
 
@@ -222,6 +269,31 @@ func applyAutoInboundFilters(
 	}
 	printer.Infof("Auto inbound-only capture enabled: ports=%v ips=%v\n", eps.ListenPorts, formatIPs(eps.LocalIPs))
 	return out, &eps
+}
+
+func discoverInboundEndpointsWithRetry(
+	targetNetworkNamespaceOpt optionals.Optional[string],
+) (eps InboundEndpoints, rawPorts []uint16, err error) {
+	deadline := time.Now().Add(inboundDiscoveryRetryTotal)
+	attempt := 0
+	for {
+		attempt++
+		eps, rawPorts, err = discoverInboundEndpointsDetailed(targetNetworkNamespaceOpt)
+		if err != nil {
+			return InboundEndpoints{}, nil, err
+		}
+		if len(eps.ListenPorts) > 0 {
+			if attempt > 1 {
+				printer.Infof("Auto inbound filter: found application listen ports %v after %d attempt(s)\n", eps.ListenPorts, attempt)
+			}
+			return eps, rawPorts, nil
+		}
+		if time.Now().After(deadline) {
+			return eps, rawPorts, nil
+		}
+		printer.Debugf("Auto inbound filter: no application listen ports yet (raw=%v), retrying...\n", rawPorts)
+		time.Sleep(inboundDiscoveryRetryInterval)
+	}
 }
 
 func formatIPs(ips []net.IP) []string {
