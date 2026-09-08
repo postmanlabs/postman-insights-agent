@@ -231,13 +231,16 @@ type rateLimitCollector struct {
 	packetCount PacketCountConsumer
 
 	stats *capturestats.Stats
+
+	connectionContext *ConnectionContextTracker
+	collectorID       uint64
 }
 
 // NewCollector creates a collector that shares this rate limit but records its
 // diagnostics against one capture source. Stats are per-source rather than
 // taken from the SharedRateLimit, because one rate limit is shared by the pcap
 // and eBPF chains while their counters must not be.
-func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer, stats *capturestats.Stats) Collector {
+func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer, stats *capturestats.Stats, connectionContext *ConnectionContextTracker) Collector {
 	c := &rateLimitCollector{
 		RateLimit:              r,
 		NextCollector:          next,
@@ -248,7 +251,9 @@ func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountC
 		epochCh:                make(chan time.Time, 1),
 		packetCount:            packetCounts,
 		stats:                  stats,
+		connectionContext:      connectionContext,
 	}
+	c.collectorID = connectionContext.registerCollector()
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	r.children = append(r.children, c)
@@ -269,6 +274,7 @@ func (r *SharedRateLimit) onCollectorClose(closed *rateLimitCollector) {
 func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 	switch c := pnt.Content.(type) {
 	case akinet.HTTPRequest:
+		r.connectionContext.observeRequest(pnt, r.collectorID)
 		if r.RateLimit.AllowHTTPRequest() {
 			// Collect request and the matching response as well.
 			r.NextCollector.Process(pnt)
@@ -304,7 +310,7 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			// the back end drops as missing_status_code.
 			//
 			r.stats.IncrResponsesDroppedNoMatchingRequest()
-			r.recordUnmatchedResponse(key)
+			r.recordUnmatchedResponse(pnt, key)
 		}
 	default:
 		if r.RateLimit.AllowOther() {
@@ -356,7 +362,7 @@ func (r *rateLimitCollector) expireRequests(threshold time.Time) {
 	printer.Debugf("Expired %v old requests\n", expired)
 }
 
-func (r *rateLimitCollector) recordUnmatchedResponse(key requestKey) {
+func (r *rateLimitCollector) recordUnmatchedResponse(pnt akinet.ParsedNetworkTraffic, key requestKey) {
 	if _, ok := r.RateLimitedRequestKeys[key]; ok {
 		delete(r.RateLimitedRequestKeys, key)
 		r.stats.IncrResponsesDroppedNoMatchingRequestRateLimited()
@@ -371,7 +377,16 @@ func (r *rateLimitCollector) recordUnmatchedResponse(key requestKey) {
 		r.stats.IncrResponsesDroppedNoMatchingRequestActiveRequestStream()
 		return
 	}
-	r.stats.IncrResponsesDroppedNoMatchingRequestUnknown()
+	switch r.connectionContext.classifyResponse(pnt, r.collectorID) {
+	case unmatchedResponseContextResponseFirst:
+		r.stats.IncrResponsesDroppedNoMatchingRequestResponseFirst()
+	case unmatchedResponseContextRequestSeenLocalCollector:
+		r.stats.IncrResponsesDroppedNoMatchingRequestRequestSeenLocalCollector()
+	case unmatchedResponseContextRequestSeenOtherCollector:
+		r.stats.IncrResponsesDroppedNoMatchingRequestRequestSeenOtherCollector()
+	default:
+		r.stats.IncrResponsesDroppedNoMatchingRequestUnknown()
+	}
 }
 
 func (r *rateLimitCollector) removeActiveRequestStream(streamID string) {

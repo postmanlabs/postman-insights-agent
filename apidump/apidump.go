@@ -1205,6 +1205,7 @@ func (a *apidump) Run() error {
 	ebpfReportEvent := sourceTelemetryEventReporter(reportTelemetryEvent, "ebpf")
 	pcapReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "pcap")
 	ebpfReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "ebpf")
+	pcapConnectionContext := trace.NewConnectionContextTracker()
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
@@ -1292,7 +1293,7 @@ func (a *apidump) Run() error {
 			// Subsampling.
 			collector = trace.NewSamplingCollector(args.SampleRate, collector, pcapReportEvent)
 			if rateLimit != nil {
-				collector = rateLimit.NewCollector(collector, summary, a.captureStats)
+				collector = rateLimit.NewCollector(collector, summary, a.captureStats, pcapConnectionContext)
 			}
 
 			// Path and host filters.
@@ -1426,7 +1427,7 @@ func (a *apidump) Run() error {
 		}
 		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector, ebpfReportEvent)
 		if rateLimit != nil {
-			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary, a.ebpfCaptureStats)
+			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary, a.ebpfCaptureStats, nil)
 		}
 		if len(hostExclusions) > 0 {
 			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector, ebpfReportEvent)

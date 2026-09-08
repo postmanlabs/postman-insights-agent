@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"net"
 	"net/url"
 	"sync"
 	"testing"
@@ -47,7 +48,7 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	stats := capturestats.New()
 	rl := NewRateLimit(1.0, stats)
 	pc := NewPacketCounter()
-	c := rl.NewCollector(cc, pc, stats).(*rateLimitCollector)
+	c := rl.NewCollector(cc, pc, stats, nil).(*rateLimitCollector)
 
 	// Sample packet from another test
 	streamID := uuid.New()
@@ -121,7 +122,7 @@ func TestRateLimit_FirstSample(t *testing.T) {
 func TestRateLimit_ClassifiesUnmatchedResponses(t *testing.T) {
 	stats := capturestats.New()
 	rl := NewRateLimit(1.0, stats)
-	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats).(*rateLimitCollector)
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, nil).(*rateLimitCollector)
 	defer rl.Stop()
 
 	rateLimitedStream := uuid.New()
@@ -157,7 +158,7 @@ func TestRateLimit_ClassifiesUnmatchedResponses(t *testing.T) {
 func TestRateLimit_ExpiresRequestKeyBeforeClassifyingResponse(t *testing.T) {
 	stats := capturestats.New()
 	rl := NewRateLimit(1.0, stats)
-	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats).(*rateLimitCollector)
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, nil).(*rateLimitCollector)
 	defer rl.Stop()
 
 	streamID := uuid.New()
@@ -173,5 +174,49 @@ func TestRateLimit_ExpiresRequestKeyBeforeClassifyingResponse(t *testing.T) {
 	snapshot := stats.Snapshot()
 	if snapshot.RequestKeysExpired != 1 || snapshot.ResponsesDroppedNoMatchingRequestExpired != 1 {
 		t.Fatalf("unexpected expiration counters: %+v", snapshot)
+	}
+}
+
+func TestRateLimit_ClassifiesUnmatchedResponsesByConnectionContext(t *testing.T) {
+	stats := capturestats.New()
+	rl := NewRateLimit(1.0, stats)
+	tracker := NewConnectionContextTracker()
+	local := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, tracker).(*rateLimitCollector)
+	other := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, tracker).(*rateLimitCollector)
+	defer rl.Stop()
+
+	streamID := uuid.New()
+	request := akinet.ParsedNetworkTraffic{
+		SrcIP: net.IPv4(10, 0, 0, 1), SrcPort: 8080,
+		DstIP: net.IPv4(10, 0, 0, 2), DstPort: 50000,
+		Content: akinet.HTTPRequest{StreamID: streamID, Seq: 1},
+	}
+	tracker.observeRequest(request, local.collectorID)
+	response := request
+	response.SrcIP, response.DstIP = request.DstIP, request.SrcIP
+	response.SrcPort, response.DstPort = request.DstPort, request.SrcPort
+	response.Content = akinet.HTTPResponse{StreamID: streamID, Seq: 2}
+
+	if err := local.Process(response); err != nil {
+		t.Fatalf("processing local response: %v", err)
+	}
+	if err := other.Process(response); err != nil {
+		t.Fatalf("processing other collector response: %v", err)
+	}
+
+	response.SrcPort = 50001
+	if err := local.Process(response); err != nil {
+		t.Fatalf("processing response-first response: %v", err)
+	}
+	if err := local.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPResponse{StreamID: streamID, Seq: 3}}); err != nil {
+		t.Fatalf("processing contextless response: %v", err)
+	}
+
+	snapshot := stats.Snapshot()
+	if snapshot.ResponsesDroppedNoMatchingRequestRequestSeenLocalCollector != 1 ||
+		snapshot.ResponsesDroppedNoMatchingRequestRequestSeenOtherCollector != 1 ||
+		snapshot.ResponsesDroppedNoMatchingRequestResponseFirst != 1 ||
+		snapshot.ResponsesDroppedNoMatchingRequestUnknown != 1 {
+		t.Fatalf("unexpected connection-context classifications: %+v", snapshot)
 	}
 }

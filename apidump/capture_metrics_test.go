@@ -49,6 +49,9 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	a.captureStats.IncrResponsesDroppedNoMatchingRequest()
 	a.captureStats.IncrResponsesDroppedNoMatchingRequestRateLimited()
 	a.captureStats.IncrResponsesDroppedNoMatchingRequestActiveRequestStream()
+	a.captureStats.IncrResponsesDroppedNoMatchingRequestResponseFirst()
+	a.captureStats.IncrResponsesDroppedNoMatchingRequestRequestSeenLocalCollector()
+	a.captureStats.IncrResponsesDroppedNoMatchingRequestRequestSeenOtherCollector()
 
 	stopTelemetry()
 
@@ -83,5 +86,14 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	}
 	if reported["pcap_response_dropped_no_matching_request_active_request_stream"] != 1 {
 		t.Fatalf("pcap_response_dropped_no_matching_request_active_request_stream = %d, want 1", reported["pcap_response_dropped_no_matching_request_active_request_stream"])
+	}
+	if reported["pcap_response_dropped_no_matching_request_response_first"] != 1 {
+		t.Fatalf("pcap_response_dropped_no_matching_request_response_first = %d, want 1", reported["pcap_response_dropped_no_matching_request_response_first"])
+	}
+	if reported["pcap_response_dropped_no_matching_request_request_seen_local_collector"] != 1 {
+		t.Fatalf("pcap_response_dropped_no_matching_request_request_seen_local_collector = %d, want 1", reported["pcap_response_dropped_no_matching_request_request_seen_local_collector"])
+	}
+	if reported["pcap_response_dropped_no_matching_request_request_seen_other_collector"] != 1 {
+		t.Fatalf("pcap_response_dropped_no_matching_request_request_seen_other_collector = %d, want 1", reported["pcap_response_dropped_no_matching_request_request_seen_other_collector"])
 	}
 }
