@@ -85,7 +85,7 @@ func runTCPFlowTestCase(c tcpFlowTestCase) error {
 		princeParserFactory{},
 		pineappleParserFactory{},
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil)
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil, nil)
 
 	for i, input := range c.inputs {
 		sg.data = memview.New([]byte(input))

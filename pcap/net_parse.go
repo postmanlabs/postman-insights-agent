@@ -65,20 +65,22 @@ type tcpStreamFactory struct {
 	outChan             chan<- akinet.ParsedNetworkTraffic
 	stats               *capturestats.Stats
 	useSyntheticPairing bool
+	directionHint       *DirectionHint
 }
 
-func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool) *tcpStreamFactory {
+func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint) *tcpStreamFactory {
 	return &tcpStreamFactory{
 		clock:               clock,
 		fs:                  fs,
 		outChan:             outChan,
 		stats:               stats,
 		useSyntheticPairing: useSyntheticPairing,
+		directionHint:       directionHint,
 	}
 }
 
 func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP, _ reassembly.AssemblerContext) reassembly.Stream {
-	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing)
+	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint)
 }
 
 // NetworkTrafficObserver is the callback function type for observing
@@ -106,6 +108,9 @@ type NetworkTrafficParser struct {
 	// existing seq/ack pairing); Collect sets this from the env var, tests may
 	// set it directly.
 	useSyntheticPairing bool
+
+	// Optional netns-wide locals for Direction tagging. Nil leaves DirectionUnknown.
+	directionHint *DirectionHint
 }
 
 func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]string, bufferShare float32, telemetry telemetry.Tracker, stats *capturestats.Stats) *NetworkTrafficParser {
@@ -152,7 +157,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 
 	// Set up assembly
 	out := make(chan akinet.ParsedNetworkTraffic, 100)
-	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing)
+	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint)
 	streamPool := reassembly.NewStreamPool(streamFactory)
 	assembler := reassembly.NewAssembler(streamPool)
 
