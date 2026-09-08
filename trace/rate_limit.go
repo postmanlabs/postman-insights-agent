@@ -212,29 +212,42 @@ type rateLimitCollector struct {
 	// Map of unmatched request arrival times
 	RequestArrivalTimes map[requestKey]time.Time
 
+	// Recent rejected and expired request keys let us attribute an unmatched
+	// response when its exact key is still known. Both maps are pruned on epoch
+	// boundaries, so they cannot grow without bound.
+	RateLimitedRequestKeys map[requestKey]time.Time
+	ExpiredRequestKeys     map[requestKey]time.Time
+
+	// Number of admitted requests still awaiting a response per TCP stream.
+	// This is a factual diagnostic for an unmatched response with no exact
+	// tombstone; it does not claim that the parser's request/response keys are
+	// necessarily wrong.
+	ActiveRequestStreams map[string]uint64
+
 	// Channel from RateLimit for epoch starts
 	epochCh chan time.Time
 
 	// Packet counter
 	packetCount PacketCountConsumer
 
-	stats                  *capturestats.Stats
-	telemetryEventReporter func(string)
+	stats *capturestats.Stats
 }
 
 // NewCollector creates a collector that shares this rate limit but records its
-// diagnostics and events against one capture source. stats and reporter are
-// per-source rather than taken from the SharedRateLimit, because one rate limit
-// is shared by the pcap and eBPF chains while their counters must not be.
-func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer, stats *capturestats.Stats, reporter func(string)) Collector {
+// diagnostics against one capture source. Stats are per-source rather than
+// taken from the SharedRateLimit, because one rate limit is shared by the pcap
+// and eBPF chains while their counters must not be.
+func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer, stats *capturestats.Stats) Collector {
 	c := &rateLimitCollector{
 		RateLimit:              r,
 		NextCollector:          next,
 		RequestArrivalTimes:    make(map[requestKey]time.Time),
+		RateLimitedRequestKeys: make(map[requestKey]time.Time),
+		ExpiredRequestKeys:     make(map[requestKey]time.Time),
+		ActiveRequestStreams:   make(map[string]uint64),
 		epochCh:                make(chan time.Time, 1),
 		packetCount:            packetCounts,
 		stats:                  stats,
-		telemetryEventReporter: reporter,
 	}
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -260,8 +273,14 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			// Collect request and the matching response as well.
 			r.NextCollector.Process(pnt)
 			key := requestKey{c.StreamID.String(), c.Seq}
+			if _, alreadyTracked := r.RequestArrivalTimes[key]; !alreadyTracked {
+				r.ActiveRequestStreams[key.StreamID] += 1
+			}
 			r.RequestArrivalTimes[key] = pnt.ObservationTime
 		} else {
+			key := requestKey{c.StreamID.String(), c.Seq}
+			r.RateLimitedRequestKeys[key] = time.Now()
+			r.stats.IncrRequestsRateLimited()
 			r.packetCount.Update(client_telemetry.PacketCounts{
 				Interface:               pnt.Interface,
 				DstHost:                 c.Host,
@@ -276,6 +295,7 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 		key := requestKey{c.StreamID.String(), c.Seq}
 		if _, ok := r.RequestArrivalTimes[key]; ok {
 			delete(r.RequestArrivalTimes, key)
+			r.removeActiveRequestStream(key.StreamID)
 			r.NextCollector.Process(pnt)
 		} else {
 			// We parsed this response but are throwing it away, because we cannot
@@ -283,18 +303,8 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			// downstream, so this becomes a witness with no response half, which
 			// the back end drops as missing_status_code.
 			//
-			// Three ways to get here:
-			//   - The request was rate limited, so we never recorded its key. Also
-			//     counted as HTTPRequestsRateLimited.
-			//   - expireRequests dropped the key on an epoch boundary before the
-			//     response arrived.
-			//   - The response's key does not match its request's key at all. Both
-			//     keys come from TCP numbers -- the request uses the ack of its
-			//     first segment, the response uses the seq of its first segment --
-			//     which are only equal if nothing else was in flight on the
-			//     connection. See akinet/http/parser.go.
 			r.stats.IncrResponsesDroppedNoMatchingRequest()
-			r.reportTelemetryEvent("response_dropped_no_matching_request")
+			r.recordUnmatchedResponse(key)
 		}
 	default:
 		if r.RateLimit.AllowOther() {
@@ -313,12 +323,6 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 	return nil
 }
 
-func (r *rateLimitCollector) reportTelemetryEvent(event string) {
-	if r.telemetryEventReporter != nil {
-		r.telemetryEventReporter(event)
-	}
-}
-
 func (r *rateLimitCollector) Close() error {
 	// Remove self from future epoch updates
 	r.RateLimit.onCollectorClose(r)
@@ -331,10 +335,51 @@ func (r *rateLimitCollector) expireRequests(threshold time.Time) {
 	for k, v := range r.RequestArrivalTimes {
 		if v.Before(threshold) {
 			delete(r.RequestArrivalTimes, k)
+			r.removeActiveRequestStream(k.StreamID)
+			// Retain from the expiration point, not the original arrival time;
+			// otherwise the cleanup loop below removes the tombstone immediately.
+			r.ExpiredRequestKeys[k] = time.Now()
 			expired += 1
 		}
 	}
+	for k, v := range r.RateLimitedRequestKeys {
+		if v.Before(threshold) {
+			delete(r.RateLimitedRequestKeys, k)
+		}
+	}
+	for k, v := range r.ExpiredRequestKeys {
+		if v.Before(threshold) {
+			delete(r.ExpiredRequestKeys, k)
+		}
+	}
+	r.stats.AddRequestKeysExpired(uint64(expired))
 	printer.Debugf("Expired %v old requests\n", expired)
+}
+
+func (r *rateLimitCollector) recordUnmatchedResponse(key requestKey) {
+	if _, ok := r.RateLimitedRequestKeys[key]; ok {
+		delete(r.RateLimitedRequestKeys, key)
+		r.stats.IncrResponsesDroppedNoMatchingRequestRateLimited()
+		return
+	}
+	if _, ok := r.ExpiredRequestKeys[key]; ok {
+		delete(r.ExpiredRequestKeys, key)
+		r.stats.IncrResponsesDroppedNoMatchingRequestExpired()
+		return
+	}
+	if r.ActiveRequestStreams[key.StreamID] > 0 {
+		r.stats.IncrResponsesDroppedNoMatchingRequestActiveRequestStream()
+		return
+	}
+	r.stats.IncrResponsesDroppedNoMatchingRequestUnknown()
+}
+
+func (r *rateLimitCollector) removeActiveRequestStream(streamID string) {
+	if r.ActiveRequestStreams[streamID] <= 1 {
+		delete(r.ActiveRequestStreams, streamID)
+		return
+	}
+	r.ActiveRequestStreams[streamID] -= 1
 }
 
 func NewRateLimit(witnessesPerMinute float64, stats *capturestats.Stats) *SharedRateLimit {

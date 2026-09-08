@@ -1292,7 +1292,7 @@ func (a *apidump) Run() error {
 			// Subsampling.
 			collector = trace.NewSamplingCollector(args.SampleRate, collector, pcapReportEvent)
 			if rateLimit != nil {
-				collector = rateLimit.NewCollector(collector, summary, a.captureStats, pcapReportEvent)
+				collector = rateLimit.NewCollector(collector, summary, a.captureStats)
 			}
 
 			// Path and host filters.
@@ -1318,6 +1318,7 @@ func (a *apidump) Run() error {
 					Collector:          collector,
 					DropDogfoodTraffic: dropDogfoodTraffic,
 					DropNginxTraffic:   a.DropNginxTraffic,
+					Stats:              a.captureStats,
 				}
 			}
 
@@ -1425,7 +1426,7 @@ func (a *apidump) Run() error {
 		}
 		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector, ebpfReportEvent)
 		if rateLimit != nil {
-			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary, a.ebpfCaptureStats, ebpfReportEvent)
+			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary, a.ebpfCaptureStats)
 		}
 		if len(hostExclusions) > 0 {
 			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector, ebpfReportEvent)

@@ -47,8 +47,17 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 	a.reportTelemetryCount(source+"_http_request_postfilter", counterDelta(httpRequests(currentPostfilter), httpRequests(previousPostfilter)))
 	a.reportTelemetryCount(source+"_http_response_postfilter", counterDelta(httpResponses(currentPostfilter), httpResponses(previousPostfilter)))
 	a.reportTelemetryCount(source+"_witness_paired", counterDelta(currentStats.WitnessesPaired, previousStats.WitnessesPaired))
-	// Expirations and first-discard outcomes use direct callbacks at the exact
-	// loss point, so reporting them here would double-count those events.
+	a.reportTelemetryCount(source+"_request_rate_limited", counterDelta(currentStats.RequestsRateLimited, previousStats.RequestsRateLimited))
+	a.reportTelemetryCount(source+"_request_key_expired", counterDelta(currentStats.RequestKeysExpired, previousStats.RequestKeysExpired))
+	a.reportTelemetryCount(source+"_request_dropped_agent_traffic", counterDelta(currentStats.RequestsDroppedAgentTraffic, previousStats.RequestsDroppedAgentTraffic))
+	a.reportTelemetryCount(source+"_response_dropped_agent_traffic", counterDelta(currentStats.ResponsesDroppedAgentTraffic, previousStats.ResponsesDroppedAgentTraffic))
+	a.reportTelemetryCount(source+"_request_dropped_nginx_traffic", counterDelta(currentStats.RequestsDroppedNginxTraffic, previousStats.RequestsDroppedNginxTraffic))
+	a.reportTelemetryCount(source+"_response_dropped_nginx_traffic", counterDelta(currentStats.ResponsesDroppedNginxTraffic, previousStats.ResponsesDroppedNginxTraffic))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request", counterDelta(currentStats.ResponsesDroppedNoMatchingRequest, previousStats.ResponsesDroppedNoMatchingRequest))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_rate_limited", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestRateLimited, previousStats.ResponsesDroppedNoMatchingRequestRateLimited))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_expired", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestExpired, previousStats.ResponsesDroppedNoMatchingRequestExpired))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_active_request_stream", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestActiveRequestStream, previousStats.ResponsesDroppedNoMatchingRequestActiveRequestStream))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_unknown", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestUnknown, previousStats.ResponsesDroppedNoMatchingRequestUnknown))
 }
 
 func httpRequests(counts client_telemetry.PacketCounts) uint64 {

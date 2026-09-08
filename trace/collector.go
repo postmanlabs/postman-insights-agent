@@ -13,6 +13,7 @@ import (
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/viper"
@@ -148,18 +149,38 @@ type UserTrafficCollector struct {
 	Collector          Collector
 	DropDogfoodTraffic bool // Filters out CLI's own traffic to Akita APIs.
 	DropNginxTraffic   bool // Filters out traffic to/from the nginx.
+	Stats              *capturestats.Stats
 }
 
 func (sc *UserTrafficCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	if sc.DropDogfoodTraffic && util.ContainsCLITraffic(t) {
+		sc.recordDrop(t, true)
 		return nil
 	}
 
 	if sc.DropNginxTraffic && util.ContainsNginxTraffic(t) {
+		sc.recordDrop(t, false)
 		return nil
 	}
 
 	return sc.Collector.Process(t)
+}
+
+func (sc *UserTrafficCollector) recordDrop(t akinet.ParsedNetworkTraffic, isAgentTraffic bool) {
+	switch t.Content.(type) {
+	case akinet.HTTPRequest:
+		if isAgentTraffic {
+			sc.Stats.IncrRequestsDroppedAgentTraffic()
+		} else {
+			sc.Stats.IncrRequestsDroppedNginxTraffic()
+		}
+	case akinet.HTTPResponse:
+		if isAgentTraffic {
+			sc.Stats.IncrResponsesDroppedAgentTraffic()
+		} else {
+			sc.Stats.IncrResponsesDroppedNginxTraffic()
+		}
+	}
 }
 
 func (sc *UserTrafficCollector) Close() error {

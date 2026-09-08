@@ -1,13 +1,16 @@
 package trace
 
 import (
+	"net/http"
 	"net/url"
 	"regexp"
 	"testing"
 
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 )
 
 type noopCollector struct{}
@@ -151,5 +154,38 @@ func TestSamplingReportsHTTPDirections(t *testing.T) {
 
 	if len(events) != 2 || events[0] != "request_sampled_out" || events[1] != "response_sampled_out" {
 		t.Fatalf("unexpected sampling events: %v", events)
+	}
+}
+
+func TestUserTrafficCollectorRecordsHTTPDropReasons(t *testing.T) {
+	stats := capturestats.New()
+	collector := &UserTrafficCollector{
+		Collector:          noopCollector{},
+		DropDogfoodTraffic: true,
+		DropNginxTraffic:   true,
+		Stats:              stats,
+	}
+	agentRequestHeaders := http.Header{}
+	agentRequestHeaders.Set(spec_util.XAkitaRequestID, "request-id")
+	agentResponseHeaders := http.Header{}
+	agentResponseHeaders.Set(spec_util.XAkitaCLIGitVersion, "version")
+
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
+		Header: agentRequestHeaders,
+	}})
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPResponse{
+		Header: agentResponseHeaders,
+	}})
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
+		Header: http.Header{"Server": {"nginx"}},
+	}})
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPResponse{
+		Header: http.Header{"Server": {"nginx"}},
+	}})
+
+	snapshot := stats.Snapshot()
+	if snapshot.RequestsDroppedAgentTraffic != 1 || snapshot.ResponsesDroppedAgentTraffic != 1 ||
+		snapshot.RequestsDroppedNginxTraffic != 1 || snapshot.ResponsesDroppedNginxTraffic != 1 {
+		t.Fatalf("unexpected user-traffic counters: %+v", snapshot)
 	}
 }

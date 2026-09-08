@@ -47,7 +47,7 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	stats := capturestats.New()
 	rl := NewRateLimit(1.0, stats)
 	pc := NewPacketCounter()
-	c := rl.NewCollector(cc, pc, stats, nil).(*rateLimitCollector)
+	c := rl.NewCollector(cc, pc, stats).(*rateLimitCollector)
 
 	// Sample packet from another test
 	streamID := uuid.New()
@@ -101,6 +101,9 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	if pc.total.HTTPRequestsRateLimited != 5 {
 		t.Errorf("Expected 5 rate limited request, got %v", pc.total.HTTPRequestsRateLimited)
 	}
+	if got := stats.Snapshot().RequestsRateLimited; got != 5 {
+		t.Errorf("Expected 5 rate limited request telemetry counts, got %v", got)
+	}
 	if rl.FirstEstimate {
 		t.Errorf("Expected FirstEstimate to be false")
 	}
@@ -115,28 +118,60 @@ func TestRateLimit_FirstSample(t *testing.T) {
 	}
 }
 
-func TestRateLimit_ReportsUnmatchedResponse(t *testing.T) {
+func TestRateLimit_ClassifiesUnmatchedResponses(t *testing.T) {
 	stats := capturestats.New()
-	var reported string
 	rl := NewRateLimit(1.0, stats)
-	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, func(event string) {
-		reported = event
-	}).(*rateLimitCollector)
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats).(*rateLimitCollector)
 	defer rl.Stop()
 
-	if err := c.Process(akinet.ParsedNetworkTraffic{
-		Content: akinet.HTTPResponse{
-			StreamID: uuid.New(),
-			Seq:      1203,
-		},
-	}); err != nil {
-		t.Fatalf("processing unmatched response: %v", err)
+	rateLimitedStream := uuid.New()
+	expiredStream := uuid.New()
+	activeStream := uuid.New()
+	c.RateLimitedRequestKeys[requestKey{rateLimitedStream.String(), 1}] = time.Now()
+	c.ExpiredRequestKeys[requestKey{expiredStream.String(), 2}] = time.Now()
+	c.ActiveRequestStreams[activeStream.String()] = 1
+
+	for _, response := range []akinet.HTTPResponse{
+		{StreamID: rateLimitedStream, Seq: 1},
+		{StreamID: expiredStream, Seq: 2},
+		{StreamID: activeStream, Seq: 3},
+		{StreamID: uuid.New(), Seq: 4},
+	} {
+		if err := c.Process(akinet.ParsedNetworkTraffic{Content: response}); err != nil {
+			t.Fatalf("processing unmatched response: %v", err)
+		}
 	}
 
-	if got := stats.Snapshot().ResponsesDroppedNoMatchingRequest; got != 1 {
-		t.Fatalf("expected one unmatched response, got %d", got)
+	snapshot := stats.Snapshot()
+	if got := snapshot.ResponsesDroppedNoMatchingRequest; got != 4 {
+		t.Fatalf("expected four unmatched responses, got %d", got)
 	}
-	if reported != "response_dropped_no_matching_request" {
-		t.Fatalf("expected unmatched response telemetry, got %q", reported)
+	if snapshot.ResponsesDroppedNoMatchingRequestRateLimited != 1 ||
+		snapshot.ResponsesDroppedNoMatchingRequestExpired != 1 ||
+		snapshot.ResponsesDroppedNoMatchingRequestActiveRequestStream != 1 ||
+		snapshot.ResponsesDroppedNoMatchingRequestUnknown != 1 {
+		t.Fatalf("unexpected unmatched-response classifications: %+v", snapshot)
+	}
+}
+
+func TestRateLimit_ExpiresRequestKeyBeforeClassifyingResponse(t *testing.T) {
+	stats := capturestats.New()
+	rl := NewRateLimit(1.0, stats)
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats).(*rateLimitCollector)
+	defer rl.Stop()
+
+	streamID := uuid.New()
+	key := requestKey{streamID.String(), 1}
+	c.RequestArrivalTimes[key] = time.Now().Add(-time.Minute)
+	c.ActiveRequestStreams[key.StreamID] = 1
+	c.expireRequests(time.Now())
+
+	if err := c.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPResponse{StreamID: streamID, Seq: 1}}); err != nil {
+		t.Fatalf("processing expired response: %v", err)
+	}
+
+	snapshot := stats.Snapshot()
+	if snapshot.RequestKeysExpired != 1 || snapshot.ResponsesDroppedNoMatchingRequestExpired != 1 {
+		t.Fatalf("unexpected expiration counters: %+v", snapshot)
 	}
 }

@@ -64,6 +64,19 @@ type Stats struct {
 	// out as an unpaired witness by the time this fires.
 	ResponsesDroppedNoMatchingRequest uint64
 
+	// First-discard and unmatched-response reason counters recorded in the
+	// rate-limit and user-traffic collector layers.
+	RequestsRateLimited                                  uint64
+	RequestKeysExpired                                   uint64
+	RequestsDroppedAgentTraffic                          uint64
+	ResponsesDroppedAgentTraffic                         uint64
+	RequestsDroppedNginxTraffic                          uint64
+	ResponsesDroppedNginxTraffic                         uint64
+	ResponsesDroppedNoMatchingRequestRateLimited         uint64
+	ResponsesDroppedNoMatchingRequestExpired             uint64
+	ResponsesDroppedNoMatchingRequestActiveRequestStream uint64
+	ResponsesDroppedNoMatchingRequestUnknown             uint64
+
 	// How witnesses left the pair cache: both halves present, request only
 	// (missing_status_code at the back end), response only (missing_latency),
 	// or two messages of the same direction merged into one malformed witness
@@ -188,6 +201,68 @@ func (s *Stats) IncrResponsesDroppedNoMatchingRequest() {
 	atomic.AddUint64(&s.ResponsesDroppedNoMatchingRequest, 1)
 }
 
+func (s *Stats) IncrRequestsRateLimited() {
+	if s == nil {
+		return
+	}
+	atomic.AddUint64(&s.RequestsRateLimited, 1)
+}
+
+func (s *Stats) AddRequestKeysExpired(n uint64) {
+	if s == nil {
+		return
+	}
+	atomic.AddUint64(&s.RequestKeysExpired, n)
+}
+
+func (s *Stats) IncrRequestsDroppedAgentTraffic() {
+	if s != nil {
+		atomic.AddUint64(&s.RequestsDroppedAgentTraffic, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedAgentTraffic() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedAgentTraffic, 1)
+	}
+}
+
+func (s *Stats) IncrRequestsDroppedNginxTraffic() {
+	if s != nil {
+		atomic.AddUint64(&s.RequestsDroppedNginxTraffic, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedNginxTraffic() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedNginxTraffic, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedNoMatchingRequestRateLimited() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedNoMatchingRequestRateLimited, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedNoMatchingRequestExpired() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedNoMatchingRequestExpired, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedNoMatchingRequestActiveRequestStream() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedNoMatchingRequestActiveRequestStream, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedNoMatchingRequestUnknown() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedNoMatchingRequestUnknown, 1)
+	}
+}
+
 func (s *Stats) IncrWitnessesPaired() {
 	if s == nil {
 		return
@@ -265,7 +340,12 @@ type Snapshot struct {
 
 	DiscardedRequests, DiscardedResponses, DiscardedOther uint64
 
-	ResponsesDroppedNoMatchingRequest uint64
+	ResponsesDroppedNoMatchingRequest                                                              uint64
+	RequestsRateLimited, RequestKeysExpired                                                        uint64
+	RequestsDroppedAgentTraffic, ResponsesDroppedAgentTraffic                                      uint64
+	RequestsDroppedNginxTraffic, ResponsesDroppedNginxTraffic                                      uint64
+	ResponsesDroppedNoMatchingRequestRateLimited, ResponsesDroppedNoMatchingRequestExpired         uint64
+	ResponsesDroppedNoMatchingRequestActiveRequestStream, ResponsesDroppedNoMatchingRequestUnknown uint64
 
 	WitnessesPaired, UnpairedRequestsFlushed, UnpairedResponsesFlushed, SameDirectionMerges uint64
 
@@ -296,7 +376,17 @@ func (s *Stats) Snapshot() Snapshot {
 		DiscardedResponses: atomic.LoadUint64(&s.DiscardedResponses),
 		DiscardedOther:     atomic.LoadUint64(&s.DiscardedOther),
 
-		ResponsesDroppedNoMatchingRequest: atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequest),
+		ResponsesDroppedNoMatchingRequest:                    atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequest),
+		RequestsRateLimited:                                  atomic.LoadUint64(&s.RequestsRateLimited),
+		RequestKeysExpired:                                   atomic.LoadUint64(&s.RequestKeysExpired),
+		RequestsDroppedAgentTraffic:                          atomic.LoadUint64(&s.RequestsDroppedAgentTraffic),
+		ResponsesDroppedAgentTraffic:                         atomic.LoadUint64(&s.ResponsesDroppedAgentTraffic),
+		RequestsDroppedNginxTraffic:                          atomic.LoadUint64(&s.RequestsDroppedNginxTraffic),
+		ResponsesDroppedNginxTraffic:                         atomic.LoadUint64(&s.ResponsesDroppedNginxTraffic),
+		ResponsesDroppedNoMatchingRequestRateLimited:         atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequestRateLimited),
+		ResponsesDroppedNoMatchingRequestExpired:             atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequestExpired),
+		ResponsesDroppedNoMatchingRequestActiveRequestStream: atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequestActiveRequestStream),
+		ResponsesDroppedNoMatchingRequestUnknown:             atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequestUnknown),
 
 		WitnessesPaired:          atomic.LoadUint64(&s.WitnessesPaired),
 		UnpairedRequestsFlushed:  atomic.LoadUint64(&s.UnpairedRequestsFlushed),
