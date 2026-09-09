@@ -586,8 +586,27 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
-			// Lock the witness while it is being flushed
-			// and unlock it after it is deleted from pairCache
+			// Claim the entry before accounting for it. sync.Map.Range is only
+			// weakly consistent, so it can hand us an entry that Process has
+			// concurrently taken with LoadAndDelete to complete a pair. That
+			// goroutine holds witnessMutex until it has counted the witness as
+			// paired, so blocking on the lock and then counting regardless
+			// would put one witness in two terminal buckets --
+			// witness_paired *and* witness_pair_expired_* -- breaking the
+			// identity that paired plus expired equals postfilter.
+			//
+			// LoadAndDelete is the same primitive Process uses, so exactly one
+			// of us wins and only the winner accounts. Losing means the pair
+			// completed, which is a better outcome than the expiry we were
+			// about to record.
+			if _, claimed := c.pairCache.LoadAndDelete(k); !claimed {
+				totalWitnesses += 1
+				return true
+			}
+
+			// Lock the witness while it is being flushed. Nothing else can
+			// reach it now that the claim is ours, but queueUpload mutates it
+			// and the lock keeps that ordering explicit.
 			e.witnessMutex.Lock()
 			defer e.witnessMutex.Unlock()
 
@@ -612,7 +631,6 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 			}
 
 			c.queueUpload(e)
-			c.pairCache.Delete(k)
 
 			flushedWitnesses += 1
 		}

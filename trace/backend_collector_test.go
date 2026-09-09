@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1820,6 +1821,65 @@ func (r *recordingCountReporter) snapshot() (map[string]uint64, int) {
 		out[k] = v
 	}
 	return out, r.calls
+}
+
+// A witness must land in exactly one terminal bucket. Process takes a cached
+// entry with LoadAndDelete to complete a pair, while a sweep reaches the same
+// entry through Range, which is only weakly consistent -- so without an atomic
+// claim both could account for it, counting one witness as paired *and* as
+// expired and breaking paired + expired = postfilter.
+//
+// The two goroutines here race deliberately; the assertion is an exact
+// identity, so it holds whatever the interleaving.
+func TestFlushPairCacheAccountsEachWitnessOnce(t *testing.T) {
+	const witnesses = 400
+
+	stats := capturestats.New()
+	c := &BackendCollector{stats: stats}
+	c.SetTelemetryCountReporter(newRecordingCountReporter().report)
+
+	keys := make([]akid.WitnessID, 0, witnesses)
+	for i := 0; i < witnesses; i++ {
+		id := akid.GenerateWitnessID()
+		keys = append(keys, id)
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       true,
+			observationTime: time.Now().Add(-time.Hour),
+			// Keeps queueUpload from needing a redactor or upload batch; the
+			// claim, not this flag, is what prevents double counting.
+			witnessFlushed: true,
+		})
+	}
+
+	// Stands in for Process completing pairs: same primitive, same claim.
+	var paired uint64
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, id := range keys {
+			if _, ok := c.pairCache.LoadAndDelete(id); ok {
+				atomic.AddUint64(&paired, 1)
+			}
+		}
+	}()
+
+	c.flushPairCache(time.Now())
+	wg.Wait()
+
+	// Anything the pairing goroutine had not reached yet is still cached;
+	// sweep again so every witness reaches a terminal state.
+	c.flushPairCache(time.Now())
+
+	expired := stats.Snapshot().UnpairedRequestsFlushed
+	claimed := atomic.LoadUint64(&paired)
+	assert.Equal(t, uint64(witnesses), claimed+expired,
+		"each witness must be accounted exactly once: paired=%d expired=%d", claimed, expired)
+
+	remaining := 0
+	c.pairCache.Range(func(_, _ any) bool { remaining++; return true })
+	assert.Equal(t, 0, remaining, "pair cache should be empty after the final sweep")
 }
 
 // Close must be able to join the periodic flusher, not just signal it.
