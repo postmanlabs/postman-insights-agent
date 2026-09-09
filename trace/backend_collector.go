@@ -195,6 +195,12 @@ type BackendCollector struct {
 	// Channel controlling periodic cache flush
 	flushDone chan struct{}
 
+	// Closed by periodicFlush when it returns. Closing flushDone only makes
+	// that goroutine exit at its *next* select, so it is a signal, not a
+	// join -- a tick already inside flushPairCache keeps running. Close waits
+	// on this before touching the batcher; see the comment there.
+	flushExited chan struct{}
+
 	// Answers "was a message on this stream already discarded as unmatched"
 	// for witnesses that expire unpaired. Installed via
 	// SetConnectionContextTracker rather than taken by the constructor, which
@@ -264,6 +270,7 @@ func NewBackendCollector(
 		learnSessionID:                  lrn,
 		learnClient:                     lc,
 		flushDone:                       make(chan struct{}),
+		flushExited:                     make(chan struct{}),
 		plugins:                         plugins,
 		sendWitnessPayloads:             sendWitnessPayloads,
 		alwaysCapturePayloadsPathsRegex: alwaysCapturePayloadsPathsRegex,
@@ -504,7 +511,26 @@ func (c *BackendCollector) reportUpload(at time.Time, status UploadStatus) {
 
 func (c *BackendCollector) Close() error {
 	defer c.redactor.StopPeriodicUpdates()
+
+	// Join the periodic flusher before doing anything else. Closing flushDone
+	// only makes it exit at its next select; a tick already executing
+	// flushPairCache runs to completion, and that sweep can take a while --
+	// it redacts every witness it queues, thousands of them in one observed
+	// run. Two things go wrong if Close races it:
+	//
+	//   - reportBuffer.Flush calls uploads.Add(1). Landing that while Close is
+	//     already inside uploads.Wait() is the WaitGroup misuse Go documents
+	//     (a positive delta from zero must happen before Wait), so Wait can
+	//     return before that upload finishes, or panic.
+	//   - batcher.InMemory.Add after uploadReportBatch.Close() succeeds but
+	//     nothing flushes afterwards, so those witnesses sit in the active
+	//     report forever -- silent loss, invisible to every counter.
+	//
+	// Waiting here also means only this goroutine touches the pair cache and
+	// the batcher from this point on.
 	close(c.flushDone)
+	<-c.flushExited
+
 	c.flushPairCache(time.Now())
 	c.uploadReportBatch.Close()
 	c.reportBuffer.WaitForUploads()
@@ -524,6 +550,9 @@ func (c *BackendCollector) getLearnSession() akid.LearnSessionID {
 }
 
 func (c *BackendCollector) periodicFlush() {
+	// Lets Close join this goroutine rather than merely signal it.
+	defer close(c.flushExited)
+
 	ticker := time.NewTicker(pairCacheCleanupInterval)
 
 	for {

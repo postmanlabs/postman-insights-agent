@@ -687,6 +687,10 @@ func TestFlushExit(t *testing.T) {
 		uploadBatchFlushDuration,
 	)
 	b.flushDone = make(chan struct{})
+	// periodicFlush closes this on return so Close can join it rather than
+	// only signal it; a literal-constructed collector has to supply it the
+	// way NewBackendCollector does.
+	b.flushExited = make(chan struct{})
 	close(b.flushDone)
 	b.periodicFlush()
 	// Test should exit immediately
@@ -1816,6 +1820,29 @@ func (r *recordingCountReporter) snapshot() (map[string]uint64, int) {
 		out[k] = v
 	}
 	return out, r.calls
+}
+
+// Close must be able to join the periodic flusher, not just signal it.
+// Closing flushDone alone lets a tick already inside flushPairCache keep
+// running, and that sweep can still call reportBuffer.Flush -> uploads.Add(1)
+// after Close has entered uploads.Wait() (WaitGroup misuse) or after
+// uploadReportBatch.Close() has run its final flush (silently stranding those
+// witnesses in the active report).
+func TestPeriodicFlushSignalsExitForClose(t *testing.T) {
+	c := &BackendCollector{
+		stats:       capturestats.New(),
+		flushDone:   make(chan struct{}),
+		flushExited: make(chan struct{}),
+	}
+
+	go c.periodicFlush()
+	close(c.flushDone)
+
+	select {
+	case <-c.flushExited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodicFlush did not signal exit; Close would proceed while it is still running")
+	}
 }
 
 // A pair-cache flush must report one delta per (direction, reason), not one
