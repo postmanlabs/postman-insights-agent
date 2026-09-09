@@ -84,20 +84,24 @@ type SamplingCollector struct {
 
 	collector Collector
 
-	telemetryEventReporter func(string)
+	// Sampled-out traffic is counted, not reported per message: below a
+	// sample rate of 1.0 the excluded messages are the majority by
+	// definition, so one telemetry event each would take the DaemonSet's
+	// node-wide lock for most of the traffic on the interface.
+	stats *capturestats.Stats
 }
 
 // Wraps a collector and performs sampling. Returns the collector itself if the
 // given sampleRate is 1.0.
-func NewSamplingCollector(sampleRate float64, collector Collector, reporters ...func(string)) Collector {
+func NewSamplingCollector(sampleRate float64, collector Collector, stats *capturestats.Stats) Collector {
 	if sampleRate == 1.0 {
 		return collector
 	}
 
 	return &SamplingCollector{
-		sampleThreshold:        float64(math.MaxUint32) * sampleRate,
-		collector:              collector,
-		telemetryEventReporter: firstTelemetryReporter(reporters),
+		sampleThreshold: float64(math.MaxUint32) * sampleRate,
+		collector:       collector,
+		stats:           stats,
 	}
 }
 
@@ -128,17 +132,11 @@ func (sc *SamplingCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	}
 	switch t.Content.(type) {
 	case akinet.HTTPRequest:
-		sc.reportTelemetryEvent("request_sampled_out")
+		sc.stats.IncrRequestsSampledOut()
 	case akinet.HTTPResponse:
-		sc.reportTelemetryEvent("response_sampled_out")
+		sc.stats.IncrResponsesSampledOut()
 	}
 	return nil
-}
-
-func (sc *SamplingCollector) reportTelemetryEvent(event string) {
-	if sc.telemetryEventReporter != nil {
-		sc.telemetryEventReporter(event)
-	}
 }
 
 func (sc *SamplingCollector) Close() error {

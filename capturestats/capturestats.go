@@ -64,6 +64,20 @@ type Stats struct {
 	// out as an unpaired witness by the time this fires.
 	ResponsesDroppedNoMatchingRequest uint64
 
+	// Traffic-proportional collector-chain drops. These are counters rather
+	// than per-message telemetry events because they can each be the dominant
+	// traffic class -- a broad host/path filter, a sample rate below 1.0, or an
+	// outbound-heavy service can drop nearly every message -- and emitting one
+	// event per drop would take the DaemonSet's node-wide telemetry lock once
+	// per message on the capture path. See the note on
+	// trace.BackendCollector.SetTelemetryCountReporter.
+	RequestsFiltered         uint64
+	ResponsesFiltered        uint64
+	RequestsSampledOut       uint64
+	ResponsesSampledOut      uint64
+	RequestsDroppedOutbound  uint64
+	ResponsesDroppedOutbound uint64
+
 	// First-discard and unmatched-response reason counters recorded in the
 	// rate-limit and user-traffic collector layers.
 	RequestsRateLimited                                        uint64
@@ -246,6 +260,42 @@ func (s *Stats) IncrDiscardedOther() {
 		return
 	}
 	atomic.AddUint64(&s.DiscardedOther, 1)
+}
+
+func (s *Stats) IncrRequestsFiltered() {
+	if s != nil {
+		atomic.AddUint64(&s.RequestsFiltered, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesFiltered() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesFiltered, 1)
+	}
+}
+
+func (s *Stats) IncrRequestsSampledOut() {
+	if s != nil {
+		atomic.AddUint64(&s.RequestsSampledOut, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesSampledOut() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesSampledOut, 1)
+	}
+}
+
+func (s *Stats) IncrRequestsDroppedOutbound() {
+	if s != nil {
+		atomic.AddUint64(&s.RequestsDroppedOutbound, 1)
+	}
+}
+
+func (s *Stats) IncrResponsesDroppedOutbound() {
+	if s != nil {
+		atomic.AddUint64(&s.ResponsesDroppedOutbound, 1)
+	}
 }
 
 func (s *Stats) IncrResponsesDroppedNoMatchingRequest() {
@@ -531,6 +581,10 @@ type Snapshot struct {
 
 	DiscardedRequests, DiscardedResponses, DiscardedOther uint64
 
+	RequestsFiltered, ResponsesFiltered               uint64
+	RequestsSampledOut, ResponsesSampledOut           uint64
+	RequestsDroppedOutbound, ResponsesDroppedOutbound uint64
+
 	ResponsesDroppedNoMatchingRequest                                                              uint64
 	RequestsRateLimited, RequestKeysExpired                                                        uint64
 	RequestsDroppedAgentTraffic, ResponsesDroppedAgentTraffic                                      uint64
@@ -582,6 +636,13 @@ func (s *Stats) Snapshot() Snapshot {
 		DiscardedRequests:  atomic.LoadUint64(&s.DiscardedRequests),
 		DiscardedResponses: atomic.LoadUint64(&s.DiscardedResponses),
 		DiscardedOther:     atomic.LoadUint64(&s.DiscardedOther),
+
+		RequestsFiltered:         atomic.LoadUint64(&s.RequestsFiltered),
+		ResponsesFiltered:        atomic.LoadUint64(&s.ResponsesFiltered),
+		RequestsSampledOut:       atomic.LoadUint64(&s.RequestsSampledOut),
+		ResponsesSampledOut:      atomic.LoadUint64(&s.ResponsesSampledOut),
+		RequestsDroppedOutbound:  atomic.LoadUint64(&s.RequestsDroppedOutbound),
+		ResponsesDroppedOutbound: atomic.LoadUint64(&s.ResponsesDroppedOutbound),
 
 		ResponsesDroppedNoMatchingRequest:                          atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequest),
 		RequestsRateLimited:                                        atomic.LoadUint64(&s.RequestsRateLimited),

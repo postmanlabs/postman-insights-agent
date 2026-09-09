@@ -10,6 +10,71 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/trace"
 )
 
+// Covers the read side of the eBPF metric holders: the worker reports them
+// while another goroutine writes the same counters, which is the steady state
+// once the eBPF chain is running.
+//
+// What this does NOT cover: the field-publication ordering in Run. Run must
+// assign a.ebpfCaptureStats and the two HTTPS counters before it starts the
+// worker, because the worker reads them every 15s; assigning them in the eBPF
+// setup block instead is an unsynchronized write racing that read. This test
+// constructs apidump with the fields already set, so moving those assignments
+// back after startTelemetryWorker would not fail it. Catching that needs a
+// test that drives Run end to end with HTTPS enabled.
+func TestReportCaptureMetricsReadsEBPFMetricsUnderRace(t *testing.T) {
+	var mu sync.Mutex
+	reported := map[string]uint64{}
+	a := &apidump{
+		Args: &Args{
+			TelemetryInterval: 60,
+			DaemonsetArgs: optionals.Some(DaemonsetArgs{
+				ReportTelemetryCount: func(event string, count uint64) {
+					mu.Lock()
+					defer mu.Unlock()
+					reported[event] += count
+				},
+			}),
+		},
+		captureStats: capturestats.New(),
+		// Published the way Run does it: before anything reads them.
+		ebpfCaptureStats: capturestats.New(),
+		dumpSummary: &Summary{
+			PrefilterSummary:      trace.NewPacketCounter(),
+			FilterSummary:         trace.NewPacketCounter(),
+			HTTPSPrefilterSummary: trace.NewPacketCounter(),
+			HTTPSSummary:          trace.NewPacketCounter(),
+		},
+		successTelemetry: &trace.SuccessTelemetry{Channel: make(chan struct{})},
+	}
+
+	stopTelemetry := a.startTelemetryWorker()
+
+	// Stand in for the eBPF collector chain writing counters while the worker
+	// is already running.
+	var writers sync.WaitGroup
+	writers.Add(1)
+	go func() {
+		defer writers.Done()
+		for i := 0; i < 100; i++ {
+			a.dumpSummary.HTTPSPrefilterSummary.Update(client_telemetry.PacketCounts{HTTPSRequests: 1})
+			a.dumpSummary.HTTPSSummary.Update(client_telemetry.PacketCounts{HTTPSRequests: 1})
+			a.ebpfCaptureStats.IncrWitnessesPaired()
+		}
+	}()
+	writers.Wait()
+
+	stopTelemetry()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if reported["ebpf_http_request_prefilter"] != 100 {
+		t.Fatalf("ebpf_http_request_prefilter = %d, want 100", reported["ebpf_http_request_prefilter"])
+	}
+	if reported["ebpf_witness_paired"] != 100 {
+		t.Fatalf("ebpf_witness_paired = %d, want 100", reported["ebpf_witness_paired"])
+	}
+}
+
 func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	var mu sync.Mutex
 	reported := map[string]uint64{}
@@ -43,6 +108,12 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	a.captureStats.IncrRequestsRateLimited()
 	a.captureStats.IncrRequestsRateLimited()
 	a.captureStats.AddRequestKeysExpired(2)
+	a.captureStats.IncrRequestsFiltered()
+	a.captureStats.IncrResponsesFiltered()
+	a.captureStats.IncrRequestsSampledOut()
+	a.captureStats.IncrResponsesSampledOut()
+	a.captureStats.IncrRequestsDroppedOutbound()
+	a.captureStats.IncrResponsesDroppedOutbound()
 	a.captureStats.IncrRequestsDroppedAgentTraffic()
 	a.captureStats.IncrResponsesDroppedNginxTraffic()
 	a.captureStats.IncrResponsesDroppedNoMatchingRequest()
@@ -80,6 +151,15 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	}
 	if reported["pcap_request_key_expired"] != 2 {
 		t.Fatalf("pcap_request_key_expired = %d, want 2", reported["pcap_request_key_expired"])
+	}
+	for _, event := range []string{
+		"pcap_request_filtered", "pcap_response_filtered",
+		"pcap_request_sampled_out", "pcap_response_sampled_out",
+		"pcap_request_dropped_outbound", "pcap_response_dropped_outbound",
+	} {
+		if reported[event] != 1 {
+			t.Fatalf("%s = %d, want 1", event, reported[event])
+		}
 	}
 	if reported["pcap_request_dropped_agent_traffic"] != 1 {
 		t.Fatalf("pcap_request_dropped_agent_traffic = %d, want 1", reported["pcap_request_dropped_agent_traffic"])

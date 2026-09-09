@@ -11,6 +11,7 @@ import (
 	"github.com/akitasoftware/akita-libs/spec_util"
 	"github.com/google/uuid"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
+	"github.com/stretchr/testify/assert"
 )
 
 type noopCollector struct{}
@@ -119,11 +120,13 @@ func TestPacketCounterRequiresMatchingProtocolPair(t *testing.T) {
 	}
 }
 
-func TestRequestFilterReportsBothDirections(t *testing.T) {
-	var events []string
-	collector := NewHTTPPathFilterCollector([]*regexp.Regexp{regexp.MustCompile("^/private")}, noopCollector{}, func(event string) {
-		events = append(events, event)
-	})
+// Filtered traffic is recorded on the session's counters, not as one
+// telemetry event per message: a broad filter can exclude nearly everything on
+// the interface, and per-message reporting would take the DaemonSet's
+// node-wide telemetry lock that many times on the capture path.
+func TestRequestFilterCountsBothDirections(t *testing.T) {
+	stats := capturestats.New()
+	collector := NewHTTPPathFilterCollector([]*regexp.Regexp{regexp.MustCompile("^/private")}, noopCollector{}, stats)
 	streamID := uuid.New()
 
 	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
@@ -133,16 +136,31 @@ func TestRequestFilterReportsBothDirections(t *testing.T) {
 		StreamID: streamID, Seq: 1,
 	}})
 
-	if len(events) != 2 || events[0] != "request_filtered" || events[1] != "response_filtered" {
-		t.Fatalf("unexpected filter events: %v", events)
-	}
+	snapshot := stats.Snapshot()
+	assert.Equal(t, uint64(1), snapshot.RequestsFiltered)
+	assert.Equal(t, uint64(1), snapshot.ResponsesFiltered)
 }
 
-func TestSamplingReportsHTTPDirections(t *testing.T) {
-	var events []string
-	collector := NewSamplingCollector(0, noopCollector{}, func(event string) {
-		events = append(events, event)
-	})
+// Unfiltered traffic must reach the next collector and leave the counters
+// alone, so the counter cannot be read as "messages seen".
+func TestRequestFilterPassesUnmatchedTraffic(t *testing.T) {
+	stats := capturestats.New()
+	next := &countingCollector{}
+	collector := NewHTTPPathFilterCollector([]*regexp.Regexp{regexp.MustCompile("^/private")}, next, stats)
+
+	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
+		StreamID: uuid.New(), Seq: 1, URL: &url.URL{Path: "/public"},
+	}})
+
+	assert.Equal(t, 1, next.GetNumPackets())
+	assert.Equal(t, uint64(0), stats.Snapshot().RequestsFiltered)
+}
+
+// Same rationale as filtering: below a sample rate of 1.0 the excluded
+// messages are the majority by definition.
+func TestSamplingCountsHTTPDirections(t *testing.T) {
+	stats := capturestats.New()
+	collector := NewSamplingCollector(0, noopCollector{}, stats)
 	streamID := uuid.New()
 
 	collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
@@ -152,9 +170,21 @@ func TestSamplingReportsHTTPDirections(t *testing.T) {
 		StreamID: streamID, Seq: 1,
 	}})
 
-	if len(events) != 2 || events[0] != "request_sampled_out" || events[1] != "response_sampled_out" {
-		t.Fatalf("unexpected sampling events: %v", events)
-	}
+	snapshot := stats.Snapshot()
+	assert.Equal(t, uint64(1), snapshot.RequestsSampledOut)
+	assert.Equal(t, uint64(1), snapshot.ResponsesSampledOut)
+}
+
+// A nil Stats must not panic: NewSamplingCollector is reachable from commands
+// that do not build a capture-diagnostics Stats.
+func TestSamplingWithNilStatsDoesNotPanic(t *testing.T) {
+	collector := NewSamplingCollector(0, noopCollector{}, nil)
+
+	err := collector.Process(akinet.ParsedNetworkTraffic{Content: akinet.HTTPRequest{
+		StreamID: uuid.New(), Seq: 1,
+	}})
+
+	assert.NoError(t, err)
 }
 
 func TestUserTrafficCollectorRecordsHTTPDropReasons(t *testing.T) {

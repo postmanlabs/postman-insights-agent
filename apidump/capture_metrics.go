@@ -47,6 +47,15 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 	a.reportTelemetryCount(source+"_http_request_postfilter", counterDelta(httpRequests(currentPostfilter), httpRequests(previousPostfilter)))
 	a.reportTelemetryCount(source+"_http_response_postfilter", counterDelta(httpResponses(currentPostfilter), httpResponses(previousPostfilter)))
 	a.reportTelemetryCount(source+"_witness_paired", counterDelta(currentStats.WitnessesPaired, previousStats.WitnessesPaired))
+	// Traffic-proportional chain drops. Counters rather than per-message
+	// events because each can be the dominant traffic class; see
+	// capturestats.Stats.RequestsFiltered.
+	a.reportTelemetryCount(source+"_request_filtered", counterDelta(currentStats.RequestsFiltered, previousStats.RequestsFiltered))
+	a.reportTelemetryCount(source+"_response_filtered", counterDelta(currentStats.ResponsesFiltered, previousStats.ResponsesFiltered))
+	a.reportTelemetryCount(source+"_request_sampled_out", counterDelta(currentStats.RequestsSampledOut, previousStats.RequestsSampledOut))
+	a.reportTelemetryCount(source+"_response_sampled_out", counterDelta(currentStats.ResponsesSampledOut, previousStats.ResponsesSampledOut))
+	a.reportTelemetryCount(source+"_request_dropped_outbound", counterDelta(currentStats.RequestsDroppedOutbound, previousStats.RequestsDroppedOutbound))
+	a.reportTelemetryCount(source+"_response_dropped_outbound", counterDelta(currentStats.ResponsesDroppedOutbound, previousStats.ResponsesDroppedOutbound))
 	a.reportTelemetryCount(source+"_request_rate_limited", counterDelta(currentStats.RequestsRateLimited, previousStats.RequestsRateLimited))
 	a.reportTelemetryCount(source+"_request_key_expired", counterDelta(currentStats.RequestKeysExpired, previousStats.RequestKeysExpired))
 	a.reportTelemetryCount(source+"_request_dropped_agent_traffic", counterDelta(currentStats.RequestsDroppedAgentTraffic, previousStats.RequestsDroppedAgentTraffic))

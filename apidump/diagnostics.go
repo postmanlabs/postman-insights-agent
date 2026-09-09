@@ -101,7 +101,8 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 			"kernel[recv=%d drop=%d ifdrop=%d] "+
 			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d reassembly_gap_flushed=%d] "+
 			"discarded[req=%d resp=%d other=%d] "+
-			"chain[resp_no_request=%d] "+
+			"chain[filtered_req=%d filtered_resp=%d sampled_out_req=%d sampled_out_resp=%d "+
+			"outbound_req=%d outbound_resp=%d resp_no_request=%d] "+
 			"resp_no_request_why[rate_limited=%d expired=%d active_stream=%d same_stream=%d "+
 			"resp_first=%d local=%d other=%d key_invalid=%d ctx_unavail=%d unknown=%d] "+
 			"conn_ctx[entries=%d peak=%d pruned=%d cap_evicted=%d] "+
@@ -142,7 +143,16 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 		snap.DiscardedResponses,
 		snap.DiscardedOther,
 
-		// Responses we parsed and then dropped for want of a matching request.
+		// Traffic-proportional collector-chain drops, then responses we parsed
+		// and dropped for want of a matching request. The first six are
+		// counters rather than per-message telemetry events precisely because
+		// any of them can account for most of the traffic on the interface.
+		snap.RequestsFiltered,
+		snap.ResponsesFiltered,
+		snap.RequestsSampledOut,
+		snap.ResponsesSampledOut,
+		snap.RequestsDroppedOutbound,
+		snap.ResponsesDroppedOutbound,
 		snap.ResponsesDroppedNoMatchingRequest,
 
 		// The same total, partitioned by what we knew about the missing

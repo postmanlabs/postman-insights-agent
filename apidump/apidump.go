@@ -1182,6 +1182,31 @@ func (a *apidump) Run() error {
 	)
 	a.dumpSummary.HTTPSCaptureEnabled = args.HTTPS.Enabled
 
+	// Allocate the eBPF metric holders here, before the telemetry worker
+	// goroutine starts below, even though the eBPF collector chain that fills
+	// them is not built until much further down.
+	//
+	// The worker reads all three every 15 seconds (see TelemetryWorker's
+	// captureMetricsTicker and reportCaptureMetrics). Assigning them down in
+	// the eBPF setup block instead would race those reads: everything in
+	// between -- redactor init, which calls the backend for redaction config,
+	// plus interface enumeration and per-interface collector construction --
+	// can easily outlast a 15-second tick on a slow network. Writing them
+	// before the goroutine exists makes goroutine creation the happens-before
+	// edge and needs no lock.
+	//
+	// Still gated on ebpfRequested: nil here means "no HTTPS capture", and
+	// SendPacketTelemetry depends on that (summaryOrNil -> the src == nil
+	// short-circuit in mergePacketCountSummaries), so allocating
+	// unconditionally would change the payload shape of every non-HTTPS
+	// capture.
+	ebpfRequested := args.HTTPS.Enabled && args.Out.AkitaURI != nil
+	if ebpfRequested {
+		a.dumpSummary.HTTPSSummary = trace.NewPacketCounter()
+		a.dumpSummary.HTTPSPrefilterSummary = trace.NewPacketCounter()
+		a.ebpfCaptureStats = capturestats.New()
+	}
+
 	// Synchronization for collectors + collector errors, each of which is run in a separate goroutine.
 	var doneWG sync.WaitGroup
 	doneWG.Add(len(userFilters) + len(negationFilters))
@@ -1323,23 +1348,23 @@ func (a *apidump) Run() error {
 			}
 
 			// Subsampling.
-			collector = trace.NewSamplingCollector(args.SampleRate, collector, pcapReportEvent)
+			collector = trace.NewSamplingCollector(args.SampleRate, collector, a.captureStats)
 			if rateLimit != nil {
 				collector = rateLimit.NewCollector(collector, summary, a.captureStats, pcapConnectionContext)
 			}
 
 			// Path and host filters.
 			if len(hostExclusions) > 0 {
-				collector = trace.NewHTTPHostFilterCollector(hostExclusions, collector, pcapReportEvent)
+				collector = trace.NewHTTPHostFilterCollector(hostExclusions, collector, a.captureStats)
 			}
 			if len(pathExclusions) > 0 {
-				collector = trace.NewHTTPPathFilterCollector(pathExclusions, collector, pcapReportEvent)
+				collector = trace.NewHTTPPathFilterCollector(pathExclusions, collector, a.captureStats)
 			}
 			if len(hostAllowlist) > 0 {
-				collector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, collector, pcapReportEvent)
+				collector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, collector, a.captureStats)
 			}
 			if len(pathAllowlist) > 0 {
-				collector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, collector, pcapReportEvent)
+				collector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, collector, a.captureStats)
 			}
 
 			// Eliminate Akita CLI traffic, unless --dogfood has been specified
@@ -1366,7 +1391,7 @@ func (a *apidump) Run() error {
 				// Drop outbound before rate-limit / pair cache (Direction from pcap).
 				// Source-prefixed reporter: dropOutboundCollector emits a bare
 				// event name, like every other collector in this chain.
-				collector = trace.NewDropOutboundCollector(collector, pcapReportEvent)
+				collector = trace.NewDropOutboundCollector(collector, a.captureStats)
 				collector = &trace.PacketCountCollector{
 					PacketCounts: prefilterSummary,
 					Collector:    collector,
@@ -1430,13 +1455,12 @@ func (a *apidump) Run() error {
 	// TCP packet trackers (the eBPF path delivers already-decrypted HTTP, not
 	// TLS handshake or raw TCP). Redaction, rate limiting, path/host filters
 	// and the backend sink are all reused unchanged.
-	ebpfRequested := args.HTTPS.Enabled && args.Out.AkitaURI != nil
 	if ebpfRequested {
-		httpsSummary := trace.NewPacketCounter()
-		httpsPrefilterSummary := trace.NewPacketCounter()
-		a.dumpSummary.HTTPSSummary = httpsSummary
-		a.dumpSummary.HTTPSPrefilterSummary = httpsPrefilterSummary
-		a.ebpfCaptureStats = capturestats.New()
+		// Allocated before the telemetry worker started, so these are already
+		// published; do not reassign them here. See the ebpfRequested block
+		// above NewSummary.
+		httpsSummary := a.dumpSummary.HTTPSSummary
+		httpsPrefilterSummary := a.dumpSummary.HTTPSPrefilterSummary
 		var httpsCollector trace.Collector = trace.NewBackendCollector(
 			a.backendSvc,
 			traceTags,
@@ -1468,21 +1492,21 @@ func (a *apidump) Run() error {
 			SuccessTelemetry:  a.successTelemetry,
 			RecordHTTPMessage: recordEBPFMessage,
 		}
-		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector, ebpfReportEvent)
+		httpsCollector = trace.NewSamplingCollector(args.SampleRate, httpsCollector, a.ebpfCaptureStats)
 		if rateLimit != nil {
 			httpsCollector = rateLimit.NewCollector(httpsCollector, httpsSummary, a.ebpfCaptureStats, nil)
 		}
 		if len(hostExclusions) > 0 {
-			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector, ebpfReportEvent)
+			httpsCollector = trace.NewHTTPHostFilterCollector(hostExclusions, httpsCollector, a.ebpfCaptureStats)
 		}
 		if len(pathExclusions) > 0 {
-			httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector, ebpfReportEvent)
+			httpsCollector = trace.NewHTTPPathFilterCollector(pathExclusions, httpsCollector, a.ebpfCaptureStats)
 		}
 		if len(hostAllowlist) > 0 {
-			httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector, ebpfReportEvent)
+			httpsCollector = trace.NewHTTPHostAllowlistCollector(hostAllowlist, httpsCollector, a.ebpfCaptureStats)
 		}
 		if len(pathAllowlist) > 0 {
-			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector, ebpfReportEvent)
+			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector, a.ebpfCaptureStats)
 		}
 		// Drop outbound here, at the same position as the pcap chain, rather
 		// than at upload time. The eBPF adapter is the producer that computes
@@ -1493,7 +1517,7 @@ func (a *apidump) Run() error {
 		// was redacted, all before being discarded. It also made
 		// ebpf_witness_paired overcount uploads by exactly the outbound
 		// volume.
-		httpsCollector = trace.NewDropOutboundCollector(httpsCollector, ebpfReportEvent)
+		httpsCollector = trace.NewDropOutboundCollector(httpsCollector, a.ebpfCaptureStats)
 		httpsCollector = &trace.PacketCountCollector{
 			PacketCounts: httpsPrefilterSummary,
 			Collector:    httpsCollector,

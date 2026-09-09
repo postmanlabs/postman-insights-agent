@@ -6,12 +6,13 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/trackers"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/learn"
 )
 
 // Filters out HTTP paths.
 // TODO: compile the N regular expressions into one for efficiency.
-func NewHTTPPathFilterCollector(matchers []*regexp.Regexp, col Collector, reporters ...func(string)) Collector {
+func NewHTTPPathFilterCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -24,12 +25,12 @@ func NewHTTPPathFilterCollector(matchers []*regexp.Regexp, col Collector, report
 			}
 			return true
 		},
-		telemetryEventReporter: firstTelemetryReporter(reporters),
+		stats: stats,
 	}
 }
 
 // Filter out matching HTTP hosts
-func NewHTTPHostFilterCollector(matchers []*regexp.Regexp, col Collector, reporters ...func(string)) Collector {
+func NewHTTPHostFilterCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -40,13 +41,13 @@ func NewHTTPHostFilterCollector(matchers []*regexp.Regexp, col Collector, report
 			}
 			return true
 		},
-		telemetryEventReporter: firstTelemetryReporter(reporters),
+		stats: stats,
 	}
 }
 
 // Allows only matching paths
 // TODO: compile the N regular expressions into one for efficiency.
-func NewHTTPPathAllowlistCollector(matchers []*regexp.Regexp, col Collector, reporters ...func(string)) Collector {
+func NewHTTPPathAllowlistCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -59,12 +60,12 @@ func NewHTTPPathAllowlistCollector(matchers []*regexp.Regexp, col Collector, rep
 			}
 			return false
 		},
-		telemetryEventReporter: firstTelemetryReporter(reporters),
+		stats: stats,
 	}
 }
 
 // Allows only matching hosts
-func NewHTTPHostAllowlistCollector(matchers []*regexp.Regexp, col Collector, reporters ...func(string)) Collector {
+func NewHTTPHostAllowlistCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -75,7 +76,7 @@ func NewHTTPHostAllowlistCollector(matchers []*regexp.Regexp, col Collector, rep
 			}
 			return false
 		},
-		telemetryEventReporter: firstTelemetryReporter(reporters),
+		stats: stats,
 	}
 }
 
@@ -108,7 +109,12 @@ type genericRequestFilter struct {
 	// mid-connection.
 	filteredIDs map[akid.WitnessID]struct{}
 
-	telemetryEventReporter func(string)
+	// Filtered traffic is counted, not reported per message. A broad host or
+	// path filter can exclude nearly every message on the interface, and one
+	// telemetry event per drop would take the DaemonSet's node-wide telemetry
+	// lock that many times, on the capture path. The counters ship as
+	// interval deltas instead -- see apidump.reportSourceFunnel.
+	stats *capturestats.Stats
 }
 
 func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
@@ -117,7 +123,7 @@ func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
 	case akinet.HTTPRequest:
 		if fc.filterFunc != nil && !fc.filterFunc(c) {
 			include = false
-			fc.reportTelemetryEvent("request_filtered")
+			fc.stats.IncrRequestsFiltered()
 
 			if fc.filteredIDs == nil {
 				fc.filteredIDs = map[akid.WitnessID]struct{}{}
@@ -127,7 +133,7 @@ func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
 	case akinet.HTTPResponse:
 		if _, ok := fc.filteredIDs[learn.ToWitnessID(c.StreamID, c.Seq)]; ok {
 			include = false
-			fc.reportTelemetryEvent("response_filtered")
+			fc.stats.IncrResponsesFiltered()
 		}
 	}
 
@@ -135,19 +141,6 @@ func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
 		return fc.Collector.Process(t)
 	}
 	return nil
-}
-
-func firstTelemetryReporter(reporters []func(string)) func(string) {
-	if len(reporters) > 0 {
-		return reporters[0]
-	}
-	return nil
-}
-
-func (fc *genericRequestFilter) reportTelemetryEvent(event string) {
-	if fc.telemetryEventReporter != nil {
-		fc.telemetryEventReporter(event)
-	}
 }
 
 func (fc *genericRequestFilter) Close() error {
