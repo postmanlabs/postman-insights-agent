@@ -42,6 +42,7 @@ func Collect(
 	telemetry telemetry.Tracker,
 	stats *capturestats.Stats,
 	telemetryEventReporter func(string),
+	directionHint *DirectionHint,
 ) error {
 	defer proc.Close()
 
@@ -59,6 +60,7 @@ func Collect(
 
 	parser := NewNetworkTrafficParser(serviceID, traceTags, bufferShare, telemetry, stats)
 	parser.useSyntheticPairing = syntheticTCPPairingEnabled()
+	parser.directionHint = directionHint
 
 	podName, ok := traceTags[tags.XAkitaKubernetesPod]
 	if !ok {

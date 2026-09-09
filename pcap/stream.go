@@ -47,11 +47,19 @@ type tcpFlow struct {
 	// in pairing.go. Nil means use the real TCP seq/ack numbers, as before.
 	pairSeq *pairSequencer
 
+	// Netns-wide locals for Direction (shared across both flows).
+	directionHint *DirectionHint
+
 	// Non-nil if there is an active parser for this flow.
 	currentParser akinet.TCPParser
 
 	// Context for the FIRST packet that currentParser is processing.
 	currentParserCtx *assemblerCtxWithSeq
+
+	// Accept-time synthetic pair allocation for currentParser, if any. Rolled
+	// back if the parse fails or is abandoned before a successful emit.
+	currentPairSeq  reassembly.Sequence
+	currentPairKind pairAllocKind
 
 	// Data that was left unused when determining parser, awaiting for more data.
 	// This is a hack to flush data when the flow terminates before a parser has
@@ -61,7 +69,7 @@ type tcpFlow struct {
 	unusedAcceptBuf memview.MemView
 }
 
-func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer) *tcpFlow {
+func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer, directionHint *DirectionHint) *tcpFlow {
 	return &tcpFlow{
 		clock:           clock,
 		netFlow:         nf,
@@ -71,6 +79,7 @@ func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flo
 		factorySelector: fs,
 		stats:           stats,
 		pairSeq:         pairSeq,
+		directionHint:   directionHint,
 	}
 }
 
@@ -144,20 +153,15 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				return
 			}
 			if f.pairSeq != nil && isHTTPParserFactory(fact) {
-				// Synthetic pairing enabled, and this is an HTTP/1.x request or
-				// response: ignore the real TCP seq/ack and use a shared
-				// per-connection FIFO ordinal instead, mirroring
-				// ebpf/events/adapter.go's tlsConnState.pairSeqForFactory. See
-				// pairing.go for why the real numbers are unreliable here.
-				//
-				// Scoped to HTTP only -- TLS/HTTP2-preface/etc. keep the real
-				// seq/ack, even when the flag is on, since this fix only concerns
-				// HTTP/1.x pairing and other factories have no reason to see
-				// substituted values.
-				synthSeq := f.pairSeq.pairSeqForFactory(fact)
+				// Synthetic pairing: ignore real TCP seq/ack; use per-connection
+				// FIFO ordinal (see pairing.go). Scoped to HTTP/1.x only.
+				synthSeq, kind := f.pairSeq.pairSeqForFactory(fact)
 				f.currentParser = fact.CreateParser(f.bidiID, synthSeq, synthSeq)
+				f.currentPairSeq = synthSeq
+				f.currentPairKind = kind
 			} else {
 				f.currentParser = fact.CreateParser(f.bidiID, ctx.seq, ctx.ack)
+				f.currentPairKind = pairAllocNone
 			}
 			f.currentParserCtx = ctx
 		default:
@@ -174,6 +178,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 		t := f.currentParserCtx.GetCaptureInfo().Timestamp
 		f.handleUnparseable(t, numBytesConsumed)
 
+		f.rollbackCurrentPairSeq()
 		f.currentParser = nil
 		f.currentParserCtx = nil
 
@@ -195,6 +200,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 		}
 		f.outChan <- f.toPNT(parseStart, parseEnd, pnc)
 
+		f.currentPairKind = pairAllocNone
 		f.currentParser = nil
 		f.currentParserCtx = nil
 
@@ -218,6 +224,13 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 	}
 }
 
+func (f *tcpFlow) rollbackCurrentPairSeq() {
+	if f.pairSeq != nil && f.currentPairKind != pairAllocNone {
+		f.pairSeq.rollbackPairSeq(f.currentPairSeq, f.currentPairKind)
+	}
+	f.currentPairKind = pairAllocNone
+}
+
 // Marks this flow as finished.
 func (f *tcpFlow) reassemblyComplete() {
 	if f.currentParser != nil {
@@ -226,10 +239,15 @@ func (f *tcpFlow) reassemblyComplete() {
 		t := f.currentParserCtx.GetCaptureInfo().Timestamp
 		if err != nil {
 			f.handleUnparseable(t, numBytesConsumed)
+			f.rollbackCurrentPairSeq()
 		} else if pnc != nil {
 			printer.V(6).Infof("ReassemblyComplete parsed additional network traffic with ts: %v", t)
 			f.outChan <- f.toPNT(t, t, pnc)
+			f.currentPairKind = pairAllocNone
 			f.handleUnparseable(t, unused.Len())
+		} else {
+			// Forced end with no complete message — undo Accept-time allocation.
+			f.rollbackCurrentPairSeq()
 		}
 		f.currentParser = nil
 		f.currentParserCtx = nil
@@ -282,33 +300,20 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	srcE, dstE := f.netFlow.Endpoints()
 	srcP, dstP := f.tcpFlow.Endpoints()
 
-	// TODO(direction): populate ParsedNetworkTraffic.Direction for the pcap path.
-	// The eBPF path already sets it (see ebpf/events/adapter.go: directionForPair),
-	// and trace.BackendCollector.toReport already maps it to the witness
-	// (INBOUND/OUTBOUND); pcap currently leaves it DirectionUnknown -> defaults to
-	// INBOUND. To implement:
-	//   - Plumb this host/interface's own IPs (already enumerated in
-	//     apidump.getInboundBPFFilter, net.go) into the pcap parser/stream.
-	//   - Same rule as eBPF, using the real packet IPs we have here:
-	//       HTTPRequest : DstIP in localIPs -> DirectionInbound  (we are the server)
-	//                     SrcIP in localIPs -> DirectionOutbound (we are the client)
-	//       HTTPResponse: invert the above.
-	//     (akinet.TCPConnectionMetadata.Initiator is an alternative signal but is
-	//     unreliable here because Accept() forces stream start without the SYN.)
-	// NOTE: this is only the tagging half. Outbound pcap traffic is currently
-	// routed to a DummyCollector (apidump.go, notMatchedFilter chain) and never
-	// uploaded, and the inbound/outbound BPF split only exists when --port/
-	// --bpf-filter is set. Actually surfacing outbound pcap witnesses is a
-	// separate, deliberate decision. Also depends on the backend accepting
-	// OUTBOUND. See the eBPF direction work for the shared-lib pieces.
+	srcIP := net.IP(srcE.Raw())
+	dstIP := net.IP(dstE.Raw())
+	srcPort := int(binary.BigEndian.Uint16(srcP.Raw()))
+	dstPort := int(binary.BigEndian.Uint16(dstP.Raw()))
+
 	return akinet.ParsedNetworkTraffic{
-		SrcIP:           net.IP(srcE.Raw()),
-		SrcPort:         int(binary.BigEndian.Uint16(srcP.Raw())),
-		DstIP:           net.IP(dstE.Raw()),
-		DstPort:         int(binary.BigEndian.Uint16(dstP.Raw())),
+		SrcIP:           srcIP,
+		SrcPort:         srcPort,
+		DstIP:           dstIP,
+		DstPort:         dstPort,
 		Content:         c,
 		ObservationTime: firstPacketTime,
 		FinalPacketTime: lastPacketTime,
+		Direction:       classifyHTTPDirection(c, srcIP, dstIP, srcPort, dstPort, f.directionHint),
 	}
 }
 
@@ -332,9 +337,11 @@ type tcpStream struct {
 	// Shared by both flows of this connection when synthetic TCP pairing is
 	// enabled; nil otherwise. See pairing.go.
 	pairSeq *pairSequencer
+
+	directionHint *DirectionHint
 }
 
-func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool) *tcpStream {
+func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint) *tcpStream {
 	var pairSeq *pairSequencer
 	if useSyntheticPairing {
 		pairSeq = newPairSequencer()
@@ -347,6 +354,7 @@ func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akin
 		outChan:         outChan,
 		stats:           stats,
 		pairSeq:         pairSeq,
+		directionHint:   directionHint,
 	}
 }
 
@@ -366,8 +374,8 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 		// data from this tcpStream or it is garbage collected by the assembler
 		// after streamTimeout.
 		tf, _ := gopacket.FlowFromEndpoints(layers.NewTCPPortEndpoint(tcp.SrcPort), layers.NewTCPPortEndpoint(tcp.DstPort))
-		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector, c.stats, c.pairSeq)
-		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector, c.stats, c.pairSeq)
+		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector, c.stats, c.pairSeq, c.directionHint)
+		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector, c.stats, c.pairSeq, c.directionHint)
 		c.flows = map[reassembly.TCPFlowDirection]*tcpFlow{
 			dir:           s1,
 			dir.Reverse(): s2,

@@ -40,18 +40,18 @@ func TestPairSequencer(t *testing.T) {
 	notReq := princeParserFactory{} // any factory whose Name() isn't the HTTP request factory's
 
 	// Simple case: request then its response.
-	r0 := p.pairSeqForFactory(req)
-	s0 := p.pairSeqForFactory(notReq)
+	r0, _ := p.pairSeqForFactory(req)
+	s0, _ := p.pairSeqForFactory(notReq)
 	if r0 != s0 {
 		t.Errorf("expected first response to pair with first request: req=%v resp=%v", r0, s0)
 	}
 
 	// Pipelined case: two requests arrive before either response. FIFO
 	// ordering must still pair them correctly.
-	r1 := p.pairSeqForFactory(req)
-	r2 := p.pairSeqForFactory(req)
-	s1 := p.pairSeqForFactory(notReq)
-	s2 := p.pairSeqForFactory(notReq)
+	r1, _ := p.pairSeqForFactory(req)
+	r2, _ := p.pairSeqForFactory(req)
+	s1, _ := p.pairSeqForFactory(notReq)
+	s2, _ := p.pairSeqForFactory(notReq)
 
 	if r1 != s1 {
 		t.Errorf("expected second request to pair with first of the two pending responses: req=%v resp=%v", r1, s1)
@@ -61,6 +61,54 @@ func TestPairSequencer(t *testing.T) {
 	}
 	if r1 == r2 {
 		t.Errorf("expected the two pipelined requests to get distinct indices, both got %v", r1)
+	}
+}
+
+func TestPairSequencerRollbackAfterFailedAccept(t *testing.T) {
+	p := newPairSequencer()
+	req := fakeHTTPRequestFactory{}
+	notReq := princeParserFactory{}
+
+	r0, kind0 := p.pairSeqForFactory(req)
+	if kind0 != pairAllocRequestPush {
+		t.Fatalf("want request push, got %v", kind0)
+	}
+	// Simulate Accept then parse fail: roll back before the next exchange.
+	p.rollbackPairSeq(r0, kind0)
+
+	r1, _ := p.pairSeqForFactory(req)
+	s1, kindResp := p.pairSeqForFactory(notReq)
+	if kindResp != pairAllocResponsePop {
+		t.Fatalf("want response pop, got %v", kindResp)
+	}
+	if r1 != s1 {
+		t.Fatalf("after request rollback, next exchange must pair: req=%v resp=%v", r1, s1)
+	}
+	if r1 != 0 {
+		t.Fatalf("after rolling back the only allocation, next ordinal should reuse 0, got %v", r1)
+	}
+
+	// Response pop then fail: put the pending request back.
+	r2, _ := p.pairSeqForFactory(req)
+	s2, kind2 := p.pairSeqForFactory(notReq)
+	p.rollbackPairSeq(s2, kind2)
+	s2b, kind2b := p.pairSeqForFactory(notReq)
+	if kind2b != pairAllocResponsePop {
+		t.Fatalf("want response pop after rollback, got %v", kind2b)
+	}
+	if r2 != s2b {
+		t.Fatalf("after response rollback, pending request must still pair: req=%v resp=%v", r2, s2b)
+	}
+
+	// Empty-FIFO response invent then fail.
+	s3, kind3 := p.pairSeqForFactory(notReq)
+	if kind3 != pairAllocResponseInvent {
+		t.Fatalf("want invent, got %v", kind3)
+	}
+	p.rollbackPairSeq(s3, kind3)
+	s4, kind4 := p.pairSeqForFactory(notReq)
+	if kind4 != pairAllocResponseInvent || s4 != s3 {
+		t.Fatalf("after invent rollback, next invent should reuse seq: got seq=%v kind=%v want seq=%v invent", s4, kind4, s3)
 	}
 }
 
