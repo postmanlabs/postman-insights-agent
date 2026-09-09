@@ -60,23 +60,23 @@ func (ctx *assemblerCtxWithSeq) GetCaptureInfo() gopacket.CaptureInfo {
 
 // tcpStreamFactory implements reassembly.StreamFactory.
 type tcpStreamFactory struct {
-	clock               clockWrapper
-	fs                  akinet.TCPParserFactorySelector
-	outChan             chan<- akinet.ParsedNetworkTraffic
-	stats               *capturestats.Stats
-	useSyntheticPairing bool
-	directionHint       *DirectionHint
+	clock                  clockWrapper
+	fs                     akinet.TCPParserFactorySelector
+	outChan                chan<- akinet.ParsedNetworkTraffic
+	stats                  *capturestats.Stats
+	useSyntheticPairing    bool
+	directionHint          *DirectionHint
 	telemetryEventReporter func(string)
 }
 
-func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint,telemetryEventReporter func(string)) *tcpStreamFactory {
+func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryEventReporter func(string)) *tcpStreamFactory {
 	return &tcpStreamFactory{
-		clock:               clock,
-		fs:                  fs,
-		outChan:             outChan,
-		stats:               stats,
-		useSyntheticPairing: useSyntheticPairing,
-		directionHint:       directionHint,
+		clock:                  clock,
+		fs:                     fs,
+		outChan:                outChan,
+		stats:                  stats,
+		useSyntheticPairing:    useSyntheticPairing,
+		directionHint:          directionHint,
 		telemetryEventReporter: telemetryEventReporter,
 	}
 }

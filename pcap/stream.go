@@ -70,17 +70,17 @@ type tcpFlow struct {
 	unusedAcceptBuf memview.MemView
 }
 
-func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer, directionHint *DirectionHint,telemetryEventReporter func(string)) *tcpFlow {
+func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer, directionHint *DirectionHint, telemetryEventReporter func(string)) *tcpFlow {
 	return &tcpFlow{
-		clock:           clock,
-		netFlow:         nf,
-		tcpFlow:         tf,
-		bidiID:          bidiID,
-		outChan:         outChan,
-		factorySelector: fs,
-		stats:           stats,
-		pairSeq:         pairSeq,
-		directionHint:   directionHint,
+		clock:                  clock,
+		netFlow:                nf,
+		tcpFlow:                tf,
+		bidiID:                 bidiID,
+		outChan:                outChan,
+		factorySelector:        fs,
+		stats:                  stats,
+		pairSeq:                pairSeq,
+		directionHint:          directionHint,
 		telemetryEventReporter: telemetryEventReporter,
 	}
 }
@@ -356,20 +356,20 @@ type tcpStream struct {
 	directionHint *DirectionHint
 }
 
-func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint,telemetryEventReporter func(string)) *tcpStream {
+func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryEventReporter func(string)) *tcpStream {
 	var pairSeq *pairSequencer
 	if useSyntheticPairing {
 		pairSeq = newPairSequencer()
 	}
 	return &tcpStream{
-		clock:           clock,
-		bidiID:          akinet.TCPBidiID(uuid.New()),
-		netFlow:         netFlow,
-		factorySelector: fs,
-		outChan:         outChan,
-		stats:           stats,
-		pairSeq:         pairSeq,
-		directionHint:   directionHint,
+		clock:                  clock,
+		bidiID:                 akinet.TCPBidiID(uuid.New()),
+		netFlow:                netFlow,
+		factorySelector:        fs,
+		outChan:                outChan,
+		stats:                  stats,
+		pairSeq:                pairSeq,
+		directionHint:          directionHint,
 		telemetryEventReporter: telemetryEventReporter,
 	}
 }

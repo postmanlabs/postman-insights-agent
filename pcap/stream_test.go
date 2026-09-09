@@ -91,7 +91,7 @@ func runTCPFlowTestCase(c tcpFlowTestCase) error {
 		princeParserFactory{},
 		pineappleParserFactory{},
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil, nil)
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil, nil, nil)
 
 	for i, input := range c.inputs {
 		sg.data = memview.New([]byte(input))
@@ -229,7 +229,7 @@ func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
 		akihttp.NewHTTPResponseParserFactory(pool),
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, func(event string) {
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string) {
 		reported = event
 	})
 	sg := &fakeScatterGather{
@@ -260,7 +260,7 @@ func TestTCPFlowReportsDiscardedRequest(t *testing.T) {
 	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
 		akihttp.NewHTTPRequestParserFactory(pool),
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, func(event string) {
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string) {
 		reported = event
 	})
 	sg := &fakeScatterGather{
