@@ -1364,7 +1364,9 @@ func (a *apidump) Run() error {
 			// Without both, the two are indistinguishable. See LogCaptureDiagnostics.
 			if filterState == matchedFilter {
 				// Drop outbound before rate-limit / pair cache (Direction from pcap).
-				collector = trace.NewDropOutboundCollector(collector, reportTelemetryEvent)
+				// Source-prefixed reporter: dropOutboundCollector emits a bare
+				// event name, like every other collector in this chain.
+				collector = trace.NewDropOutboundCollector(collector, pcapReportEvent)
 				collector = &trace.PacketCountCollector{
 					PacketCounts: prefilterSummary,
 					Collector:    collector,
@@ -1403,7 +1405,13 @@ func (a *apidump) Run() error {
 					pool,
 					apidumpTelemetry,
 					a.captureStats,
-					reportTelemetryEvent,
+					// These two reporters take deliberately opposite forms, so
+					// do not "fix" one to match the other. The pcap package
+					// emits bare event names (parser_discarded_request), which
+					// need the source prefix added here, but its counter names
+					// are already prefixed (pcap_packets_received), so wrapping
+					// those would produce pcap_pcap_packets_received.
+					pcapReportEvent,
 					directionHint,
 					reportTelemetryCount,
 				); err != nil {
@@ -1476,6 +1484,16 @@ func (a *apidump) Run() error {
 		if len(pathAllowlist) > 0 {
 			httpsCollector = trace.NewHTTPPathAllowlistCollector(pathAllowlist, httpsCollector, ebpfReportEvent)
 		}
+		// Drop outbound here, at the same position as the pcap chain, rather
+		// than at upload time. The eBPF adapter is the producer that computes
+		// direction most confidently (see ebpf/events/adapter.go:
+		// directionForPair), so this chain carries real outbound traffic --
+		// and dropping it only in queueUpload meant it first consumed witness
+		// budget in the rate limiter, occupied pair-cache slots, paired, and
+		// was redacted, all before being discarded. It also made
+		// ebpf_witness_paired overcount uploads by exactly the outbound
+		// volume.
+		httpsCollector = trace.NewDropOutboundCollector(httpsCollector, ebpfReportEvent)
 		httpsCollector = &trace.PacketCountCollector{
 			PacketCounts: httpsPrefilterSummary,
 			Collector:    httpsCollector,

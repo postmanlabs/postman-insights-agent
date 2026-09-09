@@ -439,14 +439,14 @@ func init() {
 	}
 }
 
-// dropOutboundWitnesses gates agent-side suppression of OUTBOUND-direction
-// witnesses. Direction is computed correctly upstream (see
-// ebpf/events/adapter.go: directionForPair) and set on the witness, but the
-// backend/UI do not yet support the OUTBOUND NetworkDirection — uploading such
-// witnesses would render incorrectly. Until the backend and pcap path add OUTBOUND support,
-// we drop these at the agent and log it. Flip this to false (and remove the
-// block below) to re-enable once the backend is ready.
-const dropOutboundWitnesses = true
+// Outbound-direction traffic is suppressed by dropOutboundCollector, which
+// every chain feeding this collector installs ahead of rate limiting and the
+// pair cache (see apidump.Run). It used to be dropped here instead, at upload
+// time, which meant an outbound witness consumed witness budget, occupied a
+// pair-cache slot, paired, incremented witness_paired and was redacted before
+// being thrown away -- so witness_paired overcounted uploads by the outbound
+// volume. Reinstating an upload-time gate would reintroduce that gap; the
+// place to change this policy is dropOutboundCollector.
 
 func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	if w.witnessFlushed {
@@ -456,15 +456,6 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	defer func() {
 		w.witnessFlushed = true
 	}()
-
-	// TEMPORARY: block outbound witnesses at the agent until the backend
-	// supports the OUTBOUND direction. Marked flushed by the defer above so it
-	// is not retried on the next pair-cache flush. See dropOutboundWitnesses.
-	if dropOutboundWitnesses && w.direction == akinet.DirectionOutbound {
-		printer.Debugf("Dropping OUTBOUND witness %v (agent-side gate; backend does not yet support outbound direction)\n", w.id)
-		w.reportTelemetryEvent("witness_dropped_outbound")
-		return
-	}
 
 	// Mark the method as not obfuscated.
 	w.witness.GetMethod().GetMeta().GetHttp().Obfuscation = pb.HTTPMethodMeta_NONE

@@ -46,11 +46,23 @@ var (
 	fakeLrn = akid.NewLearnSessionID(uuid.Must(uuid.Parse("2b5dd735-9fc0-4365-93e8-74bf86d3f853")))
 )
 
-func TestQueueUploadReportsOutboundDrop(t *testing.T) {
+// Outbound suppression moved out of queueUpload and into
+// dropOutboundCollector, which runs ahead of rate limiting and the pair cache.
+// queueUpload must no longer second-guess direction: doing so is what made
+// witness_paired overcount uploads, since a witness reaching here has already
+// been counted as paired.
+// The outbound check used to sit ahead of the plugin stage, so an outbound
+// witness never reached it. A failing plugin therefore proves direction is no
+// longer short-circuited: if the old gate came back, this would report
+// witness_dropped_outbound instead.
+func TestQueueUploadDoesNotFilterByDirection(t *testing.T) {
 	var event string
-	c := &BackendCollector{}
+	c := &BackendCollector{plugins: []plugin.AkitaPlugin{failingPlugin{}}}
 	w := &witnessWithInfo{
 		direction: akinet.DirectionOutbound,
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
 		telemetryEventReporter: func(got string) {
 			event = got
 		},
@@ -58,12 +70,9 @@ func TestQueueUploadReportsOutboundDrop(t *testing.T) {
 
 	c.queueUpload(w)
 
-	if event != "witness_dropped_outbound" {
-		t.Fatalf("event = %q, want witness_dropped_outbound", event)
-	}
-	if !w.witnessFlushed {
-		t.Fatal("outbound witness was not marked flushed")
-	}
+	assert.Equal(t, "witness_dropped_plugin_error", event,
+		"direction filtering belongs to dropOutboundCollector, not queueUpload")
+	assert.True(t, w.witnessFlushed, "witness should still be marked flushed")
 }
 
 func TestQueueUploadReportsPluginError(t *testing.T) {
