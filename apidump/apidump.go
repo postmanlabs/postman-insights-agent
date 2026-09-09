@@ -1205,7 +1205,7 @@ func (a *apidump) Run() error {
 	ebpfReportEvent := sourceTelemetryEventReporter(reportTelemetryEvent, "ebpf")
 	pcapReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "pcap")
 	ebpfReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "ebpf")
-	pcapConnectionContext := trace.NewConnectionContextTracker()
+	pcapConnectionContext := trace.NewConnectionContextTracker(a.captureStats)
 
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
@@ -1275,6 +1275,10 @@ func (a *apidump) Run() error {
 					}
 					bc.SetTelemetryEventReporter(pcapReportEvent)
 					bc.SetTelemetryCountReporter(pcapReportCount)
+					// Shared with this chain's rate-limit collectors below, so
+					// a witness expiring unpaired can ask whether a message on
+					// its stream was already discarded as unmatched.
+					bc.SetConnectionContextTracker(pcapConnectionContext)
 				}
 			}
 

@@ -22,6 +22,7 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/akitasoftware/go-utils/sets"
 	"github.com/golang/protobuf/proto"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
@@ -58,6 +59,15 @@ type witnessWithInfo struct {
 	finalPacketTime time.Time
 	id              akid.WitnessID
 	isRequest       bool
+
+	// The TCP stream this half arrived on. Retained because id (the pair key)
+	// cannot supply it: learn.ToWitnessID hashes "<streamID>:<seq>" through a
+	// v5 UUID, which is one-way. Without this field an expired witness has
+	// only its address 4-tuple, and an address pair can be reused by a later
+	// connection while a stream cannot -- so keeping the stream is what lets
+	// pair-expiry attribution share a key space with the rate-limit
+	// collector's per-stream view of rejected responses.
+	streamID uuid.UUID
 
 	// direction is the traffic direction relative to the monitored service, as
 	// reported by the capture layer (currently the eBPF path; DirectionUnknown
@@ -185,6 +195,14 @@ type BackendCollector struct {
 	// Channel controlling periodic cache flush
 	flushDone chan struct{}
 
+	// Answers "was a message on this stream already discarded as unmatched"
+	// for witnesses that expire unpaired. Installed via
+	// SetConnectionContextTracker rather than taken by the constructor, which
+	// already takes more arguments than is comfortable. Nil outside the pcap
+	// chain, and nil-safe on every method it is used through.
+	connectionContext      *ConnectionContextTracker
+	connectionContextMutex sync.Mutex
+
 	// Mutex protecting learnSessionID
 	learnSessionMutex sync.Mutex
 
@@ -269,11 +287,17 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	var isRequest bool
 	var partial *learn.PartialWitness
 	var parseHTTPErr error
+	// akinet.ParsedNetworkTraffic carries no stream identity of its own; it
+	// lives inside the content union, so this switch is the only place it can
+	// be read.
+	var streamID uuid.UUID
 	switch content := t.Content.(type) {
 	case akinet.HTTPRequest:
 		isRequest = true
+		streamID = content.StreamID
 		partial, parseHTTPErr = learn.ParseHTTP(content)
 	case akinet.HTTPResponse:
+		streamID = content.StreamID
 		partial, parseHTTPErr = learn.ParseHTTP(content)
 	case akinet.TCPConnectionMetadata:
 		return c.processTCPConnection(t, content)
@@ -346,6 +370,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			finalPacketTime:        t.FinalPacketTime,
 			id:                     partial.PairKey,
 			isRequest:              isRequest,
+			streamID:               streamID,
 			direction:              t.Direction,
 			telemetryEventReporter: c.reportTelemetryEvent,
 		}
@@ -530,6 +555,14 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	// each telemetry call takes a lock shared by every target on the node.
 	var expiredMissingResponse, expiredMissingRequest uint64
 
+	// Stream keys of the witnesses expired by this sweep, plus which half each
+	// was missing, collected here and classified after the Range returns.
+	// Hashing is pure so it is safe under the witness lock; the tracker lookup
+	// is not done here, which is what keeps witnessMutex and the tracker mutex
+	// from ever being held at the same time.
+	var expiredStreamKeys []uint64
+	var expiredWasRequest []bool
+
 	c.pairCache.Range(func(k, v interface{}) bool {
 		e := v.(*witnessWithInfo)
 		if e.observationTime.Before(cutoffTime) {
@@ -537,6 +570,13 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 			// and unlock it after it is deleted from pairCache
 			e.witnessMutex.Lock()
 			defer e.witnessMutex.Unlock()
+
+			// A zero key means no stream identity was retained, which
+			// classifyPairExpiries reports as its own reason rather than
+			// silently folding into "the companion never arrived".
+			streamKey, _ := streamContextKey(e.streamID)
+			expiredStreamKeys = append(expiredStreamKeys, streamKey)
+			expiredWasRequest = append(expiredWasRequest, e.isRequest)
 
 			// This witness never found its other half, and we are about to upload
 			// it anyway. Record which half is missing: the back end will drop a
@@ -565,10 +605,118 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	c.reportTelemetryCount("witness_pair_expired_response", expiredMissingResponse)
 	c.reportTelemetryCount("witness_pair_expired_request", expiredMissingRequest)
 
+	c.reportPairExpiryReasons(expiredStreamKeys, expiredWasRequest)
+
 	if flushedWitnesses > 0 {
 		printer.Debugf("Flushed %d unpaired witnesses, %d still waiting for a pair\n",
 			flushedWitnesses, totalWitnesses-flushedWitnesses)
 	}
+}
+
+// SetConnectionContextTracker installs the shared per-session tracker used to
+// attribute pair-cache expiries. Must be synchronized: periodicFlush is
+// started by the constructor, so the flush goroutine can be reading this
+// field while Run is still wiring the collector up.
+func (c *BackendCollector) SetConnectionContextTracker(tracker *ConnectionContextTracker) {
+	c.connectionContextMutex.Lock()
+	defer c.connectionContextMutex.Unlock()
+	c.connectionContext = tracker
+}
+
+func (c *BackendCollector) getConnectionContextTracker() *ConnectionContextTracker {
+	c.connectionContextMutex.Lock()
+	defer c.connectionContextMutex.Unlock()
+	return c.connectionContext
+}
+
+// pairExpiryReasonName maps a reason to the suffix used in both the telemetry
+// event name and the diagnostics log line.
+func pairExpiryReasonName(reason pairExpiryContext) string {
+	switch reason {
+	case pairExpiryContextPeerRejected:
+		return "peer_rejected"
+	case pairExpiryContextPeerNeverObserved:
+		return "peer_never_observed"
+	case pairExpiryContextPeerStreamUnknown:
+		return "peer_stream_unknown"
+	case pairExpiryContextPeerTrackerUnavailable:
+		return "peer_tracker_unavailable"
+	default:
+		return "peer_unknown"
+	}
+}
+
+// reportPairExpiryReasons partitions one sweep's expiries by why the missing
+// half never arrived.
+//
+// Totals are accumulated across the whole sweep and reported once per
+// (direction, reason), never once per witness: reportTelemetryCount's callback
+// takes a node-wide lock shared by every target on the host, and a sweep can
+// expire thousands of witnesses at once.
+// TestFlushPairCacheBatchesExpiryTelemetry pins that contract.
+func (c *BackendCollector) reportPairExpiryReasons(streamKeys []uint64, wasRequest []bool) {
+	if len(streamKeys) == 0 {
+		return
+	}
+
+	reasons := c.getConnectionContextTracker().classifyPairExpiries(streamKeys)
+
+	// Indexed [wasRequest][reason]: a request-only witness (wasRequest) is the
+	// one missing its response.
+	missingResponse := map[pairExpiryContext]uint64{}
+	missingRequest := map[pairExpiryContext]uint64{}
+
+	for i, reason := range reasons {
+		if wasRequest[i] {
+			missingResponse[reason]++
+		} else {
+			missingRequest[reason]++
+		}
+	}
+
+	for reason, count := range missingResponse {
+		c.recordPairExpiryReason(true, reason, count)
+	}
+	for reason, count := range missingRequest {
+		c.recordPairExpiryReason(false, reason, count)
+	}
+}
+
+// recordPairExpiryReason reports one (direction, reason) bucket to both the
+// session's diagnostics counters and the interval telemetry stream.
+// missingResponse distinguishes a request-only witness from a response-only
+// one, matching the naming of the witness_pair_expired_* totals these
+// partition.
+func (c *BackendCollector) recordPairExpiryReason(missingResponse bool, reason pairExpiryContext, count uint64) {
+	if missingResponse {
+		switch reason {
+		case pairExpiryContextPeerRejected:
+			c.stats.AddPairExpiredResponsePeerRejected(count)
+		case pairExpiryContextPeerNeverObserved:
+			c.stats.AddPairExpiredResponsePeerNeverObserved(count)
+		case pairExpiryContextPeerStreamUnknown:
+			c.stats.AddPairExpiredResponsePeerStreamUnknown(count)
+		default:
+			c.stats.AddPairExpiredResponsePeerTrackerUnavailable(count)
+		}
+	} else {
+		switch reason {
+		case pairExpiryContextPeerRejected:
+			c.stats.AddPairExpiredRequestPeerRejected(count)
+		case pairExpiryContextPeerNeverObserved:
+			c.stats.AddPairExpiredRequestPeerNeverObserved(count)
+		case pairExpiryContextPeerStreamUnknown:
+			c.stats.AddPairExpiredRequestPeerStreamUnknown(count)
+		default:
+			c.stats.AddPairExpiredRequestPeerTrackerUnavailable(count)
+		}
+	}
+
+	missing := "request"
+	if missingResponse {
+		missing = "response"
+	}
+	c.reportTelemetryCount("witness_pair_expired_"+missing+"_"+pairExpiryReasonName(reason), count)
 }
 
 func (c *BackendCollector) SetTelemetryEventReporter(reporter func(string)) {

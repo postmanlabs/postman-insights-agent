@@ -57,10 +57,32 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_rate_limited", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestRateLimited, previousStats.ResponsesDroppedNoMatchingRequestRateLimited))
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_expired", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestExpired, previousStats.ResponsesDroppedNoMatchingRequestExpired))
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_active_request_stream", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestActiveRequestStream, previousStats.ResponsesDroppedNoMatchingRequestActiveRequestStream))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_request_seen_same_stream", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestRequestSeenSameStream, previousStats.ResponsesDroppedNoMatchingRequestRequestSeenSameStream))
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_response_first", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestResponseFirst, previousStats.ResponsesDroppedNoMatchingRequestResponseFirst))
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_request_seen_local_collector", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestRequestSeenLocalCollector, previousStats.ResponsesDroppedNoMatchingRequestRequestSeenLocalCollector))
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_request_seen_other_collector", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestRequestSeenOtherCollector, previousStats.ResponsesDroppedNoMatchingRequestRequestSeenOtherCollector))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_context_key_invalid", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestContextKeyInvalid, previousStats.ResponsesDroppedNoMatchingRequestContextKeyInvalid))
+	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_context_unavailable", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestContextUnavailable, previousStats.ResponsesDroppedNoMatchingRequestContextUnavailable))
 	a.reportTelemetryCount(source+"_response_dropped_no_matching_request_unknown", counterDelta(currentStats.ResponsesDroppedNoMatchingRequestUnknown, previousStats.ResponsesDroppedNoMatchingRequestUnknown))
+
+	// Health of the tracker behind the response_first and request_seen_*
+	// reasons above. These qualify those reasons rather than partitioning any
+	// drop count, so they are deliberately not part of the
+	// response_dropped_no_matching_request identity.
+	a.reportTelemetryCount(source+"_connection_context_pruned", counterDelta(currentStats.ConnectionContextPruned, previousStats.ConnectionContextPruned))
+	a.reportTelemetryCount(source+"_connection_context_capacity_evicted", counterDelta(currentStats.ConnectionContextCapacityEvicted, previousStats.ConnectionContextCapacityEvicted))
+	// Delta of a running maximum, so summing this event over any range yields
+	// the tracker's peak occupancy over that range -- see
+	// capturestats.AddConnectionContextOccupancy for why the live gauge
+	// itself cannot be shipped through a summed-count pipeline.
+	a.reportTelemetryCount(source+"_connection_context_entries_peak", counterDelta(currentStats.ConnectionContextEntriesPeak, previousStats.ConnectionContextEntriesPeak))
+
+	// Attrition of the stream-keyed index behind the pair-expiry peer_rejected
+	// reason. Named apart from the connection-context counters above because
+	// they track different populations; a loss here turns a peer_rejected into
+	// a peer_never_observed.
+	a.reportTelemetryCount(source+"_unmatched_response_stream_pruned", counterDelta(currentStats.UnmatchedResponseStreamPruned, previousStats.UnmatchedResponseStreamPruned))
+	a.reportTelemetryCount(source+"_unmatched_response_stream_capacity_evicted", counterDelta(currentStats.UnmatchedResponseStreamCapacityEvicted, previousStats.UnmatchedResponseStreamCapacityEvicted))
 }
 
 func httpRequests(counts client_telemetry.PacketCounts) uint64 {

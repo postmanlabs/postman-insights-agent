@@ -102,7 +102,13 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d reassembly_gap_flushed=%d] "+
 			"discarded[req=%d resp=%d other=%d] "+
 			"chain[resp_no_request=%d] "+
+			"resp_no_request_why[rate_limited=%d expired=%d active_stream=%d same_stream=%d "+
+			"resp_first=%d local=%d other=%d key_invalid=%d ctx_unavail=%d unknown=%d] "+
+			"conn_ctx[entries=%d peak=%d pruned=%d cap_evicted=%d] "+
 			"pair[ok=%d req_only=%d resp_only=%d same_dir_merge=%d parse_failed=%d] "+
+			"pair_expiry_why[resp_rejected=%d resp_never=%d resp_no_stream=%d resp_no_tracker=%d "+
+			"req_rejected=%d req_never=%d req_no_stream=%d req_no_tracker=%d] "+
+			"unmatched_stream_idx[pruned=%d cap_evicted=%d] "+
 			"neg_latency[sub_ms=%d sub_s=%d over_s=%d]%s\n",
 
 		// Identify which apidump session this line came from. A node runs one
@@ -139,6 +145,37 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 		// Responses we parsed and then dropped for want of a matching request.
 		snap.ResponsesDroppedNoMatchingRequest,
 
+		// The same total, partitioned by what we knew about the missing
+		// request at the moment we dropped the response. The reasons are
+		// mutually exclusive and ordered strongest evidence first, so they
+		// sum back to resp_no_request above.
+		//
+		// same_stream is the one to read against resp_first: it means a
+		// request *was* admitted on this response's own TCP stream and the
+		// keys still disagreed, whereas resp_first means the tracker held no
+		// request for the connection at all -- a claim only as good as
+		// conn_ctx below, since pruning and capacity eviction both erase the
+		// request that would have contradicted it.
+		snap.ResponsesDroppedNoMatchingRequestRateLimited,
+		snap.ResponsesDroppedNoMatchingRequestExpired,
+		snap.ResponsesDroppedNoMatchingRequestActiveRequestStream,
+		snap.ResponsesDroppedNoMatchingRequestRequestSeenSameStream,
+		snap.ResponsesDroppedNoMatchingRequestResponseFirst,
+		snap.ResponsesDroppedNoMatchingRequestRequestSeenLocalCollector,
+		snap.ResponsesDroppedNoMatchingRequestRequestSeenOtherCollector,
+		snap.ResponsesDroppedNoMatchingRequestContextKeyInvalid,
+		snap.ResponsesDroppedNoMatchingRequestContextUnavailable,
+		snap.ResponsesDroppedNoMatchingRequestUnknown,
+
+		// Connection-context tracker occupancy and attrition. A nonzero
+		// cap_evicted means the tracker was discarding connections
+		// arbitrarily to stay under its entry cap, which downgrades every
+		// resp_first in the same interval to "we no longer know".
+		snap.ConnectionContextEntries,
+		snap.ConnectionContextEntriesPeak,
+		snap.ConnectionContextPruned,
+		snap.ConnectionContextCapacityEvicted,
+
 		// How witnesses left the pair cache, plus parse_failed: a request or
 		// response that reached the backend collector -- so it already passed
 		// prefilter, filters, rate limiting, and sampling, and postfilter
@@ -150,6 +187,30 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 		snap.UnpairedResponsesFlushed,
 		snap.SameDirectionMerges,
 		snap.WitnessParseFailed,
+
+		// Why the missing half of an expired witness never arrived. Each
+		// direction's four counters sum to req_only and resp_only above.
+		//
+		// resp_rejected is the one to read against the response side's
+		// resp_no_request_why[same_stream=...]: both say "a message on this
+		// TCP stream was captured and then discarded before it could pair",
+		// seen from opposite ends. They will not match exactly -- this is
+		// stream-level, and a keep-alive stream carries many exchanges.
+		//
+		// resp_never covers streams the index dropped as well as companions
+		// that truly never arrived, which is what unmatched_stream_idx
+		// qualifies.
+		snap.PairExpiredResponsePeerRejected,
+		snap.PairExpiredResponsePeerNeverObserved,
+		snap.PairExpiredResponsePeerStreamUnknown,
+		snap.PairExpiredResponsePeerTrackerUnavailable,
+		snap.PairExpiredRequestPeerRejected,
+		snap.PairExpiredRequestPeerNeverObserved,
+		snap.PairExpiredRequestPeerStreamUnknown,
+		snap.PairExpiredRequestPeerTrackerUnavailable,
+
+		snap.UnmatchedResponseStreamPruned,
+		snap.UnmatchedResponseStreamCapacityEvicted,
 
 		// Negative processing latency, bucketed by size. Small values can be
 		// genuine (a server answering before the request body finished); large

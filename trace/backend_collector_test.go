@@ -1809,9 +1809,9 @@ func (r *recordingCountReporter) snapshot() (map[string]uint64, int) {
 	return out, r.calls
 }
 
-// A pair-cache flush must report one delta per direction, not one event per
-// expired witness: every call takes a lock shared by all targets on the node,
-// and a single sweep can expire thousands of witnesses.
+// A pair-cache flush must report one delta per (direction, reason), not one
+// event per expired witness: every call takes a lock shared by all targets on
+// the node, and a single sweep can expire thousands of witnesses.
 func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
 	counts := newRecordingCountReporter()
 	var events []string
@@ -1839,12 +1839,132 @@ func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
 	c.flushPairCache(time.Now())
 
 	got, calls := counts.snapshot()
+	// No tracker was installed, so every expiry attributes to
+	// peer_tracker_unavailable rather than claiming its companion was never
+	// observed. Each direction's reasons sum to that direction's total.
 	assert.Equal(t, map[string]uint64{
-		"witness_pair_expired_response": 2,
-		"witness_pair_expired_request":  1,
+		"witness_pair_expired_response":                          2,
+		"witness_pair_expired_request":                           1,
+		"witness_pair_expired_response_peer_tracker_unavailable": 2,
+		"witness_pair_expired_request_peer_tracker_unavailable":  1,
 	}, got)
-	assert.Equal(t, 2, calls, "expected one counted call per direction, not one per witness")
+	// Two direction totals plus two (direction, reason) buckets. The number
+	// that matters is that it does not scale with the three witnesses.
+	assert.Equal(t, 4, calls, "expected one counted call per direction and per reason, not one per witness")
 	assert.Empty(t, events, "expiry must not use the per-event callback")
+}
+
+// The number of counted telemetry calls per sweep must stay bounded by the
+// number of (direction, reason) buckets, not grow with the witness count --
+// this is the property that keeps a high-loss sweep from hammering the
+// node-wide telemetry lock.
+func TestFlushPairCacheCallCountDoesNotScaleWithWitnesses(t *testing.T) {
+	counts := newRecordingCountReporter()
+
+	c := &BackendCollector{stats: capturestats.New()}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetConnectionContextTracker(NewConnectionContextTracker(c.stats))
+
+	const witnesses = 500
+	for i := 0; i < witnesses; i++ {
+		id := akid.GenerateWitnessID()
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       i%2 == 0,
+			streamID:        uuid.New(),
+			observationTime: time.Now().Add(-time.Hour),
+			witnessFlushed:  true,
+		})
+	}
+
+	c.flushPairCache(time.Now())
+
+	got, calls := counts.snapshot()
+	assert.Equal(t, uint64(witnesses/2), got["witness_pair_expired_response"])
+	assert.Equal(t, uint64(witnesses/2), got["witness_pair_expired_request"])
+	// Both directions resolve to the single reason peer_never_observed, so:
+	// two totals plus two buckets.
+	assert.Equal(t, 4, calls, "counted calls must not scale with the number of expired witnesses")
+}
+
+// The partition must name the companion as rejected when a message on the same
+// stream was already discarded as unmatched -- the request-side mirror of
+// response_dropped_no_matching_request_request_seen_same_stream.
+func TestFlushPairCacheAttributesRejectedCompanion(t *testing.T) {
+	counts := newRecordingCountReporter()
+	stats := capturestats.New()
+	tracker := NewConnectionContextTracker(stats)
+
+	c := &BackendCollector{stats: stats}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetConnectionContextTracker(tracker)
+
+	rejectedStream := uuid.New()
+	quietStream := uuid.New()
+	tracker.observeUnmatchedResponse(rejectedStream)
+
+	for _, streamID := range []uuid.UUID{rejectedStream, quietStream, uuid.Nil} {
+		id := akid.GenerateWitnessID()
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       true,
+			streamID:        streamID,
+			observationTime: time.Now().Add(-time.Hour),
+			witnessFlushed:  true,
+		})
+	}
+
+	c.flushPairCache(time.Now())
+
+	got, _ := counts.snapshot()
+	assert.Equal(t, uint64(3), got["witness_pair_expired_response"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_response_peer_rejected"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_response_peer_never_observed"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_response_peer_stream_unknown"])
+
+	// The partition must add back up to the total it partitions.
+	snapshot := stats.Snapshot()
+	assert.Equal(t,
+		snapshot.UnpairedRequestsFlushed,
+		snapshot.PairExpiredResponsePeerRejected+
+			snapshot.PairExpiredResponsePeerNeverObserved+
+			snapshot.PairExpiredResponsePeerStreamUnknown+
+			snapshot.PairExpiredResponsePeerTrackerUnavailable,
+		"response-side reasons must sum to the request-only expiry total")
+}
+
+// The response-only direction gets the same attribution, so the counter does
+// not go blind the first time that number moves off zero.
+func TestFlushPairCacheAttributesResponseOnlyWitnesses(t *testing.T) {
+	counts := newRecordingCountReporter()
+	stats := capturestats.New()
+	tracker := NewConnectionContextTracker(stats)
+
+	c := &BackendCollector{stats: stats}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetConnectionContextTracker(tracker)
+
+	stream := uuid.New()
+	tracker.observeUnmatchedResponse(stream)
+
+	id := akid.GenerateWitnessID()
+	c.pairCache.Store(id, &witnessWithInfo{
+		id:              id,
+		isRequest:       false,
+		streamID:        stream,
+		observationTime: time.Now().Add(-time.Hour),
+		witnessFlushed:  true,
+	})
+
+	c.flushPairCache(time.Now())
+
+	got, _ := counts.snapshot()
+	assert.Equal(t, uint64(1), got["witness_pair_expired_request"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_request_peer_rejected"])
+
+	snapshot := stats.Snapshot()
+	assert.Equal(t, uint64(1), snapshot.PairExpiredRequestPeerRejected)
+	assert.Equal(t, snapshot.UnpairedResponsesFlushed, snapshot.PairExpiredRequestPeerRejected)
 }
 
 // newUploadTestBuffer returns a buffer holding one witness, wired to mockClient.

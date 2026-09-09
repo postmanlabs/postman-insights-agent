@@ -52,6 +52,15 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	a.captureStats.IncrResponsesDroppedNoMatchingRequestResponseFirst()
 	a.captureStats.IncrResponsesDroppedNoMatchingRequestRequestSeenLocalCollector()
 	a.captureStats.IncrResponsesDroppedNoMatchingRequestRequestSeenOtherCollector()
+	a.captureStats.IncrResponsesDroppedNoMatchingRequestRequestSeenSameStream()
+	a.captureStats.IncrResponsesDroppedNoMatchingRequestContextKeyInvalid()
+	a.captureStats.IncrResponsesDroppedNoMatchingRequestContextUnavailable()
+	a.captureStats.AddConnectionContextPruned(4)
+	a.captureStats.AddConnectionContextCapacityEvicted(3)
+	a.captureStats.AddConnectionContextOccupancy(7)
+	a.captureStats.AddConnectionContextOccupancy(5)
+	a.captureStats.AddUnmatchedResponseStreamPruned(6)
+	a.captureStats.AddUnmatchedResponseStreamCapacityEvicted(2)
 
 	stopTelemetry()
 
@@ -95,5 +104,31 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	}
 	if reported["pcap_response_dropped_no_matching_request_request_seen_other_collector"] != 1 {
 		t.Fatalf("pcap_response_dropped_no_matching_request_request_seen_other_collector = %d, want 1", reported["pcap_response_dropped_no_matching_request_request_seen_other_collector"])
+	}
+	if reported["pcap_response_dropped_no_matching_request_request_seen_same_stream"] != 1 {
+		t.Fatalf("pcap_response_dropped_no_matching_request_request_seen_same_stream = %d, want 1", reported["pcap_response_dropped_no_matching_request_request_seen_same_stream"])
+	}
+	if reported["pcap_response_dropped_no_matching_request_context_key_invalid"] != 1 {
+		t.Fatalf("pcap_response_dropped_no_matching_request_context_key_invalid = %d, want 1", reported["pcap_response_dropped_no_matching_request_context_key_invalid"])
+	}
+	if reported["pcap_response_dropped_no_matching_request_context_unavailable"] != 1 {
+		t.Fatalf("pcap_response_dropped_no_matching_request_context_unavailable = %d, want 1", reported["pcap_response_dropped_no_matching_request_context_unavailable"])
+	}
+	if reported["pcap_connection_context_pruned"] != 4 {
+		t.Fatalf("pcap_connection_context_pruned = %d, want 4", reported["pcap_connection_context_pruned"])
+	}
+	if reported["pcap_connection_context_capacity_evicted"] != 3 {
+		t.Fatalf("pcap_connection_context_capacity_evicted = %d, want 3", reported["pcap_connection_context_capacity_evicted"])
+	}
+	// Occupancy went 7 then 5, so the peak delta reports 7 -- not the last
+	// observed size, and not their sum.
+	if reported["pcap_connection_context_entries_peak"] != 7 {
+		t.Fatalf("pcap_connection_context_entries_peak = %d, want 7", reported["pcap_connection_context_entries_peak"])
+	}
+	if reported["pcap_unmatched_response_stream_pruned"] != 6 {
+		t.Fatalf("pcap_unmatched_response_stream_pruned = %d, want 6", reported["pcap_unmatched_response_stream_pruned"])
+	}
+	if reported["pcap_unmatched_response_stream_capacity_evicted"] != 2 {
+		t.Fatalf("pcap_unmatched_response_stream_capacity_evicted = %d, want 2", reported["pcap_unmatched_response_stream_capacity_evicted"])
 	}
 }
