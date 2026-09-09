@@ -54,6 +54,10 @@ func syntheticTCPPairingEnabled() bool {
 // unmatched index, so pipelined or overlapping HTTP/1.1 exchanges on the
 // same connection still pair correctly regardless of what TCP acked when.
 //
+// Ordinals are allocated when a parser factory Accepts the first bytes
+// (pairSeqForFactory). If that parse later fails or is abandoned, call
+// rollbackPairSeq so the FIFO does not stay permanently skewed.
+//
 // Not synchronized: like the rest of tcpFlow/tcpStream, a pairSequencer is
 // only ever touched by the single goroutine that drives TCP reassembly for
 // the interface owning this connection (see NetworkTrafficParser.ParseFromInterface).
@@ -73,22 +77,67 @@ func newPairSequencer() *pairSequencer {
 	return &pairSequencer{}
 }
 
-func (p *pairSequencer) pairSeqForFactory(factory akinet.TCPParserFactory) reassembly.Sequence {
+// pairAllocKind records how an Accept-time ordinal was taken from the FIFO so
+// rollbackPairSeq can undo it if the parse never emits.
+type pairAllocKind int
+
+const (
+	pairAllocNone pairAllocKind = iota
+	pairAllocRequestPush
+	pairAllocResponsePop
+	pairAllocResponseInvent
+)
+
+func (p *pairSequencer) pairSeqForFactory(factory akinet.TCPParserFactory) (reassembly.Sequence, pairAllocKind) {
 	if isHTTPRequestParserFactory(factory) {
 		idx := p.nextPairIdx
 		p.nextPairIdx++
 		p.unmatchedRequests = append(p.unmatchedRequests, idx)
-		return reassembly.Sequence(idx)
+		return reassembly.Sequence(idx), pairAllocRequestPush
 	}
 
-	idx := p.nextPairIdx
 	if len(p.unmatchedRequests) > 0 {
-		idx = p.unmatchedRequests[0]
+		idx := p.unmatchedRequests[0]
 		p.unmatchedRequests = p.unmatchedRequests[1:]
-	} else {
-		p.nextPairIdx++
+		return reassembly.Sequence(idx), pairAllocResponsePop
 	}
-	return reassembly.Sequence(idx)
+	idx := p.nextPairIdx
+	p.nextPairIdx++
+	return reassembly.Sequence(idx), pairAllocResponseInvent
+}
+
+// rollbackPairSeq undoes an Accept-time allocation when the parser fails or is
+// abandoned before a successful emit. Safe no-op for pairAllocNone.
+func (p *pairSequencer) rollbackPairSeq(seq reassembly.Sequence, kind pairAllocKind) {
+	if p == nil {
+		return
+	}
+	idx := int(seq)
+	switch kind {
+	case pairAllocRequestPush:
+		// Single-goroutine reassembly: the abandoned request is still the last
+		// unmatched entry if nothing else Accept'd on this connection since.
+		if n := len(p.unmatchedRequests); n > 0 && p.unmatchedRequests[n-1] == idx {
+			p.unmatchedRequests = p.unmatchedRequests[:n-1]
+		} else {
+			// Remove by value if ordering was disturbed (defensive).
+			for i, v := range p.unmatchedRequests {
+				if v == idx {
+					p.unmatchedRequests = append(p.unmatchedRequests[:i], p.unmatchedRequests[i+1:]...)
+					break
+				}
+			}
+		}
+		if p.nextPairIdx == idx+1 {
+			p.nextPairIdx = idx
+		}
+	case pairAllocResponsePop:
+		p.unmatchedRequests = append([]int{idx}, p.unmatchedRequests...)
+	case pairAllocResponseInvent:
+		if p.nextPairIdx == idx+1 {
+			p.nextPairIdx = idx
+		}
+	}
 }
 
 func isHTTPRequestParserFactory(factory akinet.TCPParserFactory) bool {

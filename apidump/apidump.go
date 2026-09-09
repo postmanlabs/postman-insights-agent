@@ -2,6 +2,7 @@ package apidump
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1002,6 +1003,33 @@ func (a *apidump) Run() error {
 		a.SendErrorTelemetry(api_schema.ApidumpError_InvalidFilters, err)
 		return err
 	}
+
+	// When the user did not set --bpf-filter, auto-restrict to discovered
+	// application listen ports in the capture netns (inbound-only). This drops
+	// mesh outbound / Istio REDIRECT split halves without requiring --port.
+	var inboundEndpoints *InboundEndpoints
+	userFilters, inboundEndpoints = applyAutoInboundFilters(interfaces, userFilters, targetNetworkNamespace, args.Filter)
+	var directionHint *pcap.DirectionHint
+	if inboundEndpoints != nil {
+		directionHint = pcap.NewDirectionHint(inboundEndpoints.LocalIPs, inboundEndpoints.ListenPorts)
+	}
+	// If auto filter did not apply (user BPF or empty listen set), still try to
+	// discover endpoints for Direction tagging / outbound drop.
+	if directionHint == nil && args.Filter == "" {
+		if eps, err := DiscoverInboundEndpoints(targetNetworkNamespace); err == nil {
+			directionHint = pcap.NewDirectionHint(eps.LocalIPs, eps.ListenPorts)
+			inboundEndpoints = &eps
+		}
+	}
+	if capturingNegation {
+		// Rebuild negation from the (possibly auto) inbound filters.
+		negationFilters = make(map[string]string, len(userFilters))
+		for n, f := range userFilters {
+			if f != "" {
+				negationFilters[n] = fmt.Sprintf("not (%s)", f)
+			}
+		}
+	}
 	lastCheckpoint = "filter_setup"
 
 	// When HTTPS-via-eBPF capture is active, drop the TLS port from the cBPF
@@ -1335,6 +1363,8 @@ func (a *apidump) Run() error {
 			// collector chain (filters, rate limiting) rather than to parsing.
 			// Without both, the two are indistinguishable. See LogCaptureDiagnostics.
 			if filterState == matchedFilter {
+				// Drop outbound before rate-limit / pair cache (Direction from pcap).
+				collector = trace.NewDropOutboundCollector(collector, reportTelemetryEvent)
 				collector = &trace.PacketCountCollector{
 					PacketCounts: prefilterSummary,
 					Collector:    collector,
@@ -1373,7 +1403,8 @@ func (a *apidump) Run() error {
 					pool,
 					apidumpTelemetry,
 					a.captureStats,
-					pcapReportEvent,
+					reportTelemetryEvent,
+					directionHint,
 					reportTelemetryCount,
 				); err != nil {
 					errChan <- interfaceError{
