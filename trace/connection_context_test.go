@@ -93,26 +93,72 @@ func TestConnectionContextTrackerCountsAgePruning(t *testing.T) {
 	}
 }
 
-func TestConnectionContextTrackerCountsCapacityEviction(t *testing.T) {
+// Capacity is enforced when a new key is inserted, not by prune, and costs
+// O(1) -- it deletes whichever key the map iterator yields first.
+func TestConnectionContextTrackerEvictsAtCapacityOnInsert(t *testing.T) {
 	stats := capturestats.New()
 	tracker := NewConnectionContextTracker(stats)
+	collector := tracker.registerCollector()
 
 	now := time.Now()
 	for i := range uint64(connectionContextMaxEntries) {
 		tracker.connections[i] = connectionContext{lastObserved: now}
 	}
 
-	tracker.prune(now)
+	fresh := connectionContextTraffic(net.IPv4(10, 0, 0, 1), 8080, net.IPv4(10, 0, 0, 2), 50000)
+	tracker.observeRequest(fresh, collector)
 
-	snapshot := stats.Snapshot()
-	if snapshot.ConnectionContextPruned != 0 {
-		t.Fatalf("age-pruned entries = %d, want 0", snapshot.ConnectionContextPruned)
+	if got := len(tracker.connections); got != connectionContextMaxEntries {
+		t.Fatalf("entries after insert at cap = %d, want %d", got, connectionContextMaxEntries)
 	}
+	snapshot := stats.Snapshot()
 	if snapshot.ConnectionContextCapacityEvicted != 1 {
 		t.Fatalf("capacity evictions = %d, want 1", snapshot.ConnectionContextCapacityEvicted)
 	}
-	if snapshot.ConnectionContextEntries != connectionContextMaxEntries-1 {
-		t.Fatalf("entries after eviction = %d, want %d", snapshot.ConnectionContextEntries, connectionContextMaxEntries-1)
+
+	// Re-observing an existing connection does not grow the map, so it must
+	// not evict anything either.
+	tracker.observeRequest(fresh, collector)
+	if got := stats.Snapshot().ConnectionContextCapacityEvicted; got != 1 {
+		t.Fatalf("capacity evictions after re-observing = %d, want 1", got)
+	}
+}
+
+// A saturated tracker must not sweep on every observation. The guard used to
+// short-circuit the cleanup mask whenever an index was full, which made every
+// message scan both maps end to end -- O(entries) per message on the capture
+// goroutine, where stalling Process backs up into libpcap and surfaces as
+// dropped packets.
+func TestConnectionContextTrackerDoesNotSweepPerObservationAtCapacity(t *testing.T) {
+	stats := capturestats.New()
+	tracker := NewConnectionContextTracker(stats)
+	collector := tracker.registerCollector()
+
+	// Every entry is old enough to be swept, so any sweep is visible in the
+	// age-pruned counter.
+	stale := time.Now().Add(-2 * connectionContextRetention)
+	for i := range uint64(connectionContextMaxEntries) {
+		tracker.connections[i] = connectionContext{lastObserved: stale}
+	}
+
+	// Well under the cleanup mask, so none of these should trigger a sweep.
+	const observations = 10
+	for i := 0; i < observations; i++ {
+		tracker.observeRequest(
+			connectionContextTraffic(net.IPv4(10, 0, 0, 1), 8080+i, net.IPv4(10, 0, 0, 2), 50000), collector)
+	}
+
+	snapshot := stats.Snapshot()
+	if snapshot.ConnectionContextPruned != 0 {
+		t.Fatalf("age-pruned %d entries without reaching a sampled observation; the sweep is not mask-gated",
+			snapshot.ConnectionContextPruned)
+	}
+	if snapshot.ConnectionContextCapacityEvicted != observations {
+		t.Fatalf("capacity evictions = %d, want %d (one O(1) eviction per new key)",
+			snapshot.ConnectionContextCapacityEvicted, observations)
+	}
+	if got := len(tracker.connections); got != connectionContextMaxEntries {
+		t.Fatalf("entries = %d, want the map pinned at %d", got, connectionContextMaxEntries)
 	}
 }
 

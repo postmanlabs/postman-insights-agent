@@ -148,7 +148,12 @@ func (t *ConnectionContextTracker) observeRequest(pnt akinet.ParsedNetworkTraffi
 	defer t.mu.Unlock()
 	t.prune(time.Now())
 
-	context := t.connections[key]
+	context, existing := t.connections[key]
+	if !existing {
+		// Only a new key grows the map, so only then is room needed.
+		t.stats.AddConnectionContextCapacityEvicted(
+			evictOneForInsert(t.connections, connectionContextMaxEntries))
+	}
 	if context.requestCollectors == nil {
 		context.requestCollectors = make(map[uint64]struct{})
 	}
@@ -210,6 +215,10 @@ func (t *ConnectionContextTracker) observeUnmatchedResponse(streamID uuid.UUID) 
 	defer t.mu.Unlock()
 	t.prune(time.Now())
 
+	if _, existing := t.unmatchedResponseStreams[key]; !existing {
+		t.stats.AddUnmatchedResponseStreamCapacityEvicted(
+			evictOneForInsert(t.unmatchedResponseStreams, connectionContextMaxEntries))
+	}
 	t.unmatchedResponseStreams[key] = time.Now()
 }
 
@@ -252,26 +261,28 @@ func (t *ConnectionContextTracker) classifyPairExpiries(streamKeys []uint64) []p
 	return out
 }
 
-// prune drops tracked connections, and counts what it dropped.
+// prune drops entries that have aged out of either index, and counts what it
+// dropped. Pruning erases the evidence classifyResponse and
+// classifyPairExpiries depend on, so an uncounted prune shows up later as a
+// ResponseFirst or PeerNeverObserved that cannot be challenged.
 //
-// Both loops below erase the evidence classifyResponse depends on, so an
-// uncounted prune shows up later as a ResponseFirst that cannot be
-// challenged. The age loop is expected attrition; the capacity loop deletes
-// whichever keys the map iterator happens to yield, so a nonzero
-// ConnectionContextCapacityEvicted means ResponseFirst counts from that
-// interval are unreliable rather than merely old.
+// Sampled, not run on every observation: the sweep is O(entries), so gating it
+// on the cleanup mask amortizes the per-message cost to O(1). It deliberately
+// does *not* force a sweep when an index is full -- capacity is enforced at
+// insertion by evictOneForInsert, so neither index can exceed its cap, and
+// force-sweeping at saturation would turn every single message into a full
+// scan of both maps on the capture goroutine. That is the opposite of what a
+// bounded index is for: stalling Process backs up the parsedChan drain into
+// libpcap's buffer and shows up as pcap_packets_dropped.
 //
 // Callers must hold t.mu.
 func (t *ConnectionContextTracker) prune(now time.Time) {
 	t.observations++
-	atCapacity := len(t.connections) >= connectionContextMaxEntries ||
-		len(t.unmatchedResponseStreams) >= connectionContextMaxEntries
-	if !atCapacity && t.observations&connectionContextCleanupMask != 0 {
+	if t.observations&connectionContextCleanupMask != 0 {
 		return
 	}
 
-	var pruned, evicted uint64
-	var streamsPruned, streamsEvicted uint64
+	var pruned, streamsPruned uint64
 
 	threshold := now.Add(-connectionContextRetention)
 	for key, context := range t.connections {
@@ -280,33 +291,40 @@ func (t *ConnectionContextTracker) prune(now time.Time) {
 			pruned++
 		}
 	}
-	for len(t.connections) >= connectionContextMaxEntries {
-		for key := range t.connections {
-			delete(t.connections, key)
-			evicted++
-			break
-		}
-	}
-
 	for key, lastObserved := range t.unmatchedResponseStreams {
 		if lastObserved.Before(threshold) {
 			delete(t.unmatchedResponseStreams, key)
 			streamsPruned++
 		}
 	}
-	for len(t.unmatchedResponseStreams) >= connectionContextMaxEntries {
-		for key := range t.unmatchedResponseStreams {
-			delete(t.unmatchedResponseStreams, key)
-			streamsEvicted++
-			break
-		}
-	}
 
 	t.stats.AddConnectionContextPruned(pruned)
-	t.stats.AddConnectionContextCapacityEvicted(evicted)
 	t.stats.AddUnmatchedResponseStreamPruned(streamsPruned)
-	t.stats.AddUnmatchedResponseStreamCapacityEvicted(streamsEvicted)
 	t.recordOccupancy()
+}
+
+// evictOneForInsert makes room for one new entry, deleting an arbitrary
+// existing one if the map is already at its cap. Returns how many it evicted,
+// so the caller can count it.
+//
+// O(1): it deletes whichever key the map iterator yields first, which is why
+// the eviction has to be reported. An evicted connection turns a later
+// ResponseFirst into a claim the tracker can no longer support, so a nonzero
+// eviction count means that reason is unreliable for the interval rather than
+// merely stale.
+//
+// Enforced here rather than in prune so that read paths -- classifyResponse,
+// classifyPairExpiries -- never destroy evidence they were only asked to
+// consult.
+func evictOneForInsert[K comparable, V any](m map[K]V, maxEntries int) uint64 {
+	if len(m) < maxEntries {
+		return 0
+	}
+	for key := range m {
+		delete(m, key)
+		return 1
+	}
+	return 0
 }
 
 // recordOccupancy publishes the tracker's current size. Called on every path
