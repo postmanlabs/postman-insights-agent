@@ -55,12 +55,8 @@ func (h *DirectionHint) isListenPort(port int) bool {
 	return ok
 }
 
-func (h *DirectionHint) isEnvoyPort(port int) bool {
-	return port >= 15000 && port <= 15090
-}
-
 // classifyHTTPDirection mirrors eBPF directionForPair using packet IPs/ports.
-// Both-local (Istio REDIRECT on lo) uses listen/Envoy port tie-break.
+// Both-local (Istio REDIRECT on lo) uses listen/mesh-proxy port tie-break.
 func classifyHTTPDirection(content akinet.ParsedNetworkContent, srcIP, dstIP net.IP, srcPort, dstPort int, hint *DirectionHint) akinet.NetTrafficDirection {
 	if hint == nil {
 		return akinet.DirectionUnknown
@@ -86,11 +82,11 @@ func classifyRequestDirection(srcLocal, dstLocal bool, dstPort int, hint *Direct
 	case srcLocal && !dstLocal:
 		return akinet.DirectionOutbound
 	case srcLocal && dstLocal:
-		// Mesh / loopback: prefer listen-port as inbound server, Envoy as outbound.
+		// Mesh / loopback: prefer listen-port as inbound server, mesh proxy as outbound.
 		if hint.isListenPort(dstPort) {
 			return akinet.DirectionInbound
 		}
-		if hint.isEnvoyPort(dstPort) {
+		if IsMeshProxyPort(uint16(dstPort)) {
 			return akinet.DirectionOutbound
 		}
 		// Ephemeral client → local peer without known listen port: outbound.

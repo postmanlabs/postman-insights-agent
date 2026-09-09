@@ -9,7 +9,8 @@ import (
 
 // DiscoverInboundEndpoints finds UP interface IPs and TCP LISTEN ports in the
 // current process network namespace. On non-Linux platforms, targetNetworkNamespace
-// is ignored (setns is unavailable).
+// is ignored (setns is unavailable). Mesh/admin ports follow pcap.IsMeshProxyPort
+// and ssh exclusion in shared discovery helpers.
 func DiscoverInboundEndpoints(targetNetworkNamespaceOpt optionals.Optional[string]) (InboundEndpoints, error) {
 	eps, _, err := discoverInboundEndpointsDetailed(targetNetworkNamespaceOpt)
 	return eps, err

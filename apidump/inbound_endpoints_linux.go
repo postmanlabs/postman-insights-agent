@@ -12,7 +12,7 @@ import (
 
 // DiscoverInboundEndpoints finds UP interface IPs and TCP LISTEN ports in the
 // target network namespace (or the current process ns when none is set).
-// Mesh/admin listen ports (Istio 15000–15090, ssh) are omitted.
+// Mesh/admin listen ports (pcap.IsMeshProxyPort, ssh) are omitted.
 func DiscoverInboundEndpoints(targetNetworkNamespaceOpt optionals.Optional[string]) (InboundEndpoints, error) {
 	eps, _, err := discoverInboundEndpointsDetailed(targetNetworkNamespaceOpt)
 	return eps, err

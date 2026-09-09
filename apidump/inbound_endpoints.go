@@ -13,6 +13,7 @@ import (
 
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/pcap"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 )
 
@@ -27,8 +28,9 @@ var (
 	inboundDiscoveryRetryInterval = 500 * time.Millisecond
 )
 
-// Default ports excluded from auto inbound capture (mesh sidecars, admin).
-// Apps that listen only on these ports will not get an auto filter applied
+// Default ports excluded from auto inbound capture (admin / non-app).
+// Mesh proxy ports are excluded via pcap.IsMeshProxyPort (shared with Direction).
+// Apps that listen only on excluded ports will not get an auto filter applied
 // for those ports; other listen ports in the same netns still apply.
 var defaultExcludedListenPorts = map[uint16]struct{}{
 	22: {}, // ssh
@@ -170,11 +172,8 @@ func shouldExcludeListenPort(port uint16, exclude map[uint16]struct{}) bool {
 	if _, ok := exclude[port]; ok {
 		return true
 	}
-	// Istio / Envoy sidecar control and data ports.
-	if port >= 15000 && port <= 15090 {
-		return true
-	}
-	return false
+	// Shared with pcap Direction tie-break (see pcap.IsMeshProxyPort).
+	return pcap.IsMeshProxyPort(port)
 }
 
 // parseListenPortFromProcNetTCPLine returns the local port when the row is in
