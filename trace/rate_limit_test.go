@@ -362,3 +362,73 @@ func TestRateLimit_PublishesTombstonedUnmatchedResponses(t *testing.T) {
 		t.Fatalf("tombstoned drop classified as %d, want peer rejected", got[0])
 	}
 }
+
+// RateLimitedRequestKeys is the one rate-limit map sized by rejections rather
+// than admissions, so it must be capped: expireRequests ranges it inline in
+// Process, on the capture goroutine, and an unbounded map turns a diagnostic
+// into a periodic source of packet loss.
+func TestRateLimit_CapsRejectionTombstones(t *testing.T) {
+	stats := capturestats.New()
+	// A zero-value SharedRateLimit has no active sample interval, so
+	// AllowHTTPRequest rejects everything. NewRateLimit would start a
+	// goroutine that opens an interval almost immediately, making
+	// admit-vs-reject a race.
+	rl := &SharedRateLimit{stats: stats}
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, nil).(*rateLimitCollector)
+
+	// Fill to the cap directly; driving 100k rejections through Process would
+	// make this test needlessly slow.
+	now := time.Now()
+	for i := 0; i < rateLimitTombstoneMaxEntries; i++ {
+		c.RateLimitedRequestKeys[requestKey{"stream", i}] = now
+	}
+
+	// Rejected, so it would otherwise add a tombstone.
+	streamID := uuid.New()
+	if err := c.Process(akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{StreamID: streamID, Seq: 1},
+	}); err != nil {
+		t.Fatalf("processing rejected request: %v", err)
+	}
+
+	if got := len(c.RateLimitedRequestKeys); got != rateLimitTombstoneMaxEntries {
+		t.Fatalf("tombstone map grew past the cap: %d", got)
+	}
+	snapshot := stats.Snapshot()
+	if snapshot.RateLimitTombstonesDropped != 1 {
+		t.Fatalf("dropped tombstones = %d, want 1", snapshot.RateLimitTombstonesDropped)
+	}
+	// The rejection itself must still be counted; only the attribution aid is
+	// dropped.
+	if snapshot.RequestsRateLimited != 1 {
+		t.Fatalf("rate-limited requests = %d, want 1", snapshot.RequestsRateLimited)
+	}
+}
+
+// Below the cap nothing is dropped, so the counter cannot be read as
+// "rejections" and the exact rate_limited attribution still works.
+func TestRateLimit_RecordsTombstonesBelowCap(t *testing.T) {
+	stats := capturestats.New()
+	rl := &SharedRateLimit{stats: stats}
+	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, nil).(*rateLimitCollector)
+
+	streamID := uuid.New()
+	if err := c.Process(akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{StreamID: streamID, Seq: 1},
+	}); err != nil {
+		t.Fatalf("processing rejected request: %v", err)
+	}
+	if err := c.Process(akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPResponse{StreamID: streamID, Seq: 1},
+	}); err != nil {
+		t.Fatalf("processing unmatched response: %v", err)
+	}
+
+	snapshot := stats.Snapshot()
+	if snapshot.RateLimitTombstonesDropped != 0 {
+		t.Fatalf("dropped tombstones = %d, want 0", snapshot.RateLimitTombstonesDropped)
+	}
+	if snapshot.ResponsesDroppedNoMatchingRequestRateLimited != 1 {
+		t.Fatalf("exact rate-limited attribution = %d, want 1", snapshot.ResponsesDroppedNoMatchingRequestRateLimited)
+	}
+}

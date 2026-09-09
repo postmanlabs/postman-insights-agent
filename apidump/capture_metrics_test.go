@@ -108,6 +108,7 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	a.captureStats.IncrRequestsRateLimited()
 	a.captureStats.IncrRequestsRateLimited()
 	a.captureStats.AddRequestKeysExpired(2)
+	a.captureStats.IncrRateLimitTombstonesDropped()
 	a.captureStats.IncrRequestsFiltered()
 	a.captureStats.IncrResponsesFiltered()
 	a.captureStats.IncrRequestsSampledOut()
@@ -151,6 +152,9 @@ func TestTelemetryWorkerFinalizationIncludesLateCaptureMetrics(t *testing.T) {
 	}
 	if reported["pcap_request_key_expired"] != 2 {
 		t.Fatalf("pcap_request_key_expired = %d, want 2", reported["pcap_request_key_expired"])
+	}
+	if reported["pcap_rate_limit_tombstones_dropped"] != 1 {
+		t.Fatalf("pcap_rate_limit_tombstones_dropped = %d, want 1", reported["pcap_rate_limit_tombstones_dropped"])
 	}
 	for _, event := range []string{
 		"pcap_request_filtered", "pcap_response_filtered",

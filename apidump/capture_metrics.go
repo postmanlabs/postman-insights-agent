@@ -58,6 +58,9 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 	a.reportTelemetryCount(source+"_response_dropped_outbound", counterDelta(currentStats.ResponsesDroppedOutbound, previousStats.ResponsesDroppedOutbound))
 	a.reportTelemetryCount(source+"_request_rate_limited", counterDelta(currentStats.RequestsRateLimited, previousStats.RequestsRateLimited))
 	a.reportTelemetryCount(source+"_request_key_expired", counterDelta(currentStats.RequestKeysExpired, previousStats.RequestKeysExpired))
+	// Qualifies the rate_limited slice of the unmatched-response partition
+	// below: nonzero means that reason undercounts by this much.
+	a.reportTelemetryCount(source+"_rate_limit_tombstones_dropped", counterDelta(currentStats.RateLimitTombstonesDropped, previousStats.RateLimitTombstonesDropped))
 	a.reportTelemetryCount(source+"_request_dropped_agent_traffic", counterDelta(currentStats.RequestsDroppedAgentTraffic, previousStats.RequestsDroppedAgentTraffic))
 	a.reportTelemetryCount(source+"_response_dropped_agent_traffic", counterDelta(currentStats.ResponsesDroppedAgentTraffic, previousStats.ResponsesDroppedAgentTraffic))
 	a.reportTelemetryCount(source+"_request_dropped_nginx_traffic", counterDelta(currentStats.RequestsDroppedNginxTraffic, previousStats.RequestsDroppedNginxTraffic))

@@ -27,6 +27,29 @@ const (
 	RateLimitExponentialAlpha = "rate-limit-exponential-alpha"
 )
 
+// Cap on RateLimitedRequestKeys, the one rate-limit map whose size tracks
+// *rejected* rather than admitted requests.
+//
+// Every other map here is bounded by the admit budget: RequestArrivalTimes and
+// ActiveRequestStreams only ever hold admitted requests, ExpiredRequestKeys is
+// populated from RequestArrivalTimes, and SeenRequestStreams holds the streams
+// of admitted requests. RateLimitedRequestKeys is different -- it gets an entry
+// per rejection, retained for RateLimitMaxDuration (10 minutes by default), so
+// on a workload where rate limiting rejects most traffic its size is
+// rejection-rate x 10 minutes with no ceiling.
+//
+// That costs twice over. The obvious cost is memory, which for an agent under a
+// DaemonSet memory limit ends in an OOM kill. The sharper one is that
+// expireRequests ranges every one of these maps inline in Process, on the
+// capture goroutine, once per epoch -- and stalling Process stalls the drain of
+// parsedChan, which backs up into libpcap's buffer and shows up as
+// pcap_packets_dropped. An unbounded map turns a diagnostic into a periodic
+// source of the loss it is meant to explain.
+//
+// Matches connectionContextMaxEntries for consistency with the other bounded
+// diagnostic index in this package.
+const rateLimitTombstoneMaxEntries = 100_000
+
 func init() {
 	viper.SetDefault(RateLimitEpochTime, 5*time.Minute)
 	viper.SetDefault(RateLimitMaxDuration, 10*time.Minute)
@@ -313,7 +336,18 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			r.SeenRequestStreams[key.StreamID] = time.Now()
 		} else {
 			key := requestKey{c.StreamID.String(), c.Seq}
-			r.RateLimitedRequestKeys[key] = time.Now()
+			// Above the cap, drop the tombstone rather than the packet budget.
+			// The consequence is attribution, not correctness: without it, this
+			// request's response later falls through to a weaker reason
+			// (active_request_stream, request_seen_same_stream, or
+			// response_first) instead of the exact rate_limited one, so
+			// response_dropped_no_matching_request_rate_limited undercounts by
+			// however much this counter reports.
+			if len(r.RateLimitedRequestKeys) < rateLimitTombstoneMaxEntries {
+				r.RateLimitedRequestKeys[key] = time.Now()
+			} else {
+				r.stats.IncrRateLimitTombstonesDropped()
+			}
 			r.stats.IncrRequestsRateLimited()
 			r.packetCount.Update(client_telemetry.PacketCounts{
 				Interface:               pnt.Interface,

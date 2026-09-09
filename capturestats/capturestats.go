@@ -80,8 +80,16 @@ type Stats struct {
 
 	// First-discard and unmatched-response reason counters recorded in the
 	// rate-limit and user-traffic collector layers.
-	RequestsRateLimited                                        uint64
-	RequestKeysExpired                                         uint64
+	RequestsRateLimited uint64
+	RequestKeysExpired  uint64
+
+	// Rejected-request tombstones the rate limiter declined to record because
+	// its bounded map was full (see trace.rateLimitTombstoneMaxEntries). A
+	// nonzero value means ResponsesDroppedNoMatchingRequestRateLimited
+	// undercounts by this much, with those responses attributed to a weaker
+	// reason instead -- it qualifies that partition the same way
+	// ConnectionContextCapacityEvicted qualifies ResponseFirst.
+	RateLimitTombstonesDropped                                 uint64
 	RequestsDroppedAgentTraffic                                uint64
 	ResponsesDroppedAgentTraffic                               uint64
 	RequestsDroppedNginxTraffic                                uint64
@@ -310,6 +318,12 @@ func (s *Stats) IncrRequestsRateLimited() {
 		return
 	}
 	atomic.AddUint64(&s.RequestsRateLimited, 1)
+}
+
+func (s *Stats) IncrRateLimitTombstonesDropped() {
+	if s != nil {
+		atomic.AddUint64(&s.RateLimitTombstonesDropped, 1)
+	}
 }
 
 func (s *Stats) AddRequestKeysExpired(n uint64) {
@@ -587,6 +601,7 @@ type Snapshot struct {
 
 	ResponsesDroppedNoMatchingRequest                                                              uint64
 	RequestsRateLimited, RequestKeysExpired                                                        uint64
+	RateLimitTombstonesDropped                                                                     uint64
 	RequestsDroppedAgentTraffic, ResponsesDroppedAgentTraffic                                      uint64
 	RequestsDroppedNginxTraffic, ResponsesDroppedNginxTraffic                                      uint64
 	ResponsesDroppedNoMatchingRequestRateLimited, ResponsesDroppedNoMatchingRequestExpired         uint64
@@ -647,6 +662,7 @@ func (s *Stats) Snapshot() Snapshot {
 		ResponsesDroppedNoMatchingRequest:                          atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequest),
 		RequestsRateLimited:                                        atomic.LoadUint64(&s.RequestsRateLimited),
 		RequestKeysExpired:                                         atomic.LoadUint64(&s.RequestKeysExpired),
+		RateLimitTombstonesDropped:                                 atomic.LoadUint64(&s.RateLimitTombstonesDropped),
 		RequestsDroppedAgentTraffic:                                atomic.LoadUint64(&s.RequestsDroppedAgentTraffic),
 		ResponsesDroppedAgentTraffic:                               atomic.LoadUint64(&s.ResponsesDroppedAgentTraffic),
 		RequestsDroppedNginxTraffic:                                atomic.LoadUint64(&s.RequestsDroppedNginxTraffic),

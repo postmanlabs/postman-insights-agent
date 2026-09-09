@@ -110,6 +110,7 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 			"pair_expiry_why[resp_rejected=%d resp_never=%d resp_no_stream=%d resp_no_tracker=%d "+
 			"req_rejected=%d req_never=%d req_no_stream=%d req_no_tracker=%d] "+
 			"unmatched_stream_idx[pruned=%d cap_evicted=%d] "+
+			"rl_tombstones[dropped=%d] "+
 			"neg_latency[sub_ms=%d sub_s=%d over_s=%d]%s\n",
 
 		// Identify which apidump session this line came from. A node runs one
@@ -221,6 +222,11 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 
 		snap.UnmatchedResponseStreamPruned,
 		snap.UnmatchedResponseStreamCapacityEvicted,
+
+		// Rejection tombstones the rate limiter's bounded map could not hold.
+		// Nonzero means resp_no_request_why[rate_limited=...] undercounts by
+		// this much, with those responses landing in a weaker reason.
+		snap.RateLimitTombstonesDropped,
 
 		// Negative processing latency, bucketed by size. Small values can be
 		// genuine (a server answering before the request body finished); large
