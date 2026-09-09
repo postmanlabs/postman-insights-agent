@@ -103,16 +103,38 @@ func httpsTelemetryWorker(
 	}
 
 	var previous HTTPSCaptureStats
+
+	// Separate from the log line below because it also runs on cancellation,
+	// where the BPF maps behind the logged fields may already be gone.
+	reportDeltas := func(s HTTPSCaptureStats) {
+		if reportCount == nil {
+			return
+		}
+		reportCount("ebpf_flow_dropped", counterDelta(s.FlowsDropped, previous.FlowsDropped))
+		reportCount("ebpf_h2_hpack_desync", counterDelta(s.H2HPACKDesyncs, previous.H2HPACKDesyncs))
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Read once more before returning, so the last interval is not
+			// lost. Reporting only on the ticker discarded up to `interval`
+			// (30s) of these counters on every shutdown, and a session shorter
+			// than one interval reported none of them at all -- which is
+			// exactly the session where drops matter most. pollPcapStats's
+			// done branch and TelemetryWorker's do the same thing.
+			//
+			// Safe after cancellation: both counters reported here come from
+			// adapter.Stats(), a mutex-guarded read of Go-side fields, not
+			// from the BPF maps that teardown may already have closed. No
+			// ebpf-stats line is logged here for that reason -- its
+			// loader-derived fields would read zero post-teardown and look
+			// like a collapse in capture rather than an artifact of shutdown.
+			reportDeltas(read())
 			return
 		case <-t.C:
 			s := read()
-			if reportCount != nil {
-				reportCount("ebpf_flow_dropped", counterDelta(s.FlowsDropped, previous.FlowsDropped))
-				reportCount("ebpf_h2_hpack_desync", counterDelta(s.H2HPACKDesyncs, previous.H2HPACKDesyncs))
-			}
+			reportDeltas(s)
 			previous = s
 			printer.Stderr.Infof("ebpf-stats: %s\n", s.String())
 			if tracker != nil {
