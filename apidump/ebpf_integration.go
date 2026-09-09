@@ -61,6 +61,7 @@ func httpsTelemetryWorker(
 	mgr *uprobes.Manager,
 	adapter *events.Adapter,
 	tracker telemetry.Tracker,
+	reportCount func(string, uint64),
 ) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -75,9 +76,10 @@ func httpsTelemetryWorker(
 		}
 		if adapter != nil {
 			s.FlowsActive, _ = adapter.Snapshot()
-			s.MessagesEmitted = adapter.MessagesEmitted
-			s.FlowsDropped = adapter.FlowsDropped
-			s.H2HPACKDesyncs = adapter.H2HPACKDesyncs
+			adapterStats := adapter.Stats()
+			s.MessagesEmitted = adapterStats.MessagesEmitted
+			s.FlowsDropped = adapterStats.FlowsDropped
+			s.H2HPACKDesyncs = adapterStats.H2HPACKDesyncs
 		}
 		if ldr != nil {
 			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
@@ -100,12 +102,40 @@ func httpsTelemetryWorker(
 		return s
 	}
 
+	var previous HTTPSCaptureStats
+
+	// Separate from the log line below because it also runs on cancellation,
+	// where the BPF maps behind the logged fields may already be gone.
+	reportDeltas := func(s HTTPSCaptureStats) {
+		if reportCount == nil {
+			return
+		}
+		reportCount("ebpf_flow_dropped", counterDelta(s.FlowsDropped, previous.FlowsDropped))
+		reportCount("ebpf_h2_hpack_desync", counterDelta(s.H2HPACKDesyncs, previous.H2HPACKDesyncs))
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Read once more before returning, so the last interval is not
+			// lost. Reporting only on the ticker discarded up to `interval`
+			// (30s) of these counters on every shutdown, and a session shorter
+			// than one interval reported none of them at all -- which is
+			// exactly the session where drops matter most. pollPcapStats's
+			// done branch and TelemetryWorker's do the same thing.
+			//
+			// Safe after cancellation: both counters reported here come from
+			// adapter.Stats(), a mutex-guarded read of Go-side fields, not
+			// from the BPF maps that teardown may already have closed. No
+			// ebpf-stats line is logged here for that reason -- its
+			// loader-derived fields would read zero post-teardown and look
+			// like a collapse in capture rather than an artifact of shutdown.
+			reportDeltas(read())
 			return
 		case <-t.C:
 			s := read()
+			reportDeltas(s)
+			previous = s
 			printer.Stderr.Infof("ebpf-stats: %s\n", s.String())
 			if tracker != nil {
 				tracker.WorkflowStep("ebpf_capture_stats", s.String())
@@ -250,7 +280,7 @@ func startHTTPSeBPFCapture(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker)
+			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker, args.reportTelemetryCount)
 		}()
 	}
 
@@ -258,17 +288,17 @@ func startHTTPSeBPFCapture(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			select {
-			case <-captureCtx.Done():
-				return
-			case pnt, ok := <-out:
-				if !ok {
-					return
-				}
-				if err := collector.Process(pnt); err != nil {
-					printer.Stderr.Warningf("ebpf: collector.Process: %v\n", err)
-				}
+		defer func() {
+			if err := collector.Close(); err != nil {
+				printer.Stderr.Warningf("ebpf: collector.Close: %v\n", err)
+			}
+		}()
+		// The producer closes out after cancellation. Drain it rather than
+		// returning on captureCtx.Done so already-adapted messages reach the
+		// collector before its pair cache and report buffer are closed.
+		for pnt := range out {
+			if err := collector.Process(pnt); err != nil {
+				printer.Stderr.Warningf("ebpf: collector.Process: %v\n", err)
 			}
 		}
 	}()

@@ -7,6 +7,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/google/uuid"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/viper"
@@ -25,6 +26,29 @@ const (
 	// Parameter controlling exponential moving average
 	RateLimitExponentialAlpha = "rate-limit-exponential-alpha"
 )
+
+// Cap on RateLimitedRequestKeys, the one rate-limit map whose size tracks
+// *rejected* rather than admitted requests.
+//
+// Every other map here is bounded by the admit budget: RequestArrivalTimes and
+// ActiveRequestStreams only ever hold admitted requests, ExpiredRequestKeys is
+// populated from RequestArrivalTimes, and SeenRequestStreams holds the streams
+// of admitted requests. RateLimitedRequestKeys is different -- it gets an entry
+// per rejection, retained for RateLimitMaxDuration (10 minutes by default), so
+// on a workload where rate limiting rejects most traffic its size is
+// rejection-rate x 10 minutes with no ceiling.
+//
+// That costs twice over. The obvious cost is memory, which for an agent under a
+// DaemonSet memory limit ends in an OOM kill. The sharper one is that
+// expireRequests ranges every one of these maps inline in Process, on the
+// capture goroutine, once per epoch -- and stalling Process stalls the drain of
+// parsedChan, which backs up into libpcap's buffer and shows up as
+// pcap_packets_dropped. An unbounded map turns a diagnostic into a periodic
+// source of the loss it is meant to explain.
+//
+// Matches connectionContextMaxEntries for consistency with the other bounded
+// diagnostic index in this package.
+const rateLimitTombstoneMaxEntries = 100_000
 
 func init() {
 	viper.SetDefault(RateLimitEpochTime, 5*time.Minute)
@@ -212,21 +236,70 @@ type rateLimitCollector struct {
 	// Map of unmatched request arrival times
 	RequestArrivalTimes map[requestKey]time.Time
 
+	// Recent rejected and expired request keys let us attribute an unmatched
+	// response when its exact key is still known. Both maps are pruned on epoch
+	// boundaries, so they cannot grow without bound.
+	RateLimitedRequestKeys map[requestKey]time.Time
+	ExpiredRequestKeys     map[requestKey]time.Time
+
+	// Number of admitted requests still awaiting a response per TCP stream.
+	// This is a factual diagnostic for an unmatched response with no exact
+	// tombstone; it does not claim that the parser's request/response keys are
+	// necessarily wrong.
+	ActiveRequestStreams map[string]uint64
+
+	// Last time a request was admitted on each TCP stream, retained after that
+	// request leaves ActiveRequestStreams.
+	//
+	// ActiveRequestStreams alone cannot answer "did we ever see a request on
+	// this stream", because removeActiveRequestStream deletes the entry as
+	// soon as the request pairs or expires. A response whose key does not
+	// match the request we admitted on its own stream therefore used to fall
+	// through to the connection-context classifier and be reported as
+	// response_first -- indistinguishable from a connection whose request we
+	// genuinely never captured. This map keeps that distinction observable.
+	//
+	// Only admitted requests are recorded. A rate-limited request already has
+	// an exact tombstone in RateLimitedRequestKeys, and its response *should*
+	// be dropped, so folding it in here would mix correct behaviour into a
+	// counter that exists to surface key mismatches.
+	//
+	// Bounded the same way RequestArrivalTimes is: keys are a subset of the
+	// streams of admitted requests, which the rate limit itself caps per
+	// epoch, and stale entries are pruned in expireRequests.
+	SeenRequestStreams map[string]time.Time
+
 	// Channel from RateLimit for epoch starts
 	epochCh chan time.Time
 
 	// Packet counter
 	packetCount PacketCountConsumer
+
+	stats *capturestats.Stats
+
+	connectionContext *ConnectionContextTracker
+	collectorID       uint64
 }
 
-func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer) Collector {
+// NewCollector creates a collector that shares this rate limit but records its
+// diagnostics against one capture source. Stats are per-source rather than
+// taken from the SharedRateLimit, because one rate limit is shared by the pcap
+// and eBPF chains while their counters must not be.
+func (r *SharedRateLimit) NewCollector(next Collector, packetCounts PacketCountConsumer, stats *capturestats.Stats, connectionContext *ConnectionContextTracker) Collector {
 	c := &rateLimitCollector{
-		RateLimit:           r,
-		NextCollector:       next,
-		RequestArrivalTimes: make(map[requestKey]time.Time),
-		epochCh:             make(chan time.Time, 1),
-		packetCount:         packetCounts,
+		RateLimit:              r,
+		NextCollector:          next,
+		RequestArrivalTimes:    make(map[requestKey]time.Time),
+		RateLimitedRequestKeys: make(map[requestKey]time.Time),
+		ExpiredRequestKeys:     make(map[requestKey]time.Time),
+		ActiveRequestStreams:   make(map[string]uint64),
+		SeenRequestStreams:     make(map[string]time.Time),
+		epochCh:                make(chan time.Time, 1),
+		packetCount:            packetCounts,
+		stats:                  stats,
+		connectionContext:      connectionContext,
 	}
+	c.collectorID = connectionContext.registerCollector()
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	r.children = append(r.children, c)
@@ -247,12 +320,35 @@ func (r *SharedRateLimit) onCollectorClose(closed *rateLimitCollector) {
 func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 	switch c := pnt.Content.(type) {
 	case akinet.HTTPRequest:
+		r.connectionContext.observeRequest(pnt, r.collectorID)
 		if r.RateLimit.AllowHTTPRequest() {
 			// Collect request and the matching response as well.
 			r.NextCollector.Process(pnt)
 			key := requestKey{c.StreamID.String(), c.Seq}
+			if _, alreadyTracked := r.RequestArrivalTimes[key]; !alreadyTracked {
+				r.ActiveRequestStreams[key.StreamID] += 1
+			}
 			r.RequestArrivalTimes[key] = pnt.ObservationTime
+			// Wall clock, not pnt.ObservationTime, so a zero or skewed packet
+			// timestamp (see capturestats.ZeroValuePacketTimestamp) cannot make
+			// this entry instantly prunable and silently restore the
+			// misattribution it exists to prevent.
+			r.SeenRequestStreams[key.StreamID] = time.Now()
 		} else {
+			key := requestKey{c.StreamID.String(), c.Seq}
+			// Above the cap, drop the tombstone rather than the packet budget.
+			// The consequence is attribution, not correctness: without it, this
+			// request's response later falls through to a weaker reason
+			// (active_request_stream, request_seen_same_stream, or
+			// response_first) instead of the exact rate_limited one, so
+			// response_dropped_no_matching_request_rate_limited undercounts by
+			// however much this counter reports.
+			if len(r.RateLimitedRequestKeys) < rateLimitTombstoneMaxEntries {
+				r.RateLimitedRequestKeys[key] = time.Now()
+			} else {
+				r.stats.IncrRateLimitTombstonesDropped()
+			}
+			r.stats.IncrRequestsRateLimited()
 			r.packetCount.Update(client_telemetry.PacketCounts{
 				Interface:               pnt.Interface,
 				DstHost:                 c.Host,
@@ -267,6 +363,7 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 		key := requestKey{c.StreamID.String(), c.Seq}
 		if _, ok := r.RequestArrivalTimes[key]; ok {
 			delete(r.RequestArrivalTimes, key)
+			r.removeActiveRequestStream(key.StreamID)
 			r.NextCollector.Process(pnt)
 		} else {
 			// We parsed this response but are throwing it away, because we cannot
@@ -274,17 +371,8 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			// downstream, so this becomes a witness with no response half, which
 			// the back end drops as missing_status_code.
 			//
-			// Three ways to get here:
-			//   - The request was rate limited, so we never recorded its key. Also
-			//     counted as HTTPRequestsRateLimited.
-			//   - expireRequests dropped the key on an epoch boundary before the
-			//     response arrived.
-			//   - The response's key does not match its request's key at all. Both
-			//     keys come from TCP numbers -- the request uses the ack of its
-			//     first segment, the response uses the seq of its first segment --
-			//     which are only equal if nothing else was in flight on the
-			//     connection. See akinet/http/parser.go.
-			r.RateLimit.stats.IncrResponsesDroppedNoMatchingRequest()
+			r.stats.IncrResponsesDroppedNoMatchingRequest()
+			r.recordUnmatchedResponse(pnt, key, c.StreamID)
 		}
 	default:
 		if r.RateLimit.AllowOther() {
@@ -315,10 +403,91 @@ func (r *rateLimitCollector) expireRequests(threshold time.Time) {
 	for k, v := range r.RequestArrivalTimes {
 		if v.Before(threshold) {
 			delete(r.RequestArrivalTimes, k)
+			r.removeActiveRequestStream(k.StreamID)
+			// Retain from the expiration point, not the original arrival time;
+			// otherwise the cleanup loop below removes the tombstone immediately.
+			r.ExpiredRequestKeys[k] = time.Now()
 			expired += 1
 		}
 	}
+	for k, v := range r.RateLimitedRequestKeys {
+		if v.Before(threshold) {
+			delete(r.RateLimitedRequestKeys, k)
+		}
+	}
+	for k, v := range r.ExpiredRequestKeys {
+		if v.Before(threshold) {
+			delete(r.ExpiredRequestKeys, k)
+		}
+	}
+	for k, v := range r.SeenRequestStreams {
+		if v.Before(threshold) {
+			delete(r.SeenRequestStreams, k)
+		}
+	}
+	r.stats.AddRequestKeysExpired(uint64(expired))
 	printer.Debugf("Expired %v old requests\n", expired)
+}
+
+func (r *rateLimitCollector) recordUnmatchedResponse(pnt akinet.ParsedNetworkTraffic, key requestKey, streamID uuid.UUID) {
+	// Publish the drop against its stream before classifying it. This is the
+	// companion evidence a witness expiring unpaired later looks up (see
+	// ConnectionContextTracker.classifyPairExpiries), and it is recorded for
+	// every unmatched response regardless of which bucket below claims it: a
+	// response explained by an exact tombstone was still captured and then
+	// discarded before it could complete a pair.
+	r.connectionContext.observeUnmatchedResponse(streamID)
+
+	if _, ok := r.RateLimitedRequestKeys[key]; ok {
+		delete(r.RateLimitedRequestKeys, key)
+		r.stats.IncrResponsesDroppedNoMatchingRequestRateLimited()
+		return
+	}
+	if _, ok := r.ExpiredRequestKeys[key]; ok {
+		delete(r.ExpiredRequestKeys, key)
+		r.stats.IncrResponsesDroppedNoMatchingRequestExpired()
+		return
+	}
+	if r.ActiveRequestStreams[key.StreamID] > 0 {
+		r.stats.IncrResponsesDroppedNoMatchingRequestActiveRequestStream()
+		return
+	}
+	// Checked before the connection-context classifier because it is the
+	// stronger claim: a TCP stream identifies one connection, while the
+	// classifier's key is a normalized address pair that a later connection
+	// can reuse. Reaching here means we admitted a request on this very
+	// stream and this response's key still did not match it -- so the request
+	// was captured and the two keys disagree, which is what
+	// response_first would otherwise have denied.
+	if _, ok := r.SeenRequestStreams[key.StreamID]; ok {
+		r.stats.IncrResponsesDroppedNoMatchingRequestRequestSeenSameStream()
+		return
+	}
+	switch r.connectionContext.classifyResponse(pnt, r.collectorID) {
+	case unmatchedResponseContextResponseFirst:
+		r.stats.IncrResponsesDroppedNoMatchingRequestResponseFirst()
+	case unmatchedResponseContextRequestSeenLocalCollector:
+		r.stats.IncrResponsesDroppedNoMatchingRequestRequestSeenLocalCollector()
+	case unmatchedResponseContextRequestSeenOtherCollector:
+		r.stats.IncrResponsesDroppedNoMatchingRequestRequestSeenOtherCollector()
+	case unmatchedResponseContextKeyInvalid:
+		r.stats.IncrResponsesDroppedNoMatchingRequestContextKeyInvalid()
+	case unmatchedResponseContextTrackerUnavailable:
+		r.stats.IncrResponsesDroppedNoMatchingRequestContextUnavailable()
+	default:
+		// Only unmatchedResponseContextUnknown reaches here, which
+		// classifyResponse no longer returns. Kept as a backstop so a reason
+		// added there without a case here is counted rather than dropped.
+		r.stats.IncrResponsesDroppedNoMatchingRequestUnknown()
+	}
+}
+
+func (r *rateLimitCollector) removeActiveRequestStream(streamID string) {
+	if r.ActiveRequestStreams[streamID] <= 1 {
+		delete(r.ActiveRequestStreams, streamID)
+		return
+	}
+	r.ActiveRequestStreams[streamID] -= 1
 }
 
 func NewRateLimit(witnessesPerMinute float64, stats *capturestats.Stats) *SharedRateLimit {

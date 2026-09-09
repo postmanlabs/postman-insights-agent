@@ -24,10 +24,11 @@ type Summary struct {
 	NumUserFilters  int
 
 	// Values that change over the course of apidump are pointers.
-	FilterSummary    *trace.PacketCounter
-	PrefilterSummary *trace.PacketCounter
-	NegationSummary  *trace.PacketCounter
-	HTTPSSummary     *trace.PacketCounter
+	FilterSummary         *trace.PacketCounter
+	PrefilterSummary      *trace.PacketCounter
+	NegationSummary       *trace.PacketCounter
+	HTTPSSummary          *trace.PacketCounter
+	HTTPSPrefilterSummary *trace.PacketCounter
 
 	// HTTPSCaptureEnabled is true when --enable-https-capture is in effect,
 	// which changes the end-of-trace warning for detected HTTPS traffic.

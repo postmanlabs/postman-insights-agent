@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/OneOfOne/xxhash"
-	"github.com/pkg/errors"
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/client_telemetry"
+	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/spf13/viper"
@@ -82,11 +83,17 @@ type SamplingCollector struct {
 	sampleThreshold float64
 
 	collector Collector
+
+	// Sampled-out traffic is counted, not reported per message: below a
+	// sample rate of 1.0 the excluded messages are the majority by
+	// definition, so one telemetry event each would take the DaemonSet's
+	// node-wide lock for most of the traffic on the interface.
+	stats *capturestats.Stats
 }
 
 // Wraps a collector and performs sampling. Returns the collector itself if the
 // given sampleRate is 1.0.
-func NewSamplingCollector(sampleRate float64, collector Collector) Collector {
+func NewSamplingCollector(sampleRate float64, collector Collector, stats *capturestats.Stats) Collector {
 	if sampleRate == 1.0 {
 		return collector
 	}
@@ -94,6 +101,7 @@ func NewSamplingCollector(sampleRate float64, collector Collector) Collector {
 	return &SamplingCollector{
 		sampleThreshold: float64(math.MaxUint32) * sampleRate,
 		collector:       collector,
+		stats:           stats,
 	}
 }
 
@@ -122,6 +130,12 @@ func (sc *SamplingCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	if sc.includeSample(key) {
 		return sc.collector.Process(t)
 	}
+	switch t.Content.(type) {
+	case akinet.HTTPRequest:
+		sc.stats.IncrRequestsSampledOut()
+	case akinet.HTTPResponse:
+		sc.stats.IncrResponsesSampledOut()
+	}
 	return nil
 }
 
@@ -133,18 +147,38 @@ type UserTrafficCollector struct {
 	Collector          Collector
 	DropDogfoodTraffic bool // Filters out CLI's own traffic to Akita APIs.
 	DropNginxTraffic   bool // Filters out traffic to/from the nginx.
+	Stats              *capturestats.Stats
 }
 
 func (sc *UserTrafficCollector) Process(t akinet.ParsedNetworkTraffic) error {
 	if sc.DropDogfoodTraffic && util.ContainsCLITraffic(t) {
+		sc.recordDrop(t, true)
 		return nil
 	}
 
 	if sc.DropNginxTraffic && util.ContainsNginxTraffic(t) {
+		sc.recordDrop(t, false)
 		return nil
 	}
 
 	return sc.Collector.Process(t)
+}
+
+func (sc *UserTrafficCollector) recordDrop(t akinet.ParsedNetworkTraffic, isAgentTraffic bool) {
+	switch t.Content.(type) {
+	case akinet.HTTPRequest:
+		if isAgentTraffic {
+			sc.Stats.IncrRequestsDroppedAgentTraffic()
+		} else {
+			sc.Stats.IncrRequestsDroppedNginxTraffic()
+		}
+	case akinet.HTTPResponse:
+		if isAgentTraffic {
+			sc.Stats.IncrResponsesDroppedAgentTraffic()
+		} else {
+			sc.Stats.IncrResponsesDroppedNginxTraffic()
+		}
+	}
 }
 
 func (sc *UserTrafficCollector) Close() error {

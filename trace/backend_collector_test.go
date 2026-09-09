@@ -1,12 +1,15 @@
 package trace
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,15 +28,99 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
+	"github.com/postmanlabs/postman-insights-agent/plugin"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/stretchr/testify/assert"
 )
 
+type failingPlugin struct{}
+
+var _ plugin.AkitaPlugin = failingPlugin{}
+
+func (failingPlugin) Name() string { return "failing" }
+
+func (failingPlugin) Transform(*pb.Method) error { return errors.New("transform failed") }
+
 var (
 	fakeSvc = akid.NewServiceID(uuid.Must(uuid.Parse("8b2cf196-87fe-4e53-a6b9-1452d7efb863")))
 	fakeLrn = akid.NewLearnSessionID(uuid.Must(uuid.Parse("2b5dd735-9fc0-4365-93e8-74bf86d3f853")))
 )
+
+// Outbound suppression moved out of queueUpload and into
+// dropOutboundCollector, which runs ahead of rate limiting and the pair cache.
+// queueUpload must no longer second-guess direction: doing so is what made
+// witness_paired overcount uploads, since a witness reaching here has already
+// been counted as paired.
+// The outbound check used to sit ahead of the plugin stage, so an outbound
+// witness never reached it. A failing plugin therefore proves direction is no
+// longer short-circuited: if the old gate came back, this would report
+// witness_dropped_outbound instead.
+func TestQueueUploadDoesNotFilterByDirection(t *testing.T) {
+	var event string
+	c := &BackendCollector{plugins: []plugin.AkitaPlugin{failingPlugin{}}}
+	w := &witnessWithInfo{
+		direction: akinet.DirectionOutbound,
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+		telemetryEventReporter: func(got string) {
+			event = got
+		},
+	}
+
+	c.queueUpload(w)
+
+	assert.Equal(t, "witness_dropped_plugin_error", event,
+		"direction filtering belongs to dropOutboundCollector, not queueUpload")
+	assert.True(t, w.witnessFlushed, "witness should still be marked flushed")
+}
+
+func TestQueueUploadReportsPluginError(t *testing.T) {
+	var event string
+	c := &BackendCollector{plugins: []plugin.AkitaPlugin{failingPlugin{}}}
+	w := &witnessWithInfo{
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+		telemetryEventReporter: func(got string) {
+			event = got
+		},
+	}
+
+	c.queueUpload(w)
+
+	if event != "witness_dropped_plugin_error" {
+		t.Fatalf("event = %q, want witness_dropped_plugin_error", event)
+	}
+	if !w.witnessFlushed {
+		t.Fatal("plugin-error witness was not marked flushed")
+	}
+}
+
+func TestReportBufferReportsOversizedWitness(t *testing.T) {
+	var event string
+	buf := &reportBuffer{
+		collector:             &BackendCollector{},
+		packetCounts:          NewPacketCounter(),
+		maxWitnessSize_bytes:  optionals.Some(1),
+		witnessesHavePayloads: false,
+	}
+	w := &witnessWithInfo{
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+		telemetryEventReporter: func(got string) {
+			event = got
+		},
+	}
+
+	buf.addWitness(w)
+
+	if event != "witness_dropped_oversized" {
+		t.Fatalf("event = %q, want witness_dropped_oversized", event)
+	}
+}
 
 var redactionString = data_masks.RedactionString
 
@@ -601,6 +688,10 @@ func TestFlushExit(t *testing.T) {
 		uploadBatchFlushDuration,
 	)
 	b.flushDone = make(chan struct{})
+	// periodicFlush closes this on return so Close can join it rather than
+	// only signal it; a literal-constructed collector has to supply it the
+	// way NewBackendCollector does.
+	b.flushExited = make(chan struct{})
 	close(b.flushDone)
 	b.periodicFlush()
 	// Test should exit immediately
@@ -1700,5 +1791,387 @@ func TestRedactionConfigs(t *testing.T) {
 		assert.NoError(t, col.Close())
 
 		rec.assertExpectedWitnesses(t, []*pb.Witness{testCase.expectedWitnesses})
+	}
+}
+
+// recordingCountReporter collects the counted-callback deltas emitted during a
+// test, keyed by event name.
+type recordingCountReporter struct {
+	mu     sync.Mutex
+	counts map[string]uint64
+	calls  int
+}
+
+func newRecordingCountReporter() *recordingCountReporter {
+	return &recordingCountReporter{counts: map[string]uint64{}}
+}
+
+func (r *recordingCountReporter) report(event string, count uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counts[event] += count
+	r.calls++
+}
+
+func (r *recordingCountReporter) snapshot() (map[string]uint64, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]uint64, len(r.counts))
+	for k, v := range r.counts {
+		out[k] = v
+	}
+	return out, r.calls
+}
+
+// A witness must land in exactly one terminal bucket. Process takes a cached
+// entry with LoadAndDelete to complete a pair, while a sweep reaches the same
+// entry through Range, which is only weakly consistent -- so without an atomic
+// claim both could account for it, counting one witness as paired *and* as
+// expired and breaking paired + expired = postfilter.
+//
+// The two goroutines here race deliberately; the assertion is an exact
+// identity, so it holds whatever the interleaving.
+func TestFlushPairCacheAccountsEachWitnessOnce(t *testing.T) {
+	const witnesses = 400
+
+	stats := capturestats.New()
+	c := &BackendCollector{stats: stats}
+	c.SetTelemetryCountReporter(newRecordingCountReporter().report)
+
+	keys := make([]akid.WitnessID, 0, witnesses)
+	for i := 0; i < witnesses; i++ {
+		id := akid.GenerateWitnessID()
+		keys = append(keys, id)
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       true,
+			observationTime: time.Now().Add(-time.Hour),
+			// Keeps queueUpload from needing a redactor or upload batch; the
+			// claim, not this flag, is what prevents double counting.
+			witnessFlushed: true,
+		})
+	}
+
+	// Stands in for Process completing pairs: same primitive, same claim.
+	var paired uint64
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, id := range keys {
+			if _, ok := c.pairCache.LoadAndDelete(id); ok {
+				atomic.AddUint64(&paired, 1)
+			}
+		}
+	}()
+
+	c.flushPairCache(time.Now())
+	wg.Wait()
+
+	// Anything the pairing goroutine had not reached yet is still cached;
+	// sweep again so every witness reaches a terminal state.
+	c.flushPairCache(time.Now())
+
+	expired := stats.Snapshot().UnpairedRequestsFlushed
+	claimed := atomic.LoadUint64(&paired)
+	assert.Equal(t, uint64(witnesses), claimed+expired,
+		"each witness must be accounted exactly once: paired=%d expired=%d", claimed, expired)
+
+	remaining := 0
+	c.pairCache.Range(func(_, _ any) bool { remaining++; return true })
+	assert.Equal(t, 0, remaining, "pair cache should be empty after the final sweep")
+}
+
+// Close must be able to join the periodic flusher, not just signal it.
+// Closing flushDone alone lets a tick already inside flushPairCache keep
+// running, and that sweep can still call reportBuffer.Flush -> uploads.Add(1)
+// after Close has entered uploads.Wait() (WaitGroup misuse) or after
+// uploadReportBatch.Close() has run its final flush (silently stranding those
+// witnesses in the active report).
+func TestPeriodicFlushSignalsExitForClose(t *testing.T) {
+	c := &BackendCollector{
+		stats:       capturestats.New(),
+		flushDone:   make(chan struct{}),
+		flushExited: make(chan struct{}),
+	}
+
+	go c.periodicFlush()
+	close(c.flushDone)
+
+	select {
+	case <-c.flushExited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodicFlush did not signal exit; Close would proceed while it is still running")
+	}
+}
+
+// A pair-cache flush must report one delta per (direction, reason), not one
+// event per expired witness: every call takes a lock shared by all targets on
+// the node, and a single sweep can expire thousands of witnesses.
+func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
+	counts := newRecordingCountReporter()
+	var events []string
+
+	c := &BackendCollector{stats: capturestats.New()}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetTelemetryEventReporter(func(event string) {
+		events = append(events, event)
+	})
+
+	// Two request-only partials (missing their responses) and one
+	// response-only partial (missing its request).
+	for i, isRequest := range []bool{true, true, false} {
+		id := akid.GenerateWitnessID()
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       isRequest,
+			observationTime: time.Now().Add(-time.Duration(i+1) * time.Minute),
+			// Already flushed, so queueUpload returns before it needs a
+			// redactor or an upload batch. Expiry accounting happens first.
+			witnessFlushed: true,
+		})
+	}
+
+	c.flushPairCache(time.Now())
+
+	got, calls := counts.snapshot()
+	// No tracker was installed, so every expiry attributes to
+	// peer_tracker_unavailable rather than claiming its companion was never
+	// observed. Each direction's reasons sum to that direction's total.
+	assert.Equal(t, map[string]uint64{
+		"witness_pair_expired_response":                          2,
+		"witness_pair_expired_request":                           1,
+		"witness_pair_expired_response_peer_tracker_unavailable": 2,
+		"witness_pair_expired_request_peer_tracker_unavailable":  1,
+	}, got)
+	// Two direction totals plus two (direction, reason) buckets. The number
+	// that matters is that it does not scale with the three witnesses.
+	assert.Equal(t, 4, calls, "expected one counted call per direction and per reason, not one per witness")
+	assert.Empty(t, events, "expiry must not use the per-event callback")
+}
+
+// The number of counted telemetry calls per sweep must stay bounded by the
+// number of (direction, reason) buckets, not grow with the witness count --
+// this is the property that keeps a high-loss sweep from hammering the
+// node-wide telemetry lock.
+func TestFlushPairCacheCallCountDoesNotScaleWithWitnesses(t *testing.T) {
+	counts := newRecordingCountReporter()
+
+	c := &BackendCollector{stats: capturestats.New()}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetConnectionContextTracker(NewConnectionContextTracker(c.stats))
+
+	const witnesses = 500
+	for i := 0; i < witnesses; i++ {
+		id := akid.GenerateWitnessID()
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       i%2 == 0,
+			streamID:        uuid.New(),
+			observationTime: time.Now().Add(-time.Hour),
+			witnessFlushed:  true,
+		})
+	}
+
+	c.flushPairCache(time.Now())
+
+	got, calls := counts.snapshot()
+	assert.Equal(t, uint64(witnesses/2), got["witness_pair_expired_response"])
+	assert.Equal(t, uint64(witnesses/2), got["witness_pair_expired_request"])
+	// Both directions resolve to the single reason peer_never_observed, so:
+	// two totals plus two buckets.
+	assert.Equal(t, 4, calls, "counted calls must not scale with the number of expired witnesses")
+}
+
+// The partition must name the companion as rejected when a message on the same
+// stream was already discarded as unmatched -- the request-side mirror of
+// response_dropped_no_matching_request_request_seen_same_stream.
+func TestFlushPairCacheAttributesRejectedCompanion(t *testing.T) {
+	counts := newRecordingCountReporter()
+	stats := capturestats.New()
+	tracker := NewConnectionContextTracker(stats)
+
+	c := &BackendCollector{stats: stats}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetConnectionContextTracker(tracker)
+
+	rejectedStream := uuid.New()
+	quietStream := uuid.New()
+	tracker.observeUnmatchedResponse(rejectedStream)
+
+	for _, streamID := range []uuid.UUID{rejectedStream, quietStream, uuid.Nil} {
+		id := akid.GenerateWitnessID()
+		c.pairCache.Store(id, &witnessWithInfo{
+			id:              id,
+			isRequest:       true,
+			streamID:        streamID,
+			observationTime: time.Now().Add(-time.Hour),
+			witnessFlushed:  true,
+		})
+	}
+
+	c.flushPairCache(time.Now())
+
+	got, _ := counts.snapshot()
+	assert.Equal(t, uint64(3), got["witness_pair_expired_response"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_response_peer_rejected"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_response_peer_never_observed"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_response_peer_stream_unknown"])
+
+	// The partition must add back up to the total it partitions.
+	snapshot := stats.Snapshot()
+	assert.Equal(t,
+		snapshot.UnpairedRequestsFlushed,
+		snapshot.PairExpiredResponsePeerRejected+
+			snapshot.PairExpiredResponsePeerNeverObserved+
+			snapshot.PairExpiredResponsePeerStreamUnknown+
+			snapshot.PairExpiredResponsePeerTrackerUnavailable,
+		"response-side reasons must sum to the request-only expiry total")
+}
+
+// The response-only direction gets the same attribution, so the counter does
+// not go blind the first time that number moves off zero.
+func TestFlushPairCacheAttributesResponseOnlyWitnesses(t *testing.T) {
+	counts := newRecordingCountReporter()
+	stats := capturestats.New()
+	tracker := NewConnectionContextTracker(stats)
+
+	c := &BackendCollector{stats: stats}
+	c.SetTelemetryCountReporter(counts.report)
+	c.SetConnectionContextTracker(tracker)
+
+	stream := uuid.New()
+	tracker.observeUnmatchedResponse(stream)
+
+	id := akid.GenerateWitnessID()
+	c.pairCache.Store(id, &witnessWithInfo{
+		id:              id,
+		isRequest:       false,
+		streamID:        stream,
+		observationTime: time.Now().Add(-time.Hour),
+		witnessFlushed:  true,
+	})
+
+	c.flushPairCache(time.Now())
+
+	got, _ := counts.snapshot()
+	assert.Equal(t, uint64(1), got["witness_pair_expired_request"])
+	assert.Equal(t, uint64(1), got["witness_pair_expired_request_peer_rejected"])
+
+	snapshot := stats.Snapshot()
+	assert.Equal(t, uint64(1), snapshot.PairExpiredRequestPeerRejected)
+	assert.Equal(t, snapshot.UnpairedResponsesFlushed, snapshot.PairExpiredRequestPeerRejected)
+}
+
+// newUploadTestBuffer returns a buffer holding one witness, wired to mockClient.
+// reportBuffers is 1 so Flush blocks until its upload goroutine returns the
+// report to the channel, making the assertions deterministic.
+func newUploadTestBuffer(t *testing.T, mockClient *mockrest.MockLearnClient, counts *recordingCountReporter) *reportBuffer {
+	t.Helper()
+
+	c := &BackendCollector{learnClient: mockClient}
+	c.SetTelemetryCountReporter(counts.report)
+
+	buf := newReportBuffer(c, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, 1)
+	buf.addWitness(&witnessWithInfo{
+		witness: &pb.Witness{Method: &pb.Method{
+			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+		}},
+	})
+	if buf.activeUploadReport.IsEmpty() {
+		t.Fatal("test setup: buffer has no witness to upload")
+	}
+	return buf
+}
+
+func TestFlushReportsUploadOutcome(t *testing.T) {
+	tests := []struct {
+		name      string
+		uploadErr error
+		wantEvent string
+	}{
+		{name: "success", uploadErr: nil, wantEvent: "witness_upload_success"},
+		{
+			name:      "throttled",
+			uploadErr: mockrest.HTTPError{StatusCode: http.StatusTooManyRequests},
+			wantEvent: "witness_upload_throttled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			mockClient.EXPECT().
+				AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(tt.uploadErr).
+				Times(1)
+
+			counts := newRecordingCountReporter()
+			buf := newUploadTestBuffer(t, mockClient, counts)
+
+			if err := buf.Flush(); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+
+			got, _ := counts.snapshot()
+			assert.Equal(t, map[string]uint64{tt.wantEvent: 1}, got,
+				"the batch's witness count must be attributed to its upload outcome")
+		})
+	}
+}
+
+func TestReportBufferWaitsForAllInflightUploads(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	mockClient.EXPECT().
+		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, akid.LearnSessionID, *kgxapi.UploadReportsRequest) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		}).
+		Times(2)
+
+	c := &BackendCollector{learnClient: mockClient}
+	buf := newReportBuffer(c, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, 3)
+	for range 2 {
+		buf.addWitness(&witnessWithInfo{
+			witness: &pb.Witness{Method: &pb.Method{
+				Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
+			}},
+		})
+		if err := buf.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("upload did not start")
+		}
+	}
+
+	waited := make(chan struct{})
+	go func() {
+		buf.WaitForUploads()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("WaitForUploads returned before uploads completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(time.Second):
+		t.Fatal("WaitForUploads did not wait for both uploads")
 	}
 }

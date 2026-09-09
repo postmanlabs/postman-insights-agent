@@ -60,3 +60,14 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 		t.Fatalf("captured.Events = %+v, want the drained buffer to stay empty", captured.Events)
 	}
 }
+
+func TestRecordTelemetryCountAccumulatesDelta(t *testing.T) {
+	d := &Daemonset{}
+	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 17)
+	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 25)
+	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 0)
+
+	if got := d.telemetryEvents["pcap_packets_dropped"]["pod-a"]; got != 42 {
+		t.Fatalf("pcap drop count = %d, want 42", got)
+	}
+}

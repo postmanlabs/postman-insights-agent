@@ -6,12 +6,13 @@ import (
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/akinet"
 	"github.com/akitasoftware/akita-libs/trackers"
+	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/learn"
 )
 
 // Filters out HTTP paths.
 // TODO: compile the N regular expressions into one for efficiency.
-func NewHTTPPathFilterCollector(matchers []*regexp.Regexp, col Collector) Collector {
+func NewHTTPPathFilterCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -24,11 +25,12 @@ func NewHTTPPathFilterCollector(matchers []*regexp.Regexp, col Collector) Collec
 			}
 			return true
 		},
+		stats: stats,
 	}
 }
 
 // Filter out matching HTTP hosts
-func NewHTTPHostFilterCollector(matchers []*regexp.Regexp, col Collector) Collector {
+func NewHTTPHostFilterCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -39,12 +41,13 @@ func NewHTTPHostFilterCollector(matchers []*regexp.Regexp, col Collector) Collec
 			}
 			return true
 		},
+		stats: stats,
 	}
 }
 
 // Allows only matching paths
 // TODO: compile the N regular expressions into one for efficiency.
-func NewHTTPPathAllowlistCollector(matchers []*regexp.Regexp, col Collector) Collector {
+func NewHTTPPathAllowlistCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -57,11 +60,12 @@ func NewHTTPPathAllowlistCollector(matchers []*regexp.Regexp, col Collector) Col
 			}
 			return false
 		},
+		stats: stats,
 	}
 }
 
 // Allows only matching hosts
-func NewHTTPHostAllowlistCollector(matchers []*regexp.Regexp, col Collector) Collector {
+func NewHTTPHostAllowlistCollector(matchers []*regexp.Regexp, col Collector, stats *capturestats.Stats) Collector {
 	return &genericRequestFilter{
 		Collector: col,
 		filterFunc: func(r akinet.HTTPRequest) bool {
@@ -72,6 +76,7 @@ func NewHTTPHostAllowlistCollector(matchers []*regexp.Regexp, col Collector) Col
 			}
 			return false
 		},
+		stats: stats,
 	}
 }
 
@@ -103,6 +108,13 @@ type genericRequestFilter struct {
 	// of observing a response without request due to packet capture starting
 	// mid-connection.
 	filteredIDs map[akid.WitnessID]struct{}
+
+	// Filtered traffic is counted, not reported per message. A broad host or
+	// path filter can exclude nearly every message on the interface, and one
+	// telemetry event per drop would take the DaemonSet's node-wide telemetry
+	// lock that many times, on the capture path. The counters ship as
+	// interval deltas instead -- see apidump.reportSourceFunnel.
+	stats *capturestats.Stats
 }
 
 func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
@@ -111,6 +123,7 @@ func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
 	case akinet.HTTPRequest:
 		if fc.filterFunc != nil && !fc.filterFunc(c) {
 			include = false
+			fc.stats.IncrRequestsFiltered()
 
 			if fc.filteredIDs == nil {
 				fc.filteredIDs = map[akid.WitnessID]struct{}{}
@@ -120,6 +133,7 @@ func (fc *genericRequestFilter) Process(t akinet.ParsedNetworkTraffic) error {
 	case akinet.HTTPResponse:
 		if _, ok := fc.filteredIDs[learn.ToWitnessID(c.StreamID, c.Seq)]; ok {
 			include = false
+			fc.stats.IncrResponsesFiltered()
 		}
 	}
 

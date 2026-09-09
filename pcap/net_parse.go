@@ -60,27 +60,29 @@ func (ctx *assemblerCtxWithSeq) GetCaptureInfo() gopacket.CaptureInfo {
 
 // tcpStreamFactory implements reassembly.StreamFactory.
 type tcpStreamFactory struct {
-	clock               clockWrapper
-	fs                  akinet.TCPParserFactorySelector
-	outChan             chan<- akinet.ParsedNetworkTraffic
-	stats               *capturestats.Stats
-	useSyntheticPairing bool
-	directionHint       *DirectionHint
+	clock                  clockWrapper
+	fs                     akinet.TCPParserFactorySelector
+	outChan                chan<- akinet.ParsedNetworkTraffic
+	stats                  *capturestats.Stats
+	useSyntheticPairing    bool
+	directionHint          *DirectionHint
+	telemetryEventReporter func(string)
 }
 
-func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint) *tcpStreamFactory {
+func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryEventReporter func(string)) *tcpStreamFactory {
 	return &tcpStreamFactory{
-		clock:               clock,
-		fs:                  fs,
-		outChan:             outChan,
-		stats:               stats,
-		useSyntheticPairing: useSyntheticPairing,
-		directionHint:       directionHint,
+		clock:                  clock,
+		fs:                     fs,
+		outChan:                outChan,
+		stats:                  stats,
+		useSyntheticPairing:    useSyntheticPairing,
+		directionHint:          directionHint,
+		telemetryEventReporter: telemetryEventReporter,
 	}
 }
 
 func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP, _ reassembly.AssemblerContext) reassembly.Stream {
-	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint)
+	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint, fact.telemetryEventReporter)
 }
 
 // NetworkTrafficObserver is the callback function type for observing
@@ -88,14 +90,15 @@ func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP,
 type NetworkTrafficObserver func(gopacket.Packet)
 
 type NetworkTrafficParser struct {
-	serviceID   akid.ServiceID
-	traceTags   map[tags.Key]string
-	pcap        pcapWrapper
-	clock       clockWrapper
-	observer    NetworkTrafficObserver // This function is called for every packet.
+	serviceID              akid.ServiceID
+	traceTags              map[tags.Key]string
+	pcap                   pcapWrapper
+	clock                  clockWrapper
+	observer               NetworkTrafficObserver // This function is called for every packet.
 	telemetryEventReporter func(string)
-	bufferShare float32
-	telemetry   telemetry.Tracker
+	telemetryCountReporter func(string, uint64)
+	bufferShare            float32
+	telemetry              telemetry.Tracker
 
 	// Capture-diagnostics counters for this parser's session. One
 	// NetworkTrafficParser is created per apidump.Run() call, so stats being a
@@ -137,6 +140,11 @@ func (p *NetworkTrafficParser) InstallTelemetryEventReporter(reporter func(strin
 	p.telemetryEventReporter = reporter
 }
 
+// InstallTelemetryCountReporter installs the target-scoped interval counter callback.
+func (p *NetworkTrafficParser) InstallTelemetryCountReporter(reporter func(string, uint64)) {
+	p.telemetryCountReporter = reporter
+}
+
 // Parses network traffic from an interface.
 // This function will attempt to parse the traffic with the highest level of
 // protocol details as possible. For instance, it will try to piece together
@@ -150,14 +158,14 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 	fs ...akinet.TCPParserFactory,
 ) (<-chan akinet.ParsedNetworkTraffic, error) {
 	// Read in packets, pass to assembler
-	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt, p.stats)
+	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt, p.stats, p.telemetryCountReporter)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed begin capturing packets from %s", interfaceName)
 	}
 
 	// Set up assembly
 	out := make(chan akinet.ParsedNetworkTraffic, 100)
-	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint)
+	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint, p.telemetryEventReporter)
 	streamPool := reassembly.NewStreamPool(streamFactory)
 	assembler := reassembly.NewAssembler(streamPool)
 
@@ -247,9 +255,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 					p.stats.AddReassemblyGapFlushed(uint64(flushed))
 				}
 
-				for i := 0; i < flushed; i++ {
-					p.reportTelemetryEvent("capture_gap_truncated_flushed")
-				}
+				p.reportTelemetryCount("pcap_reassembly_gap_flushed", uint64(flushed))
 			}
 		}
 	}()
@@ -260,6 +266,12 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 func (p *NetworkTrafficParser) reportTelemetryEvent(event string) {
 	if p.telemetryEventReporter != nil {
 		p.telemetryEventReporter(event)
+	}
+}
+
+func (p *NetworkTrafficParser) reportTelemetryCount(event string, count uint64) {
+	if p.telemetryCountReporter != nil && count > 0 {
+		p.telemetryCountReporter(event, count)
 	}
 }
 
