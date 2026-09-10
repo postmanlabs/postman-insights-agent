@@ -44,7 +44,7 @@ func (*Loader) RateBucketsMap() any                     { return nil }
 func (*Loader) SSLFdMap() (any, bool)                   { return nil, false }
 func (*Loader) SetRateCapPerSec(_ uint32) error         { return ErrUnsupported }
 func (*Loader) RefillRateBucket(_ uint32, _ uint64) error { return ErrUnsupported }
-func (*Loader) DeleteRateBucket(_ uint32) error         { return ErrUnsupported }
+func (*Loader) DeleteRateBucket(_ uint32) error           { return ErrUnsupported }
 func OpenExecutable(_ string) (any, error)              { return nil, ErrUnsupported }
 
 // Counter index constants (mirrored from loader_linux.go) so non-eBPF builds
