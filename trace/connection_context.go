@@ -200,7 +200,7 @@ func (t *ConnectionContextTracker) classifyResponse(pnt akinet.ParsedNetworkTraf
 // observeUnmatchedResponse records that a message on this stream was discarded
 // as unmatched, whatever subreason the drop was attributed to. Every unmatched
 // response is evidence of a key-matching failure on its stream, including the
-// ones an exact tombstone already explained: those were still messages the
+// ones an exact rejection record already explained: those were still messages the
 // agent captured and then threw away before a witness could be paired.
 func (t *ConnectionContextTracker) observeUnmatchedResponse(streamID uuid.UUID) {
 	if t == nil {

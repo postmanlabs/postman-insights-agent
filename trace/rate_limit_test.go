@@ -147,7 +147,7 @@ func TestRateLimit_ClassifiesUnmatchedResponses(t *testing.T) {
 	if got := snapshot.ResponsesDroppedNoMatchingRequest; got != 4 {
 		t.Fatalf("expected four unmatched responses, got %d", got)
 	}
-	// The fourth response has no tombstone, no active stream, and this
+	// The fourth response has no rejection record, no active stream, and this
 	// collector was built without a connection-context tracker, so it is
 	// reported as context_unavailable rather than being folded into unknown.
 	if snapshot.ResponsesDroppedNoMatchingRequestRateLimited != 1 ||
@@ -335,10 +335,10 @@ func TestRateLimit_PublishesUnmatchedResponsesForPairExpiry(t *testing.T) {
 	}
 }
 
-// Even an unmatched response that an exact tombstone already explains was
+// Even an unmatched response that an exact rejection record already explains was
 // still captured and then discarded before it could pair, so it must publish
 // to the stream index too.
-func TestRateLimit_PublishesTombstonedUnmatchedResponses(t *testing.T) {
+func TestRateLimit_PublishesExplainedUnmatchedResponses(t *testing.T) {
 	stats := capturestats.New()
 	rl := NewRateLimit(1.0, stats)
 	tracker := NewConnectionContextTracker(stats)
@@ -355,11 +355,11 @@ func TestRateLimit_PublishesTombstonedUnmatchedResponses(t *testing.T) {
 	}
 
 	if got := stats.Snapshot().ResponsesDroppedNoMatchingRequestRateLimited; got != 1 {
-		t.Fatalf("expected the rate-limited tombstone to claim the drop, got %d", got)
+		t.Fatalf("expected the exact rate-limited record to claim the drop, got %d", got)
 	}
 	streamKey, _ := streamContextKey(streamID)
 	if got := tracker.classifyPairExpiries([]uint64{streamKey}); got[0] != pairExpiryContextPeerRejected {
-		t.Fatalf("tombstoned drop classified as %d, want peer rejected", got[0])
+		t.Fatalf("explained drop classified as %d, want peer rejected", got[0])
 	}
 }
 
@@ -367,7 +367,7 @@ func TestRateLimit_PublishesTombstonedUnmatchedResponses(t *testing.T) {
 // than admissions, so it must be capped: expireRequests ranges it inline in
 // Process, on the capture goroutine, and an unbounded map turns a diagnostic
 // into a periodic source of packet loss.
-func TestRateLimit_CapsRejectionTombstones(t *testing.T) {
+func TestRateLimit_CapsRateLimitedRequestKeys(t *testing.T) {
 	stats := capturestats.New()
 	// A zero-value SharedRateLimit has no active sample interval, so
 	// AllowHTTPRequest rejects everything. NewRateLimit would start a
@@ -379,11 +379,11 @@ func TestRateLimit_CapsRejectionTombstones(t *testing.T) {
 	// Fill to the cap directly; driving 100k rejections through Process would
 	// make this test needlessly slow.
 	now := time.Now()
-	for i := 0; i < rateLimitTombstoneMaxEntries; i++ {
+	for i := 0; i < rateLimitedRequestKeysMaxEntries; i++ {
 		c.RateLimitedRequestKeys[requestKey{"stream", i}] = now
 	}
 
-	// Rejected, so it would otherwise add a tombstone.
+	// Rejected, so it would otherwise record a key.
 	streamID := uuid.New()
 	if err := c.Process(akinet.ParsedNetworkTraffic{
 		Content: akinet.HTTPRequest{StreamID: streamID, Seq: 1},
@@ -391,12 +391,12 @@ func TestRateLimit_CapsRejectionTombstones(t *testing.T) {
 		t.Fatalf("processing rejected request: %v", err)
 	}
 
-	if got := len(c.RateLimitedRequestKeys); got != rateLimitTombstoneMaxEntries {
-		t.Fatalf("tombstone map grew past the cap: %d", got)
+	if got := len(c.RateLimitedRequestKeys); got != rateLimitedRequestKeysMaxEntries {
+		t.Fatalf("RateLimitedRequestKeys grew past the cap: %d", got)
 	}
 	snapshot := stats.Snapshot()
-	if snapshot.RateLimitTombstonesDropped != 1 {
-		t.Fatalf("dropped tombstones = %d, want 1", snapshot.RateLimitTombstonesDropped)
+	if snapshot.RateLimitedRequestKeysCapacityEvicted != 1 {
+		t.Fatalf("capacity-evicted keys = %d, want 1", snapshot.RateLimitedRequestKeysCapacityEvicted)
 	}
 	// The rejection itself must still be counted; only the attribution aid is
 	// dropped.
@@ -407,7 +407,7 @@ func TestRateLimit_CapsRejectionTombstones(t *testing.T) {
 
 // Below the cap nothing is dropped, so the counter cannot be read as
 // "rejections" and the exact rate_limited attribution still works.
-func TestRateLimit_RecordsTombstonesBelowCap(t *testing.T) {
+func TestRateLimit_RecordsRateLimitedRequestKeysBelowCap(t *testing.T) {
 	stats := capturestats.New()
 	rl := &SharedRateLimit{stats: stats}
 	c := rl.NewCollector(&countingCollector{}, NewPacketCounter(), stats, nil).(*rateLimitCollector)
@@ -425,8 +425,8 @@ func TestRateLimit_RecordsTombstonesBelowCap(t *testing.T) {
 	}
 
 	snapshot := stats.Snapshot()
-	if snapshot.RateLimitTombstonesDropped != 0 {
-		t.Fatalf("dropped tombstones = %d, want 0", snapshot.RateLimitTombstonesDropped)
+	if snapshot.RateLimitedRequestKeysCapacityEvicted != 0 {
+		t.Fatalf("capacity-evicted keys = %d, want 0", snapshot.RateLimitedRequestKeysCapacityEvicted)
 	}
 	if snapshot.ResponsesDroppedNoMatchingRequestRateLimited != 1 {
 		t.Fatalf("exact rate-limited attribution = %d, want 1", snapshot.ResponsesDroppedNoMatchingRequestRateLimited)
