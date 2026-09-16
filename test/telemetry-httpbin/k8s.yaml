@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telemetry-httpbin-nginx
+  namespace: telemetry-httpbin
+data:
+  nginx.conf: |
+    events {}
+    http {
+        server {
+            listen 8443 ssl;
+            server_name telemetry-httpbin.telemetry-httpbin.svc;
+
+            ssl_certificate     /etc/nginx/tls/tls.crt;
+            ssl_certificate_key /etc/nginx/tls/tls.key;
+
+            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_prefer_server_ciphers on;
+
+            # go-httpbin's /delay and /drip can legitimately run as long as
+            # MAX_DURATION (see the Deployment below) -- these must be raised
+            # to match, or nginx will cut the TLS connection at its own
+            # default 60s proxy timeout before httpbin ever responds.
+            proxy_connect_timeout 10s;
+            proxy_send_timeout    130s;
+            proxy_read_timeout    130s;
+
+            location / {
+                proxy_pass http://127.0.0.1:8080;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header X-Forwarded-For $remote_addr;
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-httpbin
+  namespace: telemetry-httpbin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telemetry-httpbin
+  template:
+    metadata:
+      labels:
+        app: telemetry-httpbin
+    spec:
+      containers:
+        - name: httpbin
+          image: ghcr.io/mccutchen/go-httpbin:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # postman beta (workspace: sample-ws1, insights project: telemetry-httpbin)
+            # [URL](https://postman.postman-beta.co/workspace/sample-ws1~242d05ab-0cff-4982-8b4e-c6566042f09b/insights/svc_6WCwA3GtfKJFDunqUB2hVD)
+            - name: POSTMAN_INSIGHTS_PROJECT_ID
+              value: svc_6WCwA3GtfKJFDunqUB2hVD
+
+            # Raised well past the agent's 60s pairCacheExpiration so
+            # /delay/<seconds> can actually force a witness_pair_expired
+            # repro instead of being clamped to the 10s default. Keep this
+            # in sync with nginx's proxy_send_timeout/proxy_read_timeout
+            # above when testing over the HTTPS (eBPF) path.
+            - name: "MAX_DURATION"
+              value: "120s"
+
+          readinessProbe:
+            httpGet:
+              path: /status/200
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /status/200
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+        # TLS-terminating sidecar in front of the plain-HTTP httpbin
+        # container (same pattern as https-service/k8s.yaml). Its libssl
+        # calls are what the eBPF uprobe capture path hooks into, so this
+        # is what makes /delay, /drip, etc. usable for eBPF TLS scenarios
+        # -- the plain HTTP port above still exists for pcap-only testing.
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 8443
+              name: https
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /status/200
+              port: https
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /status/200
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: telemetry-httpbin-nginx
+        - name: tls
+          secret:
+            secretName: telemetry-httpbin-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-httpbin
+  namespace: telemetry-httpbin
+spec:
+  selector:
+    app: telemetry-httpbin
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: https
