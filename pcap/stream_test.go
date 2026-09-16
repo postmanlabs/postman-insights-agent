@@ -229,7 +229,7 @@ func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
 		akihttp.NewHTTPResponseParserFactory(pool),
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string) {
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string, _ uint64) {
 		reported = event
 	})
 	sg := &fakeScatterGather{
@@ -243,7 +243,7 @@ func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 	if got := stats.Snapshot().DiscardedResponses; got != 1 {
 		t.Fatalf("expected one discarded response, got %d", got)
 	}
-	if reported != "parser_discarded_response" {
+	if reported != "pcap_parser_discarded_response" {
 		t.Fatalf("expected parser discard telemetry, got %q", reported)
 	}
 }
@@ -260,7 +260,7 @@ func TestTCPFlowReportsDiscardedRequest(t *testing.T) {
 	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
 		akihttp.NewHTTPRequestParserFactory(pool),
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string) {
+	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string, _ uint64) {
 		reported = event
 	})
 	sg := &fakeScatterGather{
@@ -274,7 +274,7 @@ func TestTCPFlowReportsDiscardedRequest(t *testing.T) {
 	if got := stats.Snapshot().DiscardedRequests; got != 1 {
 		t.Fatalf("expected one discarded request, got %d", got)
 	}
-	if reported != "parser_discarded_request" {
+	if reported != "pcap_parser_discarded_request" {
 		t.Fatalf("expected parser discard telemetry, got %q", reported)
 	}
 }

@@ -41,9 +41,8 @@ func Collect(
 	pool buffer_pool.BufferPool,
 	telemetry telemetry.Tracker,
 	stats *capturestats.Stats,
-	telemetryEventReporter func(string),
-	directionHint *DirectionHint,
 	telemetryCountReporter func(string, uint64),
+	directionHint *DirectionHint,
 ) error {
 	defer proc.Close()
 
@@ -76,7 +75,6 @@ func Collect(
 	if packetCount != nil {
 		parser.InstallObserver(CountTcpPackets(intf, packetCount))
 	}
-	parser.InstallTelemetryEventReporter(telemetryEventReporter)
 	parser.InstallTelemetryCountReporter(telemetryCountReporter)
 
 	parsedChan, err := parser.ParseFromInterface(intf, bpfFilter, targetNetworkNamespaceOpt, stop, facts...)

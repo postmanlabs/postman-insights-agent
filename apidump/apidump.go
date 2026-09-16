@@ -86,7 +86,6 @@ type DaemonsetArgs struct {
 	APIKey                    string
 	Environment               string
 	TraceTags                 tags.SingletonTags
-	ReportTelemetryEvent      func(string)         `json:"-"`
 	ReportTelemetryCount      func(string, uint64) `json:"-"`
 
 	// RecordPcapMessage and RecordEBPFMessage report capture liveness for this
@@ -128,9 +127,7 @@ type DaemonsetArgs struct {
 }
 
 func (a Args) reportTelemetryEvent(event string) {
-	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.ReportTelemetryEvent != nil {
-		daemonsetArgs.ReportTelemetryEvent(event)
-	}
+	a.reportTelemetryCount(event, 1)
 }
 
 func (a Args) reportTelemetryCount(event string, count uint64) {
@@ -165,25 +162,15 @@ func (a Args) setCaptureMode(mode string) {
 
 // captureLivenessHooks returns the DaemonSet-supplied capture-liveness hooks, or
 // nils when running outside DaemonSet mode.
-func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter, reportEvent func(string), reportCount func(string, uint64)) {
+func (a Args) captureLivenessHooks() (recordPcap, recordEBPF func(time.Time), uploads trace.UploadReporter, reportCount func(string, uint64)) {
 	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok {
-		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter, daemonsetArgs.ReportTelemetryEvent, daemonsetArgs.ReportTelemetryCount
+		return daemonsetArgs.RecordPcapMessage, daemonsetArgs.RecordEBPFMessage, daemonsetArgs.UploadReporter, daemonsetArgs.ReportTelemetryCount
 	}
-	return nil, nil, nil, nil, nil
+	return nil, nil, nil, nil
 }
 
-func sourceTelemetryEventReporter(reporter func(string), source string) func(string) {
-	if reporter == nil {
-		return nil
-	}
-	return func(event string) {
-		reporter(source + "_" + event)
-	}
-}
-
-// sourceTelemetryCountReporter is the counted-callback counterpart of
-// sourceTelemetryEventReporter, for emitters that report a batch delta rather
-// than one event per item.
+// sourceTelemetryCountReporter prefixes every name this reporter emits with the
+// capture source, so pcap and eBPF counters of the same name stay distinct.
 func sourceTelemetryCountReporter(reporter func(string, uint64), source string) func(string, uint64) {
 	if reporter == nil {
 		return nil
@@ -1253,9 +1240,7 @@ func (a *apidump) Run() error {
 
 	// DaemonSet-supplied capture-liveness hooks. Nil outside DaemonSet mode, and
 	// the collectors treat nil as "not reporting".
-	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryEvent, reportTelemetryCount := args.captureLivenessHooks()
-	pcapReportEvent := sourceTelemetryEventReporter(reportTelemetryEvent, "pcap")
-	ebpfReportEvent := sourceTelemetryEventReporter(reportTelemetryEvent, "ebpf")
+	recordPcapMessage, recordEBPFMessage, uploadReporter, reportTelemetryCount := args.captureLivenessHooks()
 	pcapReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "pcap")
 	ebpfReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "ebpf")
 	pcapConnectionContext := trace.NewConnectionContextTracker(a.captureStats)
@@ -1326,7 +1311,6 @@ func (a *apidump) Run() error {
 					if uploadReporter != nil {
 						bc.SetUploadReporter(uploadReporter)
 					}
-					bc.SetTelemetryEventReporter(pcapReportEvent)
 					bc.SetTelemetryCountReporter(pcapReportCount)
 					// Shared with this chain's rate-limit collectors below, so
 					// a witness expiring unpaired can ask whether a message on
@@ -1430,15 +1414,13 @@ func (a *apidump) Run() error {
 					pool,
 					apidumpTelemetry,
 					a.captureStats,
-					// These two reporters take deliberately opposite forms, so
-					// do not "fix" one to match the other. The pcap package
-					// emits bare event names (parser_discarded_request), which
-					// need the source prefix added here, but its counter names
-					// are already prefixed (pcap_packets_received), so wrapping
-					// those would produce pcap_pcap_packets_received.
-					pcapReportEvent,
-					directionHint,
+					// Deliberately the unwrapped reporter: the pcap package
+					// names its own telemetry with the source already in it
+					// (pcap_packets_received, pcap_parser_discarded_request),
+					// so adding the prefix here would produce
+					// pcap_pcap_packets_received.
 					reportTelemetryCount,
+					directionHint,
 				); err != nil {
 					errChan <- interfaceError{
 						interfaceName: interfaceName,
@@ -1483,7 +1465,6 @@ func (a *apidump) Run() error {
 			if uploadReporter != nil {
 				bc.SetUploadReporter(uploadReporter)
 			}
-			bc.SetTelemetryEventReporter(ebpfReportEvent)
 			bc.SetTelemetryCountReporter(ebpfReportCount)
 		}
 		httpsCollector = &trace.PacketCountCollector{

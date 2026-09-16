@@ -82,7 +82,7 @@ type witnessWithInfo struct {
 
 	witness *pb.Witness
 
-	telemetryEventReporter func(string)
+	telemetryCountReporter func(string, uint64)
 }
 
 func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
@@ -188,7 +188,6 @@ type BackendCollector struct {
 	// in its own goroutine.
 	uploadReporter         UploadReporter
 	uploadReporterMutex    sync.Mutex
-	telemetryReporter      func(string)
 	telemetryCountReporter func(string, uint64)
 	telemetryReporterMutex sync.Mutex
 
@@ -379,7 +378,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			isRequest:              isRequest,
 			streamID:               streamID,
 			direction:              t.Direction,
-			telemetryEventReporter: c.reportTelemetryEvent,
+			telemetryCountReporter: c.reportTelemetryCount,
 		}
 		c.pairCache.Store(partial.PairKey, w)
 		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",
@@ -390,8 +389,8 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 }
 
 func (w *witnessWithInfo) reportTelemetryEvent(event string) {
-	if w.telemetryEventReporter != nil {
-		w.telemetryEventReporter(event)
+	if w.telemetryCountReporter != nil {
+		w.telemetryCountReporter(event, 1)
 	}
 }
 
@@ -757,31 +756,26 @@ func (c *BackendCollector) recordPairExpiryReason(missingResponse bool, reason p
 	c.reportTelemetryCount("witness_pair_expired_"+missing+"_"+pairExpiryReasonName(reason), count)
 }
 
-func (c *BackendCollector) SetTelemetryEventReporter(reporter func(string)) {
-	c.telemetryReporterMutex.Lock()
-	defer c.telemetryReporterMutex.Unlock()
-	c.telemetryReporter = reporter
-}
-
 func (c *BackendCollector) reportTelemetryEvent(event string) {
-	c.telemetryReporterMutex.Lock()
-	reporter := c.telemetryReporter
-	c.telemetryReporterMutex.Unlock()
-	if reporter != nil {
-		reporter(event)
-	}
+	c.reportTelemetryCount(event, 1)
 }
 
-// SetTelemetryCountReporter installs the target-scoped interval counter callback,
-// for outcomes that occur in batches. Emitting one event per item would take the
-// DaemonSet's node-wide telemetry lock once per item, which is worst during the
-// high-loss periods these counters exist to describe.
+// SetTelemetryCountReporter installs the target-scoped telemetry callback. It
+// carries interval deltas and one-shot events alike; an event is just count 1.
 func (c *BackendCollector) SetTelemetryCountReporter(reporter func(string, uint64)) {
 	c.telemetryReporterMutex.Lock()
 	defer c.telemetryReporterMutex.Unlock()
 	c.telemetryCountReporter = reporter
 }
 
+// reportTelemetryCount reports one named counter for this target.
+//
+// Report a batch as a single call carrying the batch size, never one call per
+// item: on the DaemonSet path every call takes a node-wide mutex (see
+// Daemonset.recordTelemetryCount), so per-item reporting would contend for it
+// hardest during the high-loss episodes these counters exist to describe. A
+// sweep expiring thousands of witnesses therefore reports per (direction,
+// reason) bucket -- see recordPairExpiryReason.
 func (c *BackendCollector) reportTelemetryCount(event string, count uint64) {
 	if count == 0 {
 		return

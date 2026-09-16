@@ -70,7 +70,7 @@ type Stats struct {
 	// outbound-heavy service can drop nearly every message -- and emitting one
 	// event per drop would take the DaemonSet's node-wide telemetry lock once
 	// per message on the capture path. See the note on
-	// trace.BackendCollector.SetTelemetryCountReporter.
+	// trace.BackendCollector.reportTelemetryCount.
 	RequestsFiltered         uint64
 	ResponsesFiltered        uint64
 	RequestsSampledOut       uint64

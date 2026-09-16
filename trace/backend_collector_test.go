@@ -64,7 +64,7 @@ func TestQueueUploadDoesNotFilterByDirection(t *testing.T) {
 		witness: &pb.Witness{Method: &pb.Method{
 			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
 		}},
-		telemetryEventReporter: func(got string) {
+		telemetryCountReporter: func(got string, _ uint64) {
 			event = got
 		},
 	}
@@ -83,7 +83,7 @@ func TestQueueUploadReportsPluginError(t *testing.T) {
 		witness: &pb.Witness{Method: &pb.Method{
 			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
 		}},
-		telemetryEventReporter: func(got string) {
+		telemetryCountReporter: func(got string, _ uint64) {
 			event = got
 		},
 	}
@@ -110,7 +110,7 @@ func TestReportBufferReportsOversizedWitness(t *testing.T) {
 		witness: &pb.Witness{Method: &pb.Method{
 			Meta: &pb.MethodMeta{Meta: &pb.MethodMeta_Http{Http: &pb.HTTPMethodMeta{}}},
 		}},
-		telemetryEventReporter: func(got string) {
+		telemetryCountReporter: func(got string, _ uint64) {
 			event = got
 		},
 	}
@@ -1910,13 +1910,9 @@ func TestPeriodicFlushSignalsExitForClose(t *testing.T) {
 // the node, and a single sweep can expire thousands of witnesses.
 func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
 	counts := newRecordingCountReporter()
-	var events []string
 
 	c := &BackendCollector{stats: capturestats.New()}
 	c.SetTelemetryCountReporter(counts.report)
-	c.SetTelemetryEventReporter(func(event string) {
-		events = append(events, event)
-	})
 
 	// Two request-only partials (missing their responses) and one
 	// response-only partial (missing its request).
@@ -1946,8 +1942,11 @@ func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
 	}, got)
 	// Two direction totals plus two (direction, reason) buckets. The number
 	// that matters is that it does not scale with the three witnesses.
+	//
+	// Events and interval deltas share one reporter, so the exact map equality
+	// above is also what proves expiry does not emit a per-witness event: any
+	// such call would add a name to got and push calls past 4.
 	assert.Equal(t, 4, calls, "expected one counted call per direction and per reason, not one per witness")
-	assert.Empty(t, events, "expiry must not use the per-event callback")
 }
 
 // The number of counted telemetry calls per sweep must stay bounded by the
