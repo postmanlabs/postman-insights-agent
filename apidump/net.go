@@ -196,7 +196,7 @@ func checkPcapPermissions(interfaces map[string]interfaceInfo, targetNetworkName
 			defer wg.Done()
 			h, err := pcap.GetPcapHandle(iface, 1600, true, pcap.BlockForever, targetNetworkNamespaceOpt)
 			if err != nil {
-				apidumpTelemetry.Error("pcap permissions", err)
+				apidumpAmplitudeTelemetry.Error("pcap permissions", err)
 				errChan <- &pcapPermErr{iface: iface, err: err}
 				return
 			}

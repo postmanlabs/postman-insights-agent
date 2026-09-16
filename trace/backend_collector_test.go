@@ -238,7 +238,7 @@ func TestRedact(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
-		capturestats.New(),
+		TelemetryOptions{Stats: capturestats.New()},
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -590,7 +590,7 @@ func TestTiming(t *testing.T) {
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
-				capturestats.New(),
+				TelemetryOptions{Stats: capturestats.New()},
 			)
 			for _, pnt := range test.PNTs {
 				assert.NoError(t, col.Process(pnt))
@@ -633,7 +633,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
-		capturestats.New(),
+		TelemetryOptions{Stats: capturestats.New()},
 	)
 
 	var wg sync.WaitGroup
@@ -790,7 +790,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
-		capturestats.New(),
+		TelemetryOptions{Stats: capturestats.New()},
 	)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
@@ -962,7 +962,7 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
-		capturestats.New(),
+		TelemetryOptions{Stats: capturestats.New()},
 	)
 	assert.NoError(t, col.Process(reqWithCapturePayloadPath))
 	assert.NoError(t, col.Process(respWithCapturePayloadPath))
@@ -1784,7 +1784,7 @@ func TestRedactionConfigs(t *testing.T) {
 			nil,
 			apispec.DefaultMaxWintessUploadBuffers,
 			telemetry.Default(),
-			capturestats.New(),
+			TelemetryOptions{Stats: capturestats.New()},
 		)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))
@@ -1835,8 +1835,10 @@ func TestFlushPairCacheAccountsEachWitnessOnce(t *testing.T) {
 	const witnesses = 400
 
 	stats := capturestats.New()
-	c := &BackendCollector{stats: stats}
-	c.SetTelemetryCountReporter(newRecordingCountReporter().report)
+	c := &BackendCollector{
+		stats:                  stats,
+		telemetryCountReporter: newRecordingCountReporter().report,
+	}
 
 	keys := make([]akid.WitnessID, 0, witnesses)
 	for i := 0; i < witnesses; i++ {
@@ -1911,8 +1913,10 @@ func TestPeriodicFlushSignalsExitForClose(t *testing.T) {
 func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
 	counts := newRecordingCountReporter()
 
-	c := &BackendCollector{stats: capturestats.New()}
-	c.SetTelemetryCountReporter(counts.report)
+	c := &BackendCollector{
+		stats:                  capturestats.New(),
+		telemetryCountReporter: counts.report,
+	}
 
 	// Two request-only partials (missing their responses) and one
 	// response-only partial (missing its request).
@@ -1956,9 +1960,12 @@ func TestFlushPairCacheBatchesExpiryTelemetry(t *testing.T) {
 func TestFlushPairCacheCallCountDoesNotScaleWithWitnesses(t *testing.T) {
 	counts := newRecordingCountReporter()
 
-	c := &BackendCollector{stats: capturestats.New()}
-	c.SetTelemetryCountReporter(counts.report)
-	c.SetConnectionContextTracker(NewConnectionContextTracker(c.stats))
+	stats := capturestats.New()
+	c := &BackendCollector{
+		stats:                  stats,
+		telemetryCountReporter: counts.report,
+		connectionContext:      NewConnectionContextTracker(stats),
+	}
 
 	const witnesses = 500
 	for i := 0; i < witnesses; i++ {
@@ -1990,9 +1997,11 @@ func TestFlushPairCacheAttributesRejectedCompanion(t *testing.T) {
 	stats := capturestats.New()
 	tracker := NewConnectionContextTracker(stats)
 
-	c := &BackendCollector{stats: stats}
-	c.SetTelemetryCountReporter(counts.report)
-	c.SetConnectionContextTracker(tracker)
+	c := &BackendCollector{
+		stats:                  stats,
+		telemetryCountReporter: counts.report,
+		connectionContext:      tracker,
+	}
 
 	rejectedStream := uuid.New()
 	quietStream := uuid.New()
@@ -2035,9 +2044,11 @@ func TestFlushPairCacheAttributesResponseOnlyWitnesses(t *testing.T) {
 	stats := capturestats.New()
 	tracker := NewConnectionContextTracker(stats)
 
-	c := &BackendCollector{stats: stats}
-	c.SetTelemetryCountReporter(counts.report)
-	c.SetConnectionContextTracker(tracker)
+	c := &BackendCollector{
+		stats:                  stats,
+		telemetryCountReporter: counts.report,
+		connectionContext:      tracker,
+	}
 
 	stream := uuid.New()
 	tracker.observeUnmatchedResponse(stream)
@@ -2068,8 +2079,10 @@ func TestFlushPairCacheAttributesResponseOnlyWitnesses(t *testing.T) {
 func newUploadTestBuffer(t *testing.T, mockClient *mockrest.MockLearnClient, counts *recordingCountReporter) *reportBuffer {
 	t.Helper()
 
-	c := &BackendCollector{learnClient: mockClient}
-	c.SetTelemetryCountReporter(counts.report)
+	c := &BackendCollector{
+		learnClient:            mockClient,
+		telemetryCountReporter: counts.report,
+	}
 
 	buf := newReportBuffer(c, NewPacketCounter(), uploadBatchMaxSize_bytes, optionals.None[int](), false, 1)
 	buf.addWitness(&witnessWithInfo{

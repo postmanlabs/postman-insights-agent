@@ -75,8 +75,9 @@ const (
 var (
 	ProcessSignalErr = errors.New("process received exit signal")
 
-	// Telemetry tracker for the apidump process
-	apidumpTelemetry telemetry.Tracker
+	// Amplitude analytics tracker for the apidump process. Distinct from the
+	// per-target capture counters that travel on Args.reportTelemetryCount.
+	apidumpAmplitudeTelemetry telemetry.Tracker
 )
 
 // Args for running apidump as daemonset in Kubernetes
@@ -441,14 +442,14 @@ func (a *apidump) LookupService() error {
 		if err != nil {
 			return err
 		}
-		apidumpTelemetry = telemetry.NewScoped(trackingUser)
+		apidumpAmplitudeTelemetry = telemetry.NewScoped(trackingUser)
 		a.setTrackingUser(trackingUser.UserID, trackingUser.TeamID)
 	} else {
-		apidumpTelemetry = telemetry.Default()
+		apidumpAmplitudeTelemetry = telemetry.Default()
 	}
 
 	// Initialize new front client with telemetry APIError handler.
-	frontClient := rest.NewFrontClient(a.Domain, a.ClientID, authHandler, apidumpTelemetry.APIError)
+	frontClient := rest.NewFrontClient(a.Domain, a.ClientID, authHandler, apidumpAmplitudeTelemetry.APIError)
 
 	// Every branch below makes exactly one real backend call to resolve a
 	// service (RegisterDiscoveredService, CreateApplication, or a lookup by
@@ -579,7 +580,7 @@ func (a *apidump) LookupService() error {
 	a.reportTelemetryEvent("service_resolved")
 	a.setResolvedService(akid.String(a.backendSvc), a.backendSvcName)
 
-	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler, apidumpTelemetry.APIError)
+	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler, apidumpAmplitudeTelemetry.APIError)
 	return nil
 }
 
@@ -619,7 +620,7 @@ func (a *apidump) SendInitialTelemetry() {
 	if err != nil {
 		// Log an error and continue.
 		printer.Stderr.Errorf("Failed to send initial telemetry statistics: %s\n", err)
-		apidumpTelemetry.Error("telemetry", err)
+		apidumpAmplitudeTelemetry.Error("telemetry", err)
 	}
 }
 
@@ -674,7 +675,7 @@ func (a *apidump) SendTelemetry(req *api_schema.PostClientPacketCaptureStatsRequ
 	if err != nil {
 		// Log an error and continue.
 		printer.Stderr.Errorf("Failed to send telemetry statistics: %s\n", err)
-		apidumpTelemetry.Error("telemetry", err)
+		apidumpAmplitudeTelemetry.Error("telemetry", err)
 	}
 }
 
@@ -805,7 +806,7 @@ func (a *apidump) RotateLearnSession(done <-chan struct{}, collectors []trace.Le
 			traceName := util.RandomLearnSessionName()
 			backendLrn, err := util.NewLearnSession(a.learnClient, traceName, traceTags, nil)
 			if err != nil {
-				apidumpTelemetry.Error("new learn session", err)
+				apidumpAmplitudeTelemetry.Error("new learn session", err)
 				printer.Errorf("Failed to create trace %s: %v\n", traceName, err)
 				break
 			}
@@ -813,7 +814,7 @@ func (a *apidump) RotateLearnSession(done <-chan struct{}, collectors []trace.Le
 			for _, c := range collectors {
 				c.SwitchLearnSession(backendLrn)
 			}
-			apidumpTelemetry.Success("rotate learn session")
+			apidumpAmplitudeTelemetry.Success("rotate learn session")
 		}
 	}
 }
@@ -1293,8 +1294,17 @@ func (a *apidump) Run() error {
 						optionals.Some(args.AlwaysCapturePayloads),
 						args.Plugins,
 						args.MaxWitnessUploadBuffers,
-						apidumpTelemetry,
-						a.captureStats,
+						apidumpAmplitudeTelemetry,
+						trace.TelemetryOptions{
+							Stats:          a.captureStats,
+							CountReporter:  pcapReportCount,
+							UploadReporter: uploadReporter,
+							// Shared with this chain's rate-limit collectors
+							// below, so a witness expiring unpaired can ask
+							// whether a message on its stream was already
+							// discarded as unmatched.
+							ConnectionContext: pcapConnectionContext,
+						},
 					)
 
 					collector = backendCollector
@@ -1305,17 +1315,6 @@ func (a *apidump) Run() error {
 				// If the backend collector supports rotation of learn session ID, then set that up.
 				if lsc, ok := backendCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 					toRotate = append(toRotate, lsc)
-				}
-
-				if bc, ok := backendCollector.(*trace.BackendCollector); ok {
-					if uploadReporter != nil {
-						bc.SetUploadReporter(uploadReporter)
-					}
-					bc.SetTelemetryCountReporter(pcapReportCount)
-					// Shared with this chain's rate-limit collectors below, so
-					// a witness expiring unpaired can ask whether a message on
-					// its stream was already discarded as unmatched.
-					bc.SetConnectionContextTracker(pcapConnectionContext)
 				}
 			}
 
@@ -1412,7 +1411,7 @@ func (a *apidump) Run() error {
 					collector,
 					summary,
 					pool,
-					apidumpTelemetry,
+					apidumpAmplitudeTelemetry,
 					a.captureStats,
 					// Deliberately the unwrapped reporter: the pcap package
 					// names its own telemetry with the source already in it
@@ -1455,17 +1454,17 @@ func (a *apidump) Run() error {
 			optionals.Some(args.AlwaysCapturePayloads),
 			args.Plugins,
 			args.MaxWitnessUploadBuffers,
-			apidumpTelemetry,
-			a.ebpfCaptureStats,
+			apidumpAmplitudeTelemetry,
+			trace.TelemetryOptions{
+				Stats:          a.ebpfCaptureStats,
+				CountReporter:  ebpfReportCount,
+				UploadReporter: uploadReporter,
+				// No ConnectionContext: the eBPF chain has never had one, the
+				// same reason rateLimit.NewCollector below is passed nil.
+			},
 		)
 		if lsc, ok := httpsCollector.(trace.LearnSessionCollector); ok && lsc != nil {
 			toRotate = append(toRotate, lsc)
-		}
-		if bc, ok := httpsCollector.(*trace.BackendCollector); ok {
-			if uploadReporter != nil {
-				bc.SetUploadReporter(uploadReporter)
-			}
-			bc.SetTelemetryCountReporter(ebpfReportCount)
 		}
 		httpsCollector = &trace.PacketCountCollector{
 			PacketCounts:      httpsSummary,
@@ -1509,7 +1508,7 @@ func (a *apidump) Run() error {
 			<-stop
 			httpsCancel()
 		}()
-		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpTelemetry)
+		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry)
 		printer.Stderr.Infof("HTTPS capture (eBPF) started with body-cap=%d, mode=%q.\n",
 			args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
 	} else if args.HTTPS.Enabled {
@@ -1537,7 +1536,7 @@ func (a *apidump) Run() error {
 		// Keep this event bounded and free of interface names, service
 		// credentials, or payload data.
 		mode := captureMode(numCollectors > 0, ebpfRequested)
-		apidumpTelemetry.WorkflowStep("capture_started", mode)
+		apidumpAmplitudeTelemetry.WorkflowStep("capture_started", mode)
 		args.reportTelemetryEvent("capture_started")
 		args.setCaptureMode(mode)
 	} else {
@@ -1591,7 +1590,7 @@ func (a *apidump) Run() error {
 
 		if cmdErr != nil {
 			subcmdErr = errors.Wrap(cmdErr, "failed to run subcommand")
-			apidumpTelemetry.Error("subcommand", cmdErr)
+			apidumpAmplitudeTelemetry.Error("subcommand", cmdErr)
 
 			// We promised to preserve the subcommand's exit code.
 			// Explicitly notify whoever is running us to exit.
@@ -1606,7 +1605,7 @@ func (a *apidump) Run() error {
 			select {
 			case interfaceErr := <-errChan:
 				printer.Stderr.Errorf("Encountered errors while collecting traces, stopping...\n")
-				apidumpTelemetry.Error("packet capture", interfaceErr.err)
+				apidumpAmplitudeTelemetry.Error("packet capture", interfaceErr.err)
 				errorsByInterface[interfaceErr.interfaceName] = interfaceErr.err
 
 				// Drain errChan.
@@ -1647,7 +1646,7 @@ func (a *apidump) Run() error {
 				case interfaceErr := <-errChan:
 					errorsByInterface[interfaceErr.interfaceName] = interfaceErr.err
 
-					apidumpTelemetry.Error("packet capture", interfaceErr.err)
+					apidumpAmplitudeTelemetry.Error("packet capture", interfaceErr.err)
 					if len(errorsByInterface) < numCollectors {
 						printer.Stderr.Errorf("Encountered an error on interface %s, continuing with remaining interfaces.  Error: %s\n", interfaceErr.interfaceName, interfaceErr.err.Error())
 					} else {
@@ -1693,7 +1692,7 @@ func (a *apidump) Run() error {
 		// If collectors on all interfaces report errors, report trace
 		// collection failed.
 		if len(errorsByInterface) == numCollectors {
-			apidumpTelemetry.Failure("all interfaces failed")
+			apidumpAmplitudeTelemetry.Failure("all interfaces failed")
 			return errors.Errorf("trace collection failed")
 		}
 	}
@@ -1707,7 +1706,7 @@ func (a *apidump) Run() error {
 	a.dumpSummary.PrintWarnings()
 
 	if a.dumpSummary.IsEmpty() {
-		apidumpTelemetry.Failure("empty API trace")
+		apidumpAmplitudeTelemetry.Failure("empty API trace")
 	} else {
 		printer.Stderr.Infof("%s 🎉\n\n", printer.Color.Green("Success!"))
 	}
