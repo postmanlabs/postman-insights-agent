@@ -22,7 +22,7 @@ const (
 )
 
 type pcapWrapper interface {
-	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats) (<-chan gopacket.Packet, error)
+	capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) (<-chan gopacket.Packet, error)
 	getInterfaceAddrs(interfaceName string) ([]net.IP, error)
 }
 
@@ -31,7 +31,7 @@ type pcapImpl struct {
 	TraceTags map[tags.Key]string
 }
 
-func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats) (<-chan gopacket.Packet, error) {
+func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) (<-chan gopacket.Packet, error) {
 	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, targetNetworkNamespaceOpt)
 	if err != nil {
 		return nil, err
@@ -55,7 +55,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 	statsStopped := make(chan struct{})
 	go func() {
 		defer close(statsStopped)
-		pollPcapStats(handle, interfaceName, stats, statsDone)
+		pollPcapStats(handle, interfaceName, stats, statsDone, telemetryCountReporter)
 	}()
 
 	// TODO: tune the packet channel buffer

@@ -81,6 +81,13 @@ type Adapter struct {
 	H2HPACKDesyncs uint64
 }
 
+// Stats is a lock-protected snapshot of adapter counters for one target.
+type Stats struct {
+	MessagesEmitted uint64
+	FlowsDropped    uint64
+	H2HPACKDesyncs  uint64
+}
+
 // connKey identifies a TLS connection (both directions).
 type connKey struct {
 	PID    uint32
@@ -525,6 +532,16 @@ func (a *Adapter) Snapshot() (numFlows int, totalBytes int) {
 		totalBytes += st.totalIn
 	}
 	return
+}
+
+func (a *Adapter) Stats() Stats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return Stats{
+		MessagesEmitted: a.MessagesEmitted,
+		FlowsDropped:    a.FlowsDropped,
+		H2HPACKDesyncs:  a.H2HPACKDesyncs,
+	}
 }
 
 // PreResolve caches a (pid, ssl_ctx, fd) → SocketInfo mapping. Called by
