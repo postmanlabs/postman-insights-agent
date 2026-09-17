@@ -48,7 +48,7 @@ const (
 //
 // Matches connectionContextMaxEntries for consistency with the other bounded
 // diagnostic index in this package.
-const rateLimitTombstoneMaxEntries = 100_000
+const rateLimitedRequestKeysMaxEntries = 100_000
 
 func init() {
 	viper.SetDefault(RateLimitEpochTime, 5*time.Minute)
@@ -244,8 +244,8 @@ type rateLimitCollector struct {
 
 	// Number of admitted requests still awaiting a response per TCP stream.
 	// This is a factual diagnostic for an unmatched response with no exact
-	// tombstone; it does not claim that the parser's request/response keys are
-	// necessarily wrong.
+	// rejection record; it does not claim that the parser's request/response
+	// keys are necessarily wrong.
 	ActiveRequestStreams map[string]uint64
 
 	// Last time a request was admitted on each TCP stream, retained after that
@@ -260,7 +260,7 @@ type rateLimitCollector struct {
 	// genuinely never captured. This map keeps that distinction observable.
 	//
 	// Only admitted requests are recorded. A rate-limited request already has
-	// an exact tombstone in RateLimitedRequestKeys, and its response *should*
+	// an exact key in RateLimitedRequestKeys, and its response *should*
 	// be dropped, so folding it in here would mix correct behaviour into a
 	// counter that exists to surface key mismatches.
 	//
@@ -336,17 +336,18 @@ func (r *rateLimitCollector) Process(pnt akinet.ParsedNetworkTraffic) error {
 			r.SeenRequestStreams[key.StreamID] = time.Now()
 		} else {
 			key := requestKey{c.StreamID.String(), c.Seq}
-			// Above the cap, drop the tombstone rather than the packet budget.
+			// Above the cap, drop the rejection record rather than the packet
+			// budget.
 			// The consequence is attribution, not correctness: without it, this
 			// request's response later falls through to a weaker reason
 			// (active_request_stream, request_seen_same_stream, or
 			// response_first) instead of the exact rate_limited one, so
 			// response_dropped_no_matching_request_rate_limited undercounts by
 			// however much this counter reports.
-			if len(r.RateLimitedRequestKeys) < rateLimitTombstoneMaxEntries {
+			if len(r.RateLimitedRequestKeys) < rateLimitedRequestKeysMaxEntries {
 				r.RateLimitedRequestKeys[key] = time.Now()
 			} else {
-				r.stats.IncrRateLimitTombstonesDropped()
+				r.stats.IncrRateLimitedRequestKeysCapacityEvicted()
 			}
 			r.stats.IncrRequestsRateLimited()
 			r.packetCount.Update(client_telemetry.PacketCounts{
@@ -405,7 +406,7 @@ func (r *rateLimitCollector) expireRequests(threshold time.Time) {
 			delete(r.RequestArrivalTimes, k)
 			r.removeActiveRequestStream(k.StreamID)
 			// Retain from the expiration point, not the original arrival time;
-			// otherwise the cleanup loop below removes the tombstone immediately.
+			// otherwise the cleanup loop below removes the record immediately.
 			r.ExpiredRequestKeys[k] = time.Now()
 			expired += 1
 		}
@@ -434,7 +435,7 @@ func (r *rateLimitCollector) recordUnmatchedResponse(pnt akinet.ParsedNetworkTra
 	// companion evidence a witness expiring unpaired later looks up (see
 	// ConnectionContextTracker.classifyPairExpiries), and it is recorded for
 	// every unmatched response regardless of which bucket below claims it: a
-	// response explained by an exact tombstone was still captured and then
+	// response explained by an exact rejection record was still captured and then
 	// discarded before it could complete a pair.
 	r.connectionContext.observeUnmatchedResponse(streamID)
 

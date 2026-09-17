@@ -70,7 +70,7 @@ type Stats struct {
 	// outbound-heavy service can drop nearly every message -- and emitting one
 	// event per drop would take the DaemonSet's node-wide telemetry lock once
 	// per message on the capture path. See the note on
-	// trace.BackendCollector.SetTelemetryCountReporter.
+	// trace.BackendCollector.reportTelemetryCount.
 	RequestsFiltered         uint64
 	ResponsesFiltered        uint64
 	RequestsSampledOut       uint64
@@ -83,13 +83,16 @@ type Stats struct {
 	RequestsRateLimited uint64
 	RequestKeysExpired  uint64
 
-	// Rejected-request tombstones the rate limiter declined to record because
-	// its bounded map was full (see trace.rateLimitTombstoneMaxEntries). A
-	// nonzero value means ResponsesDroppedNoMatchingRequestRateLimited
-	// undercounts by this much, with those responses attributed to a weaker
-	// reason instead -- it qualifies that partition the same way
-	// ConnectionContextCapacityEvicted qualifies ResponseFirst.
-	RateLimitTombstonesDropped                                 uint64
+	// Rate-limited request keys the collector declined to record because its
+	// bounded map was already at capacity (see
+	// trace.rateLimitedRequestKeysMaxEntries). Named for consistency with the
+	// other CapacityEvicted counters, though at this cap it is the incoming key
+	// that is refused rather than a resident that is evicted. A nonzero value
+	// means ResponsesDroppedNoMatchingRequestRateLimited undercounts by this
+	// much, with those responses attributed to a weaker reason instead -- it
+	// qualifies that partition the same way ConnectionContextCapacityEvicted
+	// qualifies ResponseFirst.
+	RateLimitedRequestKeysCapacityEvicted                      uint64
 	RequestsDroppedAgentTraffic                                uint64
 	ResponsesDroppedAgentTraffic                               uint64
 	RequestsDroppedNginxTraffic                                uint64
@@ -320,9 +323,9 @@ func (s *Stats) IncrRequestsRateLimited() {
 	atomic.AddUint64(&s.RequestsRateLimited, 1)
 }
 
-func (s *Stats) IncrRateLimitTombstonesDropped() {
+func (s *Stats) IncrRateLimitedRequestKeysCapacityEvicted() {
 	if s != nil {
-		atomic.AddUint64(&s.RateLimitTombstonesDropped, 1)
+		atomic.AddUint64(&s.RateLimitedRequestKeysCapacityEvicted, 1)
 	}
 }
 
@@ -601,7 +604,7 @@ type Snapshot struct {
 
 	ResponsesDroppedNoMatchingRequest                                                              uint64
 	RequestsRateLimited, RequestKeysExpired                                                        uint64
-	RateLimitTombstonesDropped                                                                     uint64
+	RateLimitedRequestKeysCapacityEvicted                                                          uint64
 	RequestsDroppedAgentTraffic, ResponsesDroppedAgentTraffic                                      uint64
 	RequestsDroppedNginxTraffic, ResponsesDroppedNginxTraffic                                      uint64
 	ResponsesDroppedNoMatchingRequestRateLimited, ResponsesDroppedNoMatchingRequestExpired         uint64
@@ -662,7 +665,7 @@ func (s *Stats) Snapshot() Snapshot {
 		ResponsesDroppedNoMatchingRequest:                          atomic.LoadUint64(&s.ResponsesDroppedNoMatchingRequest),
 		RequestsRateLimited:                                        atomic.LoadUint64(&s.RequestsRateLimited),
 		RequestKeysExpired:                                         atomic.LoadUint64(&s.RequestKeysExpired),
-		RateLimitTombstonesDropped:                                 atomic.LoadUint64(&s.RateLimitTombstonesDropped),
+		RateLimitedRequestKeysCapacityEvicted:                      atomic.LoadUint64(&s.RateLimitedRequestKeysCapacityEvicted),
 		RequestsDroppedAgentTraffic:                                atomic.LoadUint64(&s.RequestsDroppedAgentTraffic),
 		ResponsesDroppedAgentTraffic:                               atomic.LoadUint64(&s.ResponsesDroppedAgentTraffic),
 		RequestsDroppedNginxTraffic:                                atomic.LoadUint64(&s.RequestsDroppedNginxTraffic),

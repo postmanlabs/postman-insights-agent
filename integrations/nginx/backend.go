@@ -198,7 +198,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		args.Plugins,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
-		capturestats.New(),
+		trace.TelemetryOptions{Stats: capturestats.New()},
 	)
 
 	// TODO: rate-limit

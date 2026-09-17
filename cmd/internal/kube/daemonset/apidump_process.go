@@ -138,7 +138,6 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 				APIKey:                    podArgs.PodCreds.InsightsAPIKey,
 				Environment:               podArgs.PodCreds.InsightsEnvironment,
 				TraceTags:                 podArgs.TraceTags,
-				ReportTelemetryEvent:      func(event string) { d.recordTelemetryEvent(string(podUID), event) },
 				ReportTelemetryCount:      func(event string, count uint64) { d.recordTelemetryCount(string(podUID), event, count) },
 				SetFailureCategory:        func(category string) { d.Coverage.SetDiagnostics(string(podUID), category, nil, nil) },
 				SetResolvedService: func(serviceID, serviceName string) {

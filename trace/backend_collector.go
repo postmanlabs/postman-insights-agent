@@ -82,7 +82,7 @@ type witnessWithInfo struct {
 
 	witness *pb.Witness
 
-	telemetryEventReporter func(string)
+	telemetryCountReporter func(string, uint64)
 }
 
 func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
@@ -182,16 +182,6 @@ type BackendCollector struct {
 	uploadReportBatch *batcher.InMemory[rawReport]
 	reportBuffer      *reportBuffer
 
-	// Optional observer of upload outcomes. Set via SetUploadReporter rather than
-	// passed to the constructor, which already takes more arguments than is
-	// comfortable. Guarded by uploadReporterMutex because Flush runs the upload
-	// in its own goroutine.
-	uploadReporter         UploadReporter
-	uploadReporterMutex    sync.Mutex
-	telemetryReporter      func(string)
-	telemetryCountReporter func(string, uint64)
-	telemetryReporterMutex sync.Mutex
-
 	// Channel controlling periodic cache flush
 	flushDone chan struct{}
 
@@ -200,14 +190,6 @@ type BackendCollector struct {
 	// join -- a tick already inside flushPairCache keeps running. Close waits
 	// on this before touching the batcher; see the comment there.
 	flushExited chan struct{}
-
-	// Answers "was a message on this stream already discarded as unmatched"
-	// for witnesses that expire unpaired. Installed via
-	// SetConnectionContextTracker rather than taken by the constructor, which
-	// already takes more arguments than is comfortable. Nil outside the pcap
-	// chain, and nil-safe on every method it is used through.
-	connectionContext      *ConnectionContextTracker
-	connectionContextMutex sync.Mutex
 
 	// Mutex protecting learnSessionID
 	learnSessionMutex sync.Mutex
@@ -223,15 +205,40 @@ type BackendCollector struct {
 
 	redactor *data_masks.Redactor
 
-	telemetry telemetry.Tracker
+	// Amplitude analytics for agent-level events (errors, workflow steps).
+	// Unrelated to the capture diagnostics below, which go to the DaemonSet's
+	// per-target event stream instead.
+	amplitudeTelemetry telemetry.Tracker
 
-	// Capture-diagnostics counters for the apidump session this collector
-	// belongs to. One BackendCollector is created per apidump.Run() call (two
-	// if HTTPS capture is also enabled), so stats being a field here -- rather
-	// than a package-level counter -- is what keeps pairing outcomes and
-	// negative-latency counts scoped to the pod this collector is uploading
-	// witnesses for, instead of every pod the node happens to monitor.
+	// Scoped to this collector's apidump session, so that the
+	// DaemonSet's numbers stay per-pod rather than per-node.
 	stats *capturestats.Stats
+
+	// Nil means not reporting.
+	telemetryCountReporter func(string, uint64)
+	uploadReporter         UploadReporter
+
+	// Answers "was a message on this stream already discarded as unmatched"
+	// for witnesses that expire unpaired. Nil outside the pcap chain, and
+	// nil-safe on every method it is used through.
+	connectionContext *ConnectionContextTracker
+}
+
+// TelemetryOptions carries the capture diagnostics a BackendCollector reports
+// on itself. Every field is optional and nil-safe; the zero value reports
+// nothing.
+type TelemetryOptions struct {
+	Stats *capturestats.Stats
+
+	// Interval counters; an event is just a count of 1.
+	CountReporter func(string, uint64)
+
+	// Per-batch upload outcomes, feeding the coverage snapshot's
+	// last_upload_at and last_upload_status.
+	UploadReporter UploadReporter
+
+	// Shared with the chain's rate-limit collectors; nil outside pcap.
+	ConnectionContext *ConnectionContextTracker
 }
 
 var _ LearnSessionCollector = (*BackendCollector)(nil)
@@ -248,8 +255,8 @@ func NewBackendCollector(
 	alwaysCapturePayloads optionals.Optional[[]string],
 	plugins []plugin.AkitaPlugin,
 	uploadReportBuffers int,
-	telemetry telemetry.Tracker,
-	stats *capturestats.Stats,
+	amplitudeTelemetry telemetry.Tracker,
+	opts TelemetryOptions,
 ) Collector {
 	// Compile the regexps for the always capture payloads.
 	alwaysCapturePayloadsPathsRegex := []*regexp.Regexp{}
@@ -275,8 +282,11 @@ func NewBackendCollector(
 		sendWitnessPayloads:             sendWitnessPayloads,
 		alwaysCapturePayloadsPathsRegex: alwaysCapturePayloadsPathsRegex,
 		redactor:                        redactor,
-		telemetry:                       telemetry,
-		stats:                           stats,
+		amplitudeTelemetry:              amplitudeTelemetry,
+		stats:                           opts.Stats,
+		telemetryCountReporter:          opts.CountReporter,
+		uploadReporter:                  opts.UploadReporter,
+		connectionContext:               opts.ConnectionContext,
 	}
 
 	col.reportBuffer = newReportBuffer(col, packetCounts, uploadBatchMaxSize_bytes, maxWitnessSize_bytes, sendWitnessPayloads, uploadReportBuffers)
@@ -324,7 +334,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 		// whichever side of the pair this was, no witness will be produced
 		// for it.
 		c.stats.IncrWitnessParseFailed()
-		c.telemetry.RateLimitError("parse HTTP", parseHTTPErr)
+		c.amplitudeTelemetry.RateLimitError("parse HTTP", parseHTTPErr)
 		c.reportTelemetryEvent("http_parse_failed_" + messageDirection(isRequest) + "_" + classifyParseHTTPError(parseHTTPErr))
 		printer.Debugf("Failed to parse HTTP, skipping: %v\n", parseHTTPErr)
 		return nil
@@ -379,7 +389,7 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			isRequest:              isRequest,
 			streamID:               streamID,
 			direction:              t.Direction,
-			telemetryEventReporter: c.reportTelemetryEvent,
+			telemetryCountReporter: c.reportTelemetryCount,
 		}
 		c.pairCache.Store(partial.PairKey, w)
 		printer.Debugf("Partial witness %v request=%v at %v -- %v\n",
@@ -390,8 +400,8 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 }
 
 func (w *witnessWithInfo) reportTelemetryEvent(event string) {
-	if w.telemetryEventReporter != nil {
-		w.telemetryEventReporter(event)
+	if w.telemetryCountReporter != nil {
+		w.telemetryCountReporter(event, 1)
 	}
 }
 
@@ -490,22 +500,10 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	})
 }
 
-// SetUploadReporter installs an observer for upload outcomes. Passing nil
-// disables reporting.
-func (c *BackendCollector) SetUploadReporter(r UploadReporter) {
-	c.uploadReporterMutex.Lock()
-	defer c.uploadReporterMutex.Unlock()
-	c.uploadReporter = r
-}
-
 // reportUpload records the outcome of one upload batch, if an observer is set.
 func (c *BackendCollector) reportUpload(at time.Time, status UploadStatus) {
-	c.uploadReporterMutex.Lock()
-	reporter := c.uploadReporter
-	c.uploadReporterMutex.Unlock()
-
-	if reporter != nil {
-		reporter.RecordUpload(at, status)
+	if c.uploadReporter != nil {
+		c.uploadReporter.RecordUpload(at, status)
 	}
 }
 
@@ -651,22 +649,6 @@ func (c *BackendCollector) flushPairCache(cutoffTime time.Time) {
 	}
 }
 
-// SetConnectionContextTracker installs the shared per-session tracker used to
-// attribute pair-cache expiries. Must be synchronized: periodicFlush is
-// started by the constructor, so the flush goroutine can be reading this
-// field while Run is still wiring the collector up.
-func (c *BackendCollector) SetConnectionContextTracker(tracker *ConnectionContextTracker) {
-	c.connectionContextMutex.Lock()
-	defer c.connectionContextMutex.Unlock()
-	c.connectionContext = tracker
-}
-
-func (c *BackendCollector) getConnectionContextTracker() *ConnectionContextTracker {
-	c.connectionContextMutex.Lock()
-	defer c.connectionContextMutex.Unlock()
-	return c.connectionContext
-}
-
 // pairExpiryReasonName maps a reason to the suffix used in both the telemetry
 // event name and the diagnostics log line.
 func pairExpiryReasonName(reason pairExpiryContext) string {
@@ -697,7 +679,7 @@ func (c *BackendCollector) reportPairExpiryReasons(streamKeys []uint64, wasReque
 		return
 	}
 
-	reasons := c.getConnectionContextTracker().classifyPairExpiries(streamKeys)
+	reasons := c.connectionContext.classifyPairExpiries(streamKeys)
 
 	// Indexed [wasRequest][reason]: a request-only witness (wasRequest) is the
 	// one missing its response.
@@ -757,40 +739,24 @@ func (c *BackendCollector) recordPairExpiryReason(missingResponse bool, reason p
 	c.reportTelemetryCount("witness_pair_expired_"+missing+"_"+pairExpiryReasonName(reason), count)
 }
 
-func (c *BackendCollector) SetTelemetryEventReporter(reporter func(string)) {
-	c.telemetryReporterMutex.Lock()
-	defer c.telemetryReporterMutex.Unlock()
-	c.telemetryReporter = reporter
-}
-
 func (c *BackendCollector) reportTelemetryEvent(event string) {
-	c.telemetryReporterMutex.Lock()
-	reporter := c.telemetryReporter
-	c.telemetryReporterMutex.Unlock()
-	if reporter != nil {
-		reporter(event)
-	}
+	c.reportTelemetryCount(event, 1)
 }
 
-// SetTelemetryCountReporter installs the target-scoped interval counter callback,
-// for outcomes that occur in batches. Emitting one event per item would take the
-// DaemonSet's node-wide telemetry lock once per item, which is worst during the
-// high-loss periods these counters exist to describe.
-func (c *BackendCollector) SetTelemetryCountReporter(reporter func(string, uint64)) {
-	c.telemetryReporterMutex.Lock()
-	defer c.telemetryReporterMutex.Unlock()
-	c.telemetryCountReporter = reporter
-}
-
+// reportTelemetryCount reports one named counter for this target.
+//
+// Report a batch as a single call carrying the batch size, never one call per
+// item: on the DaemonSet path every call takes a node-wide mutex (see
+// Daemonset.recordTelemetryCount), so per-item reporting would contend for it
+// hardest during the high-loss episodes these counters exist to describe. A
+// sweep expiring thousands of witnesses therefore reports per (direction,
+// reason) bucket -- see recordPairExpiryReason.
 func (c *BackendCollector) reportTelemetryCount(event string, count uint64) {
 	if count == 0 {
 		return
 	}
-	c.telemetryReporterMutex.Lock()
-	reporter := c.telemetryCountReporter
-	c.telemetryReporterMutex.Unlock()
-	if reporter != nil {
-		reporter(event, count)
+	if c.telemetryCountReporter != nil {
+		c.telemetryCountReporter(event, count)
 	}
 }
 

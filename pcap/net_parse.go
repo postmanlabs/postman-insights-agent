@@ -66,10 +66,10 @@ type tcpStreamFactory struct {
 	stats                  *capturestats.Stats
 	useSyntheticPairing    bool
 	directionHint          *DirectionHint
-	telemetryEventReporter func(string)
+	telemetryCountReporter func(string, uint64)
 }
 
-func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryEventReporter func(string)) *tcpStreamFactory {
+func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryCountReporter func(string, uint64)) *tcpStreamFactory {
 	return &tcpStreamFactory{
 		clock:                  clock,
 		fs:                     fs,
@@ -77,12 +77,12 @@ func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetwork
 		stats:                  stats,
 		useSyntheticPairing:    useSyntheticPairing,
 		directionHint:          directionHint,
-		telemetryEventReporter: telemetryEventReporter,
+		telemetryCountReporter: telemetryCountReporter,
 	}
 }
 
 func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP, _ reassembly.AssemblerContext) reassembly.Stream {
-	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint, fact.telemetryEventReporter)
+	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint, fact.telemetryCountReporter)
 }
 
 // NetworkTrafficObserver is the callback function type for observing
@@ -95,7 +95,6 @@ type NetworkTrafficParser struct {
 	pcap                   pcapWrapper
 	clock                  clockWrapper
 	observer               NetworkTrafficObserver // This function is called for every packet.
-	telemetryEventReporter func(string)
 	telemetryCountReporter func(string, uint64)
 	bufferShare            float32
 	telemetry              telemetry.Tracker
@@ -135,12 +134,8 @@ func (p *NetworkTrafficParser) InstallObserver(observer NetworkTrafficObserver) 
 	p.observer = observer
 }
 
-// InstallTelemetryEventReporter installs the target-scoped event callback.
-func (p *NetworkTrafficParser) InstallTelemetryEventReporter(reporter func(string)) {
-	p.telemetryEventReporter = reporter
-}
-
-// InstallTelemetryCountReporter installs the target-scoped interval counter callback.
+// InstallTelemetryCountReporter installs the target-scoped telemetry callback,
+// which carries both interval deltas and one-shot events (count 1).
 func (p *NetworkTrafficParser) InstallTelemetryCountReporter(reporter func(string, uint64)) {
 	p.telemetryCountReporter = reporter
 }
@@ -165,7 +160,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 
 	// Set up assembly
 	out := make(chan akinet.ParsedNetworkTraffic, 100)
-	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint, p.telemetryEventReporter)
+	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint, p.telemetryCountReporter)
 	streamPool := reassembly.NewStreamPool(streamFactory)
 	assembler := reassembly.NewAssembler(streamPool)
 
@@ -261,12 +256,6 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 	}()
 
 	return out, nil
-}
-
-func (p *NetworkTrafficParser) reportTelemetryEvent(event string) {
-	if p.telemetryEventReporter != nil {
-		p.telemetryEventReporter(event)
-	}
 }
 
 func (p *NetworkTrafficParser) reportTelemetryCount(event string, count uint64) {
