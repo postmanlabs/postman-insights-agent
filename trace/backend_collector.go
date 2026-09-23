@@ -4,9 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/rand/v2"
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/learn"
@@ -46,6 +49,78 @@ const (
 	// How often to flush the upload batch.
 	uploadBatchFlushDuration = 5 * time.Second
 )
+
+// An unparseable value falls back to the default rather than to zero, so a
+// typo cannot silently switch the baseline off on a fleet that wants it on.
+var timingSampleOneIn = func() uint64 {
+	// One witness in timingSampleOneIn carries pipeline timing checkpoints
+	// (api_schema.WitnessReport.EventTimestamps). 0 disables them entirely, so an
+	// agent left at the default sends byte-identical payloads to what it sent
+	// before.
+	v := os.Getenv("POSTMAN_INSIGHTS_AGENT_WITNESS_TIMING_SAMPLE_ONE_IN")
+	if v == "" {
+		return apispec.DefaultWitnessTimingSampleOneIn
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		printer.Warningf("env-var 'POSTMAN_INSIGHTS_AGENT_WITNESS_TIMING_SAMPLE_ONE_IN' value %q could not be parsed: %v, using default: %v\n", v, err, apispec.DefaultWitnessTimingSampleOneIn)
+		return apispec.DefaultWitnessTimingSampleOneIn
+	}
+	return n
+}()
+
+// witnessTimings holds one witness's pipeline checkpoints. A nil
+// *witnessTimings marks the witness as untimed, which is the only thing that
+// distinguishes a sampled witness from an unsampled one.
+type witnessTimings struct {
+	// Packet capture timestamps, on the kernel's clock via libpcap or eBPF.
+	// Set together at pairing, the only point where the request/response
+	// mirror has been resolved.
+	reqRecv   time.Time // last packet of the request
+	respStart time.Time // first packet of the response
+	respRecv  time.Time // last packet of the response
+
+	// Agent wall-clock, time.Now() at the stage each names.
+	paired   time.Time // request and response merged
+	redacted time.Time // redaction returned
+	batched  time.Time // batcher handed the witness to the buffer
+}
+
+// newWitnessTimings returns checkpoints for a sampled witness, or nil to leave
+// the witness untimed.
+func newWitnessTimings() *witnessTimings {
+	if timingSampleOneIn == 0 || rand.Uint64N(timingSampleOneIn) != 0 {
+		return nil
+	}
+	return &witnessTimings{}
+}
+
+// toWire renders the checkpoints in the form the back end receives.
+// WitnessBuffered and WitnessUploaded are left zero here and stamped downstream
+// by reportBuffer, which is why SizeInBytes counts EventTimestamps at its
+// maximum rather than at what is currently set.
+func (t *witnessTimings) toWire() *kgxapi.EventTimestamps {
+	if t == nil {
+		return nil
+	}
+	return &kgxapi.EventTimestamps{
+		ReqRecv:         unixMicroOrZero(t.reqRecv),
+		RespStart:       unixMicroOrZero(t.respStart),
+		RespRecv:        unixMicroOrZero(t.respRecv),
+		WitnessPaired:   unixMicroOrZero(t.paired),
+		WitnessRedacted: unixMicroOrZero(t.redacted),
+		WitnessBatched:  unixMicroOrZero(t.batched),
+	}
+}
+
+// A zero time is rendered as 0 rather than the large negative value it would
+// otherwise serialize to. 0 is what the baseline queries filter on.
+func unixMicroOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMicro()
+}
 
 type witnessWithInfo struct {
 	// The name of the interface on which this witness was captured.
@@ -82,6 +157,16 @@ type witnessWithInfo struct {
 
 	witness *pb.Witness
 
+	// Pipeline timing checkpoints, microseconds since the Unix epoch, in the
+	// same shape they take on the wire. Nil unless this witness was sampled:
+	// Nil unless this witness was sampled. Lives here rather than on the
+	// report because toReport() can run twice -- see reportBuffer.addWitness's
+	// obfuscation retry.
+	//
+	// Unrelated to the traffic sampling in collector.go, which decides what to
+	// capture at all.
+	timings *witnessTimings
+
 	telemetryCountReporter func(string, uint64)
 }
 
@@ -114,6 +199,7 @@ func (r *witnessWithInfo) toReport() (*kgxapi.WitnessReport, error) {
 		ClientWitnessTime: r.observationTime,
 		Hash:              hash,
 		ID:                r.id,
+		EventTimestamps:   r.timings.toWire(),
 	}, nil
 }
 
@@ -126,18 +212,34 @@ func (w *witnessWithInfo) computeProcessingLatency(stats *capturestats.Stats, is
 			printer.Debugln("Skipping latency calculation. Matched 2 responses together.")
 		}
 		w.reportTelemetryEvent("latency_anomaly_mismatched_pair_type")
+
+		// No usable packet times, so this witness cannot contribute to the
+		// baseline. Drop the checkpoints rather than upload a row of zeros.
+		w.timings = nil
 		return
 	}
 
 	// Processing latency is the time from the last packet of the request,
 	// to the first packet of the response.
-	var requestEnd, responseStart time.Time
+	var requestEnd, responseStart, responseEnd time.Time
 	if w.isRequest {
 		requestEnd = w.finalPacketTime
 		responseStart = t.ObservationTime
+		responseEnd = t.FinalPacketTime
 	} else {
 		requestEnd = t.FinalPacketTime
 		responseStart = w.observationTime
+		responseEnd = w.finalPacketTime
+	}
+
+	// Recorded before the zero-value guard below: a missing timestamp should
+	// show up as a 0 in the timing row, not exclude the two that were present.
+	// This is the only place the request/response mirror is resolved, which is
+	// why the packet-time checkpoints are stamped here and not at capture.
+	if w.timings != nil {
+		w.timings.reqRecv = requestEnd
+		w.timings.respStart = responseStart
+		w.timings.respRecv = responseEnd
 	}
 
 	// Missing data, leave as default value in protobuf
@@ -352,6 +454,13 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			// Combine the pair, merging the result into the existing item
 			// rather than the new partial.
 			learn.MergeWitness(pair.witness, partial.Witness)
+
+			// Sample here, not when the first half arrived: a witness that
+			// never pairs has no request/response packet times, so every
+			// segment the baseline is built from is uncomputable for it. Rolling
+			// at pairing also stops the sample rate being diluted by witnesses
+			// that expire.
+			pair.timings = newWitnessTimings()
 			pair.computeProcessingLatency(c.stats, isRequest, t)
 
 			// Backfill direction if the first-seen half didn't carry one. Both
@@ -369,6 +478,9 @@ func (c *BackendCollector) Process(t akinet.ParsedNetworkTraffic) error {
 			}
 
 			c.stats.IncrWitnessesPaired()
+			if pair.timings != nil {
+				pair.timings.paired = time.Now()
+			}
 			c.queueUpload(pair)
 			printer.Debugf("Completed witness %v direction=%s at %v -- %v\n",
 				partial.PairKey, pair.direction, t.ObservationTime, t.FinalPacketTime)
@@ -493,6 +605,9 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 		c.redactor.ZeroAllPrimitives(w.witness.GetMethod())
 	} else {
 		c.redactor.RedactSensitiveData(w.witness.GetMethod())
+	}
+	if w.timings != nil {
+		w.timings.redacted = time.Now()
 	}
 
 	c.uploadReportBatch.Add(rawReport{

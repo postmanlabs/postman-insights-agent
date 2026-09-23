@@ -41,4 +41,9 @@ const (
 
 	// The maximum number of witness upload buffers
 	DefaultMaxWintessUploadBuffers = 2
+
+	// One witness in this many carries pipeline timing checkpoints
+	// (api_schema.WitnessReport.EventTimestamps), feeding the INS-228 latency
+	// baseline. 0 disables them, restoring byte-identical uploads.
+	DefaultWitnessTimingSampleOneIn = 100
 )
