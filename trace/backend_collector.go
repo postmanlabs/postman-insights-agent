@@ -54,9 +54,8 @@ const (
 // typo cannot silently switch the baseline off on a fleet that wants it on.
 var timingSampleOneIn = func() uint64 {
 	// One witness in timingSampleOneIn carries pipeline timing checkpoints
-	// (api_schema.WitnessReport.EventTimestamps). 0 disables them entirely, so an
-	// agent left at the default sends byte-identical payloads to what it sent
-	// before.
+	// (api_schema.WitnessReport.EventTimestamps). 0 disables them entirely,
+	// restoring byte-identical payloads to what the agent sent before.
 	v := os.Getenv("POSTMAN_INSIGHTS_AGENT_WITNESS_TIMING_SAMPLE_ONE_IN")
 	if v == "" {
 		return apispec.DefaultWitnessTimingSampleOneIn
@@ -157,11 +156,9 @@ type witnessWithInfo struct {
 
 	witness *pb.Witness
 
-	// Pipeline timing checkpoints, microseconds since the Unix epoch, in the
-	// same shape they take on the wire. Nil unless this witness was sampled:
-	// Nil unless this witness was sampled. Lives here rather than on the
-	// report because toReport() can run twice -- see reportBuffer.addWitness's
-	// obfuscation retry.
+	// Pipeline timing checkpoints. Nil unless this witness was sampled. Lives
+	// here rather than on the report because toReport() can run twice -- see
+	// reportBuffer.addWitness's obfuscation retry.
 	//
 	// Unrelated to the traffic sampling in collector.go, which decides what to
 	// capture at all.
