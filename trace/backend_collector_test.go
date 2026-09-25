@@ -2187,3 +2187,128 @@ func TestReportBufferWaitsForAllInflightUploads(t *testing.T) {
 		t.Fatal("WaitForUploads did not wait for both uploads")
 	}
 }
+
+// Timing checkpoints must come out identical no matter which half of the pair
+// arrived first -- that mirror in computeProcessingLatency is the one place
+// this can silently invert, producing a negative service_time for every
+// response-first capture.
+func TestEventTimestampsStampedBothArrivalOrders(t *testing.T) {
+	streamID := uuid.New()
+	startTime := time.Now().Truncate(time.Microsecond)
+
+	reqStart, reqEnd := startTime, startTime.Add(2*time.Millisecond)
+	respStart, respEnd := startTime.Add(10*time.Millisecond), startTime.Add(13*time.Millisecond)
+
+	request := akinet.ParsedNetworkTraffic{
+		Content: akinet.HTTPRequest{
+			StreamID: streamID,
+			Seq:      7,
+			Method:   "GET",
+			URL:      &url.URL{Path: "/v1/doggos"},
+			Host:     "example.com",
+		},
+		ObservationTime: reqStart,
+		FinalPacketTime: reqEnd,
+	}
+	response := akinet.ParsedNetworkTraffic{
+		Content:         akinet.HTTPResponse{StreamID: streamID, Seq: 7, StatusCode: 200},
+		ObservationTime: respStart,
+		FinalPacketTime: respEnd,
+	}
+
+	cases := []struct {
+		Name        string
+		PNTs        []akinet.ParsedNetworkTraffic
+		SampleOneIn uint64
+		WantTimings bool
+	}{
+		{"request first", []akinet.ParsedNetworkTraffic{request, response}, 1, true},
+		{"response first", []akinet.ParsedNetworkTraffic{response, request}, 1, true},
+		{"sampling off", []akinet.ParsedNetworkTraffic{request, response}, 0, false},
+
+		// Expires unpaired on Close. Its request/response packet times never
+		// resolve, so every segment of the baseline is uncomputable and it must
+		// not spend payload carrying a row of zeros.
+		{"never paired", []akinet.ParsedNetworkTraffic{request}, 1, false},
+	}
+
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			defer func(prev uint64) { timingSampleOneIn = prev }(timingSampleOneIn)
+			timingSampleOneIn = test.SampleOneIn
+
+			ctrl := gomock.NewController(t)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			defer ctrl.Finish()
+
+			var reports []*kgxapi.WitnessReport
+			mockClient.
+				EXPECT().
+				AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+				Do(func(args ...interface{}) {
+					reports = append(reports, args[2].(*kgxapi.UploadReportsRequest).Witnesses...)
+				}).
+				AnyTimes().
+				Return(nil)
+
+			mockClient.
+				EXPECT().
+				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+				AnyTimes().
+				Return(kgxapi.NewServiceAgentConfig(), nil)
+
+			redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+			assert.NoError(t, err)
+
+			col := NewBackendCollector(
+				fakeSvc,
+				map[tags.Key]string{},
+				fakeLrn,
+				mockClient,
+				redactor,
+				optionals.None[int](),
+				NewPacketCounter(),
+				false,
+				optionals.None[[]string](),
+				nil,
+				apispec.DefaultMaxWintessUploadBuffers,
+				telemetry.Default(),
+				TelemetryOptions{Stats: capturestats.New()},
+			)
+			for _, pnt := range test.PNTs {
+				assert.NoError(t, col.Process(pnt))
+			}
+			assert.NoError(t, col.Close())
+
+			assert.Len(t, reports, 1)
+			ts := reports[0].EventTimestamps
+
+			if !test.WantTimings {
+				assert.Nil(t, ts, "witness must carry no event_timestamps")
+				return
+			}
+			assert.NotNil(t, ts)
+
+			// Packet times come straight from the capture, so they are exact
+			// regardless of arrival order.
+			assert.Equal(t, reqEnd.UnixMicro(), ts.ReqRecv)
+			assert.Equal(t, respStart.UnixMicro(), ts.RespStart)
+			assert.Equal(t, respEnd.UnixMicro(), ts.RespRecv)
+
+			// service_time must match the ProcessingLatency the same mirror
+			// computes, to within the float32 millisecond it is stored in.
+			assert.InDelta(t, 8000, ts.RespStart-ts.ReqRecv, 1)
+
+			// The wall-clock stages are stamped in pipeline order.
+			assert.NotZero(t, ts.WitnessPaired)
+			assert.LessOrEqual(t, ts.WitnessPaired, ts.WitnessRedacted)
+			assert.LessOrEqual(t, ts.WitnessRedacted, ts.WitnessBatched)
+			assert.LessOrEqual(t, ts.WitnessBatched, ts.WitnessBuffered)
+			assert.LessOrEqual(t, ts.WitnessBuffered, ts.WitnessUploaded)
+
+			// The back end must stamp its own side; the agent never does.
+			assert.Zero(t, ts.AswWitnessReceived)
+			assert.Zero(t, ts.AsmChInserted)
+		})
+	}
+}
