@@ -209,6 +209,8 @@ func StartDaemonset(args DaemonsetArgs) error {
 	// Initialize the front client. Prefer the verification token. Fall back to
 	// the DaemonSet API key when the token API is not available to the user.
 	postmanInsightsVerificationToken := os.Getenv(POSTMAN_INSIGHTS_VERIFICATION_TOKEN)
+	// POSTMAN_INSIGHTS_API_KEY only. The legacy POSTMAN_API_KEY fallback used
+	// elsewhere is intentionally not consulted; that variable is being deprecated.
 	daemonsetAPIKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
 	postmanEnv := os.Getenv(POSTMAN_INSIGHTS_ENV)
 	auth := selectTelemetryAuth(postmanInsightsVerificationToken, daemonsetAPIKey, postmanEnv)
@@ -254,7 +256,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 	if err != nil {
 		return err
 	}
-	if rawClusterName == "" {
+	if auth.enabled && rawClusterName == "" {
 		printer.Infof(
 			"POSTMAN_INSIGHTS_CLUSTER_NAME is unset. Telemetry will be reported under cluster name %q.\n",
 			clusterName,
@@ -495,11 +497,8 @@ func (d *Daemonset) Run() error {
 	return nil
 }
 
-// sendAgentStopped flushes any counters accumulated since the last heartbeat
-// and reports a terminal agent_stopped event, so a graceful shutdown leaves a
-// clear end-of-run marker instead of just going quiet until the next
-// heartbeat would have been due. The flushed counters ride along as Events on
-// this same POST, rather than as separate requests.
+// reportAgentFailed sends an agent_failed event for a startup failure category.
+// postEvent does nothing when telemetry is disabled.
 func (d *Daemonset) reportAgentFailed(category string) {
 	d.postEvent(rest.DaemonsetTelemetryRequest{
 		Event:           "agent_failed",
@@ -507,6 +506,11 @@ func (d *Daemonset) reportAgentFailed(category string) {
 	})
 }
 
+// sendAgentStopped flushes any counters accumulated since the last heartbeat
+// and reports a terminal agent_stopped event, so a graceful shutdown leaves a
+// clear end-of-run marker instead of just going quiet until the next
+// heartbeat would have been due. The flushed counters ride along as Events on
+// this same POST, rather than as separate requests.
 func (d *Daemonset) sendAgentStopped() {
 	if !d.telemetryEnabled {
 		return
