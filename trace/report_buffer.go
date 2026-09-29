@@ -72,6 +72,12 @@ func newReportBuffer(
 
 func (buf *reportBuffer) Add(raw rawReport) (bool, error) {
 	if raw.Witness != nil {
+		// The batcher has just drained this witness, ending its wait of up to
+		// uploadBatchFlushDuration. Must precede addWitness, which calls
+		// toReport().
+		if raw.Witness.timings != nil {
+			raw.Witness.timings.batched = time.Now()
+		}
 		buf.addWitness(raw.Witness)
 	}
 
@@ -128,6 +134,9 @@ func (buf *reportBuffer) addWitness(w *witnessWithInfo) {
 		return
 	}
 
+	if witnessReport.EventTimestamps != nil {
+		witnessReport.EventTimestamps.WitnessBuffered = time.Now().UnixMicro()
+	}
 	buf.activeUploadReport.AddWitnessReport(witnessReport)
 }
 
@@ -146,6 +155,15 @@ func (buf *reportBuffer) Flush() error {
 		// Upload to the back end.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+
+		// Stamped inside the goroutine rather than at handoff above, so the
+		// interval to asw_witness_received is transit and nothing else.
+		now := time.Now().UnixMicro()
+		for _, w := range report.Witnesses {
+			if w.EventTimestamps != nil {
+				w.EventTimestamps.WitnessUploaded = now
+			}
+		}
 
 		err := buf.collector.learnClient.AsyncReportsUpload(ctx, learnSessions, report)
 
