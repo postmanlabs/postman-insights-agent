@@ -86,7 +86,9 @@ func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
 // recordTelemetryCount adds an interval delta without requiring one callback
 // invocation per observed packet or message.
 func (d *Daemonset) recordTelemetryCount(targetID, event string, count uint64) {
-	if event == "" || count == 0 {
+	// Disabled telemetry never logs or sends these counters, and shutdown
+	// returns without draining them, so recording would only grow memory.
+	if !d.telemetryEnabled || event == "" || count == 0 {
 		return
 	}
 	d.telemetryEventsMu.Lock()

@@ -20,6 +20,10 @@ const (
 	POSTMAN_INSIGHTS_CLUSTER_NAME       = "POSTMAN_INSIGHTS_CLUSTER_NAME"
 	POSTMAN_INSIGHTS_TELEMETRY_DOMAIN   = "POSTMAN_INSIGHTS_TELEMETRY_DOMAIN"
 
+	// DefaultTelemetryClusterName is reported in daemonset telemetry when
+	// POSTMAN_INSIGHTS_CLUSTER_NAME is unset outside discovery mode.
+	DefaultTelemetryClusterName = "default"
+
 	// Discovery mode environment variables
 	POSTMAN_INSIGHTS_DISCOVERY_MODE     = "POSTMAN_INSIGHTS_DISCOVERY_MODE"
 	POSTMAN_INSIGHTS_INCLUDE_NAMESPACES = "POSTMAN_INSIGHTS_INCLUDE_NAMESPACES"

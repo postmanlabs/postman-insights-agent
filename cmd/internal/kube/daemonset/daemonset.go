@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -103,6 +102,9 @@ type Daemonset struct {
 	Coverage          *CoverageTracker
 	AgentID           string
 	telemetrySequence uint64
+	// telemetryEnabled is false when neither a verification token nor a
+	// DaemonSet API key is configured. Capture still runs; telemetry does not.
+	telemetryEnabled bool
 
 	// telemetryEventsMu guards both the pending counters and the start of the
 	// window they cover, so a flush cannot split the two.
@@ -204,8 +206,18 @@ func StartDaemonset(args DaemonsetArgs) error {
 		return errors.New("This command is only supported on linux images")
 	}
 
-	// Initialize the front client
+	// Initialize the front client. Prefer the verification token. Fall back to
+	// the DaemonSet API key when the token API is not available to the user.
 	postmanInsightsVerificationToken := os.Getenv(POSTMAN_INSIGHTS_VERIFICATION_TOKEN)
+	// POSTMAN_INSIGHTS_API_KEY only. The legacy POSTMAN_API_KEY fallback used
+	// elsewhere is intentionally not consulted; that variable is being deprecated.
+	daemonsetAPIKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
+	postmanEnv := os.Getenv(POSTMAN_INSIGHTS_ENV)
+	auth := selectTelemetryAuth(postmanInsightsVerificationToken, daemonsetAPIKey, postmanEnv)
+	var authHandler rest.AuthHandler
+	if auth.enabled {
+		authHandler = auth.handler
+	}
 	telemetryDomain := os.Getenv(POSTMAN_INSIGHTS_TELEMETRY_DOMAIN)
 	if telemetryDomain == "" {
 		telemetryDomain = rest.Domain
@@ -213,94 +225,85 @@ func StartDaemonset(args DaemonsetArgs) error {
 	frontClient := rest.NewFrontClient(
 		telemetryDomain,
 		telemetry.GetClientID(),
-		rest.DaemonsetAuthHandler(postmanInsightsVerificationToken),
+		authHandler,
 		nil,
 	)
 	if viper.GetBool("test_only_disable_telemetry_https") {
 		frontClient.UseInsecureScheme()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
-	defer cancel()
+
+	if auth.viaAPIKey {
+		printer.Infof(
+			"POSTMAN_INSIGHTS_VERIFICATION_TOKEN is unset. DaemonSet telemetry will " +
+				"authenticate with the DaemonSet Postman API key.\n",
+		)
+	}
+	if !auth.enabled {
+		printer.Infof(
+			"Neither POSTMAN_INSIGHTS_VERIFICATION_TOKEN nor POSTMAN_INSIGHTS_API_KEY is set. " +
+				"Telemetry will not be sent from this agent, it will not be tracked on our end, " +
+				"and it will not appear in the app's list of clusters where the agent is running.\n",
+		)
+	}
 
 	// Resolve this agent's own Postman identity before the first telemetry
 	// event, so agent_started carries it like every later agent-scope event.
 	agentUserID, agentTeamID := resolveAgentIdentity(telemetryDomain)
 
 	// Send initial telemetry
-	clusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
-	agentID := akid.String(telemetry.GetClientID())
-	coverage := NewCoverageTracker(agentID, 1000)
-	if clusterName == "" && args.DiscoveryMode {
-		return errors.New(
-			"discovery mode requires a cluster name: set POSTMAN_INSIGHTS_CLUSTER_NAME env var",
+	rawClusterName := os.Getenv(POSTMAN_INSIGHTS_CLUSTER_NAME)
+	clusterName, err := resolveTelemetryClusterName(rawClusterName, args.DiscoveryMode)
+	if err != nil {
+		return err
+	}
+	if auth.enabled && rawClusterName == "" {
+		printer.Infof(
+			"POSTMAN_INSIGHTS_CLUSTER_NAME is unset. Telemetry will be reported under cluster name %q.\n",
+			clusterName,
 		)
 	}
+	agentID := akid.String(telemetry.GetClientID())
+	coverage := NewCoverageTracker(agentID, 1000)
 	telemetryInterval := DefaultTelemetryInterval
 	if viper.GetBool("test_only_disable_https") || viper.GetBool("test_only_disable_telemetry_https") {
 		telemetryInterval = DevelopmentTelemetryInterval
 	}
+	if !auth.enabled {
+		telemetryInterval = 0
+	}
 	// Single source of sequence numbers for this run, shared by the startup event
 	// and every subsequent heartbeat and counter flush.
 	var telemetrySequence uint64
-	if clusterName == "" {
-		printer.Infof(
-			"The cluster name is missing. Telemetry will not be sent from this agent, " +
-				"it will not be tracked on our end, and it will not appear in the app's " +
-				"list of clusters where the agent is running.\n",
-		)
-		telemetryInterval = 0
-	} else {
-		// Send Initial telemetry. Sequence comes from the same counter the
-		// heartbeat uses so the two cannot collide; no targets exist yet, so the
-		// snapshot is deliberately omitted rather than sent as an empty array.
-		err := frontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
-			Type:              rest.TelemetryTypeEvents,
-			Event:             "agent_started",
-			AgentID:           agentID,
-			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
-			SchemaVersion:     "v1",
-			KubernetesCluster: clusterName,
-			UserID:            agentUserID,
-			TeamID:            agentTeamID,
-			AgentVersion:      version.ReleaseVersion().String(),
-			GitVersion:        version.GitVersion(),
-		})
-		if err != nil {
-			printer.Errorf("Failed to send initial daemonset agent telemetry: %v\n", err)
-			printer.Infof(
-				"Agent will try to send telemetry again, if the error still persists, agent " +
-					"will not be tracked on our end, and it will not appear in the app's list of " +
-					"clusters where the agent is running.\n",
-			)
-		}
+	postEvent := func(req rest.DaemonsetTelemetryRequest) {
+		req.AgentID = agentID
+		req.KubernetesCluster = clusterName
+		req.UserID = agentUserID
+		req.TeamID = agentTeamID
+		postDaemonsetEvent(auth.enabled, frontClient, &telemetrySequence, req)
 	}
+	// No targets exist yet, so the snapshot is omitted rather than sent empty.
+	postEvent(rest.DaemonsetTelemetryRequest{
+		Event:        "agent_started",
+		AgentVersion: version.ReleaseVersion().String(),
+		GitVersion:   version.GitVersion(),
+	})
 
 	kubeClient, err := kube_apis.NewKubeClient()
 	if err != nil {
-		sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "kubernetes_client_init_failed")
+		postEvent(rest.DaemonsetTelemetryRequest{
+			Event:           "agent_failed",
+			FailureCategory: "kubernetes_client_init_failed",
+		})
 		return errors.Wrap(err, "failed to create kube client")
 	}
-	if clusterName != "" {
-		kubeClientCtx, kubeClientCancel := context.WithTimeout(context.Background(), apiContextTimeout)
-		err := frontClient.PostDaemonsetAgentTelemetry(kubeClientCtx, rest.DaemonsetTelemetryRequest{
-			Type:              rest.TelemetryTypeEvents,
-			Event:             "kubernetes_client_ready",
-			AgentID:           agentID,
-			Sequence:          atomic.AddUint64(&telemetrySequence, 1),
-			SchemaVersion:     "v1",
-			KubernetesCluster: clusterName,
-			UserID:            agentUserID,
-			TeamID:            agentTeamID,
-		})
-		kubeClientCancel()
-		if err != nil {
-			printer.Errorf("Failed to send kubernetes_client_ready telemetry: %v\n", err)
-		}
-	}
+	postEvent(rest.DaemonsetTelemetryRequest{Event: "kubernetes_client_ready"})
 
 	criClient, err := cri_apis.NewCRIClient()
 	if err != nil {
-		sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "cri_client_init_failed")
+		postEvent(rest.DaemonsetTelemetryRequest{
+			Event:           "agent_failed",
+			FailureCategory: "cri_client_init_failed",
+		})
 		return errors.Wrap(err, "failed to create CRI client")
 	}
 
@@ -325,6 +328,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		Coverage:                 coverage,
 		AgentID:                  agentID,
 		telemetrySequence:        telemetrySequence,
+		telemetryEnabled:         auth.enabled,
 		telemetryWindowStart:     time.Now().UTC(),
 		agentState:               rest.AgentStateHealthy,
 		agentStateSince:          time.Now().UTC(),
@@ -334,7 +338,10 @@ func StartDaemonset(args DaemonsetArgs) error {
 	if args.DiscoveryMode {
 		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
 		if apiKey == "" {
-			sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "discovery_api_key_missing")
+			postEvent(rest.DaemonsetTelemetryRequest{
+				Event:           "agent_failed",
+				FailureCategory: "discovery_api_key_missing",
+			})
 			return errors.New("discovery mode requires an API key (set POSTMAN_INSIGHTS_API_KEY)")
 		}
 		daemonsetRun.InsightsAPIKey = apiKey
@@ -346,7 +353,10 @@ func StartDaemonset(args DaemonsetArgs) error {
 			args.ExcludeLabels,
 		)
 		if err != nil {
-			sendAgentFailed(frontClient, agentID, clusterName, agentUserID, agentTeamID, &telemetrySequence, "pod_filter_init_failed")
+			postEvent(rest.DaemonsetTelemetryRequest{
+				Event:           "agent_failed",
+				FailureCategory: "pod_filter_init_failed",
+			})
 			return errors.Wrap(err, "failed to create pod filter")
 		}
 		daemonsetRun.PodFilter = podFilter
@@ -440,7 +450,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
-		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, d.InsightsUserID, d.InsightsTeamID, &d.telemetrySequence, "informer_registration_failed")
+		d.reportAgentFailed("informer_registration_failed")
 		return errors.Wrap(err, "failed to register pod informer handlers")
 	}
 	if err := d.reconcileMissingPodsAfterStartup(); err != nil {
@@ -449,7 +459,7 @@ func (d *Daemonset) Run() error {
 		healthWorkerWG.Wait()
 		d.KubeClient.Close()
 		d.StopAllApiDumpProcesses()
-		sendAgentFailed(d.FrontClient, d.AgentID, d.ClusterName, d.InsightsUserID, d.InsightsTeamID, &d.telemetrySequence, "pod_reconciliation_failed")
+		d.reportAgentFailed("pod_reconciliation_failed")
 		return errors.Wrap(err, "failed to reconcile pods after registering informer handlers")
 	}
 
@@ -487,35 +497,30 @@ func (d *Daemonset) Run() error {
 	return nil
 }
 
+// reportAgentFailed sends an agent_failed event for a startup failure category.
+// postEvent does nothing when telemetry is disabled.
+func (d *Daemonset) reportAgentFailed(category string) {
+	d.postEvent(rest.DaemonsetTelemetryRequest{
+		Event:           "agent_failed",
+		FailureCategory: category,
+	})
+}
+
 // sendAgentStopped flushes any counters accumulated since the last heartbeat
 // and reports a terminal agent_stopped event, so a graceful shutdown leaves a
 // clear end-of-run marker instead of just going quiet until the next
 // heartbeat would have been due. The flushed counters ride along as Events on
 // this same POST, rather than as separate requests.
 func (d *Daemonset) sendAgentStopped() {
-	if d.ClusterName == "" {
+	if !d.telemetryEnabled {
 		return
 	}
-	events := d.drainTelemetryEvents(time.Now().UTC())
-
-	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
-	defer cancel()
-	err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
-		Type:              rest.TelemetryTypeEvents,
-		Event:             "agent_stopped",
-		AgentID:           d.AgentID,
-		Sequence:          atomic.AddUint64(&d.telemetrySequence, 1),
-		SchemaVersion:     "v1",
-		KubernetesCluster: d.ClusterName,
-		UserID:            d.InsightsUserID,
-		TeamID:            d.InsightsTeamID,
-		AgentVersion:      version.ReleaseVersion().String(),
-		GitVersion:        version.GitVersion(),
-		Events:            events,
+	d.postEvent(rest.DaemonsetTelemetryRequest{
+		Event:        "agent_stopped",
+		AgentVersion: version.ReleaseVersion().String(),
+		GitVersion:   version.GitVersion(),
+		Events:       d.drainTelemetryEvents(time.Now().UTC()),
 	})
-	if err != nil {
-		printer.Errorf("Failed to send agent_stopped telemetry: %v\n", err)
-	}
 }
 
 // resolveAgentIdentity looks up the Postman user and team that own this
@@ -560,37 +565,6 @@ func resolveAgentIdentity(telemetryDomain string) (userID, teamID string) {
 		return "", ""
 	}
 	return trackingUser.UserID, trackingUser.TeamID
-}
-
-// sendAgentFailed reports a terminal, agent-scope startup/runtime failure with
-// a normalized category. Used both before the Daemonset struct exists (early
-// StartDaemonset failures) and from within Run(), so it takes its telemetry
-// coordinates directly rather than a *Daemonset receiver.
-func sendAgentFailed(
-	frontClient rest.FrontClient,
-	agentID, clusterName, userID, teamID string,
-	sequence *uint64,
-	category string,
-) {
-	if clusterName == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
-	defer cancel()
-	err := frontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
-		Type:              rest.TelemetryTypeEvents,
-		Event:             "agent_failed",
-		AgentID:           agentID,
-		Sequence:          atomic.AddUint64(sequence, 1),
-		SchemaVersion:     "v1",
-		KubernetesCluster: clusterName,
-		UserID:            userID,
-		TeamID:            teamID,
-		FailureCategory:   category,
-	})
-	if err != nil {
-		printer.Errorf("Failed to send agent_failed telemetry: %v\n", err)
-	}
 }
 
 // getPodArgsFromMap retrieves the PodArgs associated with the given podUID from the PodArgsByNameMap.

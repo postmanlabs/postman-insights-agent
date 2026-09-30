@@ -15,9 +15,10 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 	mockClient := rest.NewMockFrontClient(ctrl)
 
 	d := &Daemonset{
-		ClusterName: "test-cluster",
-		Coverage:    NewCoverageTracker("agent-1", 10),
-		FrontClient: mockClient,
+		ClusterName:      "test-cluster",
+		Coverage:         NewCoverageTracker("agent-1", 10),
+		FrontClient:      mockClient,
+		telemetryEnabled: true,
 	}
 	d.recordTelemetryEvent("pod-a", "pod_discovered")
 	d.recordTelemetryEvent("pod-b", "pod_discovered")
@@ -62,12 +63,20 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 }
 
 func TestRecordTelemetryCountAccumulatesDelta(t *testing.T) {
-	d := &Daemonset{}
+	d := &Daemonset{telemetryEnabled: true}
 	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 17)
 	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 25)
 	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 0)
 
 	if got := d.telemetryEvents["pcap_packets_dropped"]["pod-a"]; got != 42 {
 		t.Fatalf("pcap drop count = %d, want 42", got)
+	}
+}
+
+func TestRecordTelemetryCountSkipsWhenTelemetryDisabled(t *testing.T) {
+	d := &Daemonset{}
+	d.recordTelemetryCount("pod-a", "pcap_packets_dropped", 17)
+	if d.telemetryEvents != nil {
+		t.Fatalf("telemetryEvents = %+v, want nil when telemetry is disabled", d.telemetryEvents)
 	}
 }
