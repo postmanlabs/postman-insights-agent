@@ -3,6 +3,7 @@ package rest
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -51,12 +52,36 @@ func TestMapAPICatalogError_PassThrough_On403_EmptyBody(t *testing.T) {
 	assert.Equal(t, 403, httpErr.StatusCode)
 }
 
-func TestIsDiscoveryTTLExpiredError_MatchesMarkerIn403(t *testing.T) {
+func TestAsDiscoveryTTLExpiredError_Matches412WithRetryAfter(t *testing.T) {
+	err := HTTPError{
+		StatusCode: 412,
+		Body:       []byte(`{"message":"discovery traffic TTL expired for service \"default/my-svc\"; onboard the service to resume traffic","akita_code":"INGEST_DISABLED","retry_after_seconds":300}`),
+	}
+	ttlErr, ok := AsDiscoveryTTLExpiredError(err)
+	assert.True(t, ok)
+	assert.Equal(t, 300*time.Second, ttlErr.RetryAfter)
+	assert.Contains(t, ttlErr.Message, discoveryTTLExpiredMarker)
+	assert.True(t, IsDiscoveryTTLExpiredError(err))
+}
+
+func TestAsDiscoveryTTLExpiredError_MatchesLegacy403(t *testing.T) {
 	err := HTTPError{
 		StatusCode: 403,
 		Body:       []byte(`{"message":"discovery traffic TTL expired for service \"default/my-svc\"; onboard the service to resume traffic"}`),
 	}
-	assert.True(t, IsDiscoveryTTLExpiredError(err))
+	ttlErr, ok := AsDiscoveryTTLExpiredError(err)
+	assert.True(t, ok)
+	assert.Equal(t, DefaultDiscoveryTTLRetryAfter, ttlErr.RetryAfter)
+}
+
+func TestAsDiscoveryTTLExpiredError_DefaultRetryWhenMissing(t *testing.T) {
+	err := HTTPError{
+		StatusCode: 412,
+		Body:       []byte(`{"message":"discovery traffic TTL expired"}`),
+	}
+	ttlErr, ok := AsDiscoveryTTLExpiredError(err)
+	assert.True(t, ok)
+	assert.Equal(t, DefaultDiscoveryTTLRetryAfter, ttlErr.RetryAfter)
 }
 
 func TestIsDiscoveryTTLExpiredError_NoMatch_403DifferentBody(t *testing.T) {
@@ -74,7 +99,7 @@ func TestIsDiscoveryTTLExpiredError_NoMatch_403EmptyBody(t *testing.T) {
 
 func TestIsDiscoveryTTLExpiredError_NoMatch_DifferentStatusCode(t *testing.T) {
 	err := HTTPError{
-		StatusCode: 412,
+		StatusCode: 400,
 		Body:       []byte(`discovery traffic TTL expired`),
 	}
 	assert.False(t, IsDiscoveryTTLExpiredError(err))
@@ -83,4 +108,11 @@ func TestIsDiscoveryTTLExpiredError_NoMatch_DifferentStatusCode(t *testing.T) {
 func TestIsDiscoveryTTLExpiredError_NoMatch_NonHTTPError(t *testing.T) {
 	err := errors.New("discovery traffic TTL expired")
 	assert.False(t, IsDiscoveryTTLExpiredError(err))
+}
+
+func TestAsDiscoveryTTLExpiredError_TypedError(t *testing.T) {
+	original := DiscoveryTTLExpiredError{RetryAfter: time.Minute, Message: "ttl done"}
+	ttlErr, ok := AsDiscoveryTTLExpiredError(original)
+	assert.True(t, ok)
+	assert.Equal(t, time.Minute, ttlErr.RetryAfter)
 }

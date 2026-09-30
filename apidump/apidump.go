@@ -486,6 +486,19 @@ func (a *apidump) LookupService() error {
 			serviceName = a.Namespace + "/" + a.WorkloadName
 		}
 
+		discoveryKey := rest.DiscoveryCacheKey(a.ClusterName, a.Namespace, a.WorkloadName)
+		if rest.DiscoveryTTLCooldown.ShouldSkip(discoveryKey) {
+			until := "the cooldown elapses"
+			if next, ok := rest.DiscoveryTTLCooldown.NextCheckAt(discoveryKey); ok {
+				until = next.Format(time.RFC3339)
+			}
+			printer.Infof(
+				"Skipping discover for %q; discovery traffic TTL cooldown active until %s\n",
+				serviceName, until,
+			)
+			return nil
+		}
+
 		discoveryMode := "daemonset"
 		if _, inDaemonset := a.DaemonsetArgs.Get(); !inDaemonset {
 			discoveryMode = "sidecar"
@@ -504,16 +517,20 @@ func (a *apidump) LookupService() error {
 			},
 		)
 		if err != nil {
-			if rest.IsDiscoveryTTLExpiredError(err) {
+			if ttlErr, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+				rest.DiscoveryTTLCooldown.Mark(discoveryKey, ttlErr.RetryAfter)
 				printer.Warningf(
 					"Discovery traffic TTL expired for service %q. "+
-						"Onboard the service in Postman to resume traffic capture.\n",
-					serviceName,
+						"Onboard the service in Postman to resume traffic capture. "+
+						"Will not retry discover for %s.\n",
+					serviceName, ttlErr.RetryAfter,
 				)
-				return errors.New("discovery traffic TTL expired")
+				// Return nil so DaemonSet marks TrafficMonitoringEnded (not Failed).
+				return nil
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
+		rest.DiscoveryTTLCooldown.Clear(discoveryKey)
 
 		var svcID akid.ServiceID
 		if err := akid.ParseIDAs(resp.ServiceID, &svcID); err != nil {
