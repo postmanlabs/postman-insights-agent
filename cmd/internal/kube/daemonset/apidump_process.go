@@ -18,7 +18,8 @@ import (
 )
 
 // isDiscoveryTTLCooldownActive reports whether this discovery-mode pod's
-// workload is still inside a /discover TTL-expiry cooldown.
+// workload is still inside a discovery TTL-expiry cooldown (from a prior
+// 412 on the discover API).
 func (d *Daemonset) isDiscoveryTTLCooldownActive(podArgs *PodArgs) bool {
 	if podArgs == nil || !podArgs.DiscoveryMode {
 		return false
@@ -36,8 +37,10 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		return err
 	}
 
-	// Skip starting capture while a prior /discover TTL-expiry cooldown is active.
-	// Mark Ended so the pod is pruned; healthcheck will re-add after the cooldown.
+	// Cooldown is gated here (DaemonSet), not inside apidump: only the DaemonSet
+	// sees every pod of a workload and can skip starting capture entirely.
+	// Terminalize coverage before pruning so a later pod delete (when the UID
+	// is no longer in PodArgsByNameMap) cannot leave a non-terminal coverage target.
 	if d.isDiscoveryTTLCooldownActive(podArgs) {
 		key := rest.DiscoveryCacheKey(podArgs.ClusterName, podArgs.Namespace, podArgs.WorkloadName)
 		until := "the cooldown elapses"
@@ -48,6 +51,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			"Skipping apidump for pod %s; discovery traffic TTL cooldown active until %s\n",
 			podArgs.PodName, until,
 		)
+		d.observeCoverageByUID(string(podUID), CoveragePodStopped, "discovery_ttl_cooldown")
 		if err := podArgs.changePodTrafficMonitorState(TrafficMonitoringEnded, PodRunning); err != nil {
 			return errors.Wrapf(err, "failed to mark pod %s ended during discovery TTL cooldown", podArgs.PodName)
 		}
@@ -181,6 +185,12 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		}
 
 		if err := apidump.Run(apidumpArgs); err != nil {
+			// Discovery TTL expiry is an intentional skip: end monitoring
+			// cleanly and terminalize coverage so pruning cannot leak a target.
+			if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+				d.observeCoverageByUID(string(podUID), CoveragePodStopped, "discovery_ttl_cooldown")
+				return nil
+			}
 			funcErr = errors.Wrapf(err, "failed to run apidump process for pod %s", podArgs.PodName)
 		}
 		return funcErr

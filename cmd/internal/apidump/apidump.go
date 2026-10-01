@@ -352,6 +352,11 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		PrivacyMode: privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
+		if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+			// Intentional skip while the service is past discovery TTL; not a
+			// capture failure for the CLI.
+			return nil
+		}
 		return cmderr.AkitaErr{Err: err}
 	}
 	return nil

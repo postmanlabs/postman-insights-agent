@@ -487,17 +487,6 @@ func (a *apidump) LookupService() error {
 		}
 
 		discoveryKey := rest.DiscoveryCacheKey(a.ClusterName, a.Namespace, a.WorkloadName)
-		if rest.DiscoveryTTLCooldown.ShouldSkip(discoveryKey) {
-			until := "the cooldown elapses"
-			if next, ok := rest.DiscoveryTTLCooldown.NextCheckAt(discoveryKey); ok {
-				until = next.Format(time.RFC3339)
-			}
-			printer.Infof(
-				"Skipping discover for %q; discovery traffic TTL cooldown active until %s\n",
-				serviceName, until,
-			)
-			return nil
-		}
 
 		discoveryMode := "daemonset"
 		if _, inDaemonset := a.DaemonsetArgs.Get(); !inDaemonset {
@@ -525,8 +514,9 @@ func (a *apidump) LookupService() error {
 						"Will not retry discover for %s.\n",
 					serviceName, ttlErr.RetryAfter,
 				)
-				// Return nil so DaemonSet marks TrafficMonitoringEnded (not Failed).
-				return nil
+				// Propagate the typed error so Run/DaemonSet can end gracefully
+				// without treating this as a capture failure or continuing setup.
+				return ttlErr
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
@@ -961,8 +951,12 @@ func (a *apidump) Run() error {
 	// checkpoint updates categorize every early-return site without having to
 	// annotate each one individually.
 	lastCheckpoint := "service_lookup"
+	// discoveryTTLSkipped is set when LookupService returns DiscoveryTTLExpiredError.
+	// That is an intentional skip, not a startup failure, so we must not emit
+	// apidump_start_failed.
+	discoveryTTLSkipped := false
 	defer func() {
-		if !startupSucceeded {
+		if !startupSucceeded && !discoveryTTLSkipped {
 			args.reportTelemetryEvent("apidump_start_failed")
 			args.setFailureCategory(lastCheckpoint)
 		}
@@ -972,6 +966,10 @@ func (a *apidump) Run() error {
 	// surface before we touch packet capture.
 	err := a.LookupService()
 	if err != nil {
+		if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+			discoveryTTLSkipped = true
+			return err
+		}
 		return err
 	}
 	lastCheckpoint = "interface_enumeration"
