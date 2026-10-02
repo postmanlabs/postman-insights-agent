@@ -3,8 +3,12 @@ package daemonset
 import (
 	"testing"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/golang/mock/gomock"
 	"github.com/postmanlabs/postman-insights-agent/rest"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // A heartbeat interval with counters accumulated for multiple targets
@@ -70,6 +74,55 @@ func TestRecordTelemetryCountAccumulatesDelta(t *testing.T) {
 
 	if got := d.telemetryEvents["pcap_packets_dropped"]["pod-a"]; got != 42 {
 		t.Fatalf("pcap drop count = %d, want 42", got)
+	}
+}
+
+func TestLoggedServiceIDUsesResolvedServiceWhenProjectIDUnset(t *testing.T) {
+	d := &Daemonset{Coverage: NewCoverageTracker("agent-1", 10)}
+	podUID := types.UID("pod-workspace")
+	podArgs := NewPodArgs("checkout")
+	podArgs.WorkspaceID = "11111111-1111-1111-1111-111111111111"
+
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: podUID, Name: "checkout"}}
+	d.Coverage.Observe(pod, CoveragePodConfigured, "configured", "")
+	// Discovery and workspace mode configure the pod with an empty project ID.
+	// SetProjectInfo records that zero ID before LookupService runs.
+	d.Coverage.SetProjectInfo(string(podUID), akid.String(podArgs.InsightsProjectID), podArgs.WorkspaceID)
+
+	if got := d.loggedServiceID(podUID, podArgs); got != akid.String(akid.ServiceID{}) {
+		t.Fatalf("before resolve, service ID = %q, want the unset project ID", got)
+	}
+
+	const resolved = "svc_resolvedServiceId000000"
+	d.Coverage.SetResolvedService(string(podUID), resolved, "checkout")
+
+	if got := d.loggedServiceID(podUID, podArgs); got != resolved {
+		t.Fatalf("logged service ID = %q, want resolved %q", got, resolved)
+	}
+	if podArgs.InsightsProjectID != (akid.ServiceID{}) {
+		t.Fatalf("InsightsProjectID = %s, want it to stay unset", podArgs.InsightsProjectID)
+	}
+}
+
+func TestLoggedServiceIDKeepsConfiguredProjectID(t *testing.T) {
+	projectID := akid.GenerateServiceID()
+	podArgs := NewPodArgs("payments")
+	podArgs.InsightsProjectID = projectID
+	podUID := types.UID("pod-project")
+
+	d := &Daemonset{}
+	if got := d.loggedServiceID(podUID, podArgs); got != projectID.String() {
+		t.Fatalf("logged service ID = %q, want configured %q", got, projectID.String())
+	}
+
+	d.Coverage = NewCoverageTracker("agent-1", 10)
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: podUID, Name: "payments"}}
+	d.Coverage.Observe(pod, CoveragePodConfigured, "configured", "")
+	d.Coverage.SetProjectInfo(string(podUID), projectID.String(), "")
+	d.Coverage.SetResolvedService(string(podUID), projectID.String(), "payments")
+
+	if got := d.loggedServiceID(podUID, podArgs); got != projectID.String() {
+		t.Fatalf("logged service ID = %q, want configured %q", got, projectID.String())
 	}
 }
 
