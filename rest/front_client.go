@@ -117,9 +117,15 @@ func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID str
 
 // RegisterDiscoveredService registers a service discovered via K8s autodiscovery
 // with the backend. Returns the service/project ID and whether it was newly created.
+// On discovery traffic TTL expiry the backend returns 412; this method maps that
+// to a DiscoveryTTLExpiredError so callers can cool down without treating it as
+// a generic API failure.
 func (c *frontClientImpl) RegisterDiscoveredService(ctx context.Context, req DiscoverServiceRequest) (DiscoverServiceResponse, error) {
 	var resp DiscoverServiceResponse
 	if err := c.Post(ctx, "/v2/agent/api-catalog/services/discover", req, &resp); err != nil {
+		if ttlErr, ok := parseDiscoveryTTLExpiredHTTPError(err); ok {
+			return resp, ttlErr
+		}
 		return resp, MapAPICatalogError(err)
 	}
 	return resp, nil

@@ -60,6 +60,14 @@ func (d *Daemonset) checkPodsHealth() {
 		}
 
 		if _, ok := d.PodArgsByNameMap.Load(pod.UID); !ok {
+			// Avoid End/prune/re-add churn while a discovery TTL cooldown is active.
+			if d.isDiscoveryTTLCooldownActive(args) {
+				printer.Debugf(
+					"Skipping add for pod %s/%s; discovery traffic TTL cooldown active\n",
+					pod.Namespace, pod.Name,
+				)
+				continue
+			}
 			err = d.addPodArgsToMap(pod.UID, args, PodRunning)
 			if err != nil {
 				printer.Errorf("Failed to add pod args to map, pod name: %s, error: %v\n", pod.Name, err)

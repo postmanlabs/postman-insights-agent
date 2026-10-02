@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/optionals"
@@ -16,6 +17,17 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// isDiscoveryTTLCooldownActive reports whether this discovery-mode pod's
+// workload is still inside a discovery TTL-expiry cooldown (from a prior
+// 412 on the discover API).
+func (d *Daemonset) isDiscoveryTTLCooldownActive(podArgs *PodArgs) bool {
+	if podArgs == nil || !podArgs.DiscoveryMode {
+		return false
+	}
+	key := rest.DiscoveryCacheKey(podArgs.ClusterName, podArgs.Namespace, podArgs.WorkloadName)
+	return rest.DiscoveryTTLCooldown.ShouldSkip(key)
+}
+
 // StartApiDumpProcess initiates the API dump process for a given pod identified by its UID.
 // It retrieves the pod arguments, changes the pod's traffic monitoring state, and starts the API dump process in a separate goroutine.
 // The goroutine handles errors and state changes, and ensures the process is stopped properly.
@@ -23,6 +35,27 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	podArgs, err := d.getPodArgsFromMap(podUID)
 	if err != nil {
 		return err
+	}
+
+	// Cooldown is gated here (DaemonSet), not inside apidump: only the DaemonSet
+	// sees every pod of a workload and can skip starting capture entirely.
+	// Terminalize coverage before pruning so a later pod delete (when the UID
+	// is no longer in PodArgsByNameMap) cannot leave a non-terminal coverage target.
+	if d.isDiscoveryTTLCooldownActive(podArgs) {
+		key := rest.DiscoveryCacheKey(podArgs.ClusterName, podArgs.Namespace, podArgs.WorkloadName)
+		until := "the cooldown elapses"
+		if next, ok := rest.DiscoveryTTLCooldown.NextCheckAt(key); ok {
+			until = next.Format(time.RFC3339)
+		}
+		printer.Infof(
+			"Skipping apidump for pod %s; discovery traffic TTL cooldown active until %s\n",
+			podArgs.PodName, until,
+		)
+		d.observeCoverageByUID(string(podUID), CoveragePodStopped, "discovery_ttl_cooldown")
+		if err := podArgs.changePodTrafficMonitorState(TrafficMonitoringEnded, PodRunning); err != nil {
+			return errors.Wrapf(err, "failed to mark pod %s ended during discovery TTL cooldown", podArgs.PodName)
+		}
+		return nil
 	}
 
 	err = podArgs.changePodTrafficMonitorState(TrafficMonitoringRunning, PodRunning)
@@ -152,6 +185,12 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		}
 
 		if err := apidump.Run(apidumpArgs); err != nil {
+			// Discovery TTL expiry is an intentional skip: end monitoring
+			// cleanly and terminalize coverage so pruning cannot leak a target.
+			if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+				d.observeCoverageByUID(string(podUID), CoveragePodStopped, "discovery_ttl_cooldown")
+				return nil
+			}
 			funcErr = errors.Wrapf(err, "failed to run apidump process for pod %s", podArgs.PodName)
 		}
 		return funcErr

@@ -518,9 +518,10 @@ When a service is discovered but not yet onboarded in the Postman app, the backe
 1. The agent registers a discovered service with the backend via `RegisterDiscoveredService`.
 2. The backend returns a `traffic_expires_at` timestamp indicating when the capture window ends.
 3. The agent sets an internal timer. When the TTL expires, it stops trace collection and marks the pod as `TrafficMonitoringEnded` (not failed).
-4. If the backend returns a 403 indicating the TTL has already expired, the agent logs a warning and exits gracefully.
+4. If the backend returns **412** (ingestion disabled) indicating the TTL has already expired, the response includes `code` and `retry_after_seconds` (default 5 minutes). The agent caches that cooldown for the workload (DaemonSet) and exits gracefully (`TrafficMonitoringEnded`), terminalizing coverage so pruned pods cannot leak tracker slots.
+5. While the cooldown is active, the DaemonSet skips starting capture for further pods of that workload (no `/discover` calls). After the cooldown, the next pod or healthcheck cycle probes again so capture can resume promptly once the service is onboarded.
 
-**To resume capture**, onboard the service in the Postman app. Once onboarded, the TTL restriction is lifted and the agent captures traffic indefinitely.
+**To resume capture**, onboard the service in the Postman app. Once onboarded, the TTL restriction is lifted and the agent captures traffic indefinitely (within about one `retry_after` window of onboarding if the agent had already cached a cooldown).
 
 > **Note:** This TTL only applies to services discovered via auto-discovery that have not yet been onboarded. Services onboarded via workspace mode, project mode, or the hybrid per-pod IDs described in [Hybrid mode](#hybrid-mode-pods-with-explicit-service-ids) are not subject to this limit.
 

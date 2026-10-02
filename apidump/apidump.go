@@ -486,6 +486,8 @@ func (a *apidump) LookupService() error {
 			serviceName = a.Namespace + "/" + a.WorkloadName
 		}
 
+		discoveryKey := rest.DiscoveryCacheKey(a.ClusterName, a.Namespace, a.WorkloadName)
+
 		discoveryMode := "daemonset"
 		if _, inDaemonset := a.DaemonsetArgs.Get(); !inDaemonset {
 			discoveryMode = "sidecar"
@@ -504,16 +506,21 @@ func (a *apidump) LookupService() error {
 			},
 		)
 		if err != nil {
-			if rest.IsDiscoveryTTLExpiredError(err) {
+			if ttlErr, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+				rest.DiscoveryTTLCooldown.Mark(discoveryKey, ttlErr.RetryAfter)
 				printer.Warningf(
 					"Discovery traffic TTL expired for service %q. "+
-						"Onboard the service in Postman to resume traffic capture.\n",
-					serviceName,
+						"Onboard the service in Postman to resume traffic capture. "+
+						"Will not retry discover for %s.\n",
+					serviceName, ttlErr.RetryAfter,
 				)
-				return errors.New("discovery traffic TTL expired")
+				// Propagate the typed error so Run/DaemonSet can end gracefully
+				// without treating this as a capture failure or continuing setup.
+				return ttlErr
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
+		rest.DiscoveryTTLCooldown.Clear(discoveryKey)
 
 		var svcID akid.ServiceID
 		if err := akid.ParseIDAs(resp.ServiceID, &svcID); err != nil {
@@ -944,8 +951,12 @@ func (a *apidump) Run() error {
 	// checkpoint updates categorize every early-return site without having to
 	// annotate each one individually.
 	lastCheckpoint := "service_lookup"
+	// discoveryTTLSkipped is set when LookupService returns DiscoveryTTLExpiredError.
+	// That is an intentional skip, not a startup failure, so we must not emit
+	// apidump_start_failed.
+	discoveryTTLSkipped := false
 	defer func() {
-		if !startupSucceeded {
+		if !startupSucceeded && !discoveryTTLSkipped {
 			args.reportTelemetryEvent("apidump_start_failed")
 			args.setFailureCategory(lastCheckpoint)
 		}
@@ -955,6 +966,10 @@ func (a *apidump) Run() error {
 	// surface before we touch packet capture.
 	err := a.LookupService()
 	if err != nil {
+		if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
+			discoveryTTLSkipped = true
+			return err
+		}
 		return err
 	}
 	lastCheckpoint = "interface_enumeration"
