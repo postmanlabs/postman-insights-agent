@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/version"
@@ -150,7 +151,7 @@ func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time) []rest.DaemonsetTe
 }
 
 // dumpPodsApiDumpProcessState logs the current state of active pods.
-// It prints a formatted table with the pod name, project ID, and current state for each pod.
+// It prints a formatted table with the pod name, service ID, and current state for each pod.
 func (d *Daemonset) dumpPodsApiDumpProcessState() {
 	logf := printer.Infof
 
@@ -160,14 +161,14 @@ func (d *Daemonset) dumpPodsApiDumpProcessState() {
 	logf("Dumping pods api dump process state, time: %s\n", time.Now().UTC())
 
 	logf(hrBr)
-	logf(" %-30v%-30v%-10v%-40v%-70v\n", "projectID", "currentState", "reproMode", "podUID", "podName")
+	logf(" %-30v%-30v%-10v%-40v%-70v\n", "serviceID", "currentState", "reproMode", "podUID", "podName")
 	logf(hrBr)
 
 	d.PodArgsByNameMap.Range(func(k, v interface{}) bool {
 		podUID := k.(types.UID)
 		podArgs := v.(*PodArgs)
 		logf(" %-30v%-30v%-10v%-40v%-70v\n",
-			podArgs.InsightsProjectID,
+			d.loggedServiceID(podUID, podArgs),
 			podArgs.PodTrafficMonitorState,
 			podArgs.ReproMode,
 			podUID,
@@ -176,4 +177,21 @@ func (d *Daemonset) dumpPodsApiDumpProcessState() {
 		return true
 	})
 	logf(hrBr)
+}
+
+// loggedServiceID is the service ID to print for a monitored pod. It can come
+// from two places:
+//   - podArgs.InsightsProjectID: set only when POSTMAN_INSIGHTS_PROJECT_ID is.
+//   - the coverage tracker: the backend-resolved ID, the only source in
+//     discovery and workspace-id mode (where InsightsProjectID stays unset).
+func (d *Daemonset) loggedServiceID(podUID types.UID, podArgs *PodArgs) string {
+	configured := akid.String(podArgs.InsightsProjectID)
+	if d.Coverage == nil {
+		return configured
+	}
+	resolved, _, _ := d.Coverage.TargetIdentity(string(podUID))
+	if resolved == "" || resolved == akid.String(akid.ServiceID{}) {
+		return configured
+	}
+	return resolved
 }
