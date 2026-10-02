@@ -59,7 +59,8 @@ COPY . .
 RUN go build -tags osusergo,netgo -ldflags "-linkmode external -extldflags '-static'" \
       -o /out/postman-insights-agent .
 
-FROM scratch
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
 COPY --from=build /out/postman-insights-agent /postman-insights-agent
 ENTRYPOINT ["/postman-insights-agent"]
 EOF
