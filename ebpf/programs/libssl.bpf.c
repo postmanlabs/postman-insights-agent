@@ -153,17 +153,22 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
 //   Key:   tgid (__u32)
 //   Value: bucket { tokens, _pad }
 //
-// We use __sync_fetch_and_sub for the atomic decrement so multi-CPU access
-// is safe. If a PID isn't in the map (e.g. wasn't refilled yet), default to
+// PERCPU_HASH gives each CPU its own copy of the bucket, eliminating the need
+// for atomic operations entirely. Each CPU decrements its own slot; userspace
+// refills all CPU slots via a per-CPU update. The only trade-off is soft
+// over-admission of at most N_CPUs events per refill interval, which is
+// acceptable for a rate limiter. This also removes the BPF_ATOMIC dependency
+// (kernel 5.12+), making the agent compatible with kernels >= 5.8 (ringbuf).
+// If a PID isn't in the map (e.g. wasn't refilled yet), default to
 // "unlimited" — favours availability over strictness.
 struct rate_bucket {
     __u64 tokens;
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);   // kernel 4.6+; no atomics needed
     __uint(max_entries, 16384);
-    __type(key, __u32);                   // tgid
+    __type(key, __u32);                        // tgid
     __type(value, struct rate_bucket);
 } pid_rate_buckets SEC(".maps");
 
@@ -180,14 +185,12 @@ static __always_inline int rate_take(__u32 tgid) {
     if (!b) {
         return 1;  // unknown PID — don't drop; let userspace catch up
     }
-    __u64 prev = __sync_fetch_and_sub(&b->tokens, 1);
-    // __sync_fetch_and_sub returns the OLD value. If it was 0, our
-    // decrement just made it underflow — we should treat that as "no
-    // tokens" and reject. Restore by re-adding so the count stays at 0.
-    if (prev == 0) {
-        __sync_fetch_and_add(&b->tokens, 1);
+    // PERCPU_HASH: each CPU owns its slot — no concurrent access from other
+    // CPUs is possible, so a plain (non-atomic) decrement is safe and correct.
+    if (b->tokens == 0) {
         return 0;
     }
+    b->tokens -= 1;
     return 1;
 }
 
