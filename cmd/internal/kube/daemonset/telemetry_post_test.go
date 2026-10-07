@@ -29,9 +29,9 @@ func TestPostDaemonsetEventSendsWhenEnabled(t *testing.T) {
 	var captured rest.DaemonsetTelemetryRequest
 	client.EXPECT().
 		PostDaemonsetAgentTelemetry(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) error {
+		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) (rest.DaemonsetTelemetryResponse, error) {
 			captured = req
-			return nil
+			return rest.DaemonsetTelemetryResponse{}, nil
 		})
 
 	postDaemonsetEvent(true, client, &sequence, rest.DaemonsetTelemetryRequest{

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -118,6 +119,9 @@ type Daemonset struct {
 	agentState          rest.AgentState
 	agentStateSince     time.Time
 	lastTelemetryFailed bool
+
+	// verbose telemetry is updated based only on the response received for daemonset telemetry endpoint. Its default value is false
+	verboseTelemetry atomic.Bool
 }
 
 // applyEnvVarDefaults reads discovery-mode environment variables and applies
@@ -274,12 +278,18 @@ func StartDaemonset(args DaemonsetArgs) error {
 	// Single source of sequence numbers for this run, shared by the startup event
 	// and every subsequent heartbeat and counter flush.
 	var telemetrySequence uint64
+
+	// it captures verbosity state when agent-scope events are dispatched (without heartbeat)
+	var verboseTelemetry bool
+
 	postEvent := func(req rest.DaemonsetTelemetryRequest) {
 		req.AgentID = agentID
 		req.KubernetesCluster = clusterName
 		req.UserID = agentUserID
 		req.TeamID = agentTeamID
-		postDaemonsetEvent(auth.enabled, frontClient, &telemetrySequence, req)
+		if resp := postDaemonsetEvent(auth.enabled, frontClient, &telemetrySequence, req); resp != nil {
+			verboseTelemetry = resp.Telemetry.Verbose
+		}
 	}
 	// No targets exist yet, so the snapshot is omitted rather than sent empty.
 	postEvent(rest.DaemonsetTelemetryRequest{
@@ -333,6 +343,8 @@ func StartDaemonset(args DaemonsetArgs) error {
 		agentState:               rest.AgentStateHealthy,
 		agentStateSince:          time.Now().UTC(),
 	}
+
+	daemonsetRun.verboseTelemetry.Store(verboseTelemetry)
 
 	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
 	if args.DiscoveryMode {
@@ -519,7 +531,7 @@ func (d *Daemonset) sendAgentStopped() {
 		Event:        "agent_stopped",
 		AgentVersion: version.ReleaseVersion().String(),
 		GitVersion:   version.GitVersion(),
-		Events:       d.drainTelemetryEvents(time.Now().UTC()),
+		Events:       d.drainTelemetryEvents(time.Now().UTC(), d.verboseTelemetry.Load()),
 	})
 }
 
