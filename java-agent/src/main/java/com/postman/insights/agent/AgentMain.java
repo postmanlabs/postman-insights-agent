@@ -4,6 +4,8 @@ import java.io.File;
 import java.lang.instrument.Instrumentation;
 import java.util.jar.JarFile;
 
+import com.postman.insights.agent.bootstrap.Contract;
+
 /**
  * Entry point for both ways the agent is loaded: {@code -javaagent} at JVM
  * start (premain) and dynamic attach by the Insights agent (agentmain).
@@ -40,11 +42,17 @@ public final class AgentMain {
     private AgentMain() {}
 
     public static void premain(String args, Instrumentation inst) {
-        start(args, inst, "static");
+        // Loaded through JAVA_TOOL_OPTIONS, the agent starts in every JVM in
+        // the container, including the JDK's own tools; they have no HTTPS
+        // traffic worth capturing, and starting the agent would slow them down.
+        if (isJdkTool(System.getProperty("sun.java.command"))) {
+            return;
+        }
+        start(args, inst, Contract.HEARTBEAT_SOURCE_STATIC);
     }
 
     public static void agentmain(String args, Instrumentation inst) {
-        start(args, inst, "attach");
+        start(args, inst, Contract.HEARTBEAT_SOURCE_ATTACH);
     }
 
     /**
@@ -85,6 +93,33 @@ public final class AgentMain {
             System.setProperty(FAILED_PROPERTY, version + ": " + cause);
             log("failed to start, HTTPS capture is off for this JVM: " + cause);
         }
+    }
+
+    /**
+     * Whether the JVM runs one of the JDK's own tools (jcmd, jps, jstack,
+     * keytool, javac, jshell and so on), from its sun.java.command: the main
+     * class, prefixed with its module on JDK 9+ ("jdk.jcmd/sun.tools.jcmd.JCmd"),
+     * or a jar path for {@code java -jar}, then the arguments. Their main
+     * classes are in packages the JDK reserves for itself.
+     */
+    static boolean isJdkTool(String command) {
+        if (command == null) {
+            return false;
+        }
+        String main = command.trim();
+        int space = main.indexOf(' ');
+        if (space >= 0) {
+            main = main.substring(0, space);
+        }
+        if (main.endsWith(".jar")) {
+            return false;
+        }
+        int slash = main.indexOf('/');
+        if (slash >= 0) {
+            main = main.substring(slash + 1);
+        }
+        return main.startsWith("sun.") || main.startsWith("jdk.") || main.startsWith("java.")
+                || main.startsWith("com.sun.tools.");
     }
 
     private static Throwable rootCause(Throwable t) {

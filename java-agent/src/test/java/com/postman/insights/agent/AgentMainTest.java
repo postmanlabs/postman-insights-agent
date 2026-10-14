@@ -1,6 +1,7 @@
 package com.postman.insights.agent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,6 +22,30 @@ class AgentMainTest {
     void clearProperties() {
         System.clearProperty(MARKER);
         System.clearProperty(FAILED);
+    }
+
+    @Test
+    void jdkToolsAreSkipped() {
+        for (String tool : new String[] {
+                "sun.tools.jcmd.JCmd 1234 VM.version",                 // JDK 8
+                "jdk.jcmd/sun.tools.jcmd.JCmd 1234 Thread.print",      // JDK 9+
+                "jdk.jcmd/sun.tools.jps.Jps",
+                "java.base/sun.security.tools.keytool.Main -list",
+                "jdk.compiler/com.sun.tools.javac.Main Foo.java",
+                "jdk.jshell/jdk.internal.jshell.tool.JShellToolProvider",
+                "jdk.jartool/sun.tools.jar.Main tf app.jar"}) {
+            assertTrue(AgentMain.isJdkTool(tool), tool);
+        }
+        for (String app : new String[] {
+                "/app/app.jar --server.port=8443",
+                "app.jar",
+                "org.springframework.boot.loader.launch.JarLauncher",
+                "com.example.Main jdk.foo",
+                "com.sun.enterprise.glassfish.bootstrap.ASMain",       // GlassFish is an application
+                "",
+                null}) {
+            assertFalse(AgentMain.isJdkTool(app), String.valueOf(app));
+        }
     }
 
     @Test

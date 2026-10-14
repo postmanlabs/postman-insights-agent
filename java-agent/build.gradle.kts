@@ -31,6 +31,17 @@ dependencies {
     for (cfg in listOf("testRuntimeOnly", "agentTestRuntimeOnly")) {
         cfg("org.junit.platform:junit-platform-launcher")
     }
+
+    // Netty with its OpenSSL (BoringSSL) engine, whose unwrap shapes differ
+    // from the JDK's. Netty 4.1 still runs on JDK 8, like the agent.
+    "agentTestImplementation"(platform("io.netty:netty-bom:4.1.139.Final"))
+    "agentTestImplementation"("io.netty:netty-handler")
+    "agentTestImplementation"("io.netty:netty-codec-http")
+    // The native library for each platform the tests run on; Gradle does
+    // not follow the artifact's dependencies on its own classifiers.
+    for (platform in listOf("linux-x86_64", "linux-aarch_64", "osx-x86_64", "osx-aarch_64")) {
+        "agentTestRuntimeOnly"("io.netty:netty-tcnative-boringssl-static:2.0.84.Final:$platform")
+    }
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -108,8 +119,9 @@ tasks.assemble {
 
 tasks.test {
     useJUnitPlatform()
-    // The example frames shared with the Go side (ebpf/javatls).
+    // The examples shared with the Go side (ebpf/javatls).
     systemProperty("frames.vectors", file("../ebpf/javatls/testdata/frames-v1.json").absolutePath)
+    systemProperty("payloads.vectors", file("../ebpf/javatls/testdata/payloads-v1.json").absolutePath)
 }
 
 val agentTestTask = tasks.register<Test>("agentTest") {
@@ -121,19 +133,25 @@ val agentTestTask = tasks.register<Test>("agentTest") {
     dependsOn(agentJar)
     val jar = agentJar.flatMap { it.archiveFile }
     val frameLog = layout.buildDirectory.file("agent-test/frames.bin")
+    val controlFile = layout.buildDirectory.file("agent-test/control")
     inputs.file(jar)
     doFirst {
         val log = frameLog.get().asFile
         log.parentFile.mkdirs()
         log.delete()
+        // What the Insights agent writes for a monitored pod; the agent is
+        // dormant without it.
+        controlFile.get().asFile.writeText("version=1\nenabled=1\n")
     }
     jvmArgumentProviders.add(CommandLineArgumentProvider {
         listOf(
             "-javaagent:${jar.get().asFile.absolutePath}=cap=4096",
             "-Dpostman.insights.agent.frameLog=${frameLog.get().asFile.absolutePath}",
+            "-Dpostman.insights.agent.controlFile=${controlFile.get().asFile.absolutePath}",
         )
     })
     systemProperty("frames.log", frameLog.get().asFile.absolutePath)
+    systemProperty("control.file", controlFile.get().asFile.absolutePath)
     // -PagentTestJavaHome=<JDK dir> runs these tests on another JDK (8 to 25),
     // independent of the JDK that runs Gradle.
     (findProperty("agentTestJavaHome") as String?)?.let { executable = "$it/bin/java" }

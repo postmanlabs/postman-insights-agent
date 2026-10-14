@@ -98,6 +98,21 @@ func TestJavaContractInSync(t *testing.T) {
 		"CONTROL_VERSION_1":               ControlVersion1,
 		"CONTROL_REFRESH_INTERVAL_MILLIS": ms(ControlRefreshInterval),
 		"CONTROL_STALE_AFTER_MILLIS":      ms(ControlStaleAfter),
+		"HEARTBEAT_KEY_AGENT_VERSION":     HeartbeatKeyAgentVersion,
+		"HEARTBEAT_KEY_JAVA_VERSION":      HeartbeatKeyJavaVersion,
+		"HEARTBEAT_KEY_JAVA_VENDOR":       HeartbeatKeyJavaVendor,
+		"HEARTBEAT_KEY_SOURCE":            HeartbeatKeySource,
+		"HEARTBEAT_KEY_STATE":             HeartbeatKeyState,
+		"HEARTBEAT_KEY_FRAMES":            HeartbeatKeyFrames,
+		"HEARTBEAT_KEY_DROPPED":           HeartbeatKeyDropped,
+		"HEARTBEAT_KEY_ERRORS":            HeartbeatKeyErrors,
+		"HEARTBEAT_KEY_CONNECTIONS":       HeartbeatKeyConnections,
+		"HEARTBEAT_SOURCE_STATIC":         HeartbeatSourceStatic,
+		"HEARTBEAT_SOURCE_ATTACH":         HeartbeatSourceAttach,
+		"HEARTBEAT_STATE_ACTIVE":          HeartbeatStateActive,
+		"HEARTBEAT_STATE_DORMANT":         HeartbeatStateDormant,
+		"HEARTBEAT_STATE_OFF":             HeartbeatStateOff,
+		"HEARTBEAT_INTERVAL_MILLIS":       ms(HeartbeatInterval),
 	})
 }
 
