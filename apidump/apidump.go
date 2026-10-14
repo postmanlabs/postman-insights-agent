@@ -131,6 +131,13 @@ func (a Args) reportTelemetryEvent(event string) {
 	a.reportTelemetryCount(event, 1)
 }
 
+// httpsSelected reports whether HTTPS capture is enabled with a TLS library
+// to capture. The pcap filter's TLS port exclusion follows this, not the
+// flag alone: with no library, pcap must still see that port.
+func (a Args) httpsSelected() bool {
+	return a.HTTPS.Enabled && !a.HTTPS.Libraries.None()
+}
+
 func (a Args) reportTelemetryCount(event string, count uint64) {
 	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.ReportTelemetryCount != nil {
 		daemonsetArgs.ReportTelemetryCount(event, count)
@@ -1038,7 +1045,7 @@ func (a *apidump) Run() error {
 	// filter so the libpcap path doesn't double-count handshake bytes already
 	// captured by the userspace TLS uprobes. See docs/https-capture-design.md
 	// §6.1 and apidump/ebpf_integration.go.
-	if args.HTTPS.Enabled && args.HTTPS.CBPFExcludePort > 0 {
+	if args.httpsSelected() && args.HTTPS.CBPFExcludePort > 0 {
 		printer.Stderr.Infof(
 			"HTTPS capture enabled: excluding TCP port %d from cBPF filter (pcap path).\n",
 			args.HTTPS.CBPFExcludePort)
@@ -1201,7 +1208,7 @@ func (a *apidump) Run() error {
 	// short-circuit in mergePacketCountSummaries), so allocating
 	// unconditionally would change the payload shape of every non-HTTPS
 	// capture.
-	ebpfRequested := args.HTTPS.Enabled && !args.HTTPS.Libraries.None() && args.Out.AkitaURI != nil
+	ebpfRequested := args.httpsSelected() && args.Out.AkitaURI != nil
 	// The end-of-trace summary reports whether eBPF capture actually ran,
 	// not whether it was asked for.
 	a.dumpSummary.HTTPSCaptureEnabled = ebpfRequested

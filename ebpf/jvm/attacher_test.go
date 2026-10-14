@@ -246,17 +246,17 @@ func TestAttacherReportsEvents(t *testing.T) {
 	openj9 := hotspot()
 	openj9.Kind = OpenJ9
 
-	assert.Equal(t, []string{EventSeen, EventAttached}, run(func(*fakeOps) {}, hotspot()))
-	assert.Equal(t, []string{EventSeen, EventSkippedPrefix + SkipOpenJ9}, run(func(*fakeOps) {}, openj9))
-	assert.Equal(t, []string{EventSeen, EventAlreadyRunning}, run(func(o *fakeOps) {
+	assert.Equal(t, []string{EventAttached}, run(func(*fakeOps) {}, hotspot()))
+	assert.Equal(t, []string{EventSkippedPrefix + SkipOpenJ9}, run(func(*fakeOps) {}, openj9))
+	assert.Equal(t, []string{EventAlreadyRunning}, run(func(o *fakeOps) {
 		o.info.args = "-javaagent:/opt/postman/postman-java-agent.jar"
 	}, hotspot()))
-	assert.Equal(t, []string{EventSeen, EventSkippedPrefix + attach.ReasonNoListener}, run(func(o *fakeOps) {
+	assert.Equal(t, []string{EventSkippedPrefix + attach.ReasonNoListener}, run(func(o *fakeOps) {
 		o.info.sigQuitCaught = false
 		o.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonNoListener}
 	}, hotspot()))
 	// Retries report nothing; only the final failure does.
-	assert.Equal(t, []string{EventSeen, EventFailedPrefix + attach.ReasonConnectFailed}, run(func(o *fakeOps) {
+	assert.Equal(t, []string{EventFailedPrefix + attach.ReasonConnectFailed}, run(func(o *fakeOps) {
 		o.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
 	}, hotspot()))
 }
@@ -276,7 +276,7 @@ func TestAttacherCountsAdds(t *testing.T) {
 	s := a.next(time.Now())
 	require.NotNil(t, s)
 	a.try(context.Background(), s)
-	assert.Equal(t, []string{EventSeen}, older.events)
+	assert.Empty(t, older.events)
 	assert.Equal(t, []string{EventAttached}, newer.events)
 
 	a.Remove(hotspot().Key())

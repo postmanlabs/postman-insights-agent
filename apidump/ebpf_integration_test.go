@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -106,3 +107,16 @@ type recordingTracker struct {
 }
 
 func (r *recordingTracker) WorkflowStep(step, detail string) { r.onStep(step, detail) }
+
+// With no TLS library selected HTTPS capture is off, so pcap must keep the
+// TLS port.
+func TestHTTPSSelected(t *testing.T) {
+	var a Args
+	assert.False(t, a.httpsSelected())
+	a.HTTPS.Enabled = true
+	assert.False(t, a.httpsSelected(), "enabled with no library")
+	a.HTTPS.Libraries = ebpf.Libraries{Java: true}
+	assert.True(t, a.httpsSelected())
+	a.HTTPS.Enabled = false
+	assert.False(t, a.httpsSelected())
+}
