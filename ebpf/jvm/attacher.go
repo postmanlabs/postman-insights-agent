@@ -77,8 +77,9 @@ const (
 	FailHelper                 = "helper_failed"
 )
 
-// Telemetry events, one per JVM and outcome, given to the report function
-// passed to Add.
+// Telemetry events, one per JVM and outcome. The Attacher gives the outcome
+// events to the report function passed to Add; EventSeen is for whoever
+// discovers JVMs, which happens whether or not they can be attached.
 const (
 	EventSeen           = "java_jvm_seen"
 	EventAttached       = "java_jvm_attached"
@@ -175,8 +176,9 @@ func newAttacher(ops attachOps, jar []byte, sum string, agentArgs func() string)
 }
 
 // Add queues p for attaching. report, when not nil, receives one telemetry
-// event (Event*) when p is first added and one for what happened to it.
-// Adding a JVM again attaches nothing more; it only takes over reporting.
+// event for what happened to it (EventAttached, EventAlreadyRunning, or an
+// EventSkippedPrefix or EventFailedPrefix event). Adding a JVM again attaches
+// nothing more; it only takes over reporting.
 func (a *Attacher) Add(p *Process, report func(event string)) {
 	a.mu.Lock()
 	if s, ok := a.jvms[p.Key()]; ok {
@@ -194,9 +196,6 @@ func (a *Attacher) Add(p *Process, report func(event string)) {
 	default:
 	}
 	a.mu.Unlock()
-	if report != nil {
-		report(EventSeen)
-	}
 }
 
 // Remove undoes one Add, and forgets the JVM after the last.

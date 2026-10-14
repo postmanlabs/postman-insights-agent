@@ -336,10 +336,13 @@ func TestNodeCollectorJVMJavaOff(t *testing.T) {
 	if nc.attacher != nil {
 		t.Fatal("an attacher with Java capture off")
 	}
-	_, unsubscribe := subscribe(t, ctx, nc, nil)
+	var counts eventCounts
+	_, unsubscribe := subscribe(t, ctx, nc, counts.add)
 	defer unsubscribe()
 	// The agent checks its control file every 5 s; it goes stale after 60 s.
 	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
+	// The pod's telemetry still shows its JVM.
+	counts.wait(t, map[string]uint64{jvm.EventSeen: 1})
 }
 
 // TestNodeCollectorJVMAttach: an unmodified JVM. The subscription discovers

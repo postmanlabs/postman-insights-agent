@@ -28,6 +28,7 @@ package ebpf
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -191,12 +192,21 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 // sees it. With hostPID (the DaemonSet) that is the node's init, whose netns
 // hostNetwork pods share; in kind it is the node container's. Without hostPID
 // it is the agent pod's own netns, which is never a monitored pod's.
-func hostNetnsInode() uint64 {
+func hostNetnsInode() uint64 { return netnsInodeAt("/proc/1/ns/net") }
+
+// netnsInodeAt returns the inode of the network namespace at path (a
+// /proc/<pid>/ns/net), or 0.
+func netnsInodeAt(path string) uint64 {
 	var st syscall.Stat_t
-	if err := syscall.Stat("/proc/1/ns/net", &st); err != nil {
+	if err := syscall.Stat(path, &st); err != nil {
 		return 0
 	}
 	return st.Ino
+}
+
+// jvmNetns returns the network namespace inode of p, or 0.
+func jvmNetns(p *jvm.Process) uint64 {
+	return netnsInodeAt(filepath.Join(p.ProcRoot, strconv.FormatUint(uint64(p.PID), 10), "ns", "net"))
 }
 
 // attachPID attaches libssl uprobes to pid for sub and routes the PID to it.
@@ -510,6 +520,11 @@ func (nc *NodeCollector) Subscribe(
 				// Discovery emits a PID again when it gains libssl or
 				// becomes a JVM: add only what is new.
 				if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvmScope && !owned {
+					// Counted here, not by the attacher, which is absent
+					// when Java capture is off or attach is unavailable.
+					if reportJVM != nil {
+						reportJVM(jvm.EventSeen)
+					}
 					nc.addJVM(tgt.JVM, reportJVM)
 					ownedJVMs[tgt.PID] = tgt.JVM.Key()
 				}

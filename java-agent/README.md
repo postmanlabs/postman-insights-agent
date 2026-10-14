@@ -77,6 +77,7 @@ The build arg `AGENT_VERSION` sets the jar's version.
 Java HTTPS capture is in preview, and off by default until the preview release.
 `--https-libraries=openssl,java` (on `kube run` and `apidump`, with `--enable-https-capture`) turns it on.
 Without `java`, the Insights Agent switches off the agents already running in the JVMs of the pods it monitors, at the next control-file refresh.
+Run as a sidecar (`apidump`), the Insights Agent captures Java only in its own pod's network namespace, even with `hostPID`.
 The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
 It also loads the agent into running JVMs that do not have it, through the `postman-jvm-attach` helper (`cmd/postman-jvm-attach`), which it runs as each JVM's own user.
 On JDK 21 and newer, the JVM then prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr; they are harmless.

@@ -73,8 +73,11 @@ type Args struct {
 	// handle for telemetry wiring; the lifecycle remains owned by Collect.
 	HookLoader func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
 
-	// EnableJava also loads the Java TLS programs. Collect captures the whole
-	// host, so it accepts frames from every process.
+	// EnableJava also loads the Java TLS programs. Java capture is confined
+	// to the agent's own network namespace: a sidecar's pod (even with
+	// hostPID, where discovery sees the whole node), or the host's for an
+	// agent on the host. Its frames are accepted, and its JVMs' control files
+	// written, only there.
 	EnableJava bool
 
 	// DisableOpenSSL attaches no libssl uprobes, so only Java is captured.
@@ -113,17 +116,32 @@ func Collect(ctx context.Context, args Args) error {
 		return fmt.Errorf("ebpf: Args.FactorySelector is nil")
 	}
 
+	// The network namespace Java capture is confined to (see EnableJava).
+	javaNetns := netnsInodeAt("/proc/self/ns/net")
+	if args.EnableJava && javaNetns == 0 {
+		printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: the agent's network namespace is unknown\n")
+		args.EnableJava = false
+	}
+
 	// 1. Load BPF programs.
 	l, err := loader.Load(loader.Config{
-		EnforcePIDAllowlist: args.EnforcePIDAllowlist,
-		MaxCaptureBytes:     args.MaxCaptureBytes,
-		EnableJava:          args.EnableJava,
+		EnforcePIDAllowlist:       args.EnforcePIDAllowlist,
+		MaxCaptureBytes:           args.MaxCaptureBytes,
+		EnableJava:                args.EnableJava,
+		EnforceJavaNetnsAllowlist: true,
 	})
 	if err != nil {
 		return fmt.Errorf("ebpf: load: %w", err)
 	}
 	defer func() { _ = l.Close() }()
 	logJavaTLSStatus(args.EnableJava, l)
+	javaOn := l.JavaEnabled()
+	if javaOn {
+		if err := l.AllowJavaNetns(javaNetns); err != nil {
+			printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: %v\n", err)
+			javaOn = false
+		}
+	}
 
 	// 2. Start ring-buffer reader.
 	reader, err := events.NewReader(l.EventsMap(), 4096)
@@ -177,12 +195,12 @@ func Collect(ctx context.Context, args Args) error {
 		args.HookLoader(l, therm, mgr, adapter)
 	}
 
-	// Collect captures the whole host, so with Java capture on it controls
-	// every JVM it discovers.
+	// With Java capture on, the JVMs in the agent's network namespace get
+	// control files.
 	var jvms *jvm.Controller
 	if args.EnableJava {
 		jvms = jvm.NewController(func() javatls.Control {
-			return javaControl(true, l, therm, args.MaxCaptureBytes)
+			return javaControl(javaOn, l, therm, args.MaxCaptureBytes)
 		})
 		go jvms.Run(ctx)
 	}
@@ -246,7 +264,7 @@ func Collect(ctx context.Context, args Args) error {
 			}
 			// Discovery emits a PID again when it gains libssl or becomes
 			// a JVM; the uprobes manager attaches a PID's libssl once.
-			if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvms != nil && !owned {
+			if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvms != nil && !owned && jvmNetns(tgt.JVM) == javaNetns {
 				jvms.Add(tgt.JVM)
 				ownedJVMs[tgt.PID] = tgt.JVM.Key()
 			}
