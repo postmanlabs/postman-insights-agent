@@ -69,6 +69,10 @@ const (
 // format, next to AgentJarPath in the Insights agent images.
 const AgentJarChecksumPath = AgentJarPath + ".sha256"
 
+// AttachHelperPath is the postman-jvm-attach helper in the Insights agent
+// images, which loads the agent into running JVMs (see ebpf/jvm/attach).
+const AttachHelperPath = "/opt/postman/postman-jvm-attach"
+
 // HEARTBEAT frames carry key=value lines (UTF-8, one per line) describing
 // the Java agent. The agent sends one when it starts and then every
 // HeartbeatInterval, whether it is capturing or dormant. Readers ignore

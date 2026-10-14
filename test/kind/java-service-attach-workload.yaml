@@ -1,0 +1,30 @@
+# The same Spring Boot (Tomcat) HTTPS service, started without the Postman
+# Java agent: the Insights agent attaches it to the running JVM.
+# Image: test/kind/Dockerfile.java-service. Deployed by deploy-java-service.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: java-service-attach
+  namespace: test-apps
+  labels:
+    app: java-service-attach
+spec:
+  containers:
+  - name: java-service-attach
+    image: pia-java-service:test
+    imagePullPolicy: Never
+    # The image's entrypoint without -javaagent.
+    command: ["java", "-jar", "/app/app.jar"]
+    ports:
+    - containerPort: 8443
+      name: https
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      allowPrivilegeEscalation: false
+    # TCP, not HTTPS: an HTTPS probe would itself be captured and count
+    # towards the checks in deploy-java-service.sh.
+    readinessProbe:
+      tcpSocket: { port: 8443 }
+      initialDelaySeconds: 5
+      periodSeconds: 5

@@ -28,6 +28,7 @@ package ebpf
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +37,8 @@ import (
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -85,6 +88,14 @@ type NodeCollector struct {
 	// frames, so one subscription's cancel cannot revoke another's. Guarded by
 	// mu.
 	javaNetnsRefs map[uint64]int
+
+	// jvms keeps the Java agents' control files fresh for the JVMs in
+	// subscribed pods, and switches the agents off when Java capture is off.
+	jvms *jvm.Controller
+	// attacher loads the Java agent into those JVMs. Nil when Java capture
+	// is off or the agent jar or helper is missing; JVMs started with
+	// -javaagent are captured all the same.
+	attacher *jvm.Attacher
 }
 
 // NodeCollectorConfig mirrors the relevant fields from ebpf.Args used at
@@ -145,6 +156,26 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		pidToSub:        routeTable[uint32]{},
 		hostNetns:       hostNetnsInode(),
 		javaNetnsRefs:   make(map[uint64]int),
+	}
+	javaSettings := func() javatls.Control {
+		return javaControl(cfg.EnableJava, l, therm, cfg.MaxCaptureBytes)
+	}
+	nc.jvms = jvm.NewController(javaSettings)
+	if javaSettings().Enabled {
+		a, err := jvm.NewAttacher(jvm.AttacherConfig{
+			HelperPath:   javatls.AttachHelperPath,
+			JarPath:      javatls.AgentJarPath,
+			ChecksumPath: javatls.AgentJarChecksumPath,
+			AgentArgs: func() string {
+				return javatls.ArgCaptureCap + "=" + strconv.Itoa(javaSettings().CaptureCap)
+			},
+		})
+		if err != nil {
+			printer.Stderr.Warningf("ebpf: Java agent cannot be attached to running JVMs (%v); "+
+				"JVMs started with -javaagent are still captured\n", err)
+		} else {
+			nc.attacher = a
+		}
 	}
 	return nc, nil
 }
@@ -228,6 +259,23 @@ func (nc *NodeCollector) releaseJavaNetns(netnsInode uint64) {
 	}
 }
 
+// addJVM writes the control file for a JVM in a subscribed pod, then queues
+// it for attaching, so an attached agent finds the file at once.
+func (nc *NodeCollector) addJVM(p *jvm.Process) {
+	nc.jvms.Add(p)
+	if nc.attacher != nil {
+		nc.attacher.Add(p)
+	}
+}
+
+// removeJVM undoes addJVM.
+func (nc *NodeCollector) removeJVM(k jvm.Key) {
+	nc.jvms.Remove(k)
+	if nc.attacher != nil {
+		nc.attacher.Remove(k)
+	}
+}
+
 // Close releases all kernel resources. Call after cancelling the context
 // passed to Run and after all Subscribe goroutines have returned.
 func (nc *NodeCollector) Close() error {
@@ -271,6 +319,11 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 	}
 
 	go rateCapRefiller(ctx, nc.ldr, nc.mgr, nc.rateCapPerSec)
+
+	go nc.jvms.Run(ctx)
+	if nc.attacher != nil {
+		go nc.attacher.Run(ctx)
+	}
 
 	gcTicker := time.NewTicker(nc.flowIdleTimeout / 2)
 	defer gcTicker.Stop()
@@ -368,11 +421,16 @@ func (nc *NodeCollector) Subscribe(
 	}
 	// Java frames are accepted per pod netns, the same key events route on.
 	javaNetns := nc.allowJavaNetns(netnsInode)
+	// The JVMs of a pod known by its own netns get control files, also with
+	// Java capture off (to switch earlier agents off). Never on the host
+	// network, where a netns does not identify one pod.
+	jvmScope := netnsInode != 0 && netnsInode != nc.hostNetns
 
 	go func() {
 		// Track which PIDs this subscription registered so we can clean up on
 		// cancel even if discovery doesn't emit Removed events in time.
 		ownedPIDs := make(map[uint32]struct{})
+		ownedJVMs := make(map[uint32]jvm.Key)
 
 		// Unregister the pod's netns route, its Java allowlist entry and any
 		// remaining PIDs. Runs however the loop ends: discovery closes its
@@ -385,6 +443,9 @@ func (nc *NodeCollector) Subscribe(
 			}
 			if javaNetns {
 				nc.releaseJavaNetns(netnsInode)
+			}
+			for _, k := range ownedJVMs {
+				nc.removeJVM(k)
 			}
 			for pid := range ownedPIDs {
 				if _, err := nc.releasePID(pid, sub); err != nil {
@@ -406,6 +467,10 @@ func (nc *NodeCollector) Subscribe(
 					return
 				}
 				if tgt.Removed {
+					if k, ok := ownedJVMs[tgt.PID]; ok {
+						delete(ownedJVMs, tgt.PID)
+						nc.removeJVM(k)
+					}
 					delete(ownedPIDs, tgt.PID)
 					if detached, err := nc.releasePID(tgt.PID, sub); err != nil {
 						printer.Debugf("ebpf: detach pid=%d: %v\n", tgt.PID, err)
@@ -418,6 +483,13 @@ func (nc *NodeCollector) Subscribe(
 					continue
 				}
 
+				if tgt.JVM != nil && jvmScope {
+					nc.addJVM(tgt.JVM)
+					ownedJVMs[tgt.PID] = tgt.JVM.Key()
+				}
+				if tgt.Lib == nil {
+					continue
+				}
 				if err := nc.attachPID(tgt, sub); err != nil {
 					printer.Debugf("ebpf: attach pid=%d path=%s failed: %v\n",
 						tgt.PID, tgt.Lib.HostPath, err)
