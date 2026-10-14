@@ -27,6 +27,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 )
 
 // These tests run the DaemonSet path end to end with real JVMs and the real
@@ -317,6 +318,79 @@ func TestNodeCollectorJVMStatic(t *testing.T) {
 	// not when the file goes stale.
 	unsubscribe()
 	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
+}
+
+// TestNodeCollectorJVMControlFrames: a real JVM's agent reaches the pod's
+// adapter through the kernel with HEARTBEAT and CLOSE frames. Its first
+// heartbeat, sent as it starts, counts it as alive; when a connection closes,
+// its CLOSE frees the connection at once rather than after the flows' idle
+// timeout.
+func TestNodeCollectorJVMControlFrames(t *testing.T) {
+	f := newJVMFixture(t)
+	nc, ctx := javaTestCollector(t)
+
+	// Subscribed before the JVM starts, so the heartbeat it sends at start
+	// comes from an allowed netns.
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	out := make(chan akinet.ParsedNetworkTraffic, 64)
+	disco := discovery.WatchWith(subCtx, discovery.WatchOpts{
+		Interval:         200 * time.Millisecond,
+		ProcRoot:         "/proc",
+		NetnsInodeFilter: ownNetns(t),
+		JVMs:             true,
+	})
+	unsubscribe, adapter := nc.Subscribe(subCtx, disco, httpSelector(t), out, "", ownNetns(t), nil)
+	defer unsubscribe()
+
+	j := f.start(t, 1000, nil, "-javaagent:"+f.agentJar)
+	deadline := time.Now().Add(10 * time.Second)
+	for adapter.Stats().JavaAgentsAlive != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the JVM's agent was not heard from: %+v", adapter.Stats())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// The agent checks its control file every 5 s.
+	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+	// No keep-alive: the client closes the connection after the response,
+	// and the server's engine closes with it.
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		DisableKeepAlives: true,
+	}}
+	before := javaCounter(t, nc, loader.JavaCounterControlFrames)
+	resp, err := client.Get("https://" + j.addr + "/hello?close=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for got := 0; got < 2; {
+		select {
+		case <-out:
+			got++
+		case <-time.After(10 * time.Second):
+			t.Fatalf("captured %d of the request and response", got)
+		}
+	}
+	// Well before the 30 s idle timeout.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		flows, _ := adapter.Snapshot()
+		if flows == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d flows left after the connection closed (control frames +%d)",
+				flows, javaCounter(t, nc, loader.JavaCounterControlFrames)-before)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if javaCounter(t, nc, loader.JavaCounterControlFrames) == before {
+		t.Fatal("no CLOSE frame reached the kernel")
+	}
 }
 
 // TestNodeCollectorJVMJavaOff: an Insights agent with Java capture off
