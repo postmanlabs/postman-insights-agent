@@ -6,7 +6,10 @@ package loader
 
 import (
 	"bytes"
+	"encoding/hex"
 	"os"
+	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -266,6 +269,31 @@ func TestJavaTLSFrames(t *testing.T) {
 			t.Fatalf("second event kind %d, want the heartbeat (the close was capped)", ev.Kind)
 		}
 		expectNoEvent(t)
+	})
+
+	t.Run("heartbeats are limited per process", func(t *testing.T) {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip("needs python3, to write heartbeats from a fresh process")
+		}
+		before := counter(t, JavaCounterHeartbeatLimited)
+		// From a process of its own, so this test's earlier heartbeats do not
+		// count: three per 30 s pass, the fourth is dropped.
+		hb := javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat}.Append(nil)
+		script := "import os; fd = os.open('/dev/null', os.O_WRONLY)\nfor _ in range(4): os.pwrite(fd, bytes.fromhex('" +
+			hex.EncodeToString(hb) + "'), " + strconv.FormatUint(uint64(javatls.Magic), 10) + ")"
+		if b, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("python: %v\n%s", err, b)
+		}
+		for i := 0; i < 3; i++ {
+			if ev := readEvent(t); ev.Kind != events.KindJavaHeartbeat {
+				t.Fatalf("event %d kind %d, want a heartbeat", i, ev.Kind)
+			}
+		}
+		expectNoEvent(t)
+		if got := counter(t, JavaCounterHeartbeatLimited) - before; got != 1 {
+			t.Errorf("heartbeat_limited grew by %d, want 1", got)
+		}
 	})
 
 	if err := l.DisallowJavaNetns(netns); err != nil {
