@@ -46,13 +46,20 @@ func javaTestCollector(t *testing.T) (*NodeCollector, context.Context) {
 // capture on or off. hostNetns is cleared as for javaTestCollector.
 func testCollector(t *testing.T, java bool) (*NodeCollector, context.Context) {
 	t.Helper()
+	return testCollectorWith(t, NodeCollectorConfig{EnableJava: java})
+}
+
+// testCollectorWith is testCollector with cfg's libraries.
+func testCollectorWith(t *testing.T, cfg NodeCollectorConfig) (*NodeCollector, context.Context) {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
 	}
 	nc, err := NewNodeCollector(NodeCollectorConfig{
 		MaxCaptureBytes:   16384,
 		DisableThermostat: true,
-		EnableJava:        java,
+		EnableJava:        cfg.EnableJava,
+		DisableOpenSSL:    cfg.DisableOpenSSL,
 	})
 	if err != nil {
 		t.Fatalf("NewNodeCollector: %v", err)
@@ -350,8 +357,7 @@ func libsslProcess(t *testing.T) discovery.Target {
 // TestNodeCollectorDisableOpenSSL: with --https-libraries=java, discovered
 // libssl processes get no uprobes.
 func TestNodeCollectorDisableOpenSSL(t *testing.T) {
-	nc, ctx := javaTestCollector(t)
-	nc.openSSL = false
+	nc, ctx := testCollectorWith(t, NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true})
 	target := libsslProcess(t)
 
 	disco := make(chan discovery.Target)
@@ -375,16 +381,30 @@ func TestNodeCollectorDisableOpenSSL(t *testing.T) {
 // TestNodeCollectorLibraries: the collector reports the libraries it captures
 // from, which the DaemonSet captures pods from.
 func TestNodeCollectorLibraries(t *testing.T) {
-	java, _ := javaTestCollector(t)
-	if got := java.Libraries(); got != (Libraries{OpenSSL: true, Java: true}) {
-		t.Errorf("Java on: %s", got)
+	for _, tc := range []struct {
+		cfg  NodeCollectorConfig
+		want Libraries
+	}{
+		{NodeCollectorConfig{EnableJava: true}, Libraries{OpenSSL: true, Java: true}},
+		{NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true}, Libraries{Java: true}},
+		{NodeCollectorConfig{}, Libraries{OpenSSL: true}},
+	} {
+		nc, _ := testCollectorWith(t, tc.cfg)
+		if got := nc.Libraries(); got != tc.want {
+			t.Errorf("%+v: libraries %s, want %s", tc.cfg, got, tc.want)
+		}
 	}
-	java.openSSL = false
-	if got := java.Libraries(); got != (Libraries{Java: true}) {
-		t.Errorf("Java only: %s", got)
+}
+
+// A NodeCollector with no library it can capture from is an error, so the
+// DaemonSet runs pods without HTTPS capture rather than capturing nothing.
+func TestNewNodeCollectorNothingToCapture(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
 	}
-	plain, _ := testCollector(t, false)
-	if got := plain.Libraries(); got != (Libraries{OpenSSL: true}) {
-		t.Errorf("Java off: %s", got)
+	nc, err := NewNodeCollector(NodeCollectorConfig{DisableOpenSSL: true})
+	if err == nil {
+		_ = nc.Close()
+		t.Fatal("NewNodeCollector with no library to capture succeeded")
 	}
 }

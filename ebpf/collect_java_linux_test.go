@@ -104,3 +104,33 @@ func TestCollectJavaOwnNetnsOnly(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// TestStartLibraries: Start reports the libraries it captures from, and fails
+// when it would capture none, so that standalone apidump keeps the TLS port in
+// pcap instead of capturing nothing there.
+func TestStartLibraries(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
+	}
+	for _, tc := range []struct {
+		load LoadArgs
+		want Libraries
+	}{
+		{LoadArgs{}, Libraries{OpenSSL: true}},
+		{LoadArgs{EnableJava: true}, Libraries{OpenSSL: true, Java: true}},
+		{LoadArgs{EnableJava: true, DisableOpenSSL: true}, Libraries{Java: true}},
+	} {
+		c, err := Start(tc.load)
+		if err != nil {
+			t.Fatalf("%+v: %v", tc.load, err)
+		}
+		if got := c.Libraries(); got != tc.want {
+			t.Errorf("%+v: libraries %s, want %s", tc.load, got, tc.want)
+		}
+		c.Close()
+	}
+	if c, err := Start(LoadArgs{DisableOpenSSL: true}); err == nil {
+		c.Close()
+		t.Error("Start with no library to capture succeeded")
+	}
+}

@@ -131,13 +131,6 @@ func (a Args) reportTelemetryEvent(event string) {
 	a.reportTelemetryCount(event, 1)
 }
 
-// httpsSelected reports whether HTTPS capture is enabled with a TLS library
-// to capture. The pcap filter's TLS port exclusion follows this, not the
-// flag alone: with no library, pcap must still see that port.
-func (a Args) httpsSelected() bool {
-	return a.HTTPS.Enabled && !a.HTTPS.Libraries.None()
-}
-
 func (a Args) reportTelemetryCount(event string, count uint64) {
 	if daemonsetArgs, ok := a.DaemonsetArgs.Get(); ok && daemonsetArgs.ReportTelemetryCount != nil {
 		daemonsetArgs.ReportTelemetryCount(event, count)
@@ -357,8 +350,9 @@ type Args struct {
 
 	// --- HTTPS-via-eBPF capture (Phase 2) ---------------------------------
 	//
-	// When HTTPS.Enabled is true, the agent additionally runs the
-	// eBPF libssl-uprobe pipeline (see ebpf/) alongside libpcap. Decrypted
+	// When HTTPS.Enabled is true, there is a backend to send to, and the BPF
+	// programs load (prepareHTTPSCapture), the agent additionally runs the
+	// eBPF pipeline (see ebpf/) alongside libpcap. Decrypted
 	// HTTPS bytes flow through a mirrored trace.Collector chain (same learn
 	// session, redactor, rate limiter, and backend sink as pcap). The libpcap
 	// filter on each interface is also adjusted to exclude
@@ -1041,27 +1035,6 @@ func (a *apidump) Run() error {
 	}
 	lastCheckpoint = "filter_setup"
 
-	// When HTTPS-via-eBPF capture is active, drop the TLS port from the cBPF
-	// filter so the libpcap path doesn't double-count handshake bytes already
-	// captured by the userspace TLS uprobes. See docs/https-capture-design.md
-	// §6.1 and apidump/ebpf_integration.go.
-	if args.httpsSelected() && args.HTTPS.CBPFExcludePort > 0 {
-		printer.Stderr.Infof(
-			"HTTPS capture enabled: excluding TCP port %d from cBPF filter (pcap path).\n",
-			args.HTTPS.CBPFExcludePort)
-		userFilters = excludePortFromBPF(userFilters, args.HTTPS.CBPFExcludePort)
-		// Negation filters intentionally untouched: if the user runs in
-		// "capture everything else too" mode, the eBPF-captured plaintext
-		// flow is the source of truth for 443, so the negation channel
-		// would still want to see port 443's *non-TLS* traffic (rare in
-		// practice). Override behaviour gated behind the existing
-		// --bpf-filter knob for power users.
-	}
-	printer.Debugln("User-specified BPF filters:", userFilters)
-	if capturingNegation {
-		printer.Debugln("Negation BPF filters:", negationFilters)
-	}
-
 	traceTags := collectTraceTags(args)
 	// Args.Tags does not receive the DaemonsetArgs.TraceTags merge above, so
 	// logCaptureDiagnostics needs its own reference to find the monitored pod
@@ -1114,6 +1087,26 @@ func (a *apidump) Run() error {
 			ServiceName: a.backendSvcName,
 			ObjectName:  util.RandomLearnSessionName(),
 		}
+	}
+
+	// HTTPS capture via eBPF runs only with a backend to send to. Whether it
+	// runs, and from which libraries, is decided here, before the pcap
+	// filters are final: standalone, this loads the BPF programs.
+	var https *httpsCapture
+	if args.HTTPS.Enabled && args.Out.AkitaURI != nil {
+		https = prepareHTTPSCapture(args)
+		// Released by start once started; this covers the returns before.
+		defer https.close()
+	} else if args.HTTPS.Enabled {
+		printer.Stderr.Warningf(
+			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")
+	}
+	ebpfRequested := https != nil
+
+	userFilters = https.pcapFilters(userFilters, args.HTTPS.CBPFExcludePort)
+	printer.Debugln("User-specified BPF filters:", userFilters)
+	if capturingNegation {
+		printer.Debugln("Negation BPF filters:", negationFilters)
 	}
 
 	// If --dogfood is specified, enable assertions in the buffer-pool code.
@@ -1208,7 +1201,6 @@ func (a *apidump) Run() error {
 	// short-circuit in mergePacketCountSummaries), so allocating
 	// unconditionally would change the payload shape of every non-HTTPS
 	// capture.
-	ebpfRequested := args.httpsSelected() && args.Out.AkitaURI != nil
 	// The end-of-trace summary reports whether eBPF capture actually ran,
 	// not whether it was asked for.
 	a.dumpSummary.HTTPSCaptureEnabled = ebpfRequested
@@ -1531,15 +1523,9 @@ func (a *apidump) Run() error {
 			<-stop
 			httpsCancel()
 		}()
-		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry)
+		_ = https.start(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry)
 		printer.Stderr.Infof("HTTPS capture (eBPF) started with libraries=%s, body-cap=%d, mode=%q.\n",
-			args.HTTPS.Libraries, args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
-	} else if args.HTTPS.Enabled && args.HTTPS.Libraries.None() {
-		printer.Stderr.Warningf(
-			"--enable-https-capture set but no TLS library is selected (--https-libraries); HTTPS capture disabled.\n")
-	} else if args.HTTPS.Enabled {
-		printer.Stderr.Warningf(
-			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")
+			https.libraries, args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
 	}
 
 	// All configured capture pipelines have been started -- this is the first
@@ -1553,11 +1539,10 @@ func (a *apidump) Run() error {
 	// numCollectors counts pcap goroutines actually launched above -- it is 0
 	// whenever the interface/filter loop had nothing to iterate over, which
 	// len(interfaces) > 0 does not catch (e.g. filters failed to build for
-	// every interface). ebpfRequested is still only "eBPF capture was
-	// configured and asked to start", not a confirmed uprobe attach --
-	// startHTTPSeBPFCapture does not yet report attach success synchronously,
-	// so a fully confirmed eBPF signal remains separate P2 work (node-scope
-	// eBPF collector health).
+	// every interface). ebpfRequested means the BPF programs are loaded
+	// (prepareHTTPSCapture), not that any uprobe attached or any JVM sends
+	// frames: a fully confirmed eBPF signal remains separate P2 work
+	// (node-scope eBPF collector health).
 	if numCollectors > 0 || ebpfRequested {
 		// Keep this event bounded and free of interface names, service
 		// credentials, or payload data.

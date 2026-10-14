@@ -63,6 +63,46 @@ func LibrariesFromFlag(names []string) Libraries {
 	return libs
 }
 
+// HTTPSCaptureFromFlags returns whether HTTPS capture runs, and from which
+// libraries, for --enable-https-capture and --https-libraries: off when the
+// libraries name none it supports, so that nothing downstream sees HTTPS
+// capture on with nothing to capture.
+func HTTPSCaptureFromFlags(enabled bool, names []string) (bool, Libraries) {
+	if !enabled {
+		return false, Libraries{}
+	}
+	libs := LibrariesFromFlag(names)
+	if libs.None() {
+		return false, Libraries{}
+	}
+	return true, libs
+}
+
+// JavaPodSkipReason returns why Java capture cannot run for a pod in network
+// namespace podNetns on a node whose own namespace is hostNetns, or "" when it
+// can. Java frames are accepted, and JVMs controlled, per network namespace,
+// so the namespace must be the pod's alone: known, and not the host's, which
+// hostNetwork pods and host processes share. Accepting more would capture
+// and control other pods' JVMs as this pod's.
+func JavaPodSkipReason(podNetns, hostNetns uint64) string {
+	switch {
+	case podNetns == 0:
+		return "the network namespace is unknown"
+	case podNetns == hostNetns:
+		return "the network namespace is the node's (host network)"
+	}
+	return ""
+}
+
+// ForPod returns the libraries a pod is captured from when the node captures
+// from l: without Java when JavaPodSkipReason gives a reason.
+func (l Libraries) ForPod(podNetns, hostNetns uint64) Libraries {
+	if JavaPodSkipReason(podNetns, hostNetns) != "" {
+		l.Java = false
+	}
+	return l
+}
+
 // None reports whether the set is empty.
 func (l Libraries) None() bool { return !l.OpenSSL && !l.Java }
 

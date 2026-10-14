@@ -28,10 +28,8 @@ var (
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
-	var libraries ebpf.Libraries
-	if enableHTTPSCapture {
-		libraries = ebpf.LibrariesFromFlag(httpsLibraries)
-	}
+	// With no library to capture, HTTPS capture is off: decided here, once.
+	httpsEnabled, libraries := ebpf.HTTPSCaptureFromFlags(enableHTTPSCapture, httpsLibraries)
 	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
 		ReproMode:            reproMode,
 		RateLimit:            rateLimit,
@@ -40,7 +38,7 @@ func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 		ExcludeNamespaces:    excludeNamespaces,
 		IncludeLabels:        includeLabels,
 		ExcludeLabels:        excludeLabels,
-		EnableHTTPSCapture:   enableHTTPSCapture,
+		EnableHTTPSCapture:   httpsEnabled,
 		HTTPSRateCapPerSec:   httpsRateCapPerSec,
 		HTTPSBodySizeCap:     httpsBodySizeCap,
 		HTTPSCBPFExcludePort: httpsCBPFExcludePort,

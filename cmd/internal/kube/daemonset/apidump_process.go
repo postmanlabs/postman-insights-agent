@@ -12,6 +12,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"k8s.io/apimachinery/pkg/types"
@@ -212,9 +213,9 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 //     acceptable only as a degraded fallback.
 //  3. No filter — when HTTPS is disabled or neither of the above is available.
 //
-// Java capture needs the inode: the kernel accepts Java frames only from
-// allowed network namespaces, and only the pod's JVMs get a control file.
-// Without it, the pod is captured without Java.
+// The pod is captured from the node's libraries, without Java when it cannot
+// run for the pod (ebpf.JavaPodSkipReason); with none left, HTTPS capture is
+// off for the pod, so pcap keeps the TLS port.
 func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.HTTPSCaptureArgs {
 	if !d.EnableHTTPSCapture {
 		return apidump.HTTPSCaptureArgs{Enabled: false}
@@ -227,6 +228,17 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		return apidump.HTTPSCaptureArgs{Enabled: false}
 	}
 
+	libraries := d.HTTPSLibraries.ForPod(netnsInode, d.httpsHostNetns)
+	if d.HTTPSLibraries.Java && !libraries.Java {
+		reason := ebpf.JavaPodSkipReason(netnsInode, d.httpsHostNetns)
+		if libraries.None() {
+			printer.Warningf("HTTPS capture is off for pod %s: Java HTTPS capture cannot run for it (%s), and it is the only library selected\n",
+				podArgs.PodName, reason)
+			return apidump.HTTPSCaptureArgs{Enabled: false}
+		}
+		printer.Infof("Java HTTPS capture is off for pod %s: %s\n", podArgs.PodName, reason)
+	}
+
 	args := apidump.HTTPSCaptureArgs{
 		Enabled:             true,
 		ContainerNetnsInode: netnsInode,
@@ -234,17 +246,8 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		BodySizeCap:         d.HTTPSBodySizeCap,
 		CBPFExcludePort:     d.HTTPSCBPFExcludePort,
 		DisableThermostat:   d.HTTPSNoThermostat,
-		Libraries:           d.HTTPSLibraries,
+		Libraries:           libraries,
 		NodeCollector:       d.EBPFNodeCollector,
-	}
-
-	if netnsInode == 0 && args.Libraries.Java {
-		args.Libraries.Java = false
-		if args.Libraries.None() {
-			printer.Warningf("HTTPS capture is off for pod %s: Java HTTPS capture needs the pod's network namespace, which is unknown\n", podArgs.PodName)
-			return apidump.HTTPSCaptureArgs{Enabled: false}
-		}
-		printer.Warningf("Java HTTPS capture is off for pod %s: it needs the pod's network namespace, which is unknown\n", podArgs.PodName)
 	}
 
 	// Only fall back to namespace-level filtering when the inode is

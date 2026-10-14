@@ -3,7 +3,6 @@ package daemonset
 import (
 	"os"
 	"runtime"
-	"strconv"
 	"testing"
 
 	"github.com/postmanlabs/postman-insights-agent/apidump"
@@ -166,26 +165,38 @@ func TestBuildHTTPSArgs_LibrariesPropagation(t *testing.T) {
 	}
 }
 
-// Without the pod's netns inode, Java frames would be rejected and the pod's
-// JVMs left uncontrolled: the pod is captured without Java.
-func TestBuildHTTPSArgs_JavaNeedsInode(t *testing.T) {
+// A pod is captured from the node's libraries, without Java when Java cannot
+// run for it; with none left, HTTPS capture is off for it, so pcap keeps the
+// TLS port.
+func TestBuildHTTPSArgs_PodLibraries(t *testing.T) {
+	const host uint64 = 100
+	both := ebpf.Libraries{OpenSSL: true, Java: true}
+	javaOnly := ebpf.Libraries{Java: true}
 	pod := &PodArgs{PodName: "web-1", Namespace: "team-a"}
 	for _, tc := range []struct {
-		libs        ebpf.Libraries
+		name        string
+		node        ebpf.Libraries
 		inode       uint64
 		wantEnabled bool
 		wantLibs    ebpf.Libraries
 	}{
-		{ebpf.Libraries{OpenSSL: true, Java: true}, 42, true, ebpf.Libraries{OpenSSL: true, Java: true}},
-		{ebpf.Libraries{OpenSSL: true, Java: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
-		{ebpf.Libraries{Java: true}, 0, false, ebpf.Libraries{}},
-		{ebpf.Libraries{OpenSSL: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
+		{"own netns", both, 42, true, both},
+		{"netns unknown", both, 0, true, ebpf.Libraries{OpenSSL: true}},
+		{"host network", both, host, true, ebpf.Libraries{OpenSSL: true}},
+		{"Java only, own netns", javaOnly, 42, true, javaOnly},
+		{"Java only, netns unknown", javaOnly, 0, false, ebpf.Libraries{}},
+		{"Java only, host network", javaOnly, host, false, ebpf.Libraries{}},
+		{"OpenSSL only, netns unknown", ebpf.Libraries{OpenSSL: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
 	} {
-		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: tc.libs}
+		d := &Daemonset{
+			EnableHTTPSCapture: true,
+			EBPFNodeCollector:  testNodeCollector,
+			HTTPSLibraries:     tc.node,
+			httpsHostNetns:     host,
+		}
 		got := buildHTTPSArgs(d, pod, tc.inode)
-		name := tc.libs.String() + " inode=" + strconv.FormatUint(tc.inode, 10)
-		assert.Equal(t, tc.wantEnabled, got.Enabled, name)
-		assert.Equal(t, tc.wantLibs, got.Libraries, name)
+		assert.Equal(t, tc.wantEnabled, got.Enabled, tc.name)
+		assert.Equal(t, tc.wantLibs, got.Libraries, tc.name)
 	}
 }
 
