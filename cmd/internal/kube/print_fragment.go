@@ -43,7 +43,7 @@ var printTerraformFragmentCmd = &cobra.Command{
 
 // validateFragmentFlags checks the flags and returns the --https-libraries
 // value for the generated agent.
-func validateFragmentFlags() (string, error) {
+func validateFragmentFlags(cmd *cobra.Command) (string, error) {
 	if !onboardDiscoveryMode && insightsProjectID == "" && onboardWorkspaceID == "" {
 		return "", cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
 	}
@@ -65,7 +65,7 @@ func validateFragmentFlags() (string, error) {
 			return "", err
 		}
 	}
-	return onboardHTTPSLibrariesArg()
+	return onboardHTTPSLibrariesArg(cmd)
 }
 
 func buildFragmentSidecarOpts(apidumpArgs []string, httpsLibraries string) SidecarOpts {
@@ -83,8 +83,8 @@ func buildFragmentSidecarOpts(apidumpArgs []string, httpsLibraries string) Sidec
 	}
 }
 
-func printHelmChartFragment(_ *cobra.Command, _ []string) error {
-	httpsLibraries, err := validateFragmentFlags()
+func printHelmChartFragment(cmd *cobra.Command, _ []string) error {
+	httpsLibraries, err := validateFragmentFlags(cmd)
 	if err != nil {
 		return err
 	}
@@ -124,8 +124,8 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func printTerraformFragment(_ *cobra.Command, _ []string) error {
-	httpsLibraries, err := validateFragmentFlags()
+func printTerraformFragment(cmd *cobra.Command, _ []string) error {
+	httpsLibraries, err := validateFragmentFlags(cmd)
 	if err != nil {
 		return err
 	}

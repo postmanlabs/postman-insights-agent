@@ -278,9 +278,15 @@ func (nc *NodeCollector) releaseJavaNetns(netnsInode uint64) {
 
 // addJVM writes the control file for a JVM in a subscribed pod, then queues
 // it for attaching, so an attached agent finds the file at once. report, when
-// not nil, receives the attach telemetry events for the pod.
+// not nil, receives the pod's JVM telemetry events: the JVM seen, counted
+// here because the attacher is absent when Java capture is off or attach is
+// unavailable, and its attach outcome.
 func (nc *NodeCollector) addJVM(p *jvm.Process, report func(event string)) {
-	nc.jvms.Add(p)
+	// Seen once per JVM, also when a replacement subscription for the same
+	// pod adds it before the one it replaces has removed it.
+	if nc.jvms.Add(p) && report != nil {
+		report(jvm.EventSeen)
+	}
 	if nc.attacher != nil {
 		nc.attacher.Add(p, report)
 	}
@@ -520,11 +526,6 @@ func (nc *NodeCollector) Subscribe(
 				// Discovery emits a PID again when it gains libssl or
 				// becomes a JVM: add only what is new.
 				if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvmScope && !owned {
-					// Counted here, not by the attacher, which is absent
-					// when Java capture is off or attach is unavailable.
-					if reportJVM != nil {
-						reportJVM(jvm.EventSeen)
-					}
 					nc.addJVM(tgt.JVM, reportJVM)
 					ownedJVMs[tgt.PID] = tgt.JVM.Key()
 				}

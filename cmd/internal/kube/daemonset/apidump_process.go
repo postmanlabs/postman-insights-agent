@@ -211,6 +211,10 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 //     namespace is known (discovery mode). Causes N× capture for N replicas;
 //     acceptable only as a degraded fallback.
 //  3. No filter — when HTTPS is disabled or neither of the above is available.
+//
+// Java capture needs the inode: the kernel accepts Java frames only from
+// allowed network namespaces, and only the pod's JVMs get a control file.
+// Without it, the pod is captured without Java.
 func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.HTTPSCaptureArgs {
 	if !d.EnableHTTPSCapture {
 		return apidump.HTTPSCaptureArgs{Enabled: false}
@@ -232,6 +236,15 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		DisableThermostat:   d.HTTPSNoThermostat,
 		Libraries:           d.HTTPSLibraries,
 		NodeCollector:       d.EBPFNodeCollector,
+	}
+
+	if netnsInode == 0 && args.Libraries.Java {
+		args.Libraries.Java = false
+		if args.Libraries.None() {
+			printer.Warningf("HTTPS capture is off for pod %s: Java HTTPS capture needs the pod's network namespace, which is unknown\n", podArgs.PodName)
+			return apidump.HTTPSCaptureArgs{Enabled: false}
+		}
+		printer.Warningf("Java HTTPS capture is off for pod %s: it needs the pod's network namespace, which is unknown\n", podArgs.PodName)
 	}
 
 	// Only fall back to namespace-level filtering when the inode is

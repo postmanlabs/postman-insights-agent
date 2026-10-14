@@ -77,7 +77,8 @@ type Args struct {
 	// to the agent's own network namespace: a sidecar's pod (even with
 	// hostPID, where discovery sees the whole node), or the host's for an
 	// agent on the host. Its frames are accepted, and its JVMs' control files
-	// written, only there.
+	// written, only there. With it off, those JVMs' control files say
+	// disabled.
 	EnableJava bool
 
 	// DisableOpenSSL attaches no libssl uprobes, so only Java is captured.
@@ -195,10 +196,11 @@ func Collect(ctx context.Context, args Args) error {
 		args.HookLoader(l, therm, mgr, adapter)
 	}
 
-	// With Java capture on, the JVMs in the agent's network namespace get
-	// control files.
+	// The JVMs in the agent's network namespace get control files, with Java
+	// capture on or off. Off, they tell a Java agent an earlier run enabled to
+	// stop at the next refresh, rather than once its file goes stale.
 	var jvms *jvm.Controller
-	if args.EnableJava {
+	if javaNetns != 0 {
 		jvms = jvm.NewController(func() javatls.Control {
 			return javaControl(javaOn, l, therm, args.MaxCaptureBytes)
 		})
@@ -218,7 +220,7 @@ func Collect(ctx context.Context, args Args) error {
 		// root-ns PIDs separately and reads /host/proc directly.
 		disco = discovery.WatchWith(ctx, discovery.WatchOpts{
 			Interval: args.DiscoveryInterval,
-			JVMs:     args.EnableJava,
+			JVMs:     jvms != nil,
 		})
 	}
 

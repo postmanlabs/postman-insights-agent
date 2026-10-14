@@ -3,6 +3,7 @@ package daemonset
 import (
 	"os"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/postmanlabs/postman-insights-agent/apidump"
@@ -162,6 +163,29 @@ func TestBuildHTTPSArgs_LibrariesPropagation(t *testing.T) {
 		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: libs}
 		got := buildHTTPSArgs(d, &PodArgs{}, 42)
 		assert.Equal(t, libs, got.Libraries)
+	}
+}
+
+// Without the pod's netns inode, Java frames would be rejected and the pod's
+// JVMs left uncontrolled: the pod is captured without Java.
+func TestBuildHTTPSArgs_JavaNeedsInode(t *testing.T) {
+	pod := &PodArgs{PodName: "web-1", Namespace: "team-a"}
+	for _, tc := range []struct {
+		libs        ebpf.Libraries
+		inode       uint64
+		wantEnabled bool
+		wantLibs    ebpf.Libraries
+	}{
+		{ebpf.Libraries{OpenSSL: true, Java: true}, 42, true, ebpf.Libraries{OpenSSL: true, Java: true}},
+		{ebpf.Libraries{OpenSSL: true, Java: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
+		{ebpf.Libraries{Java: true}, 0, false, ebpf.Libraries{}},
+		{ebpf.Libraries{OpenSSL: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
+	} {
+		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: tc.libs}
+		got := buildHTTPSArgs(d, pod, tc.inode)
+		name := tc.libs.String() + " inode=" + strconv.FormatUint(tc.inode, 10)
+		assert.Equal(t, tc.wantEnabled, got.Enabled, name)
+		assert.Equal(t, tc.wantLibs, got.Libraries, name)
 	}
 }
 

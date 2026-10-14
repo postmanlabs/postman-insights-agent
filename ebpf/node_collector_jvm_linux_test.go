@@ -343,6 +343,46 @@ func TestNodeCollectorJVMJavaOff(t *testing.T) {
 	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
 	// The pod's telemetry still shows its JVM.
 	counts.wait(t, map[string]uint64{jvm.EventSeen: 1})
+
+	// A replacement subscription for the pod, while this one still runs,
+	// does not count the JVM again. Discovery scans every 200 ms.
+	_, replace := subscribe(t, ctx, nc, counts.add)
+	defer replace()
+	time.Sleep(time.Second)
+	if got := counts.get(); !maps.Equal(got, map[string]uint64{jvm.EventSeen: 1}) {
+		t.Fatalf("telemetry counters %v after a replacement subscription", got)
+	}
+}
+
+// TestCollectJVMJavaOff: standalone Collect with Java capture off
+// (--https-libraries=openssl) also switches off a Java agent an earlier run
+// left capturing, at once rather than when its control file goes stale.
+func TestCollectJVMJavaOff(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
+	}
+	f := newJVMFixture(t)
+	j := f.start(t, 1000, nil, "-javaagent:"+f.agentJar)
+	earlier := jvm.NewController(func() javatls.Control { return javatls.Control{Enabled: true, CaptureCap: 4096} })
+	earlier.Add(j.inspect(t))
+	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	args := Defaults()
+	args.DisableThermostat = true
+	args.DiscoveryInterval = 200 * time.Millisecond
+	args.FactorySelector = httpSelector(t)
+	args.Out = make(chan akinet.ParsedNetworkTraffic, 64)
+	done := make(chan error, 1)
+	go func() { done <- Collect(ctx, args) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Collect: %v", err)
+		}
+	}()
+	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
 }
 
 // TestNodeCollectorJVMAttach: an unmodified JVM. The subscription discovers

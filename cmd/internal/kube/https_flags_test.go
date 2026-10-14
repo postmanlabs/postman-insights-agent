@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/postmanlabs/postman-insights-agent/rest"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,21 +23,25 @@ func TestOnboardHTTPSLibrariesArg(t *testing.T) {
 	}(onboardEnableHTTPSCapture, onboardHTTPSLibraries)
 
 	for _, tc := range []struct {
-		enable  bool
-		libs    []string
+		args    []string
 		want    string
 		wantErr string
 	}{
-		{enable: true, want: ""},
-		{enable: false, want: ""},
-		{enable: true, libs: []string{"openssl"}, want: "openssl"},
-		{enable: true, libs: []string{"Java", "openssl"}, want: "openssl,java"},
-		{enable: false, libs: []string{"openssl"}, wantErr: "requires --enable-https-capture"},
-		{enable: true, libs: []string{"openssl", "gotls"}, wantErr: "unknown gotls"},
+		{args: []string{"--enable-https-capture"}, want: ""},
+		{args: nil, want: ""},
+		{args: []string{"--enable-https-capture", "--https-libraries=openssl"}, want: "openssl"},
+		{args: []string{"--enable-https-capture", "--https-libraries=Java,openssl"}, want: "openssl,java"},
+		{args: []string{"--https-libraries=openssl"}, wantErr: "requires --enable-https-capture"},
+		{args: []string{"--enable-https-capture", "--https-libraries=openssl,gotls"}, wantErr: "unknown gotls"},
+		// Given but empty names no library; it does not mean the default.
+		{args: []string{"--enable-https-capture", "--https-libraries="}, wantErr: "names no library"},
+		{args: []string{"--https-libraries="}, wantErr: "requires --enable-https-capture"},
 	} {
-		onboardEnableHTTPSCapture, onboardHTTPSLibraries = tc.enable, tc.libs
-		got, err := onboardHTTPSLibrariesArg()
-		name := strings.Join(tc.libs, ",")
+		cmd := &cobra.Command{}
+		addOnboardingModeFlags(cmd)
+		name := strings.Join(tc.args, " ")
+		require.NoError(t, cmd.ParseFlags(tc.args), name)
+		got, err := onboardHTTPSLibrariesArg(cmd)
 		if tc.wantErr != "" {
 			assert.ErrorContains(t, err, tc.wantErr, name)
 			continue

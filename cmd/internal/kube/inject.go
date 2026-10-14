@@ -38,7 +38,7 @@ var injectCmd = &cobra.Command{
 	Use:   "inject",
 	Short: "Inject the Postman Insights Agent into a Kubernetes deployment",
 	Long:  "Inject the Postman Insights Agent into a Kubernetes deployment or set of deployments, and output the result to stdout or a file",
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate onboarding mode: exactly one of project, workspace-id, or discovery-mode.
 		if !onboardDiscoveryMode && insightsProjectID == "" && onboardWorkspaceID == "" {
 			return cmderr.AkitaErr{
@@ -57,7 +57,7 @@ var injectCmd = &cobra.Command{
 		if _, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces."); err != nil {
 			return err
 		}
-		httpsLibraries, err := onboardHTTPSLibrariesArg()
+		httpsLibraries, err := onboardHTTPSLibrariesArg(cmd)
 		if err != nil {
 			return err
 		}

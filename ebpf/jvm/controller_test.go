@@ -75,11 +75,11 @@ func TestControllerWritesOnAdd(t *testing.T) {
 	c, fs := newTestController(&settings)
 	a := proc(1, 100)
 
-	c.Add(a)
+	assert.True(t, c.Add(a))
 	assert.Equal(t, []write{{1, string(on.Marshal()), true}}, fs.take())
 
 	// A second subscription adding the same JVM writes nothing new.
-	c.Add(a)
+	assert.False(t, c.Add(a))
 	assert.Empty(t, fs.take())
 	assert.Equal(t, 1, c.Len())
 }
