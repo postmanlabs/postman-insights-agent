@@ -1,7 +1,9 @@
 package com.postman.insights.agent.bootstrap;
 
+import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -43,6 +45,17 @@ final class Connections {
     int size() {
         expunge();
         return map.size();
+    }
+
+    /** Tests only: the weak reference the map holds for engine, or null. */
+    Reference<Object> referenceFor(Object engine) {
+        for (Map.Entry<Object, Info> e : map.entrySet()) {
+            Key k = (Key) e.getKey();
+            if (k.get() == engine) {
+                return k;
+            }
+        }
+        return null;
     }
 
     private void expunge() {

@@ -7,6 +7,7 @@ package ebpf
 import (
 	"context"
 	"os"
+	"os/exec"
 	"syscall"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 )
 
 // TestNodeCollectorJavaFrames runs the DaemonSet path end to end below the
@@ -236,4 +238,72 @@ func TestNodeCollectorJavaCleanupWhenDiscoveryCloses(t *testing.T) {
 	defer unsubscribe()
 	close(disco)
 	expectRejected(t, nc)
+}
+
+// TestNodeCollectorSharedPIDKeepsProbes: two subscriptions can share a PID
+// (hostNetwork pods). The uprobes manager attaches once per PID, so the probes
+// must stay attached until the last subscription using them leaves. Uses a
+// Python process, which maps the system libssl.
+func TestNodeCollectorSharedPIDKeepsProbes(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("needs python3, to run a process that maps libssl")
+	}
+	cmd := exec.Command(python, "-c", "import ssl, time; time.sleep(60)")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	pid := uint32(cmd.Process.Pid)
+
+	var lib *uprobes.LibSSLPath
+	deadline := time.Now().Add(5 * time.Second)
+	for lib == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("python3 never mapped libssl")
+		}
+		lib, _ = uprobes.FindLibSSLAnyAt("/proc", pid)
+		time.Sleep(20 * time.Millisecond)
+	}
+	target := discovery.Target{PID: pid, Lib: lib, Seen: time.Now()}
+
+	sel := httpSelector(t)
+	discoA, discoB := make(chan discovery.Target, 1), make(chan discovery.Target, 1)
+	cancelA, _ := nc.Subscribe(ctx, discoA, sel, make(chan akinet.ParsedNetworkTraffic, 16), "", 0)
+	cancelB, _ := nc.Subscribe(ctx, discoB, sel, make(chan akinet.ParsedNetworkTraffic, 16), "", 0)
+	defer cancelB()
+
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatal(what)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	routed := func() int {
+		nc.mu.RLock()
+		defer nc.mu.RUnlock()
+		return len(nc.pidToSub[pid])
+	}
+	discoA <- target
+	discoB <- target
+	waitFor("both subscriptions never routed the PID", func() bool { return routed() == 2 })
+	probes := nc.mgr.ProbeCount(pid)
+	if probes == 0 {
+		t.Fatal("no uprobes attached")
+	}
+
+	cancelA()
+	waitFor("the cancelled subscription is still routed", func() bool { return routed() == 1 })
+	if got := nc.mgr.ProbeCount(pid); got != probes {
+		t.Fatalf("%d probes left after one of two subscriptions left, want %d", got, probes)
+	}
+
+	discoB <- discovery.Target{PID: pid, Removed: true, Seen: time.Now()}
+	waitFor("probes still attached after the last subscription released the PID",
+		func() bool { return nc.mgr.ProbeCount(pid) == 0 })
 }

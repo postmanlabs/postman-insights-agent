@@ -68,8 +68,14 @@ type NodeCollector struct {
 	// netnsToSub is the primary routing table: pod netns inode -> subscribers.
 	netnsToSub routeTable[uint64]
 	// pidToSub is a fallback routing table (node-ns PID -> subscribers) used on
-	// non-nested nodes where BPF PIDs match discovery PIDs.
+	// non-nested nodes where BPF PIDs match discovery PIDs. It also records
+	// which subscriptions use a PID's uprobes (see attachPID).
 	pidToSub routeTable[uint32]
+
+	// probeMu serializes attaching and detaching uprobes with the pidToSub
+	// bookkeeping, so a detach for one subscription cannot interleave with
+	// another subscription attaching the same PID.
+	probeMu sync.Mutex
 
 	// hostNetns is the node's own network namespace, which every hostNetwork
 	// pod and every host process shares. Java frames are never accepted from
@@ -153,6 +159,37 @@ func hostNetnsInode() uint64 {
 		return 0
 	}
 	return st.Ino
+}
+
+// attachPID attaches libssl uprobes to pid for sub and routes the PID to it.
+// The uprobes manager attaches once per PID, and two subscriptions can share a
+// PID (hostNetwork pods), so pidToSub records every subscription using the
+// probes and releasePID detaches only when the last one leaves.
+func (nc *NodeCollector) attachPID(tgt discovery.Target, sub *podSub) error {
+	nc.probeMu.Lock()
+	defer nc.probeMu.Unlock()
+	if err := nc.mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {
+		return err
+	}
+	nc.mu.Lock()
+	nc.pidToSub.add(tgt.PID, sub)
+	nc.mu.Unlock()
+	return nil
+}
+
+// releasePID undoes attachPID for sub, and detaches the uprobes if no other
+// subscription uses them. Reports whether it detached.
+func (nc *NodeCollector) releasePID(pid uint32, sub *podSub) (bool, error) {
+	nc.probeMu.Lock()
+	defer nc.probeMu.Unlock()
+	nc.mu.Lock()
+	nc.pidToSub.remove(pid, sub)
+	last := nc.pidToSub.get(pid) == nil
+	nc.mu.Unlock()
+	if !last {
+		return false, nil
+	}
+	return true, nc.mgr.Detach(pid)
 }
 
 // allowJavaNetns accepts Java frames from a subscribed pod's netns. It
@@ -341,19 +378,16 @@ func (nc *NodeCollector) Subscribe(
 		// remaining PIDs. Runs however the loop ends: discovery closes its
 		// channel when the capture context ends, which can be seen first.
 		defer func() {
-			nc.mu.Lock()
 			if netnsInode != 0 {
+				nc.mu.Lock()
 				nc.netnsToSub.remove(netnsInode, sub)
+				nc.mu.Unlock()
 			}
-			for pid := range ownedPIDs {
-				nc.pidToSub.remove(uint32(pid), sub)
-			}
-			nc.mu.Unlock()
 			if javaNetns {
 				nc.releaseJavaNetns(netnsInode)
 			}
 			for pid := range ownedPIDs {
-				if err := nc.mgr.Detach(pid); err != nil {
+				if _, err := nc.releasePID(pid, sub); err != nil {
 					printer.Debugf("ebpf: subscribe cancel: detach pid=%d: %v\n", pid, err)
 				}
 				if adapter.Resolver != nil {
@@ -372,13 +406,10 @@ func (nc *NodeCollector) Subscribe(
 					return
 				}
 				if tgt.Removed {
-					nc.mu.Lock()
-					nc.pidToSub.remove(uint32(tgt.PID), sub)
-					nc.mu.Unlock()
 					delete(ownedPIDs, tgt.PID)
-					if err := nc.mgr.Detach(tgt.PID); err != nil {
+					if detached, err := nc.releasePID(tgt.PID, sub); err != nil {
 						printer.Debugf("ebpf: detach pid=%d: %v\n", tgt.PID, err)
-					} else {
+					} else if detached {
 						printer.Debugf("ebpf: detached libssl uprobes pid=%d (pod exited)\n", tgt.PID)
 					}
 					if adapter.Resolver != nil {
@@ -387,14 +418,11 @@ func (nc *NodeCollector) Subscribe(
 					continue
 				}
 
-				if err := nc.mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {
+				if err := nc.attachPID(tgt, sub); err != nil {
 					printer.Debugf("ebpf: attach pid=%d path=%s failed: %v\n",
 						tgt.PID, tgt.Lib.HostPath, err)
 					continue
 				}
-				nc.mu.Lock()
-				nc.pidToSub.add(uint32(tgt.PID), sub)
-				nc.mu.Unlock()
 				ownedPIDs[tgt.PID] = struct{}{}
 				nProbes := nc.mgr.ProbeCount(tgt.PID)
 				printer.Stderr.Infof(

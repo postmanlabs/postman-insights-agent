@@ -2,7 +2,12 @@ package com.postman.insights.agent.bootstrap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.lang.ref.Reference;
+import java.lang.ref.WeakReference;
 
 import org.junit.jupiter.api.Test;
 
@@ -42,16 +47,27 @@ class ConnectionsTest {
         assertEquals(2, c.get(new Object()).id);
     }
 
+    /**
+     * The map holds engines only weakly, and drops an entry once its reference
+     * is enqueued, which is what the garbage collector does when the engine
+     * becomes unreachable. Enqueuing by hand keeps this deterministic; a
+     * System.gc() is not guaranteed to collect anything.
+     */
     @Test
-    void doesNotKeepEnginesAlive() throws Exception {
+    void dropsEntriesOfCollectedEngines() {
         Connections c = new Connections();
-        for (int i = 0; i < 1000; i++) {
-            c.get(new Object());
-        }
-        for (int i = 0; i < 50 && c.size() > 0; i++) {
-            System.gc();
-            Thread.sleep(20);
-        }
-        assertEquals(0, c.size());
+        Object kept = new Object();
+        Object collected = new Object();
+        long keptId = c.get(kept).id;
+        c.get(collected);
+
+        Reference<Object> ref = c.referenceFor(collected);
+        assertTrue(ref instanceof WeakReference, "engine held strongly");
+        assertSame(collected, ref.get());
+
+        assertTrue(ref.enqueue());
+        assertEquals(1, c.size());
+        assertNull(c.referenceFor(collected));
+        assertEquals(keptId, c.get(kept).id);
     }
 }
