@@ -4,7 +4,13 @@ package jvm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,4 +198,31 @@ func TestAttacherForgetsExitedJVMs(t *testing.T) {
 	a.Add(hotspot())
 	a.Remove(hotspot().Key())
 	assert.Nil(t, a.next(time.Now()))
+}
+
+func TestNewAttacherChecksum(t *testing.T) {
+	dir := t.TempDir()
+	helper, jar, sums := filepath.Join(dir, "helper"), filepath.Join(dir, "agent.jar"), filepath.Join(dir, "agent.jar.sha256")
+	require.NoError(t, os.WriteFile(helper, nil, 0o755))
+	require.NoError(t, os.WriteFile(jar, []byte("jar"), 0o644))
+	sum := sha256.Sum256([]byte("jar"))
+	cfg := AttacherConfig{HelperPath: helper, JarPath: jar, ChecksumPath: sums, AgentArgs: func() string { return "" }}
+
+	for _, content := range []string{"", " \n"} {
+		require.NoError(t, os.WriteFile(sums, []byte(content), 0o644))
+		_, err := NewAttacher(cfg)
+		assert.ErrorContains(t, err, "no checksum", "checksum file %q", content)
+	}
+
+	require.NoError(t, os.WriteFile(sums, []byte(strings.Repeat("0", 64)+"  agent.jar\n"), 0o644))
+	_, err := NewAttacher(cfg)
+	assert.ErrorContains(t, err, "SHA-256")
+
+	require.NoError(t, os.WriteFile(sums, []byte(hex.EncodeToString(sum[:])+"  agent.jar\n"), 0o644))
+	_, err = NewAttacher(cfg)
+	if runtime.GOOS == "linux" {
+		assert.NoError(t, err)
+	} else {
+		assert.ErrorIs(t, err, errAttachUnsupported)
+	}
 }

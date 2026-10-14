@@ -70,11 +70,14 @@ const (
 	ReasonNoListener      = "no_attach_listener" // not running, and no signal allowed
 	ReasonSignalFailed    = "signal_failed"
 	ReasonListenerTimeout = "attach_listener_timeout" // signalled, but no listener appeared
-	ReasonConnectFailed   = "connect_failed"
-	ReasonProtocol        = "protocol_error"
-	ReasonLoadFailed      = "load_failed"  // the JVM refused to load the agent
-	ReasonAgentFailed     = "agent_failed" // the agent loaded but failed to start
-	ReasonEarlierFailure  = "agent_failed_earlier"
+	// ReasonAttachInProgress: another attach owned the trigger file, and
+	// its listener did not come up in time. Not signalled; worth a retry.
+	ReasonAttachInProgress = "attach_in_progress"
+	ReasonConnectFailed    = "connect_failed"
+	ReasonProtocol         = "protocol_error"
+	ReasonLoadFailed       = "load_failed"  // the JVM refused to load the agent
+	ReasonAgentFailed      = "agent_failed" // the agent loaded but failed to start
+	ReasonEarlierFailure   = "agent_failed_earlier"
 )
 
 // Result is what the helper reports.

@@ -15,6 +15,9 @@ import (
 // maxRequestSize bounds what the helper reads from stdin.
 const maxRequestSize = 64 << 10
 
+// run performs a request; Run, or a stand-in in tests.
+var run = Run
+
 // Main is the helper's main: it reads one Request from in, performs it, and
 // writes the Result to out. It returns the exit code: 0 when a Result was
 // written, whatever the outcome; 2 when the request could not be read.
@@ -28,10 +31,19 @@ func Main(in io.Reader, out io.Writer) int {
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.DisallowUnknownFields()
 		err = dec.Decode(&req)
+		if err == nil {
+			if _, tail := dec.Token(); tail != io.EOF {
+				err = errors.New("data after the request")
+			}
+		}
 	}
-	res := Run(req)
+	// A request that does not decode cleanly is never performed, even when
+	// every field it needs was decoded before the error.
+	var res Result
 	if err != nil {
 		res = failed(ReasonBadRequest, false, "read request: %v", err)
+	} else {
+		res = run(req)
 	}
 	if err := json.NewEncoder(out).Encode(res); err != nil {
 		return 2

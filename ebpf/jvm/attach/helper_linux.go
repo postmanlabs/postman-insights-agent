@@ -26,6 +26,10 @@ const (
 	loadTimeout     = 60 * time.Second
 )
 
+// staleTriggerAge is when a trigger file left by another attach is taken
+// over: its creator removes it within listenerTimeout, unless it was killed.
+const staleTriggerAge = 3 * listenerTimeout
+
 // Run performs req and reports the outcome. It must run as the JVM's user.
 func Run(req Request) Result {
 	if req.Version != RequestVersion1 || req.PID == 0 || req.NSPID == 0 || req.JarPath == "" {
@@ -57,24 +61,31 @@ func Run(req Request) Result {
 		// HotSpot starts its attach listener on SIGQUIT only when this
 		// trigger file exists and belongs to the JVM's user; otherwise
 		// SIGQUIT prints a thread dump.
-		trigger, err := createTrigger(procDir, ".attach_pid"+nspid)
+		trigger, owned, err := createTrigger(procDir, ".attach_pid"+nspid)
 		if err != nil {
 			return failed(ReasonSignalFailed, false, "create trigger file: %v", err)
 		}
-		defer trigger()
-		if err := unix.PidfdSendSignal(pidfd, unix.SIGQUIT, nil, 0); err != nil {
-			return failed(ReasonSignalFailed, false, "SIGQUIT: %v", err)
+		// Only the trigger's creator signals. Another attach (an Insights
+		// agent being replaced, or jcmd) owns an existing one: a second
+		// SIGQUIT could arrive once the listener runs, and print a thread
+		// dump. Wait for its listener instead.
+		if owned {
+			if err := unix.PidfdSendSignal(pidfd, unix.SIGQUIT, nil, 0); err != nil {
+				trigger()
+				return failed(ReasonSignalFailed, false, "SIGQUIT: %v", err)
+			}
+			signalled = true
 		}
-		signalled = true
-		deadline := time.Now().Add(listenerTimeout)
-		for !isSocket(sock) {
-			if !sameProcess(pidfd, req.StartTime) {
-				return failed(ReasonProcessGone, true, "the JVM exited")
-			}
-			if time.Now().After(deadline) {
-				return failed(ReasonListenerTimeout, true, "no attach listener %s after SIGQUIT", listenerTimeout)
-			}
-			time.Sleep(50 * time.Millisecond)
+		err = waitForListener(pidfd, req.StartTime, sock)
+		// The listener is up, or will not come: the trigger is done with.
+		trigger()
+		switch {
+		case err == errExited:
+			return failed(ReasonProcessGone, signalled, "the JVM exited")
+		case err != nil && owned:
+			return failed(ReasonListenerTimeout, true, "no attach listener %s after SIGQUIT", listenerTimeout)
+		case err != nil:
+			return failed(ReasonAttachInProgress, false, "another attach to this JVM started, and its listener did not come up within %s", listenerTimeout)
 		}
 	}
 
@@ -115,6 +126,26 @@ func Run(req Request) Result {
 	return failed(ReasonProtocol, signalled, "the agent loaded but did not report its state")
 }
 
+var (
+	errExited  = errors.New("the JVM exited")
+	errTimeout = errors.New("timed out")
+)
+
+// waitForListener waits until the JVM open as pidfd listens on sock.
+func waitForListener(pidfd int, start uint64, sock string) error {
+	deadline := time.Now().Add(listenerTimeout)
+	for !isSocket(sock) {
+		if !sameProcess(pidfd, start) {
+			return errExited
+		}
+		if time.Now().After(deadline) {
+			return errTimeout
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil
+}
+
 func queryFailure(err error, signalled bool) Result {
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
@@ -143,11 +174,14 @@ func isSocket(path string) bool {
 }
 
 // createTrigger creates name in the JVM's /tmp, resolving the path inside
-// the JVM's root, and returns a func that removes it.
-func createTrigger(procDir, name string) (func(), error) {
+// the JVM's root. owned reports whether this call created it: when it already
+// exists, another attach is starting the listener, unless the file is older
+// than staleTriggerAge, which is taken over. The returned func releases the
+// trigger, removing it when owned; call it once.
+func createTrigger(procDir, name string) (release func(), owned bool, err error) {
 	root, err := unix.Open(filepath.Join(procDir, "root"), unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer unix.Close(root)
 	tmp, err := unix.Openat2(root, "/tmp", &unix.OpenHow{
@@ -155,21 +189,46 @@ func createTrigger(procDir, name string) (func(), error) {
 		Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	fd, err := unix.Openat(tmp, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil && !errors.Is(err, unix.EEXIST) {
+	owned, err = createExclusive(tmp, name)
+	if err == nil && !owned && triggerStale(tmp, name) {
+		// Left by an attach that was killed. If another attach takes it
+		// over first, this one creates nothing and waits.
+		_ = unix.Unlinkat(tmp, name, 0)
+		owned, err = createExclusive(tmp, name)
+	}
+	if err != nil {
 		unix.Close(tmp)
-		return nil, err
-	}
-	created := err == nil
-	if created {
-		unix.Close(fd)
+		return nil, false, err
 	}
 	return func() {
-		if created {
+		if owned {
 			_ = unix.Unlinkat(tmp, name, 0)
 		}
 		unix.Close(tmp)
-	}, nil
+	}, owned, nil
+}
+
+// createExclusive creates name in dir, and reports false if it exists.
+func createExclusive(dir int, name string) (bool, error) {
+	fd, err := unix.Openat(dir, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if errors.Is(err, unix.EEXIST) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	unix.Close(fd)
+	return true, nil
+}
+
+// triggerStale reports whether the trigger name in dir is older than
+// staleTriggerAge.
+func triggerStale(dir int, name string) bool {
+	var st unix.Stat_t
+	if err := unix.Fstatat(dir, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false
+	}
+	return time.Since(time.Unix(st.Mtim.Unix())) > staleTriggerAge
 }

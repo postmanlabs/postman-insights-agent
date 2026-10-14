@@ -125,7 +125,11 @@ func NewAttacher(cfg AttacherConfig) (*Attacher, error) {
 	if err != nil {
 		return nil, err
 	}
-	want := strings.Fields(string(sums) + " ")[0]
+	fields := strings.Fields(string(sums))
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("%s: no checksum", cfg.ChecksumPath)
+	}
+	want := fields[0]
 	sum := sha256.Sum256(jar)
 	got := hex.EncodeToString(sum[:])
 	if got != want {
@@ -348,7 +352,7 @@ func (a *Attacher) fail(s *attachState, reason string, signalled bool, detail st
 // retryable reports whether a failure may go away by itself.
 func retryable(reason string) bool {
 	switch reason {
-	case FailInspect, FailStage, attach.ReasonConnectFailed, attach.ReasonProtocol:
+	case FailInspect, FailStage, attach.ReasonConnectFailed, attach.ReasonProtocol, attach.ReasonAttachInProgress:
 		return true
 	}
 	return false

@@ -110,11 +110,28 @@ func TestStartTimeFromStat(t *testing.T) {
 }
 
 func TestMainBadRequest(t *testing.T) {
+	defer func(r func(Request) Result) { run = r }(run)
+	run = func(Request) Result {
+		t.Error("performed a request that did not decode")
+		return Result{Outcome: Attached}
+	}
+
 	var out bytes.Buffer
+	// Complete, but with a field the helper does not know.
+	assert.Equal(t, 2, Main(strings.NewReader(`{"version":1,"pid":1,"start_time":1,"nspid":1,"jar_path":"/x","surprise":true}`), &out))
+	assert.Contains(t, out.String(), `"reason":"bad_request"`)
+
+	// Complete, but followed by more data.
+	out.Reset()
+	assert.Equal(t, 2, Main(strings.NewReader(`{"version":1,"pid":1,"start_time":1,"nspid":1,"jar_path":"/x"} {}`), &out))
+	assert.Contains(t, out.String(), `"reason":"bad_request"`)
+
+	out.Reset()
 	assert.Equal(t, 2, Main(strings.NewReader(`{"version":1,"surprise":true}`), &out))
 	assert.Contains(t, out.String(), `"reason":"bad_request"`)
 
 	out.Reset()
+	run = Run
 	assert.Equal(t, 2, Main(strings.NewReader(`{"version":2,"pid":1,"nspid":1,"jar_path":"/x"}`), &out))
 	assert.Contains(t, out.String(), `"reason":"bad_request"`)
 }
