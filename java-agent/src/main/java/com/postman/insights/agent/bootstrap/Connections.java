@@ -22,8 +22,43 @@ final class Connections {
         /** Frame flags describing the role, or 0 until the role is known. */
         volatile short roleFlags;
 
+        /** Which directions the engine reported CLOSED for, and whether CLOSE was sent. Guarded by this. */
+        private boolean inboundDone;
+        private boolean outboundDone;
+        private boolean closeSent;
+
         Info(long id) {
             this.id = id;
+        }
+
+        /**
+         * Records that the engine reported CLOSED for one direction, and
+         * returns true once, when the connection can carry no more
+         * responses and a CLOSE frame should be sent: when the side that
+         * carries responses is done (the server's outbound, the client's
+         * inbound), or both sides are when the role is unknown. The request
+         * side alone is not enough: a server still answers a request whose
+         * client closed its side after sending it.
+         */
+        synchronized boolean closed(boolean outbound, short role) {
+            if (closeSent) {
+                return false;
+            }
+            if (outbound) {
+                outboundDone = true;
+            } else {
+                inboundDone = true;
+            }
+            boolean responsesDone;
+            if ((role & Frame.FLAG_ROLE_KNOWN) == 0) {
+                responsesDone = inboundDone && outboundDone;
+            } else if ((role & Frame.FLAG_CLIENT_MODE) != 0) {
+                responsesDone = inboundDone;
+            } else {
+                responsesDone = outboundDone;
+            }
+            closeSent = responsesDone;
+            return responsesDone;
         }
     }
 

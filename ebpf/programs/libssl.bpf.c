@@ -247,6 +247,7 @@ static __always_inline int emit_event(
     e->fd           = lookup_fd(pid_tgid >> 32, ssl_ctx);
     if (e->fd >= 0) counter_inc(6, 1);
     e->direction    = direction;
+    e->kind         = EVENT_KIND_DATA;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
     // Routing key for the NodeCollector (see current_netns in common.h).

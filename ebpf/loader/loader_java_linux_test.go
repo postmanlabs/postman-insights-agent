@@ -166,12 +166,42 @@ func TestJavaTLSFrames(t *testing.T) {
 		}
 	})
 
-	t.Run("control frames are counted, not forwarded", func(t *testing.T) {
+	t.Run("control frames become control events", func(t *testing.T) {
 		before := counter(t, JavaCounterControlFrames)
+		status := []byte("agent_version=1.0.0\nstate=active\n")
+		pwrite(t, javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat,
+			TotalLen: uint32(len(status)), Payload: status}.Append(nil))
 		pwrite(t, javatls.Frame{Version: javatls.Version1, Op: javatls.OpClose, ConnID: 7}.Append(nil))
-		expectNoEvent(t)
-		if got := counter(t, JavaCounterControlFrames) - before; got != 1 {
-			t.Errorf("control_frames grew by %d, want 1", got)
+
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// struct control_event, about 1 KiB, not a 16 KiB ssl_event.
+		if n := len(rec.RawSample); n > 2048 {
+			t.Errorf("heartbeat record of %d bytes", n)
+		}
+		hb, err := events.Decode(rec.RawSample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hb.Kind != events.KindJavaHeartbeat || uint64(hb.NetNS) != netns || !bytes.Equal(hb.Bytes(), status) {
+			t.Errorf("heartbeat = kind %d netns %d payload %q", hb.Kind, hb.NetNS, hb.Bytes())
+		}
+		closed := readEvent(t)
+		if closed.Kind != events.KindJavaClose || closed.SSLCtx != javatls.SSLCtx(7) || closed.LenCaptured != 0 {
+			t.Errorf("close = kind %d ctx %#x captured %d", closed.Kind, closed.SSLCtx, closed.LenCaptured)
+		}
+		if got := counter(t, JavaCounterControlFrames) - before; got != 2 {
+			t.Errorf("control_frames grew by %d, want 2", got)
+		}
+	})
+
+	t.Run("data events are of kind data", func(t *testing.T) {
+		pwrite(t, send)
+		if ev := readEvent(t); ev.Kind != events.KindData {
+			t.Errorf("kind %d", ev.Kind)
 		}
 	})
 
@@ -216,6 +246,26 @@ func TestJavaTLSFrames(t *testing.T) {
 		if got := drain(); got != 1 {
 			t.Errorf("%d events after the window refilled, want 1", got)
 		}
+	})
+
+	t.Run("rate cap applies to CLOSE, not HEARTBEAT", func(t *testing.T) {
+		if err := l.SetRateCapPerSec(1); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.SetRateCapPerSec(0) }()
+		time.Sleep(1100 * time.Millisecond) // a fresh window
+		pwrite(t, send)                     // takes the only token
+		closeFrame := javatls.Frame{Version: javatls.Version1, Op: javatls.OpClose, ConnID: 7}.Append(nil)
+		pwrite(t, closeFrame)
+		hb := javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat}.Append(nil)
+		pwrite(t, hb)
+		if ev := readEvent(t); ev.Kind != events.KindData {
+			t.Fatalf("first event kind %d, want data", ev.Kind)
+		}
+		if ev := readEvent(t); ev.Kind != events.KindJavaHeartbeat {
+			t.Fatalf("second event kind %d, want the heartbeat (the close was capped)", ev.Kind)
+		}
+		expectNoEvent(t)
 	})
 
 	if err := l.DisallowJavaNetns(netns); err != nil {

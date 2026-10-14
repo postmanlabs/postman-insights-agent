@@ -101,7 +101,7 @@ static __always_inline int java_rate_take(__u32 tgid) {
 #define JAVA_CTR_RATE_CAPPED       5  // dropped by the per-PID rate cap
 #define JAVA_CTR_NETNS_REJECTED    6  // sender not in an allowed netns
 #define JAVA_CTR_MALFORMED         7  // failed validation
-#define JAVA_CTR_CONTROL_FRAMES    8  // HEARTBEAT and CLOSE frames (not forwarded yet)
+#define JAVA_CTR_CONTROL_FRAMES    8  // HEARTBEAT and CLOSE frames
 #define JAVA_CTR_MAX               9
 
 struct {
@@ -123,8 +123,56 @@ static __always_inline void java_counter_inc(__u32 idx, __u64 by) {
 // (standalone apidump, which captures the whole host).
 volatile const __u32 enforce_netns_allowlist = 1;
 
+// Emits a HEARTBEAT or CLOSE frame as a control_event. A CLOSE takes a token
+// from the sender's rate-cap bucket, like data; a HEARTBEAT (one per JVM every
+// 30 s) never does, so a busy agent never looks dead.
+static __always_inline int emit_control(const struct java_frame_header *h, const __u8 *buf, __u32 netns) {
+    java_counter_inc(JAVA_CTR_CONTROL_FRAMES, 1);
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u8 kind = EVENT_KIND_JAVA_HEARTBEAT;
+    __u64 to_copy = (__u64)h->payload_len & 0xffffffffULL;
+    if (h->op == JAVA_FRAME_OP_CLOSE) {
+        if (!java_rate_take(pid_tgid >> 32)) {
+            java_counter_inc(JAVA_CTR_RATE_CAPPED, 1);
+            return 0;
+        }
+        kind = EVENT_KIND_JAVA_CLOSE;
+        to_copy = 0;
+    }
+    if (to_copy > MAX_CONTROL_PAYLOAD) {
+        to_copy = MAX_CONTROL_PAYLOAD;
+    }
+
+    struct control_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        java_counter_inc(JAVA_CTR_EVENTS_DROPPED, 1);
+        return 0;
+    }
+    e->ts_ns        = bpf_ktime_get_ns();
+    e->pid          = pid_tgid >> 32;
+    e->tid          = (__u32)pid_tgid;
+    e->ssl_ctx      = h->conn_id | JAVA_CONN_ID_TAG;
+    e->len_total    = h->payload_len;
+    e->len_captured = to_copy;
+    e->fd           = -1;
+    e->direction    = DIR_EGRESS;         // unused for control events
+    e->kind         = kind;
+    __builtin_memset(e->_pad, 0, sizeof(e->_pad));
+    e->netns        = netns;
+    if (to_copy > 0 &&
+        bpf_probe_read_user(e->payload, to_copy, buf + JAVA_FRAME_HEADER_SIZE) != 0) {
+        bpf_ringbuf_discard(e, 0);
+        java_counter_inc(JAVA_CTR_READ_FAILED, 1);
+        return 0;
+    }
+    bpf_ringbuf_submit(e, 0);
+    java_counter_inc(JAVA_CTR_EVENTS_EMITTED, 1);
+    return 0;
+}
+
 // Validates one frame (buf, count: the whole positional write) and emits its
-// payload as an ssl_event. The checks match javatls.Parse in Go.
+// payload as an ssl_event, or a control frame as a control_event. The checks
+// match javatls.Parse in Go.
 static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     java_counter_inc(JAVA_CTR_FRAMES_SEEN, 1);
 
@@ -158,10 +206,7 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     } else if (h.op == JAVA_FRAME_OP_RECV) {
         direction = DIR_INGRESS;
     } else {
-        // TODO(INS-363): forward HEARTBEAT (agent telemetry) and CLOSE (free the
-        // connection's flow state early) to userspace.
-        java_counter_inc(JAVA_CTR_CONTROL_FRAMES, 1);
-        return 0;
+        return emit_control(&h, buf, netns);
     }
     if (h.payload_len == 0) {
         return 0;
@@ -197,6 +242,7 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     e->len_captured = to_copy;
     e->fd           = -1;                 // TODO(INS-366): correlate with the socket fd
     e->direction    = direction;
+    e->kind         = EVENT_KIND_DATA;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
     e->netns        = netns;
 

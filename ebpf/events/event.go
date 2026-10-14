@@ -10,6 +10,21 @@ const (
 	DirIngress uint8 = 1 // local process is receiving (SSL_read)
 )
 
+// Event kinds; must match EVENT_KIND_* in event.h.
+const (
+	// KindData events carry plaintext.
+	KindData uint8 = 0
+	// KindJavaHeartbeat events carry a Java agent's status
+	// (javatls.ParseHeartbeat), from the process PID.
+	KindJavaHeartbeat uint8 = 1
+	// KindJavaClose events report that the Java connection SSLCtx closed.
+	KindJavaClose uint8 = 2
+)
+
+// MaxControlPayload mirrors MAX_CONTROL_PAYLOAD in event.h: the payload of
+// struct control_event, which carries the events that are not KindData.
+const MaxControlPayload = 1024
+
 // MaxEventPayload mirrors MAX_EVENT_PAYLOAD in event.h (16384). Used to size
 // the payload byte array when decoding ringbuf records. MUST stay in sync with
 // the BPF-side definition — it determines the fixed ringbuf record size.
@@ -28,7 +43,8 @@ type SSLEvent struct {
 	LenTotal    uint32 // total bytes the SSL syscall reported
 	FD          int32  // socket fd associated with the SSL*, or -1 if unknown
 	Direction   uint8  // DirEgress or DirIngress
-	_           [3]byte
+	Kind        uint8  // KindData, or a control event (KindJava*)
+	_           [2]byte
 	NetNS       uint32 // network-namespace inode (routing key; matches /proc/<pid>/ns/net)
 	Payload     [MaxEventPayload]byte
 }

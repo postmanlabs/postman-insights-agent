@@ -19,6 +19,10 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
   The Insights Agent writes the file into the container of every JVM in the pods it monitors, and refreshes it every 10 s, so capture stops on its own when the pod is no longer monitored or the Insights Agent is removed.
   The agent checks it every 5 s, on its own daemon thread (`postman-insights-agent`).
 - **HEARTBEAT frames:** at start and every 30 s, whether capturing or dormant, the agent sends its version, the JVM's version and vendor, its state and its counters.
+  The Insights Agent logs each agent once when it first hears from it and whenever its state changes, and its `ebpf-stats` line shows the agents alive and capturing in each pod (`java_agents_alive`, `java_agents_capturing`).
+- **CLOSE frames:** once a connection can carry no more responses (the server's side closed, or the client's inbound side), the agent sends a CLOSE frame.
+  The Insights Agent then completes a response delimited by the close and frees the connection's state at once, instead of after 30 s idle.
+  Connections that end without a TLS close_notify are freed when idle.
 - **JDK tools:** loaded through `JAVA_TOOL_OPTIONS`, the agent starts in every JVM in the container; it does nothing in the JDK's own tools (`jcmd`, `keytool`, `javac` and so on).
 - **Safety:** the advice never throws into application code, and 100 internal errors within any 10 minutes switch the agent off until the JVM restarts.
 

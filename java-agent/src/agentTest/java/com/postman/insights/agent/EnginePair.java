@@ -87,6 +87,22 @@ final class EnginePair {
         sink.clear();
     }
 
+    /**
+     * Closes {@code from}'s outbound side and delivers its close_notify to
+     * the peer. Returns the peer's unwrap result.
+     */
+    SSLEngineResult closeOutbound(SSLEngine from) throws Exception {
+        SSLEngine to = peer(from);
+        ByteBuffer out = outbound(from);
+        from.closeOutbound();
+        SSLEngineResult r = from.wrap(ByteBuffer.allocate(0), out);
+        assertTrue(r.getStatus() == SSLEngineResult.Status.CLOSED, "wrap after closeOutbound: " + r);
+        out.flip();
+        SSLEngineResult got = to.unwrap(out, ByteBuffer.allocate(to.getSession().getApplicationBufferSize()));
+        out.compact();
+        return got;
+    }
+
     /** The in-flight buffer for records sent by {@code from}. */
     ByteBuffer outbound(SSLEngine from) {
         return from == client ? toServer : toClient;

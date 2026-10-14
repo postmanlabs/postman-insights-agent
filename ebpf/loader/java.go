@@ -13,5 +13,5 @@ const (
 	JavaCounterRateCapped    uint32 = 5 // dropped by the per-PID rate cap
 	JavaCounterNetnsRejected uint32 = 6 // sender not in an allowed netns
 	JavaCounterMalformed     uint32 = 7 // failed validation
-	JavaCounterControlFrames uint32 = 8 // HEARTBEAT and CLOSE frames, not forwarded yet
+	JavaCounterControlFrames uint32 = 8 // HEARTBEAT and CLOSE frames
 )
