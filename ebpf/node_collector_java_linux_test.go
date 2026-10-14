@@ -187,25 +187,43 @@ func TestNodeCollectorJavaRefusesHostNetns(t *testing.T) {
 	}
 }
 
-// TestNodeCollectorJavaNetnsRefcount: cancelling one of two subscriptions on
-// the same netns keeps the other one's frames accepted.
-func TestNodeCollectorJavaNetnsRefcount(t *testing.T) {
+// TestNodeCollectorJavaSharedNetns: with two subscriptions on one netns,
+// whichever is cancelled first, the other's frames are still accepted by the
+// kernel and still delivered to it as parsed HTTP.
+func TestNodeCollectorJavaSharedNetns(t *testing.T) {
 	nc, ctx := javaTestCollector(t)
 	netns := ownNetns(t)
 	sel := httpSelector(t)
-	first, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, make(chan akinet.ParsedNetworkTraffic, 16), "", netns)
-	second, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, make(chan akinet.ParsedNetworkTraffic, 16), "", netns)
 
-	first()
-	time.Sleep(200 * time.Millisecond) // let the first subscription's cleanup run
-	emitted := javaCounter(t, nc, loader.JavaCounterEventsEmitted)
-	writeJavaFrame(t, javatls.OpRecv, "GET /still HTTP/1.1\r\n\r\n")
-	if javaCounter(t, nc, loader.JavaCounterEventsEmitted) == emitted {
-		t.Fatal("frames rejected while another subscription still allows the netns")
+	for _, firstLeaves := range []string{"older", "newer"} {
+		t.Run(firstLeaves+" cancelled first", func(t *testing.T) {
+			olderOut := make(chan akinet.ParsedNetworkTraffic, 16)
+			newerOut := make(chan akinet.ParsedNetworkTraffic, 16)
+			cancelOlder, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, olderOut, "", netns)
+			cancelNewer, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, newerOut, "", netns)
+
+			cancelFirst, cancelSecond, stayingOut := cancelOlder, cancelNewer, newerOut
+			if firstLeaves == "newer" {
+				cancelFirst, cancelSecond, stayingOut = cancelNewer, cancelOlder, olderOut
+			}
+			cancelFirst()
+			time.Sleep(200 * time.Millisecond) // let the cancelled subscription's cleanup run
+
+			writeJavaFrame(t, javatls.OpRecv, "GET /still-here HTTP/1.1\r\nHost: x\r\n\r\n")
+			select {
+			case pnt := <-stayingOut:
+				req, ok := pnt.Content.(akinet.HTTPRequest)
+				if !ok || req.URL.Path != "/still-here" {
+					t.Fatalf("remaining subscription got %T %v", pnt.Content, pnt.Content)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the remaining subscription received nothing")
+			}
+
+			cancelSecond()
+			expectRejected(t, nc)
+		})
 	}
-
-	second()
-	expectRejected(t, nc)
 }
 
 // TestNodeCollectorJavaCleanupWhenDiscoveryCloses: discovery closes its channel

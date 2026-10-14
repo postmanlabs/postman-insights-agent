@@ -17,6 +17,49 @@ type podSub struct {
 	out     chan<- akinet.ParsedNetworkTraffic
 }
 
+// routeTable maps a routing key (netns inode or PID) to the subscribers
+// registered under it, oldest first. Subscriptions can share a key: hostNetwork
+// pods share the node's netns and PIDs, and a pod's capture can restart before
+// the old subscription's cleanup has run. Events go to the newest subscriber,
+// and a subscriber that leaves removes only its own entry, so the others keep
+// receiving events whatever order they leave in.
+type routeTable[K comparable] map[K][]*podSub
+
+// add registers s under k. Adding the same subscriber twice is a no-op.
+func (r routeTable[K]) add(k K, s *podSub) {
+	for _, x := range r[k] {
+		if x == s {
+			return
+		}
+	}
+	r[k] = append(r[k], s)
+}
+
+// remove unregisters s from k, leaving other subscribers under k in place.
+func (r routeTable[K]) remove(k K, s *podSub) {
+	subs := r[k]
+	for i, x := range subs {
+		if x == s {
+			subs = append(subs[:i:i], subs[i+1:]...)
+			break
+		}
+	}
+	if len(subs) == 0 {
+		delete(r, k)
+	} else {
+		r[k] = subs
+	}
+}
+
+// get returns the newest subscriber under k, or nil.
+func (r routeTable[K]) get(k K) *podSub {
+	subs := r[k]
+	if len(subs) == 0 {
+		return nil
+	}
+	return subs[len(subs)-1]
+}
+
 // routeSub selects the subscriber for a BPF event.
 //
 // It routes primarily by the event's network-namespace inode (netnsInode),
@@ -31,11 +74,11 @@ type podSub struct {
 // nodes where /host/proc is the init namespace and PIDs already match.
 //
 // Returns nil when no subscriber matches (the event is dropped).
-func routeSub(byNetns map[uint64]*podSub, byPID map[uint32]*podSub, netnsInode uint64, pid uint32) *podSub {
+func routeSub(byNetns routeTable[uint64], byPID routeTable[uint32], netnsInode uint64, pid uint32) *podSub {
 	if netnsInode != 0 {
-		if s := byNetns[netnsInode]; s != nil {
+		if s := byNetns.get(netnsInode); s != nil {
 			return s
 		}
 	}
-	return byPID[pid]
+	return byPID.get(pid)
 }

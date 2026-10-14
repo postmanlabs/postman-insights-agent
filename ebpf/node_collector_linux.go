@@ -65,11 +65,11 @@ type NodeCollector struct {
 	maxCaptureBytes uint32
 
 	mu sync.RWMutex
-	// netnsToSub is the primary routing table: pod netns inode -> subscriber.
-	netnsToSub map[uint64]*podSub
-	// pidToSub is a fallback routing table (node-ns PID -> subscriber) used on
+	// netnsToSub is the primary routing table: pod netns inode -> subscribers.
+	netnsToSub routeTable[uint64]
+	// pidToSub is a fallback routing table (node-ns PID -> subscribers) used on
 	// non-nested nodes where BPF PIDs match discovery PIDs.
-	pidToSub map[uint32]*podSub
+	pidToSub routeTable[uint32]
 
 	// hostNetns is the node's own network namespace, which every hostNetwork
 	// pod and every host process shares. Java frames are never accepted from
@@ -135,8 +135,8 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
-		netnsToSub:      make(map[uint64]*podSub),
-		pidToSub:        make(map[uint32]*podSub),
+		netnsToSub:      routeTable[uint64]{},
+		pidToSub:        routeTable[uint32]{},
 		hostNetns:       hostNetnsInode(),
 		javaNetnsRefs:   make(map[uint64]int),
 	}
@@ -262,16 +262,20 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 			nc.mu.RLock()
 			adapters := make([]*events.Adapter, 0, len(nc.netnsToSub)+len(nc.pidToSub))
 			seen := make(map[*events.Adapter]struct{})
-			for _, s := range nc.netnsToSub {
-				if _, ok := seen[s.adapter]; !ok {
-					adapters = append(adapters, s.adapter)
-					seen[s.adapter] = struct{}{}
+			for _, subs := range nc.netnsToSub {
+				for _, s := range subs {
+					if _, ok := seen[s.adapter]; !ok {
+						adapters = append(adapters, s.adapter)
+						seen[s.adapter] = struct{}{}
+					}
 				}
 			}
-			for _, s := range nc.pidToSub {
-				if _, ok := seen[s.adapter]; !ok {
-					adapters = append(adapters, s.adapter)
-					seen[s.adapter] = struct{}{}
+			for _, subs := range nc.pidToSub {
+				for _, s := range subs {
+					if _, ok := seen[s.adapter]; !ok {
+						adapters = append(adapters, s.adapter)
+						seen[s.adapter] = struct{}{}
+					}
 				}
 			}
 			nc.mu.RUnlock()
@@ -322,7 +326,7 @@ func (nc *NodeCollector) Subscribe(
 	sub := &podSub{adapter: adapter, out: out}
 	if netnsInode != 0 {
 		nc.mu.Lock()
-		nc.netnsToSub[netnsInode] = sub
+		nc.netnsToSub.add(netnsInode, sub)
 		nc.mu.Unlock()
 	}
 	// Java frames are accepted per pod netns, the same key events route on.
@@ -339,10 +343,10 @@ func (nc *NodeCollector) Subscribe(
 		defer func() {
 			nc.mu.Lock()
 			if netnsInode != 0 {
-				delete(nc.netnsToSub, netnsInode)
+				nc.netnsToSub.remove(netnsInode, sub)
 			}
 			for pid := range ownedPIDs {
-				delete(nc.pidToSub, uint32(pid))
+				nc.pidToSub.remove(uint32(pid), sub)
 			}
 			nc.mu.Unlock()
 			if javaNetns {
@@ -369,7 +373,7 @@ func (nc *NodeCollector) Subscribe(
 				}
 				if tgt.Removed {
 					nc.mu.Lock()
-					delete(nc.pidToSub, uint32(tgt.PID))
+					nc.pidToSub.remove(uint32(tgt.PID), sub)
 					nc.mu.Unlock()
 					delete(ownedPIDs, tgt.PID)
 					if err := nc.mgr.Detach(tgt.PID); err != nil {
@@ -389,7 +393,7 @@ func (nc *NodeCollector) Subscribe(
 					continue
 				}
 				nc.mu.Lock()
-				nc.pidToSub[uint32(tgt.PID)] = sub
+				nc.pidToSub.add(uint32(tgt.PID), sub)
 				nc.mu.Unlock()
 				ownedPIDs[tgt.PID] = struct{}{}
 				nProbes := nc.mgr.ProbeCount(tgt.PID)
