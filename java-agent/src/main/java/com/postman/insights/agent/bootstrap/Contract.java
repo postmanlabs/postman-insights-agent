@@ -11,6 +11,12 @@ public final class Contract {
      */
     public static final String MARKER_PROPERTY = "postman.insights.agent.version";
 
+    /**
+     * System property set when the agent failed to start; its value is the
+     * version and the reason. The agent does not retry in the same JVM.
+     */
+    public static final String FAILED_PROPERTY = "postman.insights.agent.failed";
+
     /** Agent argument: maximum payload bytes per frame. */
     public static final String ARG_CAPTURE_CAP = "cap";
 

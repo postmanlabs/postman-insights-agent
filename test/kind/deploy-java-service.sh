@@ -73,11 +73,12 @@ sleep 15
 
 echo "==> Sending HTTPS requests to ${POD_IP}:8443"
 kubectl delete pod -n "$NS" java-client --ignore-not-found >/dev/null
-kubectl run java-client --restart=Never -n "$NS" --image=curlimages/curl:latest --rm -i --quiet -- sh -c "
+# -f: an HTTP error fails curl, and -e makes that fail the pod and this script.
+kubectl run java-client --restart=Never -n "$NS" --image=curlimages/curl:latest --rm -i --quiet -- sh -ec "
   for i in \$(seq 1 ${REQUESTS}); do
-    curl -sk https://${POD_IP}:8443/hello?name=kind-\$i; echo
-    curl -sk https://${POD_IP}:8443/orders/42; echo
-    curl -sk -X POST -H 'Content-Type: application/json' -d '{\"item\":\"book\",\"qty\":2}' https://${POD_IP}:8443/orders; echo
+    curl -fsSk https://${POD_IP}:8443/hello?name=kind-\$i; echo
+    curl -fsSk https://${POD_IP}:8443/orders/42; echo
+    curl -fsSk -X POST -H 'Content-Type: application/json' -d '{\"item\":\"book\",\"qty\":2}' https://${POD_IP}:8443/orders; echo
   done"
 
 echo "==> Waiting for the next ebpf-stats lines (logged every 30s)"
@@ -92,8 +93,9 @@ else
   grep -E 'Java HTTPS capture' <<<"$LOGS" || true
   fail=1
 fi
-# Highest value of a key=value field across ebpf-stats lines.
-max_field() { grep -o "ebpf-stats: .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; }
+# Highest value of a key=value field across ebpf-stats lines; empty when there
+# is none, so the checks below report it instead of set -e aborting here.
+max_field() { { grep -o "ebpf-stats: .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true; }
 java_events=$(max_field java_events)
 msgs=$(max_field msgs)
 want=$((REQUESTS * 3 * 2)) # a request and a response per call

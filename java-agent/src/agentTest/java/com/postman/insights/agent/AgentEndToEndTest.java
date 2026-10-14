@@ -84,6 +84,7 @@ class AgentEndToEndTest {
     @Test
     void agentIsLoadedOnce() {
         assertNotNull(System.getProperty("postman.insights.agent.version"));
+        assertNull(System.getProperty("postman.insights.agent.failed"));
         // The agent's internals are invisible to application code.
         assertThrows(ClassNotFoundException.class,
                 () -> Class.forName("com.postman.insights.agent.installer.Installer"));

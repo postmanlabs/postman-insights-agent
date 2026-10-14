@@ -27,7 +27,15 @@ import java.util.jar.JarFile;
  */
 public final class AgentMain {
     private static final String MARKER_PROPERTY = "postman.insights.agent.version";
+    private static final String FAILED_PROPERTY = "postman.insights.agent.failed";
     private static final String INSTALLER = "com.postman.insights.agent.installer.Installer";
+
+    /**
+     * Whether a start was attempted in this JVM. Every load (static, and each
+     * attach) reaches this same class through the system class loader, so one
+     * flag covers them all.
+     */
+    private static boolean attempted;
 
     private AgentMain() {}
 
@@ -39,30 +47,43 @@ public final class AgentMain {
         start(args, inst, "attach");
     }
 
+    /**
+     * Installs the hooks at most once per JVM. The marker property is set only
+     * once they are installed, so it never claims capture that is not running.
+     * A failed start is not retried, because it can leave partial state behind
+     * (the jar on the bootstrap class path, some classes transformed) that a
+     * second install would duplicate; the failed property records why.
+     */
     private static synchronized void start(String args, Instrumentation inst, String source) {
+        String loaded = System.getProperty(MARKER_PROPERTY);
+        if (loaded != null) {
+            log("version " + loaded + " is already loaded in this JVM; not loading again");
+            return;
+        }
+        if (attempted) {
+            log("an earlier start failed in this JVM (" + System.getProperty(FAILED_PROPERTY) + "); not retrying");
+            return;
+        }
+        attempted = true;
+
+        String version = "unknown";
         try {
-            String loaded = System.getProperty(MARKER_PROPERTY);
-            if (loaded != null) {
-                log("version " + loaded + " is already loaded in this JVM; not loading again");
-                return;
-            }
             File jarPath = new File(AgentMain.class.getProtectionDomain().getCodeSource().getLocation().toURI());
             JarFile jar = new JarFile(jarPath, false);
-            String version = jar.getManifest().getMainAttributes().getValue("Implementation-Version");
-            if (version == null) {
-                version = "unknown";
+            String v = jar.getManifest().getMainAttributes().getValue("Implementation-Version");
+            if (v != null) {
+                version = v;
             }
-            // Set first, so a second load attempt (static and attach, or two
-            // attaches) can never install the hooks twice.
-            System.setProperty(MARKER_PROPERTY, version);
-
             inst.appendToBootstrapClassLoaderSearch(jar);
             ClassLoader loader = new AgentClassLoader(jarPath);
             Class<?> installer = Class.forName(INSTALLER, true, loader);
             installer.getMethod("install", Instrumentation.class, String.class, String.class, String.class)
                     .invoke(null, inst, args, source, version);
+            System.setProperty(MARKER_PROPERTY, version);
         } catch (Throwable t) {
-            log("failed to start, HTTPS capture is off for this JVM: " + rootCause(t));
+            Throwable cause = rootCause(t);
+            System.setProperty(FAILED_PROPERTY, version + ": " + cause);
+            log("failed to start, HTTPS capture is off for this JVM: " + cause);
         }
     }
 

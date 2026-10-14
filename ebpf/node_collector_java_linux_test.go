@@ -27,11 +27,14 @@ import (
 // frames stop being accepted once the subscription is cancelled.
 //
 // Requires root (CAP_BPF + CAP_PERFMON) and tracefs; skipped otherwise.
-func TestNodeCollectorJavaFrames(t *testing.T) {
+// javaTestCollector starts a NodeCollector with Java capture, as the
+// DaemonSet does. hostNetns is cleared, because the tests run in the host's
+// netns in the dev container (--network=host); tests that need it set it.
+func javaTestCollector(t *testing.T) (*NodeCollector, context.Context) {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
 	}
-
 	nc, err := NewNodeCollector(NodeCollectorConfig{
 		MaxCaptureBytes:   16384,
 		DisableThermostat: true,
@@ -40,51 +43,95 @@ func TestNodeCollectorJavaFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNodeCollector: %v", err)
 	}
-	defer nc.Close()
+	t.Cleanup(func() { _ = nc.Close() })
 	if !nc.Loader().JavaEnabled() {
 		t.Fatalf("Java TLS programs did not load: %v", nc.Loader().JavaError())
 	}
+	nc.hostNetns = 0
 
-	ctx, cancelRun := context.WithCancel(context.Background())
-	defer cancelRun()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	go func() { _ = nc.Run(ctx) }()
+	return nc, ctx
+}
 
+func httpSelector(t *testing.T) akinet.TCPParserFactorySelector {
+	t.Helper()
 	pool, err := buffer_pool.MakeBufferPool(16*1024*1024, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
-	selector := akinet.TCPParserFactorySelector{
+	return akinet.TCPParserFactorySelector{
 		akihttp.NewHTTPRequestParserFactory(pool),
 		akihttp.NewHTTPResponseParserFactory(pool),
 	}
+}
 
+func ownNetns(t *testing.T) uint64 {
+	t.Helper()
 	var st syscall.Stat_t
 	if err := syscall.Stat("/proc/self/ns/net", &st); err != nil {
 		t.Fatal(err)
 	}
-	out := make(chan akinet.ParsedNetworkTraffic, 16)
-	disco := make(chan discovery.Target)
-	unsubscribe, _ := nc.Subscribe(ctx, disco, selector, out, "", st.Ino)
+	return st.Ino
+}
 
+// writeJavaFrame writes one frame from this process, as the Java agent does.
+func writeJavaFrame(t *testing.T, op uint8, payload string) {
+	t.Helper()
 	devNull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer devNull.Close()
-	write := func(op uint8, payload string) {
-		t.Helper()
-		frame := javatls.Frame{
-			Version:  javatls.Version1,
-			Op:       op,
-			Flags:    javatls.FlagRoleKnown, // server
-			ConnID:   41,
-			TotalLen: uint32(len(payload)),
-			Payload:  []byte(payload),
-		}.Append(nil)
-		if _, err := unix.Pwrite(int(devNull.Fd()), frame, int64(javatls.Magic)); err != nil {
-			t.Fatalf("pwrite: %v", err)
-		}
+	frame := javatls.Frame{
+		Version:  javatls.Version1,
+		Op:       op,
+		Flags:    javatls.FlagRoleKnown, // server
+		ConnID:   41,
+		TotalLen: uint32(len(payload)),
+		Payload:  []byte(payload),
+	}.Append(nil)
+	if _, err := unix.Pwrite(int(devNull.Fd()), frame, int64(javatls.Magic)); err != nil {
+		t.Fatalf("pwrite: %v", err)
 	}
+}
+
+func javaCounter(t *testing.T, nc *NodeCollector, idx uint32) uint64 {
+	t.Helper()
+	v, err := nc.Loader().ReadJavaCounter(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// expectRejected writes frames until the netns-rejected counter moves, or
+// fails after a few seconds (cancellation cleanup runs asynchronously).
+func expectRejected(t *testing.T, nc *NodeCollector) {
+	t.Helper()
+	before := javaCounter(t, nc, loader.JavaCounterNetnsRejected)
+	deadline := time.Now().Add(3 * time.Second)
+	for javaCounter(t, nc, loader.JavaCounterNetnsRejected) == before {
+		if time.Now().After(deadline) {
+			t.Fatal("frames still accepted")
+		}
+		writeJavaFrame(t, javatls.OpRecv, "GET /late HTTP/1.1\r\n\r\n")
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestNodeCollectorJavaFrames runs the DaemonSet path end to end below the
+// Java agent: frames written from a subscribed pod's netns (this process's)
+// come out of the pod's subscription as parsed HTTP, with no socket fd, and
+// frames stop being accepted once the subscription is cancelled.
+//
+// Requires root (CAP_BPF + CAP_PERFMON) and tracefs; skipped otherwise.
+func TestNodeCollectorJavaFrames(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	out := make(chan akinet.ParsedNetworkTraffic, 16)
+	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", ownNetns(t))
+
 	next := func() akinet.ParsedNetworkTraffic {
 		t.Helper()
 		select {
@@ -96,8 +143,8 @@ func TestNodeCollectorJavaFrames(t *testing.T) {
 		}
 	}
 
-	write(javatls.OpRecv, "GET /orders/7?expand=items HTTP/1.1\r\nHost: shop.internal\r\n\r\n")
-	write(javatls.OpSend, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"id\":\"7\"}\n")
+	writeJavaFrame(t, javatls.OpRecv, "GET /orders/7?expand=items HTTP/1.1\r\nHost: shop.internal\r\n\r\n")
+	writeJavaFrame(t, javatls.OpSend, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"id\":\"7\"}\n")
 
 	req, ok := next().Content.(akinet.HTTPRequest)
 	if !ok {
@@ -121,20 +168,54 @@ func TestNodeCollectorJavaFrames(t *testing.T) {
 
 	// After the pod goes away its netns is no longer accepted.
 	unsubscribe()
-	rejected := func() uint64 {
-		v, err := nc.Loader().ReadJavaCounter(loader.JavaCounterNetnsRejected)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return v
+	expectRejected(t, nc)
+}
+
+// TestNodeCollectorJavaRefusesHostNetns: hostNetwork pods share the node's
+// netns with every host process, so it never identifies one pod.
+func TestNodeCollectorJavaRefusesHostNetns(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	nc.hostNetns = ownNetns(t)
+	out := make(chan akinet.ParsedNetworkTraffic, 16)
+	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", nc.hostNetns)
+	defer unsubscribe()
+	expectRejected(t, nc)
+	select {
+	case <-out:
+		t.Fatal("traffic from the host netns was captured")
+	default:
 	}
-	before := rejected()
-	deadline := time.Now().Add(3 * time.Second)
-	for rejected() == before {
-		if time.Now().After(deadline) {
-			t.Fatal("frames still accepted after the subscription was cancelled")
-		}
-		write(javatls.OpRecv, "GET /late HTTP/1.1\r\n\r\n")
-		time.Sleep(20 * time.Millisecond)
+}
+
+// TestNodeCollectorJavaNetnsRefcount: cancelling one of two subscriptions on
+// the same netns keeps the other one's frames accepted.
+func TestNodeCollectorJavaNetnsRefcount(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	netns := ownNetns(t)
+	sel := httpSelector(t)
+	first, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, make(chan akinet.ParsedNetworkTraffic, 16), "", netns)
+	second, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, make(chan akinet.ParsedNetworkTraffic, 16), "", netns)
+
+	first()
+	time.Sleep(200 * time.Millisecond) // let the first subscription's cleanup run
+	emitted := javaCounter(t, nc, loader.JavaCounterEventsEmitted)
+	writeJavaFrame(t, javatls.OpRecv, "GET /still HTTP/1.1\r\n\r\n")
+	if javaCounter(t, nc, loader.JavaCounterEventsEmitted) == emitted {
+		t.Fatal("frames rejected while another subscription still allows the netns")
 	}
+
+	second()
+	expectRejected(t, nc)
+}
+
+// TestNodeCollectorJavaCleanupWhenDiscoveryCloses: discovery closes its channel
+// when the capture context ends, which the subscription may see before the
+// context; cleanup must still run.
+func TestNodeCollectorJavaCleanupWhenDiscoveryCloses(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	disco := make(chan discovery.Target)
+	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t))
+	defer unsubscribe()
+	close(disco)
+	expectRejected(t, nc)
 }

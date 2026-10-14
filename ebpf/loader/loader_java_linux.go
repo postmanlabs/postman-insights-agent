@@ -15,8 +15,8 @@ import (
 
 // The Java TLS programs are a separate object so that a failure to load or
 // attach them disables only Java capture, never libssl. They share the libssl
-// object's ring buffer and rate-cap buckets through MapReplacements (both
-// objects define these maps in programs/common.h).
+// object's ring buffer through MapReplacements (both objects define it in
+// programs/common.h).
 //
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations -Wno-microsoft-anon-tag" javatls ../programs/java_tls.bpf.c -- -I../programs
 
@@ -40,8 +40,7 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 	j := &javaTLS{}
 	opts := &ebpf.CollectionOptions{
 		MapReplacements: map[string]*ebpf.Map{
-			"events":           shared.Events,
-			"pid_rate_buckets": shared.PidRateBuckets,
+			"events": shared.Events,
 		},
 	}
 	if err := spec.LoadAndAssign(&j.objs, opts); err != nil {

@@ -88,6 +88,7 @@ func TestJavaContractInSync(t *testing.T) {
 	ms := func(d time.Duration) string { return num(uint64(d.Milliseconds())) }
 	checkJava(t, "Contract.java", javaConstants(t, "bootstrap/Contract.java"), map[string]string{
 		"MARKER_PROPERTY":                 MarkerProperty,
+		"FAILED_PROPERTY":                 FailedProperty,
 		"ARG_CAPTURE_CAP":                 ArgCaptureCap,
 		"DEFAULT_CAPTURE_CAP":             num(DefaultCaptureCap),
 		"CONTROL_FILE_PATH":               ControlFilePath,
@@ -100,10 +101,11 @@ func TestJavaContractInSync(t *testing.T) {
 	})
 }
 
-// TestJavaAgentMainInSync checks AgentMain's private copy of the marker
-// property (it cannot use Contract before the bootstrap class path is set up).
+// TestJavaAgentMainInSync checks AgentMain's private copies of the property
+// names (it cannot use Contract before the bootstrap class path is set up).
 func TestJavaAgentMainInSync(t *testing.T) {
 	checkJava(t, "AgentMain.java", javaConstants(t, "AgentMain.java"), map[string]string{
 		"MARKER_PROPERTY": MarkerProperty,
+		"FAILED_PROPERTY": FailedProperty,
 	})
 }

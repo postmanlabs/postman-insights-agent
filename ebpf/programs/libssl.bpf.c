@@ -137,6 +137,46 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
     }
 }
 
+// Per-PID rate-cap token bucket (sampling layer 2; design doc §6.2).
+// Userspace refills tokens periodically; the BPF probe decrements one token
+// per event and drops the event when the bucket is empty.
+//
+//   Key:   tgid (__u32)
+//   Value: bucket { tokens, _pad }
+//
+// We use __sync_fetch_and_sub for the atomic decrement so multi-CPU access
+// is safe. If a PID isn't in the map (e.g. wasn't refilled yet), default to
+// "unlimited" — favours availability over strictness.
+struct rate_bucket {
+    __u64 tokens;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u32);                   // tgid
+    __type(value, struct rate_bucket);
+} pid_rate_buckets SEC(".maps");
+
+static __always_inline int rate_take(__u32 tgid) {
+    if (rate_cap_per_sec == 0) {
+        return 1;  // disabled — always allow
+    }
+    struct rate_bucket *b = bpf_map_lookup_elem(&pid_rate_buckets, &tgid);
+    if (!b) {
+        return 1;  // unknown PID — don't drop; let userspace catch up
+    }
+    __u64 prev = __sync_fetch_and_sub(&b->tokens, 1);
+    // __sync_fetch_and_sub returns the OLD value. If it was 0, our
+    // decrement just made it underflow — we should treat that as "no
+    // tokens" and reject. Restore by re-adding so the count stays at 0.
+    if (prev == 0) {
+        __sync_fetch_and_add(&b->tokens, 1);
+        return 0;
+    }
+    return 1;
+}
+
 // Set from userspace at load time. Lives in .rodata (read-only after load).
 // 0 = trace all PIDs (spike); 1 = only trace PIDs in target_pids.
 volatile const __u32 enforce_pid_allowlist = 0;

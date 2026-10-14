@@ -11,11 +11,16 @@ import "time"
 // AgentJarPath is where the Java agent jar lives in the Insights agent images.
 const AgentJarPath = "/opt/postman/postman-java-agent.jar"
 
-// MarkerProperty is the JVM system property the Java agent sets once it is
-// loaded. Its value is the agent version. The attacher reads it to avoid
+// MarkerProperty is the JVM system property the Java agent sets once its hooks
+// are installed. Its value is the agent version. The attacher reads it to avoid
 // loading a second copy into a JVM that already has the agent (static opt-in,
 // or an earlier attach before an Insights agent restart).
 const MarkerProperty = "postman.insights.agent.version"
+
+// FailedProperty is the JVM system property the Java agent sets when it failed
+// to start, as "<version>: <reason>". The agent does not retry in the same
+// JVM, so the attacher should not either.
+const FailedProperty = "postman.insights.agent.failed"
 
 // Agent arguments are passed as comma-separated key=value pairs, for example
 // "cap=16384". Unknown keys are ignored so that older agents accept arguments

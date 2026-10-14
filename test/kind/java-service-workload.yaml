@@ -20,7 +20,9 @@ spec:
       runAsNonRoot: true
       runAsUser: 1000
       allowPrivilegeEscalation: false
+    # TCP, not HTTPS: an HTTPS probe would itself be captured and count
+    # towards the checks in deploy-java-service.sh.
     readinessProbe:
-      httpGet: { path: /hello, port: 8443, scheme: HTTPS }
+      tcpSocket: { port: 8443 }
       initialDelaySeconds: 5
       periodSeconds: 5

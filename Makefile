@@ -84,5 +84,9 @@ test: mock
 #
 # NOTE: some tests in ./ebpf/... load real BPF programs and need CAP_BPF, so this
 # target is not expected to pass in an unprivileged container.
+#
+# -p 1: the Java TLS tests in different packages attach syscall tracepoints that
+# see every positional write on the host, so running those packages at the same
+# time makes each see the other's frames.
 test-ebpf:
-	go test -tags insights_bpf ./ebpf/...
+	go test -tags insights_bpf -p 1 ./ebpf/...

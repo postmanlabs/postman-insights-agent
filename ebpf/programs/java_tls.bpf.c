@@ -43,6 +43,54 @@ struct {
     __type(value, __u8);                  // sentinel
 } java_netns SEC(".maps");
 
+// Per-PID rate-cap buckets for Java senders (--https-rate-cap-per-sec).
+// They refill themselves: the first event after a one-second window starts a
+// new window with a full bucket. Userspace cannot refill them the way it
+// refills libssl's buckets, because it does not know the senders' PIDs as the
+// kernel sees them (they differ in nested PID namespaces). LRU, so buckets of
+// exited processes age out.
+struct java_rate_bucket {
+    __u64 window_start_ns;
+    __u64 tokens;                         // left in the current window
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u32);                   // tgid
+    __type(value, struct java_rate_bucket);
+} java_rate_buckets SEC(".maps");
+
+#define NSEC_PER_SEC 1000000000ULL
+
+// Takes one event from tgid's bucket; returns 0 when the bucket is empty.
+// Concurrent senders on other CPUs can race on a window change; the cap is
+// approximate there, never unbounded.
+static __always_inline int java_rate_take(__u32 tgid) {
+    __u32 cap = rate_cap_per_sec;
+    if (cap == 0) {
+        return 1;
+    }
+    __u64 now = bpf_ktime_get_ns();
+    struct java_rate_bucket *b = bpf_map_lookup_elem(&java_rate_buckets, &tgid);
+    if (!b) {
+        struct java_rate_bucket fresh = { .window_start_ns = now, .tokens = cap - 1 };
+        bpf_map_update_elem(&java_rate_buckets, &tgid, &fresh, BPF_NOEXIST);
+        return 1;
+    }
+    if (now - b->window_start_ns >= NSEC_PER_SEC) {
+        b->window_start_ns = now;
+        b->tokens = cap - 1;
+        return 1;
+    }
+    // Same underflow guard as rate_take in libssl.bpf.c.
+    if (__sync_fetch_and_sub(&b->tokens, 1) == 0) {
+        __sync_fetch_and_add(&b->tokens, 1);
+        return 0;
+    }
+    return 1;
+}
+
 // Telemetry counters, per-CPU so increments are lock-free; userspace sums
 // across CPUs. Indices must match ebpf/loader (JavaCounter*).
 #define JAVA_CTR_FRAMES_SEEN       0  // writes at the magic offset
@@ -120,7 +168,7 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     }
 
     __u64 pid_tgid = bpf_get_current_pid_tgid();
-    if (!rate_take(pid_tgid >> 32)) {
+    if (!java_rate_take(pid_tgid >> 32)) {
         java_counter_inc(JAVA_CTR_RATE_CAPPED, 1);
         return 0;
     }

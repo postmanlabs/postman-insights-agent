@@ -186,6 +186,38 @@ func TestJavaTLSFrames(t *testing.T) {
 		}
 	})
 
+	t.Run("rate cap applies to Java senders and refills every second", func(t *testing.T) {
+		if err := l.SetRateCapPerSec(2); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.SetRateCapPerSec(0) }()
+		drain := func() int {
+			n := 0
+			for {
+				rd.SetDeadline(time.Now().Add(200 * time.Millisecond))
+				if _, err := rd.Read(); err != nil {
+					return n
+				}
+				n++
+			}
+		}
+		before := counter(t, JavaCounterRateCapped)
+		for i := 0; i < 5; i++ {
+			pwrite(t, send)
+		}
+		if got := drain(); got != 2 {
+			t.Errorf("%d events passed a cap of 2/s, want 2", got)
+		}
+		if got := counter(t, JavaCounterRateCapped) - before; got != 3 {
+			t.Errorf("rate_capped grew by %d, want 3", got)
+		}
+		time.Sleep(1100 * time.Millisecond)
+		pwrite(t, send)
+		if got := drain(); got != 1 {
+			t.Errorf("%d events after the window refilled, want 1", got)
+		}
+	})
+
 	if err := l.DisallowJavaNetns(netns); err != nil {
 		t.Fatalf("DisallowJavaNetns: %v", err)
 	}
