@@ -74,9 +74,13 @@ The build arg `AGENT_VERSION` sets the jar's version.
 
 ## Status
 
-Java HTTPS capture is experimental.
-The Insights Agent loads the eBPF side only when `POSTMAN_INSIGHTS_EXPERIMENTAL_JAVA_TLS=true` is set; the agent itself is loaded with `-javaagent` for now.
+Java HTTPS capture is in preview, and off by default until the preview release.
+`--https-libraries=openssl,java` (on `kube run` and `apidump`, with `--enable-https-capture`) turns it on.
+Without `java`, the Insights Agent switches off the agents already running in the JVMs of the pods it monitors, at the next control-file refresh.
 The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
-It also loads the agent into running JVMs that do not have it, through the `postman-jvm-attach` helper (`cmd/postman-jvm-attach`), which it runs as each JVM's own user.
+As a DaemonSet (`kube run`), it also loads the agent into running JVMs that do not have it, through the `postman-jvm-attach` helper (`cmd/postman-jvm-attach`), which it runs as each JVM's own user.
+Run as a sidecar (`apidump`), it loads nothing: the JVMs need `-javaagent`.
+It then captures Java only in its own pod's network namespace, even with `hostPID`, and not at all in a pod on the host network.
+A pod whose network namespace is unknown, or on the host network, is captured without Java in a DaemonSet too, since its namespace does not identify one pod.
 On JDK 21 and newer, the JVM then prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr; they are harmless.
-`--https-libraries` is planned (INS-365).
+What happens to each JVM (attached, agent already running, skipped or failed, with the reason) is logged once and counted in the pod's telemetry as `java_jvm_*` events; the `ebpf-stats` line shows the node's totals.

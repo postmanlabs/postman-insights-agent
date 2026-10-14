@@ -35,21 +35,36 @@ import (
 // netns in the dev container (--network=host); tests that need it set it.
 func javaTestCollector(t *testing.T) (*NodeCollector, context.Context) {
 	t.Helper()
+	nc, ctx := testCollector(t, true)
+	if !nc.Loader().JavaEnabled() {
+		t.Fatalf("Java TLS programs did not load: %v", nc.Loader().JavaError())
+	}
+	return nc, ctx
+}
+
+// testCollector starts a NodeCollector as the DaemonSet does, with Java
+// capture on or off. hostNetns is cleared as for javaTestCollector.
+func testCollector(t *testing.T, java bool) (*NodeCollector, context.Context) {
+	t.Helper()
+	return testCollectorWith(t, NodeCollectorConfig{EnableJava: java})
+}
+
+// testCollectorWith is testCollector with cfg's libraries.
+func testCollectorWith(t *testing.T, cfg NodeCollectorConfig) (*NodeCollector, context.Context) {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
 	}
 	nc, err := NewNodeCollector(NodeCollectorConfig{
 		MaxCaptureBytes:   16384,
 		DisableThermostat: true,
-		EnableJava:        true,
+		EnableJava:        cfg.EnableJava,
+		DisableOpenSSL:    cfg.DisableOpenSSL,
 	})
 	if err != nil {
 		t.Fatalf("NewNodeCollector: %v", err)
 	}
 	t.Cleanup(func() { _ = nc.Close() })
-	if !nc.Loader().JavaEnabled() {
-		t.Fatalf("Java TLS programs did not load: %v", nc.Loader().JavaError())
-	}
 	nc.hostNetns = 0
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -133,7 +148,7 @@ func expectRejected(t *testing.T, nc *NodeCollector) {
 func TestNodeCollectorJavaFrames(t *testing.T) {
 	nc, ctx := javaTestCollector(t)
 	out := make(chan akinet.ParsedNetworkTraffic, 16)
-	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", ownNetns(t))
+	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", ownNetns(t), nil)
 
 	next := func() akinet.ParsedNetworkTraffic {
 		t.Helper()
@@ -180,7 +195,7 @@ func TestNodeCollectorJavaRefusesHostNetns(t *testing.T) {
 	nc, ctx := javaTestCollector(t)
 	nc.hostNetns = ownNetns(t)
 	out := make(chan akinet.ParsedNetworkTraffic, 16)
-	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", nc.hostNetns)
+	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", nc.hostNetns, nil)
 	defer unsubscribe()
 	expectRejected(t, nc)
 	select {
@@ -202,8 +217,8 @@ func TestNodeCollectorJavaSharedNetns(t *testing.T) {
 		t.Run(firstLeaves+" cancelled first", func(t *testing.T) {
 			olderOut := make(chan akinet.ParsedNetworkTraffic, 16)
 			newerOut := make(chan akinet.ParsedNetworkTraffic, 16)
-			cancelOlder, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, olderOut, "", netns)
-			cancelNewer, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, newerOut, "", netns)
+			cancelOlder, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, olderOut, "", netns, nil)
+			cancelNewer, _ := nc.Subscribe(ctx, make(chan discovery.Target), sel, newerOut, "", netns, nil)
 
 			cancelFirst, cancelSecond, stayingOut := cancelOlder, cancelNewer, newerOut
 			if firstLeaves == "newer" {
@@ -235,7 +250,7 @@ func TestNodeCollectorJavaSharedNetns(t *testing.T) {
 func TestNodeCollectorJavaCleanupWhenDiscoveryCloses(t *testing.T) {
 	nc, ctx := javaTestCollector(t)
 	disco := make(chan discovery.Target)
-	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t))
+	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t), nil)
 	defer unsubscribe()
 	close(disco)
 	expectRejected(t, nc)
@@ -247,32 +262,13 @@ func TestNodeCollectorJavaCleanupWhenDiscoveryCloses(t *testing.T) {
 // Python process, which maps the system libssl.
 func TestNodeCollectorSharedPIDKeepsProbes(t *testing.T) {
 	nc, ctx := javaTestCollector(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("needs python3, to run a process that maps libssl")
-	}
-	cmd := exec.Command(python, "-c", "import ssl, time; time.sleep(60)")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-	pid := uint32(cmd.Process.Pid)
-
-	var lib *uprobes.LibSSLPath
-	deadline := time.Now().Add(5 * time.Second)
-	for lib == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("python3 never mapped libssl")
-		}
-		lib, _ = uprobes.FindLibSSLAnyAt("/proc", pid)
-		time.Sleep(20 * time.Millisecond)
-	}
-	target := discovery.Target{PID: pid, Lib: lib, Seen: time.Now()}
+	target := libsslProcess(t)
+	pid := target.PID
 
 	sel := httpSelector(t)
 	discoA, discoB := make(chan discovery.Target, 1), make(chan discovery.Target, 1)
-	cancelA, _ := nc.Subscribe(ctx, discoA, sel, make(chan akinet.ParsedNetworkTraffic, 16), "", 0)
-	cancelB, _ := nc.Subscribe(ctx, discoB, sel, make(chan akinet.ParsedNetworkTraffic, 16), "", 0)
+	cancelA, _ := nc.Subscribe(ctx, discoA, sel, make(chan akinet.ParsedNetworkTraffic, 16), "", 0, nil)
+	cancelB, _ := nc.Subscribe(ctx, discoB, sel, make(chan akinet.ParsedNetworkTraffic, 16), "", 0, nil)
 	defer cancelB()
 
 	waitFor := func(what string, cond func() bool) {
@@ -314,7 +310,7 @@ func TestNodeCollectorSharedPIDKeepsProbes(t *testing.T) {
 func TestNodeCollectorRepeatedJVMTarget(t *testing.T) {
 	nc, ctx := javaTestCollector(t)
 	disco := make(chan discovery.Target)
-	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t))
+	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t), nil)
 	defer unsubscribe()
 
 	// A PID that does not exist: the control file cannot be written, which
@@ -328,5 +324,87 @@ func TestNodeCollectorRepeatedJVMTarget(t *testing.T) {
 	disco <- discovery.Target{PID: 1<<30 + 1, Removed: true, Seen: time.Now()}
 	if n := nc.jvms.Len(); n != 0 {
 		t.Fatalf("%d JVMs still controlled after the JVM was removed", n)
+	}
+}
+
+// libsslProcess starts a Python process, which maps the system libssl, and
+// returns it as discovery finds it.
+func libsslProcess(t *testing.T) discovery.Target {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("needs python3, to run a process that maps libssl")
+	}
+	cmd := exec.Command(python, "-c", "import ssl, time; time.sleep(60)")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	pid := uint32(cmd.Process.Pid)
+
+	var lib *uprobes.LibSSLPath
+	deadline := time.Now().Add(5 * time.Second)
+	for lib == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("python3 never mapped libssl")
+		}
+		lib, _ = uprobes.FindLibSSLAnyAt("/proc", pid)
+		time.Sleep(20 * time.Millisecond)
+	}
+	return discovery.Target{PID: pid, Lib: lib, Seen: time.Now()}
+}
+
+// TestNodeCollectorDisableOpenSSL: with --https-libraries=java, discovered
+// libssl processes get no uprobes.
+func TestNodeCollectorDisableOpenSSL(t *testing.T) {
+	nc, ctx := testCollectorWith(t, NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true})
+	target := libsslProcess(t)
+
+	disco := make(chan discovery.Target)
+	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", 0, nil)
+	defer unsubscribe()
+	disco <- target
+	// The subscription handles one target at a time: once it takes the
+	// next, it is done with the first.
+	disco <- discovery.Target{PID: 1 << 30, Removed: true, Seen: time.Now()}
+
+	if n := nc.mgr.ProbeCount(target.PID); n != 0 {
+		t.Fatalf("%d uprobes attached with OpenSSL capture off", n)
+	}
+	nc.mu.RLock()
+	defer nc.mu.RUnlock()
+	if len(nc.pidToSub[target.PID]) != 0 {
+		t.Fatal("the PID was routed")
+	}
+}
+
+// TestNodeCollectorLibraries: the collector reports the libraries it captures
+// from, which the DaemonSet captures pods from.
+func TestNodeCollectorLibraries(t *testing.T) {
+	for _, tc := range []struct {
+		cfg  NodeCollectorConfig
+		want Libraries
+	}{
+		{NodeCollectorConfig{EnableJava: true}, Libraries{OpenSSL: true, Java: true}},
+		{NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true}, Libraries{Java: true}},
+		{NodeCollectorConfig{}, Libraries{OpenSSL: true}},
+	} {
+		nc, _ := testCollectorWith(t, tc.cfg)
+		if got := nc.Libraries(); got != tc.want {
+			t.Errorf("%+v: libraries %s, want %s", tc.cfg, got, tc.want)
+		}
+	}
+}
+
+// A NodeCollector with no library it can capture from is an error, so the
+// DaemonSet runs pods without HTTPS capture rather than capturing nothing.
+func TestNewNodeCollectorNothingToCapture(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
+	}
+	nc, err := NewNodeCollector(NodeCollectorConfig{DisableOpenSSL: true})
+	if err == nil {
+		_ = nc.Close()
+		t.Fatal("NewNodeCollector with no library to capture succeeded")
 	}
 }

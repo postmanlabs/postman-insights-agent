@@ -28,6 +28,8 @@ package ebpf
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -66,6 +68,9 @@ type NodeCollector struct {
 	rateCapPerSec uint32
 	// maxCaptureBytes is the initial BPF capture cap (may be lowered by thermostat).
 	maxCaptureBytes uint32
+	// openSSL attaches libssl uprobes to discovered processes; off when only
+	// Java is captured.
+	openSSL bool
 
 	mu sync.RWMutex
 	// netnsToSub is the primary routing table: pod netns inode -> subscribers.
@@ -109,11 +114,18 @@ type NodeCollectorConfig struct {
 	// EnableJava also loads the Java TLS programs, which accept frames only
 	// from the network namespaces of subscribed pods.
 	EnableJava bool
+
+	// DisableOpenSSL attaches no libssl uprobes, so only Java is captured.
+	DisableOpenSSL bool
 }
 
 // NewNodeCollector loads the eBPF programs once and returns a NodeCollector
 // ready to run. The caller must call Run(ctx) to start the event loop, and
 // Close() when done (typically deferred).
+//
+// The Java programs failing to load is not an error: the collector then
+// captures without Java (Libraries). It fails when that leaves nothing to
+// capture.
 func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 	if cfg.MaxCaptureBytes == 0 {
 		cfg.MaxCaptureBytes = 4096
@@ -138,6 +150,11 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		return nil, err
 	}
 	logJavaTLSStatus(cfg.EnableJava, l)
+	if !l.JavaEnabled() && cfg.DisableOpenSSL {
+		_ = l.Close()
+		return nil, fmt.Errorf("ebpf: none of the TLS libraries asked for (%s) can be captured",
+			Libraries{OpenSSL: !cfg.DisableOpenSSL, Java: cfg.EnableJava})
+	}
 
 	var therm *Thermostat
 	if !cfg.DisableThermostat {
@@ -152,6 +169,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
+		openSSL:         !cfg.DisableOpenSSL,
 		netnsToSub:      routeTable[uint64]{},
 		pidToSub:        routeTable[uint32]{},
 		hostNetns:       hostNetnsInode(),
@@ -184,12 +202,21 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 // sees it. With hostPID (the DaemonSet) that is the node's init, whose netns
 // hostNetwork pods share; in kind it is the node container's. Without hostPID
 // it is the agent pod's own netns, which is never a monitored pod's.
-func hostNetnsInode() uint64 {
+func hostNetnsInode() uint64 { return netnsInodeAt("/proc/1/ns/net") }
+
+// netnsInodeAt returns the inode of the network namespace at path (a
+// /proc/<pid>/ns/net), or 0.
+func netnsInodeAt(path string) uint64 {
 	var st syscall.Stat_t
-	if err := syscall.Stat("/proc/1/ns/net", &st); err != nil {
+	if err := syscall.Stat(path, &st); err != nil {
 		return 0
 	}
 	return st.Ino
+}
+
+// jvmNetns returns the network namespace inode of p, or 0.
+func jvmNetns(p *jvm.Process) uint64 {
+	return netnsInodeAt(filepath.Join(p.ProcRoot, strconv.FormatUint(uint64(p.PID), 10), "ns", "net"))
 }
 
 // attachPID attaches libssl uprobes to pid for sub and routes the PID to it.
@@ -223,14 +250,10 @@ func (nc *NodeCollector) releasePID(pid uint32, sub *podSub) (bool, error) {
 	return true, nc.mgr.Detach(pid)
 }
 
-// allowJavaNetns accepts Java frames from a subscribed pod's netns. It
-// refuses the node's own netns, shared by hostNetwork pods and host processes.
+// allowJavaNetns accepts Java frames from a subscribed pod's netns, when
+// JavaPodSkipReason allows Java for the pod.
 func (nc *NodeCollector) allowJavaNetns(netnsInode uint64) bool {
-	if !nc.ldr.JavaEnabled() || netnsInode == 0 {
-		return false
-	}
-	if netnsInode == nc.hostNetns {
-		printer.Stderr.Infof("ebpf: Java HTTPS capture skipped for a pod on the host network (netns %d)\n", netnsInode)
+	if !nc.ldr.JavaEnabled() || JavaPodSkipReason(netnsInode, nc.hostNetns) != "" {
 		return false
 	}
 	nc.mu.Lock()
@@ -260,11 +283,18 @@ func (nc *NodeCollector) releaseJavaNetns(netnsInode uint64) {
 }
 
 // addJVM writes the control file for a JVM in a subscribed pod, then queues
-// it for attaching, so an attached agent finds the file at once.
-func (nc *NodeCollector) addJVM(p *jvm.Process) {
-	nc.jvms.Add(p)
+// it for attaching, so an attached agent finds the file at once. report, when
+// not nil, receives the pod's JVM telemetry events: the JVM seen, counted
+// here because the attacher is absent when Java capture is off or attach is
+// unavailable, and its attach outcome.
+func (nc *NodeCollector) addJVM(p *jvm.Process, report func(event string)) {
+	// Seen once per JVM, also when a replacement subscription for the same
+	// pod adds it before the one it replaces has removed it.
+	if nc.jvms.Add(p) && report != nil {
+		report(jvm.EventSeen)
+	}
 	if nc.attacher != nil {
-		nc.attacher.Add(p)
+		nc.attacher.Add(p, report)
 	}
 }
 
@@ -296,6 +326,25 @@ func (nc *NodeCollector) Thermostat() *Thermostat { return nc.therm }
 
 // Manager returns the uprobe manager handle, e.g. for telemetry.
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nc.mgr }
+
+// HostNetns returns the network namespace inode of the node, or 0 when
+// unknown; see JavaPodSkipReason.
+func (nc *NodeCollector) HostNetns() uint64 { return nc.hostNetns }
+
+// Libraries returns the TLS libraries nc captures from: those it was
+// configured for, without Java when the Java programs did not load.
+func (nc *NodeCollector) Libraries() Libraries {
+	return Libraries{OpenSSL: nc.openSSL, Java: nc.ldr.JavaEnabled()}
+}
+
+// JVMStats returns what happened to the JVMs of subscribed pods so far, and
+// false when no JVMs are attached (Java capture off, or attach unavailable).
+func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) {
+	if nc.attacher == nil {
+		return jvm.AttachStats{}, false
+	}
+	return nc.attacher.Stats(), true
+}
 
 // Run starts the shared event-dispatch loop. It blocks until ctx is
 // cancelled. Call this in a dedicated goroutine.
@@ -386,7 +435,8 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 // (or namespace). netnsInode is the pod's network-namespace inode and is the
 // primary routing key (0 disables netns routing, falling back to PID).
 // factorySelector and procRoot mirror the apidump pipeline. out is owned by
-// the caller; it is never closed by Subscribe.
+// the caller; it is never closed by Subscribe. reportCount, when not nil,
+// receives the pod's telemetry counters (the attach outcome of its JVMs).
 //
 // Returns a cancel func and the pod's events.Adapter. Call cancel (and drain
 // out) when the pod terminates to unregister the pod and stop the subscription
@@ -399,8 +449,14 @@ func (nc *NodeCollector) Subscribe(
 	out chan<- akinet.ParsedNetworkTraffic,
 	procRoot string,
 	netnsInode uint64,
+	reportCount func(event string, count uint64),
 ) (context.CancelFunc, *events.Adapter) {
 	subCtx, cancel := context.WithCancel(ctx)
+
+	var reportJVM func(event string)
+	if reportCount != nil {
+		reportJVM = func(event string) { reportCount(event, 1) }
+	}
 
 	adapter := events.NewAdapter(factorySelector, out)
 	adapter.Resolver = events.NewResolverWithProcRoot(1*time.Second, procRoot)
@@ -422,9 +478,8 @@ func (nc *NodeCollector) Subscribe(
 	// Java frames are accepted per pod netns, the same key events route on.
 	javaNetns := nc.allowJavaNetns(netnsInode)
 	// The JVMs of a pod known by its own netns get control files, also with
-	// Java capture off (to switch earlier agents off). Never on the host
-	// network, where a netns does not identify one pod.
-	jvmScope := netnsInode != 0 && netnsInode != nc.hostNetns
+	// Java capture off (to switch earlier agents off).
+	jvmScope := JavaPodSkipReason(netnsInode, nc.hostNetns) == ""
 
 	go func() {
 		// Track which PIDs this subscription registered so we can clean up on
@@ -486,10 +541,10 @@ func (nc *NodeCollector) Subscribe(
 				// Discovery emits a PID again when it gains libssl or
 				// becomes a JVM: add only what is new.
 				if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvmScope && !owned {
-					nc.addJVM(tgt.JVM)
+					nc.addJVM(tgt.JVM, reportJVM)
 					ownedJVMs[tgt.PID] = tgt.JVM.Key()
 				}
-				if _, owned := ownedPIDs[tgt.PID]; tgt.Lib == nil || owned {
+				if _, owned := ownedPIDs[tgt.PID]; tgt.Lib == nil || owned || !nc.openSSL {
 					continue
 				}
 				if err := nc.attachPID(tgt, sub); err != nil {
