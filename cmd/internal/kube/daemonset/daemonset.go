@@ -380,14 +380,23 @@ func StartDaemonset(args DaemonsetArgs) error {
 			EnableJava:        args.HTTPSLibraries.Java,
 			DisableOpenSSL:    !args.HTTPSLibraries.OpenSSL,
 		})
-		if err != nil {
+		// The Java programs failing to load is not an error: the collector
+		// then captures without Java, and pods are captured from what it has.
+		switch {
+		case err != nil:
 			printer.Warningf(
 				"ebpf: failed to initialise node-scoped BPF collector (%v); "+
 					"HTTPS capture will be disabled for all monitored pods on this node.\n", err)
-		} else {
+		case nc.Libraries().None():
+			_ = nc.Close()
+			printer.Warningf(
+				"ebpf: none of the selected TLS libraries (%s) can be captured on this node; "+
+					"HTTPS capture will be disabled for all monitored pods on this node.\n", args.HTTPSLibraries)
+		default:
 			daemonsetRun.EBPFNodeCollector = nc
+			daemonsetRun.HTTPSLibraries = nc.Libraries()
 			printer.Infof("ebpf: node-scoped BPF collector initialised for %s (one loader for all pods on this node)\n",
-				args.HTTPSLibraries)
+				daemonsetRun.HTTPSLibraries)
 		}
 	}
 

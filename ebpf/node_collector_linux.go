@@ -321,6 +321,12 @@ func (nc *NodeCollector) Thermostat() *Thermostat { return nc.therm }
 // Manager returns the uprobe manager handle, e.g. for telemetry.
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nc.mgr }
 
+// Libraries returns the TLS libraries nc captures from: those it was
+// configured for, without Java when the Java programs did not load.
+func (nc *NodeCollector) Libraries() Libraries {
+	return Libraries{OpenSSL: nc.openSSL, Java: nc.ldr.JavaEnabled()}
+}
+
 // JVMStats returns what happened to the JVMs of subscribed pods so far, and
 // false when no JVMs are attached (Java capture off, or attach unavailable).
 func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) {

@@ -371,3 +371,20 @@ func TestNodeCollectorDisableOpenSSL(t *testing.T) {
 		t.Fatal("the PID was routed")
 	}
 }
+
+// TestNodeCollectorLibraries: the collector reports the libraries it captures
+// from, which the DaemonSet captures pods from.
+func TestNodeCollectorLibraries(t *testing.T) {
+	java, _ := javaTestCollector(t)
+	if got := java.Libraries(); got != (Libraries{OpenSSL: true, Java: true}) {
+		t.Errorf("Java on: %s", got)
+	}
+	java.openSSL = false
+	if got := java.Libraries(); got != (Libraries{Java: true}) {
+		t.Errorf("Java only: %s", got)
+	}
+	plain, _ := testCollector(t, false)
+	if got := plain.Libraries(); got != (Libraries{OpenSSL: true}) {
+		t.Errorf("Java off: %s", got)
+	}
+}
