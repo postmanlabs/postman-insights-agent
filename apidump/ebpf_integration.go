@@ -261,6 +261,8 @@ func startHTTPSeBPFCapture(
 			Interval:         2 * time.Second,
 			ProcRoot:         ebpfArgs.ProcRoot,
 			NetnsInodeFilter: args.HTTPS.ContainerNetnsInode,
+			// The pod's JVMs get the Java agent's control file.
+			JVMs: true,
 		})
 
 	case len(args.HTTPS.TargetNamespaces) > 0:

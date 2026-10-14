@@ -1,9 +1,9 @@
 // Package discovery enumerates the processes that the eBPF subsystem should
-// attach uprobes to.
+// attach uprobes to, and the JVMs whose Java agents it controls.
 //
-// The discovery loop polls /proc, tracks PID liveness, and emits Target events
-// for both newly-seen and exited processes so the uprobes Manager can attach
-// and detach cleanly.
+// The discovery loop polls /proc, tracks process liveness, and emits Target
+// events for both newly-seen and exited processes so the uprobes Manager can
+// attach and detach cleanly.
 //
 // Namespace filtering is applied via the optional KubeNamespaceResolver. When
 // that resolver is nil (e.g. when running outside a kube cluster), namespace
@@ -19,14 +19,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 )
 
 // Target represents a discovery event: a process newly seen, or a process
 // that disappeared. The receiver branches on Removed.
 type Target struct {
-	PID     uint32
-	Lib     *uprobes.LibSSLPath // populated when Removed == false
+	PID uint32
+	// StartTime is when the process started (clock ticks after boot). A PID
+	// seen again with a different start time is a new process: discovery
+	// emits a Removed event for the old one first.
+	StartTime uint64
+	// Lib is the libssl the process uses, when it uses one. At least one of
+	// Lib and JVM is set when Removed is false.
+	Lib *uprobes.LibSSLPath
+	// JVM is set when the process is a JVM and WatchOpts.JVMs is on.
+	JVM     *jvm.Process
 	Seen    time.Time
 	Removed bool // true → process has exited; uprobes should be detached
 }
@@ -68,6 +77,9 @@ type WatchOpts struct {
 	// Use this in the DaemonSet per-pod path to avoid N× duplicate captures
 	// when a namespace has multiple pod replicas (horizontal scaling).
 	NetnsInodeFilter uint64
+
+	// JVMs also emits JVMs (Target.JVM), whether or not they use libssl.
+	JVMs bool
 }
 
 // ScanProc walks /proc once and returns every PID that has a libssl mapping.
@@ -78,6 +90,13 @@ func ScanProc() ([]Target, error) { return ScanProcAt("/proc") }
 // a libssl mapping. Use /host/proc when running inside a DaemonSet so the
 // scanned PIDs match BPF's root-namespace view.
 func ScanProcAt(procRoot string) ([]Target, error) {
+	return scanProc(procRoot, nil, false)
+}
+
+// scanProc walks procRoot and returns the processes that use libssl, and with
+// jvms also the JVMs. keep, when set, is checked first, so the maps of
+// processes out of scope are never read.
+func scanProc(procRoot string, keep func(pid uint32) bool, jvms bool) ([]Target, error) {
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
@@ -104,12 +123,26 @@ func ScanProcAt(procRoot string) ([]Target, error) {
 		if pid == self {
 			continue
 		}
-
-		lib, err := uprobes.FindLibSSLAnyAt(procRoot, pid)
-		if err != nil {
+		if keep != nil && !keep(pid) {
 			continue
 		}
-		targets = append(targets, Target{PID: pid, Lib: lib, Seen: now})
+		start, err := jvm.StartTime(procRoot, pid)
+		if err != nil {
+			continue // exited
+		}
+
+		tgt := Target{PID: pid, StartTime: start, Seen: now}
+		if lib, err := uprobes.FindLibSSLAnyAt(procRoot, pid); err == nil {
+			tgt.Lib = lib
+		}
+		if jvms {
+			if p, err := jvm.Inspect(procRoot, pid, nil); err == nil && p.StartTime == start {
+				tgt.JVM = p
+			}
+		}
+		if tgt.Lib != nil || tgt.JVM != nil {
+			targets = append(targets, tgt)
+		}
 	}
 
 	return targets, nil
@@ -119,10 +152,11 @@ func ScanProcAt(procRoot string) ([]Target, error) {
 // opts.Interval and emits:
 //
 //   - One Target{Removed:false, Lib:...} the first time a PID is observed
-//     with libssl mapped and (if a NamespaceResolver is set) whose namespace
-//     is in AllowedNamespaces.
+//     with libssl mapped (or, with opts.JVMs, as a JVM) and (if a
+//     NamespaceResolver is set) whose namespace is in AllowedNamespaces.
 //   - One Target{Removed:true}          when a previously-emitted PID is
-//     no longer visible in /proc OR its namespace falls out of scope.
+//     no longer visible in /proc, its namespace falls out of scope, or it
+//     now belongs to a new process (PID reuse).
 //
 // Callers consume the channel and attach/detach uprobes accordingly.
 //
@@ -183,7 +217,7 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 		defer t.Stop()
 
 		scan := func() {
-			ts, err := ScanProcAt(opts.ProcRoot)
+			ts, err := scanProc(opts.ProcRoot, allowed, opts.JVMs)
 			if err != nil {
 				return
 			}
@@ -191,16 +225,22 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 			// Build a set of currently-visible PIDs that pass the filter.
 			current := make(map[uint32]Target, len(ts))
 			for _, tgt := range ts {
-				if !allowed(tgt.PID) {
-					continue
-				}
 				current[tgt.PID] = tgt
 			}
 
 			// Emit Added events for PIDs newly seen or newly in-scope.
 			for pid, tgt := range current {
-				if _, was := seen[pid]; was {
-					continue
+				if prev, was := seen[pid]; was {
+					if prev.StartTime == tgt.StartTime {
+						continue
+					}
+					// The PID was reused: the process seen before is gone.
+					select {
+					case out <- Target{PID: pid, StartTime: prev.StartTime, Removed: true, Seen: time.Now()}:
+						delete(seen, pid)
+					case <-ctx.Done():
+						return
+					}
 				}
 				select {
 				case out <- tgt:
@@ -217,7 +257,7 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 					continue
 				}
 				select {
-				case out <- Target{PID: pid, Removed: true, Seen: time.Now()}:
+				case out <- Target{PID: pid, StartTime: seen[pid].StartTime, Removed: true, Seen: time.Now()}:
 					delete(seen, pid)
 				case <-ctx.Done():
 					return

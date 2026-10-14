@@ -16,7 +16,7 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
   Heap buffers, which Tomcat and the JDK's HTTP server use, are copied without one on every JDK.
   When every buffer is busy, the frame is dropped and counted rather than making the application wait.
 - **Control file:** the agent captures only while `/tmp/.postman-insights/control` is fresh (under 60 s old), has a version it knows and says `enabled=1`; otherwise it is dormant, and the hooks return at once.
-  The Insights Agent writes the file for monitored pods, so capture stops on its own when the pod is no longer monitored or the Insights Agent is removed.
+  The Insights Agent writes the file into the container of every JVM in the pods it monitors, and refreshes it every 10 s, so capture stops on its own when the pod is no longer monitored or the Insights Agent is removed.
   The agent checks it every 5 s, on its own daemon thread (`postman-insights-agent`).
 - **HEARTBEAT frames:** at start and every 30 s, whether capturing or dormant, the agent sends its version, the JVM's version and vendor, its state and its counters.
 - **JDK tools:** loaded through `JAVA_TOOL_OPTIONS`, the agent starts in every JVM in the container; it does nothing in the JDK's own tools (`jcmd`, `keytool`, `javac` and so on).
@@ -69,12 +69,14 @@ For an end-to-end check with the eBPF agent in kind, see `test/kind/deploy-java-
 
 ## Packaging
 
-`build-scripts/Dockerfile.ebpf` builds the jar and puts it at `/opt/postman/postman-java-agent.jar` in the eBPF image, with its SHA-256 in `postman-java-agent.jar.sha256` next to it.
+`build-scripts/Dockerfile.ebpf` builds the jar and puts it at `/opt/postman/postman-java-agent.jar` in the eBPF image, with its SHA-256 in `postman-java-agent.jar.sha256` and the `postman-jvm-attach` helper next to it.
 The build arg `AGENT_VERSION` sets the jar's version.
 
 ## Status
 
 Java HTTPS capture is experimental.
 The Insights Agent loads the eBPF side only when `POSTMAN_INSIGHTS_EXPERIMENTAL_JAVA_TLS=true` is set; the agent itself is loaded with `-javaagent` for now.
-Dynamic attach from the DaemonSet, the control file writer and `--https-libraries` are planned (INS-365).
-Until then the agent stays dormant unless something else writes the control file, as `test/kind/deploy-java-service.sh` does.
+The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
+It also loads the agent into running JVMs that do not have it, through the `postman-jvm-attach` helper (`cmd/postman-jvm-attach`), which it runs as each JVM's own user.
+On JDK 21 and newer, the JVM then prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr; they are harmless.
+`--https-libraries` is planned (INS-365).
