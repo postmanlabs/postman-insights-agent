@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLEngineResult;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,7 +79,7 @@ class BridgeTest {
     private static void send(Object engine, ByteBuffer[] srcs, int n) {
         Bridge.Call c = Bridge.enter(srcs, 0, srcs.length);
         consume(srcs, n);
-        Bridge.exit(c, engine, Frame.OP_SEND);
+        Bridge.exit(c, engine, Frame.OP_SEND, null);
     }
 
     @Test
@@ -100,7 +101,7 @@ class BridgeTest {
         Bridge.Call c = Bridge.enter(dsts, 1, 1);
         dsts[1].put(ascii("OK"));
         dsts[0].put(ascii("no")); // outside [off, off+len)
-        Bridge.exit(c, engine(false), Frame.OP_RECV);
+        Bridge.exit(c, engine(false), Frame.OP_RECV, null);
 
         LoggedFrame f = log.frames().get(0);
         assertEquals(Frame.OP_RECV, f.op);
@@ -114,12 +115,12 @@ class BridgeTest {
         dst.put(ascii("old"));
         Bridge.Call c = Bridge.enter(dst);
         dst.put(ascii("new"));
-        Bridge.exit(c, engine(false), Frame.OP_RECV);
+        Bridge.exit(c, engine(false), Frame.OP_RECV, null);
 
         ByteBuffer src = direct("direct bytes");
         c = Bridge.enter(src);
         src.position(6);
-        Bridge.exit(c, engine(true), Frame.OP_SEND);
+        Bridge.exit(c, engine(true), Frame.OP_SEND, null);
 
         List<LoggedFrame> frames = log.frames();
         assertEquals(2, frames.size());
@@ -167,8 +168,8 @@ class BridgeTest {
         Bridge.Call outer = Bridge.enter(srcs, 0, 1);
         Bridge.Call in = Bridge.enter(srcs[0]);
         consume(srcs, 5);
-        Bridge.exit(in, inner, Frame.OP_SEND);
-        Bridge.exit(outer, wrapper, Frame.OP_SEND);
+        Bridge.exit(in, inner, Frame.OP_SEND, null);
+        Bridge.exit(outer, wrapper, Frame.OP_SEND, null);
 
         List<LoggedFrame> frames = log.frames();
         assertEquals(1, frames.size());
@@ -196,11 +197,11 @@ class BridgeTest {
     void badArgumentsAreIgnored() throws Exception {
         long errors = Bridge.errors();
         ByteBuffer[] srcs = bufs("x");
-        Bridge.exit(Bridge.enter(srcs, 0, 5), engine(true), Frame.OP_SEND);
-        Bridge.exit(Bridge.enter((ByteBuffer[]) null), engine(true), Frame.OP_SEND);
-        Bridge.exit(Bridge.enter((ByteBuffer) null), engine(true), Frame.OP_SEND);
-        Bridge.exit(Bridge.enter(srcs, -1, 1), engine(true), Frame.OP_SEND);
-        Bridge.exit(null, engine(true), Frame.OP_SEND);
+        Bridge.exit(Bridge.enter(srcs, 0, 5), engine(true), Frame.OP_SEND, null);
+        Bridge.exit(Bridge.enter((ByteBuffer[]) null), engine(true), Frame.OP_SEND, null);
+        Bridge.exit(Bridge.enter((ByteBuffer) null), engine(true), Frame.OP_SEND, null);
+        Bridge.exit(Bridge.enter(srcs, -1, 1), engine(true), Frame.OP_SEND, null);
+        Bridge.exit(null, engine(true), Frame.OP_SEND, null);
         assertTrue(log.frames().isEmpty());
         assertEquals(errors, Bridge.errors());
     }
@@ -246,7 +247,7 @@ class BridgeTest {
         Bridge.Call c = Bridge.enter(srcs, 0, 1);
         consume(srcs, 3);
         Bridge.control(false, CAP);
-        Bridge.exit(c, engine(true), Frame.OP_SEND);
+        Bridge.exit(c, engine(true), Frame.OP_SEND, null);
         assertTrue(log.frames().isEmpty());
 
         // The nesting depth was still unwound.
@@ -397,7 +398,7 @@ class BridgeTest {
             Bridge.Call c = Bridge.enter(srcs, 0, 2);
             srcs[0].position(srcs[0].limit());
             srcs[1].position(srcs[1].limit());
-            Bridge.exit(c, e, Frame.OP_SEND);
+            Bridge.exit(c, e, Frame.OP_SEND, null);
         };
         for (int i = 0; i < 20_000; i++) {
             call.run();
@@ -409,5 +410,83 @@ class BridgeTest {
         }
         long allocated = hs.getThreadAllocatedBytes(tid) - before;
         assertTrue(allocated < 10_000, allocated + " bytes allocated by 10000 calls");
+    }
+
+    private static final SSLEngineResult CLOSED = new SSLEngineResult(
+            SSLEngineResult.Status.CLOSED, SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING, 0, 0);
+    private static final SSLEngineResult OK = new SSLEngineResult(
+            SSLEngineResult.Status.OK, SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING, 0, 0);
+
+    /** One hooked call on engine with no bytes and the given result. */
+    private static void result(Object engine, byte op, SSLEngineResult r) {
+        Bridge.exit(Bridge.enter(bufs("")), engine, op, r);
+    }
+
+    private static List<LoggedFrame> closes() throws Exception {
+        List<LoggedFrame> out = new ArrayList<LoggedFrame>();
+        for (LoggedFrame f : log.frames()) {
+            if (f.op == Frame.OP_CLOSE) {
+                out.add(f);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * A server's connection is done once its outbound side closes: it sends
+     * no more responses. Its peer closing first is not enough, since the
+     * server may still answer.
+     */
+    @Test
+    void closeOnceServerOutboundCloses() throws Exception {
+        SSLEngine server = engine(false);
+        send(server, bufs("HTTP/1.1 200 OK"), 15);
+        long id = log.frames().get(0).connId;
+        result(server, Frame.OP_SEND, OK);
+        result(server, Frame.OP_RECV, CLOSED);
+        assertEquals(0, closes().size(), "CLOSE after only the client closed");
+
+        result(server, Frame.OP_SEND, CLOSED);
+        result(server, Frame.OP_SEND, CLOSED);
+        List<LoggedFrame> closes = closes();
+        assertEquals(1, closes.size());
+        LoggedFrame f = closes.get(0);
+        assertEquals(id, f.connId);
+        assertEquals(Frame.FLAG_ROLE_KNOWN, f.flags);
+        assertEquals(0, f.payload.length);
+        assertEquals(0, f.totalLen);
+    }
+
+    /** A client's connection is done once its inbound side closes: no more responses arrive. */
+    @Test
+    void closeOnceClientInboundCloses() throws Exception {
+        SSLEngine client = engine(true);
+        result(client, Frame.OP_SEND, CLOSED);
+        assertEquals(0, closes().size(), "CLOSE while a response can still arrive");
+        result(client, Frame.OP_RECV, CLOSED);
+        assertEquals(1, closes().size());
+        assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE, closes().get(0).flags);
+    }
+
+    /** With the role unknown, both sides must close. */
+    @Test
+    void closeWithUnknownRoleNeedsBothSides() throws Exception {
+        Object notAnEngine = new Object();
+        result(notAnEngine, Frame.OP_RECV, CLOSED);
+        assertEquals(0, closes().size());
+        result(notAnEngine, Frame.OP_SEND, CLOSED);
+        assertEquals(1, closes().size());
+        assertEquals(0, closes().get(0).flags);
+    }
+
+    /** Nothing is sent while dormant, nor for a call that threw. */
+    @Test
+    void noCloseWhileDormantOrOnThrow() throws Exception {
+        SSLEngine server = engine(false);
+        Bridge.control(false, CAP);
+        result(server, Frame.OP_SEND, CLOSED);
+        Bridge.control(true, CAP);
+        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, null);
+        assertEquals(0, closes().size());
     }
 }

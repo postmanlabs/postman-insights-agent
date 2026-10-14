@@ -20,6 +20,7 @@ final class Frames {
     static final byte OP_SEND = 1;
     static final byte OP_RECV = 2;
     static final byte OP_HEARTBEAT = 3;
+    static final byte OP_CLOSE = 4;
     static final short ROLE_KNOWN = 0x1;
     static final short CLIENT_MODE = 0x2;
 

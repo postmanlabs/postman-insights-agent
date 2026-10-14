@@ -145,6 +145,15 @@ else
   fail=1
 fi
 
+# Each service's Java agent reports itself through HEARTBEAT frames.
+agents=$({ grep -oE 'ebpf: Java agent [^ ]+ in pid [0-9]+ is active' <<<"$LOGS" | grep -oE 'pid [0-9]+' | sort -u | wc -l; } || true)
+if [[ "${agents// /}" -ge "$services" ]]; then
+  echo "  PASS  ${agents// /} Java agents heard from, capturing"
+else
+  echo "  FAIL  ${agents// /} Java agents heard from capturing, want ${services}"
+  fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo
   grep -E 'ebpf' <<<"$LOGS" | tail -20 || true

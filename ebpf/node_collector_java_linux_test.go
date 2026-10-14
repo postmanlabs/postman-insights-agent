@@ -408,3 +408,49 @@ func TestNewNodeCollectorNothingToCapture(t *testing.T) {
 		t.Fatal("NewNodeCollector with no library to capture succeeded")
 	}
 }
+
+// TestNodeCollectorJavaControlFrames: HEARTBEAT and CLOSE frames from a
+// subscribed pod reach the pod's adapter. The heartbeat counts the agent as
+// alive; the close completes a response delimited by it and frees the
+// connection.
+func TestNodeCollectorJavaControlFrames(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	out := make(chan akinet.ParsedNetworkTraffic, 16)
+	unsubscribe, adapter := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", ownNetns(t), nil)
+	defer unsubscribe()
+
+	writeJavaFrame(t, javatls.OpHeartbeat, "agent_version=1.0.0\nstate=active\n")
+	deadline := time.Now().Add(3 * time.Second)
+	for adapter.Stats().JavaAgentsAlive != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("adapter stats %+v after a heartbeat", adapter.Stats())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s := adapter.Stats(); s.JavaAgentsCapturing != 1 {
+		t.Errorf("capturing %d, want 1", s.JavaAgentsCapturing)
+	}
+
+	writeJavaFrame(t, javatls.OpRecv, "GET /stream HTTP/1.1\r\nHost: a\r\n\r\n")
+	writeJavaFrame(t, javatls.OpSend, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nall of it")
+	select {
+	case pnt := <-out:
+		if _, ok := pnt.Content.(akinet.HTTPRequest); !ok {
+			t.Fatalf("first message %T", pnt.Content)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no request")
+	}
+	writeJavaFrame(t, javatls.OpClose, "")
+	select {
+	case pnt := <-out:
+		if resp, ok := pnt.Content.(akinet.HTTPResponse); !ok || resp.StatusCode != 200 {
+			t.Fatalf("got %+v, want the response the close completes", pnt.Content)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the close did not complete the response")
+	}
+	if n, _ := adapter.Snapshot(); n != 0 {
+		t.Errorf("%d flows left after the close", n)
+	}
+}
