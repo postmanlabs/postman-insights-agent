@@ -29,6 +29,7 @@ package ebpf
 import (
 	"context"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
@@ -64,11 +65,26 @@ type NodeCollector struct {
 	maxCaptureBytes uint32
 
 	mu sync.RWMutex
-	// netnsToSub is the primary routing table: pod netns inode -> subscriber.
-	netnsToSub map[uint64]*podSub
-	// pidToSub is a fallback routing table (node-ns PID -> subscriber) used on
-	// non-nested nodes where BPF PIDs match discovery PIDs.
-	pidToSub map[uint32]*podSub
+	// netnsToSub is the primary routing table: pod netns inode -> subscribers.
+	netnsToSub routeTable[uint64]
+	// pidToSub is a fallback routing table (node-ns PID -> subscribers) used on
+	// non-nested nodes where BPF PIDs match discovery PIDs. It also records
+	// which subscriptions use a PID's uprobes (see attachPID).
+	pidToSub routeTable[uint32]
+
+	// probeMu serializes attaching and detaching uprobes with the pidToSub
+	// bookkeeping, so a detach for one subscription cannot interleave with
+	// another subscription attaching the same PID.
+	probeMu sync.Mutex
+
+	// hostNetns is the node's own network namespace, which every hostNetwork
+	// pod and every host process shares. Java frames are never accepted from
+	// it: a netns there does not identify one pod. 0 when unknown.
+	hostNetns uint64
+	// javaNetnsRefs counts the subscriptions that allowed each netns for Java
+	// frames, so one subscription's cancel cannot revoke another's. Guarded by
+	// mu.
+	javaNetnsRefs map[uint64]int
 }
 
 // NodeCollectorConfig mirrors the relevant fields from ebpf.Args used at
@@ -78,6 +94,10 @@ type NodeCollectorConfig struct {
 	RateCapPerSec     uint32
 	FlowIdleTimeout   time.Duration
 	DisableThermostat bool
+
+	// EnableJava also loads the Java TLS programs, which accept frames only
+	// from the network namespaces of subscribed pods.
+	EnableJava bool
 }
 
 // NewNodeCollector loads the eBPF programs once and returns a NodeCollector
@@ -99,11 +119,14 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 	}
 
 	l, err := loader.Load(loader.Config{
-		MaxCaptureBytes: cfg.MaxCaptureBytes,
+		MaxCaptureBytes:           cfg.MaxCaptureBytes,
+		EnableJava:                cfg.EnableJava,
+		EnforceJavaNetnsAllowlist: true,
 	})
 	if err != nil {
 		return nil, err
 	}
+	logJavaTLSStatus(cfg.EnableJava, l)
 
 	var therm *Thermostat
 	if !cfg.DisableThermostat {
@@ -118,10 +141,91 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
-		netnsToSub:      make(map[uint64]*podSub),
-		pidToSub:        make(map[uint32]*podSub),
+		netnsToSub:      routeTable[uint64]{},
+		pidToSub:        routeTable[uint32]{},
+		hostNetns:       hostNetnsInode(),
+		javaNetnsRefs:   make(map[uint64]int),
 	}
 	return nc, nil
+}
+
+// hostNetnsInode returns the network-namespace inode of PID 1 as the agent
+// sees it. With hostPID (the DaemonSet) that is the node's init, whose netns
+// hostNetwork pods share; in kind it is the node container's. Without hostPID
+// it is the agent pod's own netns, which is never a monitored pod's.
+func hostNetnsInode() uint64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat("/proc/1/ns/net", &st); err != nil {
+		return 0
+	}
+	return st.Ino
+}
+
+// attachPID attaches libssl uprobes to pid for sub and routes the PID to it.
+// The uprobes manager attaches once per PID, and two subscriptions can share a
+// PID (hostNetwork pods), so pidToSub records every subscription using the
+// probes and releasePID detaches only when the last one leaves.
+func (nc *NodeCollector) attachPID(tgt discovery.Target, sub *podSub) error {
+	nc.probeMu.Lock()
+	defer nc.probeMu.Unlock()
+	if err := nc.mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {
+		return err
+	}
+	nc.mu.Lock()
+	nc.pidToSub.add(tgt.PID, sub)
+	nc.mu.Unlock()
+	return nil
+}
+
+// releasePID undoes attachPID for sub, and detaches the uprobes if no other
+// subscription uses them. Reports whether it detached.
+func (nc *NodeCollector) releasePID(pid uint32, sub *podSub) (bool, error) {
+	nc.probeMu.Lock()
+	defer nc.probeMu.Unlock()
+	nc.mu.Lock()
+	nc.pidToSub.remove(pid, sub)
+	last := nc.pidToSub.get(pid) == nil
+	nc.mu.Unlock()
+	if !last {
+		return false, nil
+	}
+	return true, nc.mgr.Detach(pid)
+}
+
+// allowJavaNetns accepts Java frames from a subscribed pod's netns. It
+// refuses the node's own netns, shared by hostNetwork pods and host processes.
+func (nc *NodeCollector) allowJavaNetns(netnsInode uint64) bool {
+	if !nc.ldr.JavaEnabled() || netnsInode == 0 {
+		return false
+	}
+	if netnsInode == nc.hostNetns {
+		printer.Stderr.Infof("ebpf: Java HTTPS capture skipped for a pod on the host network (netns %d)\n", netnsInode)
+		return false
+	}
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	if nc.javaNetnsRefs[netnsInode] == 0 {
+		if err := nc.ldr.AllowJavaNetns(netnsInode); err != nil {
+			printer.Stderr.Warningf("ebpf: Java HTTPS capture not enabled for netns %d: %v\n", netnsInode, err)
+			return false
+		}
+	}
+	nc.javaNetnsRefs[netnsInode]++
+	return true
+}
+
+// releaseJavaNetns undoes one allowJavaNetns.
+func (nc *NodeCollector) releaseJavaNetns(netnsInode uint64) {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	nc.javaNetnsRefs[netnsInode]--
+	if nc.javaNetnsRefs[netnsInode] > 0 {
+		return
+	}
+	delete(nc.javaNetnsRefs, netnsInode)
+	if err := nc.ldr.DisallowJavaNetns(netnsInode); err != nil {
+		printer.Debugf("ebpf: disallow Java netns %d: %v\n", netnsInode, err)
+	}
 }
 
 // Close releases all kernel resources. Call after cancelling the context
@@ -195,16 +299,20 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 			nc.mu.RLock()
 			adapters := make([]*events.Adapter, 0, len(nc.netnsToSub)+len(nc.pidToSub))
 			seen := make(map[*events.Adapter]struct{})
-			for _, s := range nc.netnsToSub {
-				if _, ok := seen[s.adapter]; !ok {
-					adapters = append(adapters, s.adapter)
-					seen[s.adapter] = struct{}{}
+			for _, subs := range nc.netnsToSub {
+				for _, s := range subs {
+					if _, ok := seen[s.adapter]; !ok {
+						adapters = append(adapters, s.adapter)
+						seen[s.adapter] = struct{}{}
+					}
 				}
 			}
-			for _, s := range nc.pidToSub {
-				if _, ok := seen[s.adapter]; !ok {
-					adapters = append(adapters, s.adapter)
-					seen[s.adapter] = struct{}{}
+			for _, subs := range nc.pidToSub {
+				for _, s := range subs {
+					if _, ok := seen[s.adapter]; !ok {
+						adapters = append(adapters, s.adapter)
+						seen[s.adapter] = struct{}{}
+					}
 				}
 			}
 			nc.mu.RUnlock()
@@ -255,35 +363,42 @@ func (nc *NodeCollector) Subscribe(
 	sub := &podSub{adapter: adapter, out: out}
 	if netnsInode != 0 {
 		nc.mu.Lock()
-		nc.netnsToSub[netnsInode] = sub
+		nc.netnsToSub.add(netnsInode, sub)
 		nc.mu.Unlock()
 	}
+	// Java frames are accepted per pod netns, the same key events route on.
+	javaNetns := nc.allowJavaNetns(netnsInode)
 
 	go func() {
 		// Track which PIDs this subscription registered so we can clean up on
 		// cancel even if discovery doesn't emit Removed events in time.
 		ownedPIDs := make(map[uint32]struct{})
 
+		// Unregister the pod's netns route, its Java allowlist entry and any
+		// remaining PIDs. Runs however the loop ends: discovery closes its
+		// channel when the capture context ends, which can be seen first.
+		defer func() {
+			if netnsInode != 0 {
+				nc.mu.Lock()
+				nc.netnsToSub.remove(netnsInode, sub)
+				nc.mu.Unlock()
+			}
+			if javaNetns {
+				nc.releaseJavaNetns(netnsInode)
+			}
+			for pid := range ownedPIDs {
+				if _, err := nc.releasePID(pid, sub); err != nil {
+					printer.Debugf("ebpf: subscribe cancel: detach pid=%d: %v\n", pid, err)
+				}
+				if adapter.Resolver != nil {
+					adapter.Resolver.Forget(pid)
+				}
+			}
+		}()
+
 		for {
 			select {
 			case <-subCtx.Done():
-				// Unregister the pod's netns route and any remaining PIDs.
-				nc.mu.Lock()
-				if netnsInode != 0 {
-					delete(nc.netnsToSub, netnsInode)
-				}
-				for pid := range ownedPIDs {
-					delete(nc.pidToSub, uint32(pid))
-				}
-				nc.mu.Unlock()
-				for pid := range ownedPIDs {
-					if err := nc.mgr.Detach(pid); err != nil {
-						printer.Debugf("ebpf: subscribe cancel: detach pid=%d: %v\n", pid, err)
-					}
-					if adapter.Resolver != nil {
-						adapter.Resolver.Forget(pid)
-					}
-				}
 				return
 
 			case tgt, ok := <-disco:
@@ -291,13 +406,10 @@ func (nc *NodeCollector) Subscribe(
 					return
 				}
 				if tgt.Removed {
-					nc.mu.Lock()
-					delete(nc.pidToSub, uint32(tgt.PID))
-					nc.mu.Unlock()
 					delete(ownedPIDs, tgt.PID)
-					if err := nc.mgr.Detach(tgt.PID); err != nil {
+					if detached, err := nc.releasePID(tgt.PID, sub); err != nil {
 						printer.Debugf("ebpf: detach pid=%d: %v\n", tgt.PID, err)
-					} else {
+					} else if detached {
 						printer.Debugf("ebpf: detached libssl uprobes pid=%d (pod exited)\n", tgt.PID)
 					}
 					if adapter.Resolver != nil {
@@ -306,14 +418,11 @@ func (nc *NodeCollector) Subscribe(
 					continue
 				}
 
-				if err := nc.mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {
+				if err := nc.attachPID(tgt, sub); err != nil {
 					printer.Debugf("ebpf: attach pid=%d path=%s failed: %v\n",
 						tgt.PID, tgt.Lib.HostPath, err)
 					continue
 				}
-				nc.mu.Lock()
-				nc.pidToSub[uint32(tgt.PID)] = sub
-				nc.mu.Unlock()
 				ownedPIDs[tgt.PID] = struct{}{}
 				nProbes := nc.mgr.ProbeCount(tgt.PID)
 				printer.Stderr.Infof(

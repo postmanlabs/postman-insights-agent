@@ -5,6 +5,7 @@ package events
 import (
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -14,6 +15,9 @@ import (
 // connection in the current process, finds the fd via /proc/self/fd, and
 // verifies the resolver extracts the correct 4-tuple.
 func TestResolverAgainstRealSocket(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the resolver reads Linux /proc")
+	}
 	// Listen on a random port.
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {

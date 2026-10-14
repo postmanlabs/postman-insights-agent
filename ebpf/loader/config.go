@@ -14,6 +14,17 @@ type Config struct {
 	// event. Clamped to MAX_EVENT_PAYLOAD (16384) at the BPF level. Power
 	// of two recommended for verifier-friendly masking.
 	MaxCaptureBytes uint32
+
+	// EnableJava also loads the Java TLS programs (java_tls.bpf.c), which
+	// read the frames the Postman Java agent writes. A failure to load or
+	// attach them disables only Java capture: Load still succeeds and reports
+	// the failure through Loader.JavaError.
+	EnableJava bool
+
+	// EnforceJavaNetnsAllowlist, when true, accepts Java frames only from
+	// network namespaces added with Loader.AllowJavaNetns. When false, frames
+	// from every process are accepted.
+	EnforceJavaNetnsAllowlist bool
 }
 
 // Default returns the default load config: no PID allowlist enforcement,
@@ -27,6 +38,13 @@ func Default() Config {
 
 func (c Config) bpfEnforce() uint32 {
 	if c.EnforcePIDAllowlist {
+		return 1
+	}
+	return 0
+}
+
+func (c Config) bpfEnforceJavaNetns() uint32 {
+	if c.EnforceJavaNetnsAllowlist {
 		return 1
 	}
 	return 0

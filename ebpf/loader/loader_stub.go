@@ -28,24 +28,29 @@ func (*Loader) Close() error { return nil }
 //
 // We use `any` to avoid pulling cilium/ebpf into the dependency graph for
 // non-eBPF builds.
-func (*Loader) EventsMap() any                          { return nil }
-func (*Loader) TargetPIDsMap() any                      { return nil }
-func (*Loader) CountersMap() any                        { return nil }
-func (*Loader) SSLReadProgs() (entry, exit any)         { return nil, nil }
-func (*Loader) SSLReadExProgs() (entry, exit any)       { return nil, nil }
-func (*Loader) SSLWriteProgs() (entry, exit any)        { return nil, nil }
-func (*Loader) SSLWriteExProgs() (entry, exit any)      { return nil, nil }
-func (*Loader) SSLSetFDProg() any                       { return nil }
-func (*Loader) SSLFreeProg() any                        { return nil }
-func (*Loader) ReadCounter(_ uint32) (uint64, error)    { return 0, ErrUnsupported }
-func (*Loader) SetMaxCaptureBytes(_ uint32) error       { return ErrUnsupported }
-func (*Loader) GetMaxCaptureBytes() (uint32, error)     { return 0, ErrUnsupported }
-func (*Loader) RateBucketsMap() any                     { return nil }
-func (*Loader) SSLFdMap() (any, bool)                   { return nil, false }
-func (*Loader) SetRateCapPerSec(_ uint32) error         { return ErrUnsupported }
+func (*Loader) EventsMap() any                            { return nil }
+func (*Loader) TargetPIDsMap() any                        { return nil }
+func (*Loader) CountersMap() any                          { return nil }
+func (*Loader) SSLReadProgs() (entry, exit any)           { return nil, nil }
+func (*Loader) SSLReadExProgs() (entry, exit any)         { return nil, nil }
+func (*Loader) SSLWriteProgs() (entry, exit any)          { return nil, nil }
+func (*Loader) SSLWriteExProgs() (entry, exit any)        { return nil, nil }
+func (*Loader) SSLSetFDProg() any                         { return nil }
+func (*Loader) SSLFreeProg() any                          { return nil }
+func (*Loader) ReadCounter(_ uint32) (uint64, error)      { return 0, ErrUnsupported }
+func (*Loader) SetMaxCaptureBytes(_ uint32) error         { return ErrUnsupported }
+func (*Loader) GetMaxCaptureBytes() (uint32, error)       { return 0, ErrUnsupported }
+func (*Loader) RateBucketsMap() any                       { return nil }
+func (*Loader) SSLFdMap() (any, bool)                     { return nil, false }
+func (*Loader) SetRateCapPerSec(_ uint32) error           { return ErrUnsupported }
 func (*Loader) RefillRateBucket(_ uint32, _ uint64) error { return ErrUnsupported }
-func (*Loader) DeleteRateBucket(_ uint32) error         { return ErrUnsupported }
-func OpenExecutable(_ string) (any, error)              { return nil, ErrUnsupported }
+func (*Loader) DeleteRateBucket(_ uint32) error           { return ErrUnsupported }
+func OpenExecutable(_ string) (any, error)                { return nil, ErrUnsupported }
+func (*Loader) JavaEnabled() bool                         { return false }
+func (*Loader) JavaError() error                          { return nil }
+func (*Loader) AllowJavaNetns(_ uint64) error             { return ErrUnsupported }
+func (*Loader) DisallowJavaNetns(_ uint64) error          { return ErrUnsupported }
+func (*Loader) ReadJavaCounter(_ uint32) (uint64, error)  { return 0, ErrUnsupported }
 
 // Counter index constants (mirrored from loader_linux.go) so non-eBPF builds
 // can still compile against the same call sites.

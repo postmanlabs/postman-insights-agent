@@ -370,6 +370,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 			MaxCaptureBytes:   args.HTTPSBodySizeCap,
 			RateCapPerSec:     args.HTTPSRateCapPerSec,
 			DisableThermostat: args.HTTPSNoThermostat,
+			EnableJava:        ebpf.JavaTLSRequested(),
 		})
 		if err != nil {
 			printer.Warningf(

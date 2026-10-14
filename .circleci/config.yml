@@ -4,6 +4,7 @@ version: 2.1
 # Job graph
 # ---------
 #   build       — long-running Go build + unit tests (original; ~5 min)
+#   java-agent  - Java agent jar + its unit and -javaagent tests
 jobs:
   build:
     working_directory: ~/repo
@@ -55,7 +56,29 @@ jobs:
       - store_test_results:
           path: /tmp/test-reports
 
+  java-agent:
+    working_directory: ~/repo
+    docker:
+      - image: cimg/openjdk:21.0
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - gradle-v1-{{ checksum "java-agent/build.gradle.kts" }}-{{ checksum "java-agent/gradle/wrapper/gradle-wrapper.properties" }}
+      - run:
+          name: Build and test the Java agent
+          command: cd java-agent && ./gradlew --no-daemon check agentJar
+      - save_cache:
+          key: gradle-v1-{{ checksum "java-agent/build.gradle.kts" }}-{{ checksum "java-agent/gradle/wrapper/gradle-wrapper.properties" }}
+          paths:
+            - ~/.gradle
+      - store_test_results:
+          path: java-agent/build/test-results
+      - store_artifacts:
+          path: java-agent/build/agent/postman-java-agent.jar
+
 workflows:
   ci:
     jobs:
       - build
+      - java-agent

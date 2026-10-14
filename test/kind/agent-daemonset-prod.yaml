@@ -113,6 +113,10 @@ spec:
         #   value: "unix:///var/run/crio/crio.sock"
         - name: POSTMAN_INSIGHTS_CRI_ENDPOINT
           value: "unix:///run/containerd/containerd.sock"
+        # Java HTTPS capture (experimental, off by default until
+        # --https-libraries replaces this switch).
+        - name: POSTMAN_INSIGHTS_EXPERIMENTAL_JAVA_TLS
+          value: "true"
         securityContext:
           privileged: true   # kind requires this for BPF on the LinuxKit kernel
           capabilities:

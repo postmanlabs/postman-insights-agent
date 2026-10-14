@@ -70,6 +70,10 @@ type Args struct {
 	// Stats interface (see Stats()). Set HookLoader to receive the loader
 	// handle for telemetry wiring; the lifecycle remains owned by Collect.
 	HookLoader func(*loader.Loader, *Thermostat, *uprobes.Manager, *events.Adapter)
+
+	// EnableJava also loads the Java TLS programs. Collect captures the whole
+	// host, so it accepts frames from every process.
+	EnableJava bool
 }
 
 // Defaults returns sensible default Args for production use.
@@ -79,6 +83,17 @@ func Defaults() Args {
 		EnforcePIDAllowlist: false,
 		DiscoveryInterval:   5 * time.Second,
 		FlowIdleTimeout:     30 * time.Second,
+	}
+}
+
+// logJavaTLSStatus reports whether the Java TLS programs came up.
+func logJavaTLSStatus(requested bool, l *loader.Loader) {
+	switch {
+	case !requested:
+	case l.JavaEnabled():
+		printer.Stderr.Infof("ebpf: Java HTTPS capture enabled (experimental)\n")
+	default:
+		printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: %v\n", l.JavaError())
 	}
 }
 
@@ -97,11 +112,13 @@ func Collect(ctx context.Context, args Args) error {
 	l, err := loader.Load(loader.Config{
 		EnforcePIDAllowlist: args.EnforcePIDAllowlist,
 		MaxCaptureBytes:     args.MaxCaptureBytes,
+		EnableJava:          args.EnableJava,
 	})
 	if err != nil {
 		return fmt.Errorf("ebpf: load: %w", err)
 	}
 	defer func() { _ = l.Close() }()
+	logJavaTLSStatus(args.EnableJava, l)
 
 	// 2. Start ring-buffer reader.
 	reader, err := events.NewReader(l.EventsMap(), 4096)

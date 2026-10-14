@@ -37,18 +37,32 @@ type HTTPSCaptureStats struct {
 	H2HPACKDesyncs  uint64 // HTTP/2 connections dropped due to HPACK desync (mid-attach)
 	CurrentCapBytes uint32 // current max_capture_bytes (thermostat-adjusted)
 	CPUPercent      float64
+
+	// Java TLS capture; only reported when its programs are running.
+	JavaEnabled       bool
+	JavaFrames        uint64 // frames written by Java agents on this node
+	JavaEvents        uint64 // frames forwarded as events
+	JavaDropped       uint64 // ring buffer full
+	JavaNetnsRejected uint64 // frames from pods that are not monitored
+	JavaMalformed     uint64 // frames that failed validation
 }
 
 // String produces a single-line, customer-readable summary suitable for
 // 'kubectl logs'-style consumption.
 func (s HTTPSCaptureStats) String() string {
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"probes=%d flows_active=%d events=%d bytes=%d msgs=%d "+
 			"dropped_ringbuf=%d dropped_flows=%d read_failures=%d "+
 			"h2_hpack_desyncs=%d cap_bytes=%d cpu=%.1f%%",
 		s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
 		s.MessagesEmitted, s.EventsDropped, s.FlowsDropped, s.ReadFailures,
 		s.H2HPACKDesyncs, s.CurrentCapBytes, s.CPUPercent)
+	if s.JavaEnabled {
+		line += fmt.Sprintf(
+			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d",
+			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed)
+	}
+	return line
 }
 
 // httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
@@ -93,6 +107,23 @@ func httpsTelemetryWorker(
 			}
 			if v, err := ldr.ReadCounter(loader.CounterBytesCaptured); err == nil {
 				s.BytesCaptured = v
+			}
+			if ldr.JavaEnabled() {
+				s.JavaEnabled = true
+				for _, c := range []struct {
+					idx uint32
+					dst *uint64
+				}{
+					{loader.JavaCounterFramesSeen, &s.JavaFrames},
+					{loader.JavaCounterEventsEmitted, &s.JavaEvents},
+					{loader.JavaCounterEventsDropped, &s.JavaDropped},
+					{loader.JavaCounterNetnsRejected, &s.JavaNetnsRejected},
+					{loader.JavaCounterMalformed, &s.JavaMalformed},
+				} {
+					if v, err := ldr.ReadJavaCounter(c.idx); err == nil {
+						*c.dst = v
+					}
+				}
 			}
 		}
 		if therm != nil {
@@ -200,6 +231,7 @@ func startHTTPSeBPFCapture(
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
 	ebpfArgs.RateCapPerSec = args.HTTPS.RateCapPerSec
+	ebpfArgs.EnableJava = ebpf.JavaTLSRequested()
 
 	// DaemonSet deployments bind-mount the kernel's root /proc to /host/proc.
 	// When present, use it for resolver lookups so BPF-emitted root-ns PIDs
