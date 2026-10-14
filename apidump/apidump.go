@@ -1182,7 +1182,6 @@ func (a *apidump) Run() error {
 		negationSummary,
 		a.captureStats,
 	)
-	a.dumpSummary.HTTPSCaptureEnabled = args.HTTPS.Enabled
 
 	// Allocate the eBPF metric holders here, before the telemetry worker
 	// goroutine starts below, even though the eBPF collector chain that fills
@@ -1203,6 +1202,9 @@ func (a *apidump) Run() error {
 	// unconditionally would change the payload shape of every non-HTTPS
 	// capture.
 	ebpfRequested := args.HTTPS.Enabled && !args.HTTPS.Libraries.None() && args.Out.AkitaURI != nil
+	// The end-of-trace summary reports whether eBPF capture actually ran,
+	// not whether it was asked for.
+	a.dumpSummary.HTTPSCaptureEnabled = ebpfRequested
 	if ebpfRequested {
 		a.dumpSummary.HTTPSSummary = trace.NewPacketCounter()
 		a.dumpSummary.HTTPSPrefilterSummary = trace.NewPacketCounter()
