@@ -26,6 +26,10 @@ const tcpListenState = "0A"
 var (
 	inboundDiscoveryRetryTotal    = 15 * time.Second
 	inboundDiscoveryRetryInterval = 500 * time.Millisecond
+
+	// discoverInboundEndpoints reads the netns's addresses and listen ports.
+	// Overridable in tests, which must not depend on the host's sockets.
+	discoverInboundEndpoints = discoverInboundEndpointsDetailed
 )
 
 // Default ports excluded from auto inbound capture (admin / non-app).
@@ -277,7 +281,7 @@ func discoverInboundEndpointsWithRetry(
 	attempt := 0
 	for {
 		attempt++
-		eps, rawPorts, err = discoverInboundEndpointsDetailed(targetNetworkNamespaceOpt)
+		eps, rawPorts, err = discoverInboundEndpoints(targetNetworkNamespaceOpt)
 		if err != nil {
 			return InboundEndpoints{}, nil, err
 		}

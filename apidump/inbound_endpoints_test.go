@@ -76,12 +76,18 @@ func TestProcRootAndPIDFromNSPath(t *testing.T) {
 }
 
 func TestApplyAutoInboundFiltersNoPortsDoesNotHang(t *testing.T) {
-	prevTotal, prevInterval := inboundDiscoveryRetryTotal, inboundDiscoveryRetryInterval
+	prevTotal, prevInterval, prevDiscover := inboundDiscoveryRetryTotal, inboundDiscoveryRetryInterval, discoverInboundEndpoints
 	inboundDiscoveryRetryTotal = 0
 	inboundDiscoveryRetryInterval = time.Millisecond
+	// A netns with addresses but no listen sockets, independent of the host
+	// the test runs on.
+	discoverInboundEndpoints = func(optionals.Optional[string]) (InboundEndpoints, []uint16, error) {
+		return InboundEndpoints{LocalIPs: []net.IP{net.IPv4(10, 0, 0, 1)}}, nil, nil
+	}
 	defer func() {
 		inboundDiscoveryRetryTotal = prevTotal
 		inboundDiscoveryRetryInterval = prevInterval
+		discoverInboundEndpoints = prevDiscover
 	}()
 
 	ifaces := map[string]interfaceInfo{"eth0": interfaceWrapper{}}
