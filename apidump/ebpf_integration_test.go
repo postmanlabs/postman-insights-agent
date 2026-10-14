@@ -53,3 +53,14 @@ func TestHTTPSTelemetryWorkerNilReporterOnCancel(t *testing.T) {
 
 	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, &events.Adapter{}, nil, nil)
 }
+
+// The Java fields appear on the ebpf-stats line only while Java capture runs,
+// so the line is unchanged for everyone else.
+func TestHTTPSCaptureStatsStringJava(t *testing.T) {
+	s := HTTPSCaptureStats{JavaFrames: 5, JavaEvents: 4, JavaNetnsRejected: 1}
+	assert.NotContains(t, s.String(), "java_")
+
+	s.JavaEnabled = true
+	assert.Contains(t, s.String(),
+		" java_frames=5 java_events=4 java_dropped_ringbuf=0 java_netns_rejected=1 java_malformed=0")
+}

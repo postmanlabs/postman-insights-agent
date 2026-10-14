@@ -10,6 +10,9 @@ also emits Go bindings in the parent `ebpf/loader/` package.
 |---|---|---|
 | `event.h` | ABI-stable event struct shared with Go. | 1 |
 | `libssl.bpf.c` | Uprobes for `SSL_read`/`SSL_write`/`SSL_read_ex`/`SSL_write_ex`. | 1 |
+| `common.h` | Maps and helpers shared by every object (ring buffer, rate cap, netns). | - |
+| `java_frame.h` | Frame format the Postman Java agent writes (mirrored in `ebpf/javatls` and `java-agent/`). | - |
+| `java_tls.bpf.c` | Syscall tracepoints that read Java agent frames (`pwrite64`, `pwritev2`, `pwritev`). | Java |
 | `go_tls.bpf.c` | Uprobes for `crypto/tls.(*Conn).Read`/`Write` and Go HTTP layer. | 3 (TODO) |
 
 ## Build prerequisites
@@ -38,7 +41,7 @@ Required on the build host:
 
 ### Generating bpf2go output locally (IDE / full eBPF build)
 
-`go generate` emits `ebpf/loader/libssl_*_bpfel.go` and `*.o`. These are
+`go generate` emits `ebpf/loader/libssl_*_bpfel.go`, `ebpf/loader/javatls_*_bpfel.go` and `*.o`. These are
 **gitignored** — CI regenerates them at build time. Without them, VS Code
 may show `undefined: libsslObjects` when gopls type-checks with
 `-tags=insights_bpf` (see `.vscode/settings.json`).

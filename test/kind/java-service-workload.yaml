@@ -1,0 +1,26 @@
+# Spring Boot (Tomcat) HTTPS service with the Postman Java agent loaded at
+# start (-javaagent). Image: test/kind/Dockerfile.java-service.
+# Deployed by deploy-java-service.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: java-service
+  namespace: test-apps
+  labels:
+    app: java-service
+spec:
+  containers:
+  - name: java-service
+    image: pia-java-service:test
+    imagePullPolicy: Never
+    ports:
+    - containerPort: 8443
+      name: https
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      allowPrivilegeEscalation: false
+    readinessProbe:
+      httpGet: { path: /hello, port: 8443, scheme: HTTPS }
+      initialDelaySeconds: 5
+      periodSeconds: 5

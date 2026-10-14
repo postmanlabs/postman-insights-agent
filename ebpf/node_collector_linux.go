@@ -78,6 +78,10 @@ type NodeCollectorConfig struct {
 	RateCapPerSec     uint32
 	FlowIdleTimeout   time.Duration
 	DisableThermostat bool
+
+	// EnableJava also loads the Java TLS programs, which accept frames only
+	// from the network namespaces of subscribed pods.
+	EnableJava bool
 }
 
 // NewNodeCollector loads the eBPF programs once and returns a NodeCollector
@@ -99,11 +103,14 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 	}
 
 	l, err := loader.Load(loader.Config{
-		MaxCaptureBytes: cfg.MaxCaptureBytes,
+		MaxCaptureBytes:           cfg.MaxCaptureBytes,
+		EnableJava:                cfg.EnableJava,
+		EnforceJavaNetnsAllowlist: true,
 	})
 	if err != nil {
 		return nil, err
 	}
+	logJavaTLSStatus(cfg.EnableJava, l)
 
 	var therm *Thermostat
 	if !cfg.DisableThermostat {
@@ -258,6 +265,14 @@ func (nc *NodeCollector) Subscribe(
 		nc.netnsToSub[netnsInode] = sub
 		nc.mu.Unlock()
 	}
+	// Java frames are accepted per pod netns, the same key events route on.
+	javaNetns := nc.ldr.JavaEnabled() && netnsInode != 0
+	if javaNetns {
+		if err := nc.ldr.AllowJavaNetns(netnsInode); err != nil {
+			printer.Stderr.Warningf("ebpf: Java HTTPS capture not enabled for netns %d: %v\n", netnsInode, err)
+			javaNetns = false
+		}
+	}
 
 	go func() {
 		// Track which PIDs this subscription registered so we can clean up on
@@ -271,6 +286,11 @@ func (nc *NodeCollector) Subscribe(
 				nc.mu.Lock()
 				if netnsInode != 0 {
 					delete(nc.netnsToSub, netnsInode)
+				}
+				if javaNetns {
+					if err := nc.ldr.DisallowJavaNetns(netnsInode); err != nil {
+						printer.Debugf("ebpf: subscribe cancel: disallow Java netns %d: %v\n", netnsInode, err)
+					}
 				}
 				for pid := range ownedPIDs {
 					delete(nc.pidToSub, uint32(pid))

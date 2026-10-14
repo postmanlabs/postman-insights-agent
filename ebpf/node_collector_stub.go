@@ -24,6 +24,7 @@ type NodeCollectorConfig struct {
 	RateCapPerSec     uint32
 	FlowIdleTimeout   time.Duration
 	DisableThermostat bool
+	EnableJava        bool
 }
 
 type NodeCollector struct{}
@@ -36,9 +37,9 @@ func (nc *NodeCollector) Close() error { return nil }
 
 func (nc *NodeCollector) Run(_ context.Context) error { return ErrUnsupported }
 
-func (nc *NodeCollector) Loader() *loader.Loader       { return nil }
-func (nc *NodeCollector) Thermostat() *Thermostat      { return nil }
-func (nc *NodeCollector) Manager() *uprobes.Manager    { return nil }
+func (nc *NodeCollector) Loader() *loader.Loader    { return nil }
+func (nc *NodeCollector) Thermostat() *Thermostat   { return nil }
+func (nc *NodeCollector) Manager() *uprobes.Manager { return nil }
 
 func (nc *NodeCollector) Subscribe(
 	_ context.Context,

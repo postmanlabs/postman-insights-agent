@@ -28,6 +28,11 @@ import (
 // and per-target link.Link handles owned by the uprobes package.
 type Loader struct {
 	libssl *libsslObjects
+
+	// java is nil unless Config.EnableJava was set and the Java programs
+	// loaded and attached; javaErr says why they did not.
+	java    *javaTLS
+	javaErr error
 }
 
 // Load reads the embedded BPF ELF, instantiates maps and programs, and returns
@@ -62,12 +67,19 @@ func Load(cfg Config) (*Loader, error) {
 		return nil, fmt.Errorf("ebpf: load and assign: %w", err)
 	}
 
-	return &Loader{libssl: objs}, nil
+	l := &Loader{libssl: objs}
+	if cfg.EnableJava {
+		l.java, l.javaErr = loadJavaTLS(cfg, objs)
+	}
+	return l, nil
 }
 
 // Close releases all maps and programs. Callers MUST close any link.Link
 // handles for attached probes BEFORE calling Close on the loader.
 func (l *Loader) Close() error {
+	if l.java != nil {
+		_ = l.java.close()
+	}
 	if l.libssl != nil {
 		return l.libssl.Close()
 	}
@@ -83,7 +95,13 @@ func (l *Loader) SSLFdMap() (*ebpf.Map, bool) { return l.libssl.SslCtxToFd, true
 // SetRateCapPerSec updates the BPF-side per-PID rate cap (tokens/sec). 0
 // disables rate limiting.
 func (l *Loader) SetRateCapPerSec(v uint32) error {
-	return l.libssl.RateCapPerSec.Set(v)
+	if err := l.libssl.RateCapPerSec.Set(v); err != nil {
+		return err
+	}
+	if l.java != nil {
+		return l.java.objs.RateCapPerSec.Set(v)
+	}
+	return nil
 }
 
 // RefillRateBucket sets a single PID's bucket to `tokens`. Userspace calls
@@ -101,7 +119,13 @@ func (l *Loader) DeleteRateBucket(pid uint32) error {
 // Used by the CPU thermostat to throttle copy work without reloading. Requires
 // Linux 5.5+ (BPF_F_MMAPABLE on the global's data section).
 func (l *Loader) SetMaxCaptureBytes(v uint32) error {
-	return l.libssl.MaxCaptureBytes.Set(v)
+	if err := l.libssl.MaxCaptureBytes.Set(v); err != nil {
+		return err
+	}
+	if l.java != nil {
+		return l.java.objs.MaxCaptureBytes.Set(v)
+	}
+	return nil
 }
 
 // GetMaxCaptureBytes reads the current BPF-side knob value.

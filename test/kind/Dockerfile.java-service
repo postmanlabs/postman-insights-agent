@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+# Spring Boot (Tomcat) HTTPS service with the Postman Java agent loaded at
+# start through -javaagent, for Java HTTPS capture tests in kind.
+# Build from the repo root:
+#   docker build -f test/kind/Dockerfile.java-service -t pia-java-service:test .
+
+FROM eclipse-temurin:21-jdk AS agent
+WORKDIR /src/java-agent
+COPY java-agent/ ./
+RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon -q agentJar
+
+FROM maven:3-eclipse-temurin-21 AS app
+WORKDIR /src
+COPY test/kind/java-service/pom.xml ./
+RUN --mount=type=cache,target=/root/.m2 mvn -q -B dependency:go-offline
+COPY test/kind/java-service/src ./src
+RUN --mount=type=cache,target=/root/.m2 mvn -q -B package
+
+FROM eclipse-temurin:21-jre
+COPY --from=agent /src/java-agent/build/agent/postman-java-agent.jar /opt/postman/postman-java-agent.jar
+COPY --from=app /src/target/java-service.jar /app/app.jar
+# Test-only self-signed certificate, generated at build time.
+RUN keytool -genkeypair -alias java-service -keyalg RSA -keysize 2048 -validity 365 \
+        -dname "CN=java-service" -ext "SAN=dns:java-service,dns:localhost,ip:127.0.0.1" \
+        -storetype PKCS12 -keystore /app/keystore.p12 -storepass changeit \
+    && chmod 0644 /app/keystore.p12
+USER 1000
+EXPOSE 8443
+ENTRYPOINT ["java", "-javaagent:/opt/postman/postman-java-agent.jar", "-jar", "/app/app.jar"]

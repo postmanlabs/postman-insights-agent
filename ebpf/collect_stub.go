@@ -37,6 +37,7 @@ type Args struct {
 	RateCapPerSec       uint32
 	ProcRoot            string
 	DisableThermostat   bool
+	EnableJava          bool
 }
 
 func Defaults() Args {

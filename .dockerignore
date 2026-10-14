@@ -1,0 +1,4 @@
+# Local build output that images rebuild themselves.
+java-agent/build/
+java-agent/.gradle/
+test/kind/java-service/target/
