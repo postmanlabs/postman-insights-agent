@@ -9,15 +9,19 @@ import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.nameContains;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static net.bytebuddy.matcher.ElementMatchers.not;
-import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
+import java.io.File;
 import java.lang.instrument.Instrumentation;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
+import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.pool.TypePool;
 import net.bytebuddy.utility.JavaModule;
 
@@ -31,13 +35,54 @@ import com.postman.insights.agent.bootstrap.Contract;
 public final class Installer {
     private Installer() {}
 
+    private static final Class<?> BUF = ByteBuffer.class;
+    private static final Class<?> BUFS = ByteBuffer[].class;
+    private static final Class<?> INT = int.class;
+
     /**
-     * @param source "static" (-javaagent) or "attach" (dynamic attach)
+     * Every wrap and unwrap shape engines declare. Engines implement the
+     * abstract 4-arg forms, but may override the others without delegating to
+     * them (Netty's OpenSSL engine does), so each is hooked; the bridge emits
+     * only at the outermost hooked call.
+     */
+    private static final List<AsmVisitorWrapper> HOOKS = hooks();
+
+    private static List<AsmVisitorWrapper> hooks() {
+        List<AsmVisitorWrapper> h = new ArrayList<AsmVisitorWrapper>();
+        h.add(hook(WrapAdvice.Array.class, "wrap", BUFS, INT, INT, BUF));
+        h.add(hook(WrapAdvice.Arrays.class, "wrap", BUFS, INT, INT, BUFS, INT, INT));
+        h.add(hook(WrapAdvice.ArrayAll.class, "wrap", BUFS, BUF));
+        h.add(hook(WrapAdvice.Single.class, "wrap", BUF, BUF));
+        h.add(hook(UnwrapAdvice.Array.class, "unwrap", BUF, BUFS, INT, INT));
+        h.add(hook(UnwrapAdvice.Arrays.class, "unwrap", BUFS, INT, INT, BUFS, INT, INT));
+        h.add(hook(UnwrapAdvice.ArrayAll.class, "unwrap", BUF, BUFS));
+        h.add(hook(UnwrapAdvice.ArraysAll.class, "unwrap", BUFS, BUFS));
+        h.add(hook(UnwrapAdvice.Single.class, "unwrap", BUF, BUF));
+        return h;
+    }
+
+    private static AsmVisitorWrapper hook(Class<?> advice, String method, Class<?>... params) {
+        return Advice.to(advice).on(named(method).and(not(isAbstract())).and(takesArguments(params)));
+    }
+
+    private static DynamicType.Builder<?> instrument(DynamicType.Builder<?> builder) {
+        for (AsmVisitorWrapper h : HOOKS) {
+            builder = builder.visit(h);
+        }
+        return builder;
+    }
+
+    /**
+     * @param source Contract.HEARTBEAT_SOURCE_STATIC (-javaagent) or
+     *               Contract.HEARTBEAT_SOURCE_ATTACH (dynamic attach)
      */
     public static void install(Instrumentation inst, String rawArgs, String source, String version) {
         long start = System.nanoTime();
         AgentArgs args = AgentArgs.parse(rawArgs);
         Bridge.start(args.captureCap, System.getProperty(Contract.FRAME_LOG_PROPERTY));
+        ControlFile control = new ControlFile(
+                new File(System.getProperty(Contract.CONTROL_FILE_PROPERTY, Contract.CONTROL_FILE_PATH)));
+        Supervisor supervisor = new Supervisor(control, args.captureCap, version, source);
 
         ClassLoader own = Installer.class.getClassLoader();
         newAgentBuilder()
@@ -72,21 +117,15 @@ public final class Installer {
                 // and wrappers. failSafe: a type whose hierarchy cannot be
                 // resolved is skipped, never an error.
                 .type(failSafe(hasSuperType(named("javax.net.ssl.SSLEngine")).and(not(isInterface()))))
-                .transform((builder, type, loader, module, pd) -> builder
-                        .visit(Advice.to(WrapAdvice.class).on(named("wrap")
-                                .and(not(isAbstract()))
-                                .and(takesArguments(4))
-                                .and(takesArgument(0, ByteBuffer[].class))
-                                .and(takesArgument(3, ByteBuffer.class))))
-                        .visit(Advice.to(UnwrapAdvice.class).on(named("unwrap")
-                                .and(not(isAbstract()))
-                                .and(takesArguments(4))
-                                .and(takesArgument(0, ByteBuffer.class))
-                                .and(takesArgument(1, ByteBuffer[].class)))))
+                .transform((builder, type, loader, module, pd) -> instrument(builder))
                 .installOn(inst);
 
         log("version " + version + " loaded (" + source + ") into Java " + System.getProperty("java.version")
                 + " in " + (System.nanoTime() - start) / 1_000_000 + " ms");
+        // Apply the control file before returning, so a JVM the Insights
+        // agent is monitoring captures from its first request.
+        supervisor.check(System.currentTimeMillis());
+        supervisor.start();
     }
 
     private static final String NEXUS_DISABLED = "net.bytebuddy.nexus.disabled";

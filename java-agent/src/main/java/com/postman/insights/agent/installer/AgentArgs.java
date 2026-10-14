@@ -30,7 +30,7 @@ final class AgentArgs {
                 String value = pair.substring(eq + 1).trim();
                 if (key.equals(Contract.ARG_CAPTURE_CAP)) {
                     try {
-                        cap = Math.max(MIN_CAPTURE_CAP, Math.min(MAX_CAPTURE_CAP, Integer.parseInt(value)));
+                        cap = clampCap(Integer.parseInt(value));
                     } catch (NumberFormatException ignored) {
                         // Keep the default.
                     }
@@ -38,5 +38,10 @@ final class AgentArgs {
             }
         }
         return new AgentArgs(cap);
+    }
+
+    /** Clamps a payload cap, from the arguments or the control file, to the supported range. */
+    static int clampCap(int cap) {
+        return Math.max(MIN_CAPTURE_CAP, Math.min(MAX_CAPTURE_CAP, cap));
     }
 }

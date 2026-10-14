@@ -2,3 +2,4 @@
 java-agent/build/
 java-agent/.gradle/
 test/kind/java-service/target/
+test/kind/netty-service/target/

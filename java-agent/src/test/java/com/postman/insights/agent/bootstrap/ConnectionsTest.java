@@ -33,6 +33,17 @@ class ConnectionsTest {
     }
 
     @Test
+    void scratchLookupKey() {
+        Connections c = new Connections();
+        Connections.Lookup scratch = new Connections.Lookup();
+        Object engine = new Object();
+        Connections.Info info = c.get(engine);
+        assertSame(info, c.get(engine, scratch));
+        assertNull(scratch.referent, "scratch key keeps the engine alive");
+        assertNotEquals(info.id, c.get(new Object(), scratch).id);
+    }
+
+    @Test
     void comparesByIdentityNotEquals() {
         Connections c = new Connections();
         long a = c.get(new EqualEngine()).id;

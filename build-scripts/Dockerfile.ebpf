@@ -1,11 +1,24 @@
 # eBPF-enabled build of postman-insights-agent.
 #
 # Produces a binary compiled with -tags insights_bpf so all eBPF paths
-# (HTTPS capture via SSL uprobes) are included.
+# (HTTPS capture via SSL uprobes) are included, plus the Java agent jar for
+# Java HTTPS capture at /opt/postman/postman-java-agent.jar, with its SHA-256
+# in postman-java-agent.jar.sha256 next to it.
 # Use this image for DaemonSet deployments that need --enable-https-capture.
+#
+# Build arg AGENT_VERSION sets the Java agent's version (default 0.0.0-dev);
+# release builds pass the Insights agent's version.
 #
 # The standard build-scripts/Dockerfile builds WITHOUT eBPF (tags osusergo,netgo
 # only) and is used for the non-eBPF release binary.
+
+# The Java agent: Java 8 bytecode, the same jar on every architecture.
+FROM eclipse-temurin:21-jdk AS java-agent
+ARG AGENT_VERSION=0.0.0-dev
+WORKDIR /src/java-agent
+COPY java-agent/ ./
+RUN ./gradlew --no-daemon -q "-PagentVersion=${AGENT_VERSION}" agentJar \
+    && cd build/agent && sha256sum postman-java-agent.jar > postman-java-agent.jar.sha256
 
 FROM golang:1.25-bookworm AS builder
 
@@ -53,6 +66,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap0.8 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
+COPY --from=java-agent /src/java-agent/build/agent/postman-java-agent.jar \
+     /src/java-agent/build/agent/postman-java-agent.jar.sha256 /opt/postman/
 # Requires privileged + CAP_BPF at runtime.
 # See modules/insights_agent_mns/main.tf for the full capability set.
 USER root

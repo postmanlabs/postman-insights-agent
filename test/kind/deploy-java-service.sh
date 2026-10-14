@@ -2,8 +2,9 @@
 # End-to-end check of Java HTTPS capture in kind, through the production
 # DaemonSet path (kube run --enable-https-capture, agent-daemonset-prod.yaml).
 #
-# Deploys a Spring Boot (Tomcat) HTTPS service that loads the Postman Java agent
-# through -javaagent, sends it HTTPS requests, and checks the agent's
+# Deploys two HTTPS services that load the Postman Java agent through
+# -javaagent: Spring Boot on Tomcat (the JDK's SSLEngine) and plain Netty (its
+# OpenSSL engine). Sends each HTTPS requests, and checks the agent's
 # ebpf-stats lines: Java frames reached the kernel programs and were parsed
 # into HTTP messages. Captures also appear in Postman Insights under the
 # cluster "pia-kind-test".
@@ -20,6 +21,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CLUSTER=pia-https-test
 AGENT_IMAGE=pia-agent-ebpf:test
 JAVA_IMAGE=pia-java-service:test
+NETTY_IMAGE=pia-netty-service:test
+SERVICES="java-service netty-service"
 NS=test-apps
 SKIP_BUILD=false
 REQUESTS=3 # rounds of 3 requests each
@@ -45,19 +48,23 @@ kubectl config use-context "kind-${CLUSTER}" >/dev/null 2>&1 || {
 if [[ "$SKIP_BUILD" == "false" ]]; then
   echo "==> Building agent image ${AGENT_IMAGE}"
   docker build -f "$REPO_ROOT/build-scripts/Dockerfile.ebpf" -t "$AGENT_IMAGE" "$REPO_ROOT"
-  echo "==> Building Java service image ${JAVA_IMAGE}"
+  echo "==> Building Java service images ${JAVA_IMAGE} and ${NETTY_IMAGE}"
   docker build -f "$REPO_ROOT/test/kind/Dockerfile.java-service" -t "$JAVA_IMAGE" "$REPO_ROOT"
-  kind load docker-image "$AGENT_IMAGE" --name "$CLUSTER"
-  kind load docker-image "$JAVA_IMAGE" --name "$CLUSTER"
+  docker build -f "$REPO_ROOT/test/kind/Dockerfile.netty-service" -t "$NETTY_IMAGE" "$REPO_ROOT"
+  kind load docker-image "$AGENT_IMAGE" "$JAVA_IMAGE" "$NETTY_IMAGE" --name "$CLUSTER"
 fi
 
-echo "==> Java service pod"
+echo "==> Java service pods"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-kubectl delete pod -n "$NS" java-service --ignore-not-found
-kubectl apply -f "$REPO_ROOT/test/kind/java-service-workload.yaml"
-kubectl wait -n "$NS" --for=condition=Ready pod/java-service --timeout=180s
-POD_IP=$(kubectl get pod -n "$NS" java-service -o jsonpath='{.status.podIP}')
-kubectl logs -n "$NS" java-service | grep 'postman-insights-agent' || true
+POD_IPS=""
+for svc in $SERVICES; do
+  kubectl delete pod -n "$NS" "$svc" --ignore-not-found
+  kubectl apply -f "$REPO_ROOT/test/kind/${svc}-workload.yaml"
+done
+for svc in $SERVICES; do
+  kubectl wait -n "$NS" --for=condition=Ready "pod/$svc" --timeout=180s
+  POD_IPS="$POD_IPS $(kubectl get pod -n "$NS" "$svc" -o jsonpath='{.status.podIP}')"
+done
 
 echo "==> Agent DaemonSet (kube run --enable-https-capture, Java HTTPS capture on)"
 kubectl create namespace postman-insights --dry-run=client -o yaml | kubectl apply -f -
@@ -71,14 +78,43 @@ kubectl rollout restart -n postman-insights daemonset/postman-insights-agent
 kubectl rollout status -n postman-insights daemonset/postman-insights-agent --timeout=180s
 sleep 15
 
-echo "==> Sending HTTPS requests to ${POD_IP}:8443"
+# The Java agents stay dormant until a fresh control file enables them. Until
+# the Insights agent writes it (INS-365), this script does, the way the
+# Insights agent must: replaced atomically. It goes stale after 60 s, which is
+# enough for the requests below.
+echo "==> Enabling capture in the Java agents"
+for svc in $SERVICES; do
+  kubectl exec -n "$NS" "$svc" -- sh -ec 'mkdir -p /tmp/.postman-insights
+    printf "version=1\nenabled=1\n" > /tmp/.postman-insights/control.tmp
+    mv /tmp/.postman-insights/control.tmp /tmp/.postman-insights/control'
+done
+for svc in $SERVICES; do
+  # The agent checks the control file every 5 s.
+  capturing=false
+  for _ in $(seq 1 20); do
+    if kubectl logs -n "$NS" "$svc" | grep -q 'postman-insights-agent\] capturing HTTPS traffic'; then
+      capturing=true
+      break
+    fi
+    sleep 1
+  done
+  kubectl logs -n "$NS" "$svc" | grep 'postman-insights-agent' || true
+  if [[ "$capturing" != true ]]; then
+    echo "ERROR: the Java agent in ${svc} did not start capturing" >&2
+    exit 1
+  fi
+done
+
+echo "==> Sending HTTPS requests to${POD_IPS} (port 8443)"
 kubectl delete pod -n "$NS" java-client --ignore-not-found >/dev/null
 # -f: an HTTP error fails curl, and -e makes that fail the pod and this script.
 kubectl run java-client --restart=Never -n "$NS" --image=curlimages/curl:latest --rm -i --quiet -- sh -ec "
-  for i in \$(seq 1 ${REQUESTS}); do
-    curl -fsSk https://${POD_IP}:8443/hello?name=kind-\$i; echo
-    curl -fsSk https://${POD_IP}:8443/orders/42; echo
-    curl -fsSk -X POST -H 'Content-Type: application/json' -d '{\"item\":\"book\",\"qty\":2}' https://${POD_IP}:8443/orders; echo
+  for ip in ${POD_IPS}; do
+    for i in \$(seq 1 ${REQUESTS}); do
+      curl -fsSk https://\$ip:8443/hello?name=kind-\$i; echo
+      curl -fsSk https://\$ip:8443/orders/42; echo
+      curl -fsSk -X POST -H 'Content-Type: application/json' -d '{\"item\":\"book\",\"qty\":2}' https://\$ip:8443/orders; echo
+    done
   done"
 
 echo "==> Waiting for the next ebpf-stats lines (logged every 30s)"
@@ -98,7 +134,8 @@ fi
 max_field() { { grep -o "ebpf-stats: .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true; }
 java_events=$(max_field java_events)
 msgs=$(max_field msgs)
-want=$((REQUESTS * 3 * 2)) # a request and a response per call
+services=$(wc -w <<<"$SERVICES")
+want=$((services * REQUESTS * 3 * 2)) # a request and a response per call
 if [[ "${java_events:-0}" -ge "$want" ]]; then
   echo "  PASS  java_events=${java_events}"
 else
