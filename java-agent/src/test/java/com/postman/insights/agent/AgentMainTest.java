@@ -42,6 +42,9 @@ class AgentMainTest {
                 "org.springframework.boot.loader.launch.JarLauncher",
                 "com.example.Main jdk.foo",
                 "com.sun.enterprise.glassfish.bootstrap.ASMain",       // GlassFish is an application
+                // The source launcher runs the application's own code.
+                "jdk.compiler/com.sun.tools.javac.launcher.Main Server.java",          // JDK 11 to 21
+                "jdk.compiler/com.sun.tools.javac.launcher.SourceLauncher Server.java", // JDK 22+
                 "",
                 null}) {
             assertFalse(AgentMain.isJdkTool(app), String.valueOf(app));

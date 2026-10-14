@@ -100,7 +100,9 @@ public final class AgentMain {
      * keytool, javac, jshell and so on), from its sun.java.command: the main
      * class, prefixed with its module on JDK 9+ ("jdk.jcmd/sun.tools.jcmd.JCmd"),
      * or a jar path for {@code java -jar}, then the arguments. Their main
-     * classes are in packages the JDK reserves for itself.
+     * classes are in packages the JDK reserves for itself. The source
+     * launcher ({@code java Server.java}) is the exception: it runs the
+     * application's own code.
      */
     static boolean isJdkTool(String command) {
         if (command == null) {
@@ -117,6 +119,9 @@ public final class AgentMain {
         int slash = main.indexOf('/');
         if (slash >= 0) {
             main = main.substring(slash + 1);
+        }
+        if (main.startsWith("com.sun.tools.javac.launcher.")) {
+            return false;
         }
         return main.startsWith("sun.") || main.startsWith("jdk.") || main.startsWith("java.")
                 || main.startsWith("com.sun.tools.");
