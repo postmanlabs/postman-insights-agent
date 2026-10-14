@@ -16,8 +16,13 @@ const rawEventSize = int(unsafe.Sizeof(SSLEvent{}))
 // ssl_event and struct control_event share.
 const rawHeaderSize = int(unsafe.Offsetof(SSLEvent{}.Payload))
 
-// rawControlEventSize is the size of struct control_event.
-const rawControlEventSize = rawHeaderSize + MaxControlPayload
+// rawControlEventSize is the size of struct control_event: the fields before
+// the payload and the payload, rounded up to the struct's alignment (that of
+// its __u64 fields), as C pads it.
+const rawControlEventSize = (rawHeaderSize + MaxControlPayload + eventAlign - 1) / eventAlign * eventAlign
+
+// eventAlign is the alignment of struct ssl_event and struct control_event.
+const eventAlign = int(unsafe.Alignof(SSLEvent{}))
 
 // ErrShortRecord is returned by Decode when a ringbuf record is too short for
 // its kind of event.

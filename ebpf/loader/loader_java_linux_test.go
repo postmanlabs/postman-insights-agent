@@ -178,9 +178,9 @@ func TestJavaTLSFrames(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// struct control_event, about 1 KiB, not a 16 KiB ssl_event.
-		if n := len(rec.RawSample); n > 2048 {
-			t.Errorf("heartbeat record of %d bytes", n)
+		// sizeof(struct control_event), not a 16 KiB ssl_event.
+		if n := len(rec.RawSample); n != 1072 {
+			t.Errorf("heartbeat record of %d bytes, want 1072", n)
 		}
 		hb, err := events.Decode(rec.RawSample)
 		if err != nil {

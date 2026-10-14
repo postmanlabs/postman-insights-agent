@@ -27,8 +27,9 @@ func rawRecord(size int, kind uint8, payload string) []byte {
 // Control events are the smaller struct control_event; data events must be
 // a full struct ssl_event.
 func TestDecodeControlEvent(t *testing.T) {
-	// 44 bytes of fields; C pads struct control_event to 1072.
-	if rawHeaderSize != 44 || rawControlEventSize != 44+1024 {
+	// 44 bytes of fields and a 1024-byte payload, which C pads to 1072, a
+	// multiple of the struct's 8-byte alignment.
+	if rawHeaderSize != 44 || rawControlEventSize != 1072 {
 		t.Fatalf("header %d, control event %d: out of step with event.h", rawHeaderSize, rawControlEventSize)
 	}
 	ev, err := Decode(rawRecord(rawControlEventSize, KindJavaHeartbeat, "state=active\n"))
@@ -41,6 +42,9 @@ func TestDecodeControlEvent(t *testing.T) {
 
 	if _, err := Decode(rawRecord(rawControlEventSize, KindData, "GET")); !errors.Is(err, ErrShortRecord) {
 		t.Errorf("a data event of control size decoded: %v", err)
+	}
+	if _, err := Decode(rawRecord(rawControlEventSize-1, KindJavaHeartbeat, "state=active\n")); !errors.Is(err, ErrShortRecord) {
+		t.Errorf("a truncated control event decoded: %v", err)
 	}
 	if _, err := Decode(rawRecord(rawHeaderSize, KindJavaClose, "")); !errors.Is(err, ErrShortRecord) {
 		t.Errorf("a header-only record decoded: %v", err)
