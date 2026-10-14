@@ -57,6 +57,10 @@ var injectCmd = &cobra.Command{
 		if _, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces."); err != nil {
 			return err
 		}
+		httpsLibraries, err := onboardHTTPSLibrariesArg()
+		if err != nil {
+			return err
+		}
 		// In project mode, also validate that the project exists.
 		if !onboardDiscoveryMode && onboardWorkspaceID == "" {
 			if err := lookupService(insightsProjectID); err != nil {
@@ -149,6 +153,7 @@ var injectCmd = &cobra.Command{
 			Labels:             meta.Labels,
 			ApidumpArgs:        apidumpArgs,
 			EnableHTTPSCapture: onboardEnableHTTPSCapture,
+			HTTPSLibraries:     httpsLibraries,
 		})
 
 		rawInjected, err := injector.ToRawYAML(injectr, container)

@@ -16,6 +16,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -45,6 +46,15 @@ type HTTPSCaptureStats struct {
 	JavaDropped       uint64 // ring buffer full
 	JavaNetnsRejected uint64 // frames from pods that are not monitored
 	JavaMalformed     uint64 // frames that failed validation
+
+	// What happened to the JVMs of monitored pods on this node; only
+	// reported where the Java agent is attached to running JVMs.
+	JVMAttach        bool
+	JVMsSeen         uint64
+	JVMsAttached     uint64
+	JVMsAgentRunning uint64 // already ran the agent (-javaagent, or attached earlier)
+	JVMsSkipped      uint64 // not attachable by design (OpenJ9, attach disabled, -Xrs)
+	JVMsAttachFailed uint64
 }
 
 // String produces a single-line, customer-readable summary suitable for
@@ -62,7 +72,21 @@ func (s HTTPSCaptureStats) String() string {
 			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d",
 			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed)
 	}
+	if s.JVMAttach {
+		line += fmt.Sprintf(
+			" jvms=%d jvms_attached=%d jvms_agent_running=%d jvms_skipped=%d jvms_attach_failed=%d",
+			s.JVMsSeen, s.JVMsAttached, s.JVMsAgentRunning, s.JVMsSkipped, s.JVMsAttachFailed)
+	}
 	return line
+}
+
+// sumCounts adds up per-reason counters.
+func sumCounts(m map[string]uint64) uint64 {
+	var n uint64
+	for _, v := range m {
+		n += v
+	}
+	return n
 }
 
 // httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
@@ -74,6 +98,7 @@ func httpsTelemetryWorker(
 	therm *ebpf.Thermostat,
 	mgr *uprobes.Manager,
 	adapter *events.Adapter,
+	jvmStats func() (jvm.AttachStats, bool),
 	tracker telemetry.Tracker,
 	reportCount func(string, uint64),
 ) {
@@ -129,6 +154,16 @@ func httpsTelemetryWorker(
 		if therm != nil {
 			s.CurrentCapBytes = therm.CurrentCap()
 			s.CPUPercent = therm.CPUPercent()
+		}
+		if jvmStats != nil {
+			if st, ok := jvmStats(); ok {
+				s.JVMAttach = true
+				s.JVMsSeen = st.Seen
+				s.JVMsAttached = st.Attached
+				s.JVMsAgentRunning = st.AlreadyRunning
+				s.JVMsSkipped = sumCounts(st.Skipped)
+				s.JVMsAttachFailed = sumCounts(st.Failed)
+			}
 		}
 		return s
 	}
@@ -231,7 +266,8 @@ func startHTTPSeBPFCapture(
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
 	ebpfArgs.RateCapPerSec = args.HTTPS.RateCapPerSec
-	ebpfArgs.EnableJava = ebpf.JavaTLSRequested()
+	ebpfArgs.EnableJava = args.HTTPS.Libraries.Java
+	ebpfArgs.DisableOpenSSL = !args.HTTPS.Libraries.OpenSSL
 
 	// DaemonSet deployments bind-mount the kernel's root /proc to /host/proc.
 	// When present, use it for resolver lookups so BPF-emitted root-ns PIDs
@@ -305,6 +341,12 @@ func startHTTPSeBPFCapture(
 		}
 	}
 
+	// The node's JVM attach counters, where the NodeCollector attaches.
+	var jvmStats func() (jvm.AttachStats, bool)
+	if args.HTTPS.NodeCollector != nil {
+		jvmStats = args.HTTPS.NodeCollector.JVMStats
+	}
+
 	// HookLoader captures the subsystem handles after Collect has wired them
 	// up, so the telemetry goroutine can read counters / probe counts / etc.
 	ebpfArgs.HookLoader = func(
@@ -314,7 +356,7 @@ func startHTTPSeBPFCapture(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker, args.reportTelemetryCount)
+			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, jvmStats, tracker, args.reportTelemetryCount)
 		}()
 	}
 
@@ -353,6 +395,8 @@ func startHTTPSeBPFCapture(
 			out,
 			ebpfArgs.ProcRoot,
 			args.HTTPS.ContainerNetnsInode,
+			// The attach outcome of the pod's JVMs.
+			args.reportTelemetryCount,
 		)
 		// Expose node-level handles + this pod's adapter to the telemetry worker
 		// (mirrors HookLoader). The adapter carries the per-pod MessagesEmitted /

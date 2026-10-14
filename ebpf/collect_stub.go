@@ -38,6 +38,7 @@ type Args struct {
 	ProcRoot            string
 	DisableThermostat   bool
 	EnableJava          bool
+	DisableOpenSSL      bool
 }
 
 func Defaults() Args {

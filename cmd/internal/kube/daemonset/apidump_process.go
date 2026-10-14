@@ -230,6 +230,7 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		BodySizeCap:         d.HTTPSBodySizeCap,
 		CBPFExcludePort:     d.HTTPSCBPFExcludePort,
 		DisableThermostat:   d.HTTPSNoThermostat,
+		Libraries:           d.HTTPSLibraries,
 		NodeCollector:       d.EBPFNodeCollector,
 	}
 

@@ -53,7 +53,7 @@ func newTestAttacher() (*Attacher, *fakeOps) {
 // attempt adds p and makes one attach attempt for it.
 func attempt(t *testing.T, a *Attacher, p *Process) *attachState {
 	t.Helper()
-	a.Add(p)
+	a.Add(p, nil)
 	s := a.next(time.Now())
 	require.NotNil(t, s)
 	a.try(context.Background(), s)
@@ -80,7 +80,7 @@ func TestAttacherAttaches(t *testing.T) {
 	assert.Equal(t, uint64(1), st.Attached)
 
 	// Added again (another subscription, or discovery again): nothing new.
-	a.Add(hotspot())
+	a.Add(hotspot(), nil)
 	assert.Nil(t, a.next(time.Now()))
 	assert.Equal(t, uint64(1), a.Stats().Seen)
 }
@@ -195,7 +195,7 @@ func TestAttacherForgetsExitedJVMs(t *testing.T) {
 	a.mu.Unlock()
 
 	a, _ = newTestAttacher()
-	a.Add(hotspot())
+	a.Add(hotspot(), nil)
 	a.Remove(hotspot().Key())
 	assert.Nil(t, a.next(time.Now()))
 }
@@ -225,4 +225,62 @@ func TestNewAttacherChecksum(t *testing.T) {
 	} else {
 		assert.ErrorIs(t, err, errAttachUnsupported)
 	}
+}
+
+// recorder collects the telemetry events reported for a JVM.
+type recorder struct{ events []string }
+
+func (r *recorder) report(event string) { r.events = append(r.events, event) }
+
+func TestAttacherReportsEvents(t *testing.T) {
+	run := func(setup func(*fakeOps), p *Process) []string {
+		a, ops := newTestAttacher()
+		setup(ops)
+		var rec recorder
+		a.Add(p, rec.report)
+		for s := a.next(time.Now().Add(time.Hour)); s != nil; s = a.next(time.Now().Add(time.Hour)) {
+			a.try(context.Background(), s)
+		}
+		return rec.events
+	}
+	openj9 := hotspot()
+	openj9.Kind = OpenJ9
+
+	assert.Equal(t, []string{EventSeen, EventAttached}, run(func(*fakeOps) {}, hotspot()))
+	assert.Equal(t, []string{EventSeen, EventSkippedPrefix + SkipOpenJ9}, run(func(*fakeOps) {}, openj9))
+	assert.Equal(t, []string{EventSeen, EventAlreadyRunning}, run(func(o *fakeOps) {
+		o.info.args = "-javaagent:/opt/postman/postman-java-agent.jar"
+	}, hotspot()))
+	assert.Equal(t, []string{EventSeen, EventSkippedPrefix + attach.ReasonNoListener}, run(func(o *fakeOps) {
+		o.info.sigQuitCaught = false
+		o.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonNoListener}
+	}, hotspot()))
+	// Retries report nothing; only the final failure does.
+	assert.Equal(t, []string{EventSeen, EventFailedPrefix + attach.ReasonConnectFailed}, run(func(o *fakeOps) {
+		o.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
+	}, hotspot()))
+}
+
+func TestAttacherCountsAdds(t *testing.T) {
+	a, ops := newTestAttacher()
+	ops.info.age = time.Second // not attached yet
+	var older, newer recorder
+	a.Add(hotspot(), older.report)
+	a.Add(hotspot(), newer.report) // a second subscription for the pod
+	assert.Equal(t, uint64(1), a.Stats().Seen)
+
+	// The older subscription goes away; the JVM stays queued, and reports
+	// to the newer one.
+	a.Remove(hotspot().Key())
+	ops.info.age = time.Minute
+	s := a.next(time.Now())
+	require.NotNil(t, s)
+	a.try(context.Background(), s)
+	assert.Equal(t, []string{EventSeen}, older.events)
+	assert.Equal(t, []string{EventAttached}, newer.events)
+
+	a.Remove(hotspot().Key())
+	a.mu.Lock()
+	assert.Empty(t, a.jvms)
+	a.mu.Unlock()
 }

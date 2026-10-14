@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
+	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,7 +37,7 @@ func TestHTTPSTelemetryWorkerReportsFinalDeltaOnCancel(t *testing.T) {
 
 	// An interval far longer than the test can run, so only the cancellation
 	// branch can possibly report.
-	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, adapter, nil, reportCount)
+	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, adapter, nil, nil, reportCount)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -51,7 +53,7 @@ func TestHTTPSTelemetryWorkerNilReporterOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, &events.Adapter{}, nil, nil)
+	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, &events.Adapter{}, nil, nil, nil)
 }
 
 // The Java fields appear on the ebpf-stats line only while Java capture runs,
@@ -64,3 +66,43 @@ func TestHTTPSCaptureStatsStringJava(t *testing.T) {
 	assert.Contains(t, s.String(),
 		" java_frames=5 java_events=4 java_dropped_ringbuf=0 java_netns_rejected=1 java_malformed=0")
 }
+
+// The JVM attach counters appear only where JVMs are attached.
+func TestHTTPSCaptureStatsStringJVMs(t *testing.T) {
+	s := HTTPSCaptureStats{JVMsSeen: 3}
+	assert.NotContains(t, s.String(), "jvms")
+
+	s.JVMAttach = true
+	s.JVMsAttached, s.JVMsAgentRunning, s.JVMsSkipped = 1, 1, 1
+	assert.Contains(t, s.String(),
+		" jvms=3 jvms_attached=1 jvms_agent_running=1 jvms_skipped=1 jvms_attach_failed=0")
+}
+
+// The worker reads the JVM attach counters it is given, summing the reasons.
+func TestHTTPSTelemetryWorkerJVMStats(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var line string
+	tracker := &recordingTracker{onStep: func(step, detail string) {
+		if step == "ebpf_capture_stats" {
+			line = detail
+			cancel()
+		}
+	}}
+	stats := func() (jvm.AttachStats, bool) {
+		return jvm.AttachStats{
+			Seen: 4, Attached: 1,
+			Skipped: map[string]uint64{jvm.SkipOpenJ9: 1, jvm.SkipAttachDisabled: 1},
+			Failed:  map[string]uint64{jvm.FailHelper: 1},
+		}, true
+	}
+	httpsTelemetryWorker(ctx, time.Millisecond, nil, nil, nil, nil, stats, tracker, nil)
+	assert.Contains(t, line, " jvms=4 jvms_attached=1 jvms_agent_running=0 jvms_skipped=2 jvms_attach_failed=1")
+}
+
+// recordingTracker passes WorkflowStep to onStep; nothing else may be called.
+type recordingTracker struct {
+	telemetry.Tracker
+	onStep func(step, detail string)
+}
+
+func (r *recordingTracker) WorkflowStep(step, detail string) { r.onStep(step, detail) }

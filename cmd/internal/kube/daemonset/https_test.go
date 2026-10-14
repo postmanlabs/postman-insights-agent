@@ -157,6 +157,14 @@ func TestBuildHTTPSArgs_CBPFExcludePortPropagation(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPSArgs_LibrariesPropagation(t *testing.T) {
+	for _, libs := range []ebpf.Libraries{{OpenSSL: true, Java: true}, {OpenSSL: true}, {Java: true}} {
+		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: libs}
+		got := buildHTTPSArgs(d, &PodArgs{}, 42)
+		assert.Equal(t, libs, got.Libraries)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DaemonsetArgs — HTTPS field zero values and propagation
 // ---------------------------------------------------------------------------

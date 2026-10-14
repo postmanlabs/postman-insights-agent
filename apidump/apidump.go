@@ -189,10 +189,9 @@ type HTTPSCaptureArgs struct {
 	// libpcap. Requires a build with the `insights_bpf` tag on Linux.
 	Enabled bool
 
-	// Libraries is the comma-separated list of userspace TLS libraries to
-	// attach probes to. Currently only "openssl" is wired (libssl.so.*).
-	// Phase 3 adds "gotls" and "boringssl".
-	Libraries []string
+	// Libraries are the TLS libraries to capture (--https-libraries). With
+	// none, HTTPS capture is off.
+	Libraries ebpf.Libraries
 
 	// TargetNamespaces restricts uprobe attachment to processes whose
 	// Kubernetes namespace is in the list. Empty = all namespaces in scope.
@@ -1203,7 +1202,7 @@ func (a *apidump) Run() error {
 	// short-circuit in mergePacketCountSummaries), so allocating
 	// unconditionally would change the payload shape of every non-HTTPS
 	// capture.
-	ebpfRequested := args.HTTPS.Enabled && args.Out.AkitaURI != nil
+	ebpfRequested := args.HTTPS.Enabled && !args.HTTPS.Libraries.None() && args.Out.AkitaURI != nil
 	if ebpfRequested {
 		a.dumpSummary.HTTPSSummary = trace.NewPacketCounter()
 		a.dumpSummary.HTTPSPrefilterSummary = trace.NewPacketCounter()
@@ -1524,8 +1523,11 @@ func (a *apidump) Run() error {
 			httpsCancel()
 		}()
 		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry)
-		printer.Stderr.Infof("HTTPS capture (eBPF) started with body-cap=%d, mode=%q.\n",
-			args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
+		printer.Stderr.Infof("HTTPS capture (eBPF) started with libraries=%s, body-cap=%d, mode=%q.\n",
+			args.HTTPS.Libraries, args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
+	} else if args.HTTPS.Enabled && args.HTTPS.Libraries.None() {
+		printer.Stderr.Warningf(
+			"--enable-https-capture set but no TLS library is selected (--https-libraries); HTTPS capture disabled.\n")
 	} else if args.HTTPS.Enabled {
 		printer.Stderr.Warningf(
 			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")

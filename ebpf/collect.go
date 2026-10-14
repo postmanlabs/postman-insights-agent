@@ -21,8 +21,6 @@ package ebpf
 
 import (
 	"errors"
-	"os"
-	"strconv"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 )
@@ -34,15 +32,3 @@ type DiscoveryChan = <-chan discovery.Target
 // ErrUnsupported is returned by Collect on platforms / builds where the eBPF
 // subsystem is unavailable.
 var ErrUnsupported = errors.New("ebpf: HTTPS capture not supported on this platform/build")
-
-// JavaTLSEnvVar is a developer switch that turns on Java HTTPS capture while
-// it is being built. Java capture stays off by default until --https-libraries
-// is wired up (INS-365), which replaces this switch; it is not a supported
-// customer setting.
-const JavaTLSEnvVar = "POSTMAN_INSIGHTS_EXPERIMENTAL_JAVA_TLS"
-
-// JavaTLSRequested reports whether JavaTLSEnvVar is set to a true value.
-func JavaTLSRequested() bool {
-	v, err := strconv.ParseBool(os.Getenv(JavaTLSEnvVar))
-	return err == nil && v
-}
