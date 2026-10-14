@@ -8,7 +8,7 @@
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.5.6</version>
+    <version>4.1.1</version>
     <relativePath/>
   </parent>
 
@@ -18,12 +18,14 @@
 
   <properties>
     <java.version>21</java.version>
+    <!-- Newer than Spring Boot 4.1.1's managed 11.0.24, for Tomcat security fixes. -->
+    <tomcat.version>11.0.27</tomcat.version>
   </properties>
 
   <dependencies>
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-web</artifactId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
     </dependency>
   </dependencies>
 
