@@ -77,6 +77,18 @@ const (
 	FailHelper                 = "helper_failed"
 )
 
+// Telemetry events, one per JVM and outcome, given to the report function
+// passed to Add.
+const (
+	EventSeen           = "java_jvm_seen"
+	EventAttached       = "java_jvm_attached"
+	EventAlreadyRunning = "java_jvm_agent_already_running"
+	// EventSkippedPrefix and EventFailedPrefix are followed by the reason
+	// (Skip*, Fail* or attach.Reason*).
+	EventSkippedPrefix = "java_jvm_attach_skipped_"
+	EventFailedPrefix  = "java_jvm_attach_failed_"
+)
+
 // attachOps is everything the Attacher does to real processes, so the
 // decisions can be tested without JVMs.
 type attachOps interface {
@@ -110,6 +122,12 @@ type attachState struct {
 	due      time.Time
 	attempts int
 	done     bool
+	// refs counts the callers that added p: two subscriptions can cover the
+	// same pod while one replaces the other.
+	refs int
+	// report receives the JVM's telemetry events; it is the latest caller's,
+	// which outlives the subscription it replaces. May be nil.
+	report func(event string)
 }
 
 // NewAttacher reads the agent jar and checks it against its checksum.
@@ -156,23 +174,44 @@ func newAttacher(ops attachOps, jar []byte, sum string, agentArgs func() string)
 	}
 }
 
-// Add queues p for attaching. Adding a JVM again does nothing.
-func (a *Attacher) Add(p *Process) {
+// Add queues p for attaching. report, when not nil, receives one telemetry
+// event (Event*) when p is first added and one for what happened to it.
+// Adding a JVM again attaches nothing more; it only takes over reporting.
+func (a *Attacher) Add(p *Process, report func(event string)) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if _, ok := a.jvms[p.Key()]; ok {
+	if s, ok := a.jvms[p.Key()]; ok {
+		s.refs++
+		if report != nil {
+			s.report = report
+		}
+		a.mu.Unlock()
 		return
 	}
-	a.jvms[p.Key()] = &attachState{p: p, due: time.Now()}
+	a.jvms[p.Key()] = &attachState{p: p, due: time.Now(), refs: 1, report: report}
 	a.stats.Seen++
 	select {
 	case a.wake <- struct{}{}:
 	default:
 	}
+	a.mu.Unlock()
+	if report != nil {
+		report(EventSeen)
+	}
 }
 
-// Remove forgets a JVM that exited or is no longer monitored.
+// Remove undoes one Add, and forgets the JVM after the last.
 func (a *Attacher) Remove(k Key) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s, ok := a.jvms[k]; ok {
+		if s.refs--; s.refs <= 0 {
+			delete(a.jvms, k)
+		}
+	}
+}
+
+// forget drops a JVM that exited.
+func (a *Attacher) forget(k Key) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.jvms, k)
@@ -232,7 +271,7 @@ func (a *Attacher) next(now time.Time) *attachState {
 func (a *Attacher) try(ctx context.Context, s *attachState) {
 	p := s.p
 	if !a.ops.alive(p) {
-		a.Remove(p.Key())
+		a.forget(p.Key())
 		return
 	}
 	if p.Kind != HotSpot {
@@ -257,7 +296,7 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 		a.skip(s, SkipDynamicLoadingDisabled, "dynamic agent loading is disabled (-XX:-EnableDynamicAgentLoading)")
 		return
 	case flags.staticAgent:
-		a.finish(s, func(st *AttachStats) { st.AlreadyRunning++ },
+		a.finish(s, EventAlreadyRunning, func(st *AttachStats) { st.AlreadyRunning++ },
 			"ebpf: Java agent already loaded at start (-javaagent) in JVM %s\n", p)
 		return
 	}
@@ -290,11 +329,11 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 		if res.Signalled {
 			how = "started its attach listener with SIGQUIT"
 		}
-		a.finish(s, func(st *AttachStats) { st.Attached++ },
+		a.finish(s, EventAttached, func(st *AttachStats) { st.Attached++ },
 			"ebpf: Java agent %s attached to JVM %s in %d ms (%s)\n",
 			res.AgentVersion, p, time.Since(start).Milliseconds(), how)
 	case attach.AlreadyLoaded:
-		a.finish(s, func(st *AttachStats) { st.AlreadyRunning++ },
+		a.finish(s, EventAlreadyRunning, func(st *AttachStats) { st.AlreadyRunning++ },
 			"ebpf: Java agent %s already running in JVM %s\n", res.AgentVersion, p)
 	default:
 		if res.Reason == attach.ReasonNoListener {
@@ -305,16 +344,21 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 	}
 }
 
-func (a *Attacher) finish(s *attachState, count func(*AttachStats), format string, args ...any) {
+// finish records the JVM's outcome: it counts it, reports event and logs.
+func (a *Attacher) finish(s *attachState, event string, count func(*AttachStats), format string, args ...any) {
 	a.mu.Lock()
 	s.done = true
 	count(&a.stats)
+	report := s.report
 	a.mu.Unlock()
+	if report != nil {
+		report(event)
+	}
 	printer.Stderr.Infof(format, args...)
 }
 
 func (a *Attacher) skip(s *attachState, reason, why string) {
-	a.finish(s, func(st *AttachStats) { st.Skipped[reason]++ },
+	a.finish(s, EventSkippedPrefix+reason, func(st *AttachStats) { st.Skipped[reason]++ },
 		"ebpf: Java agent not attached to JVM %s: %s\n", s.p, why)
 }
 
@@ -335,12 +379,16 @@ func (a *Attacher) fail(s *attachState, reason string, signalled bool, detail st
 		s.done = true
 		a.stats.Failed[reason]++
 	}
+	report := s.report
 	a.mu.Unlock()
 
 	if retry {
 		printer.Stderr.Warningf("ebpf: Java agent not attached to JVM %s yet (%s: %s); retrying in %s\n",
 			s.p, reason, detail, retryDelays[s.attempts-1])
 		return
+	}
+	if report != nil {
+		report(EventFailedPrefix + reason)
 	}
 	never := ""
 	if signalled {

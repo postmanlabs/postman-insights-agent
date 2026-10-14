@@ -76,6 +76,9 @@ type Args struct {
 	// EnableJava also loads the Java TLS programs. Collect captures the whole
 	// host, so it accepts frames from every process.
 	EnableJava bool
+
+	// DisableOpenSSL attaches no libssl uprobes, so only Java is captured.
+	DisableOpenSSL bool
 }
 
 // Defaults returns sensible default Args for production use.
@@ -93,7 +96,7 @@ func logJavaTLSStatus(requested bool, l *loader.Loader) {
 	switch {
 	case !requested:
 	case l.JavaEnabled():
-		printer.Stderr.Infof("ebpf: Java HTTPS capture enabled (experimental)\n")
+		printer.Stderr.Infof("ebpf: Java HTTPS capture enabled\n")
 	default:
 		printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: %v\n", l.JavaError())
 	}
@@ -247,7 +250,7 @@ func Collect(ctx context.Context, args Args) error {
 				jvms.Add(tgt.JVM)
 				ownedJVMs[tgt.PID] = tgt.JVM.Key()
 			}
-			if tgt.Lib == nil {
+			if tgt.Lib == nil || args.DisableOpenSSL {
 				continue
 			}
 			if err := mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {

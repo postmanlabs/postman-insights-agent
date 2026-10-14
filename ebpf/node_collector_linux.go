@@ -66,6 +66,9 @@ type NodeCollector struct {
 	rateCapPerSec uint32
 	// maxCaptureBytes is the initial BPF capture cap (may be lowered by thermostat).
 	maxCaptureBytes uint32
+	// openSSL attaches libssl uprobes to discovered processes; off when only
+	// Java is captured.
+	openSSL bool
 
 	mu sync.RWMutex
 	// netnsToSub is the primary routing table: pod netns inode -> subscribers.
@@ -109,6 +112,9 @@ type NodeCollectorConfig struct {
 	// EnableJava also loads the Java TLS programs, which accept frames only
 	// from the network namespaces of subscribed pods.
 	EnableJava bool
+
+	// DisableOpenSSL attaches no libssl uprobes, so only Java is captured.
+	DisableOpenSSL bool
 }
 
 // NewNodeCollector loads the eBPF programs once and returns a NodeCollector
@@ -152,6 +158,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		flowIdleTimeout: cfg.FlowIdleTimeout,
 		rateCapPerSec:   cfg.RateCapPerSec,
 		maxCaptureBytes: cfg.MaxCaptureBytes,
+		openSSL:         !cfg.DisableOpenSSL,
 		netnsToSub:      routeTable[uint64]{},
 		pidToSub:        routeTable[uint32]{},
 		hostNetns:       hostNetnsInode(),
@@ -260,11 +267,12 @@ func (nc *NodeCollector) releaseJavaNetns(netnsInode uint64) {
 }
 
 // addJVM writes the control file for a JVM in a subscribed pod, then queues
-// it for attaching, so an attached agent finds the file at once.
-func (nc *NodeCollector) addJVM(p *jvm.Process) {
+// it for attaching, so an attached agent finds the file at once. report, when
+// not nil, receives the attach telemetry events for the pod.
+func (nc *NodeCollector) addJVM(p *jvm.Process, report func(event string)) {
 	nc.jvms.Add(p)
 	if nc.attacher != nil {
-		nc.attacher.Add(p)
+		nc.attacher.Add(p, report)
 	}
 }
 
@@ -296,6 +304,15 @@ func (nc *NodeCollector) Thermostat() *Thermostat { return nc.therm }
 
 // Manager returns the uprobe manager handle, e.g. for telemetry.
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nc.mgr }
+
+// JVMStats returns what happened to the JVMs of subscribed pods so far, and
+// false when no JVMs are attached (Java capture off, or attach unavailable).
+func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) {
+	if nc.attacher == nil {
+		return jvm.AttachStats{}, false
+	}
+	return nc.attacher.Stats(), true
+}
 
 // Run starts the shared event-dispatch loop. It blocks until ctx is
 // cancelled. Call this in a dedicated goroutine.
@@ -386,7 +403,8 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 // (or namespace). netnsInode is the pod's network-namespace inode and is the
 // primary routing key (0 disables netns routing, falling back to PID).
 // factorySelector and procRoot mirror the apidump pipeline. out is owned by
-// the caller; it is never closed by Subscribe.
+// the caller; it is never closed by Subscribe. reportCount, when not nil,
+// receives the pod's telemetry counters (the attach outcome of its JVMs).
 //
 // Returns a cancel func and the pod's events.Adapter. Call cancel (and drain
 // out) when the pod terminates to unregister the pod and stop the subscription
@@ -399,8 +417,14 @@ func (nc *NodeCollector) Subscribe(
 	out chan<- akinet.ParsedNetworkTraffic,
 	procRoot string,
 	netnsInode uint64,
+	reportCount func(event string, count uint64),
 ) (context.CancelFunc, *events.Adapter) {
 	subCtx, cancel := context.WithCancel(ctx)
+
+	var reportJVM func(event string)
+	if reportCount != nil {
+		reportJVM = func(event string) { reportCount(event, 1) }
+	}
 
 	adapter := events.NewAdapter(factorySelector, out)
 	adapter.Resolver = events.NewResolverWithProcRoot(1*time.Second, procRoot)
@@ -486,10 +510,10 @@ func (nc *NodeCollector) Subscribe(
 				// Discovery emits a PID again when it gains libssl or
 				// becomes a JVM: add only what is new.
 				if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvmScope && !owned {
-					nc.addJVM(tgt.JVM)
+					nc.addJVM(tgt.JVM, reportJVM)
 					ownedJVMs[tgt.PID] = tgt.JVM.Key()
 				}
-				if _, owned := ownedPIDs[tgt.PID]; tgt.Lib == nil || owned {
+				if _, owned := ownedPIDs[tgt.PID]; tgt.Lib == nil || owned || !nc.openSSL {
 					continue
 				}
 				if err := nc.attachPID(tgt, sub); err != nil {

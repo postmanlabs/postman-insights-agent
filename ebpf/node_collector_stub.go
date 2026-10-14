@@ -15,6 +15,7 @@ import (
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 )
@@ -25,6 +26,7 @@ type NodeCollectorConfig struct {
 	FlowIdleTimeout   time.Duration
 	DisableThermostat bool
 	EnableJava        bool
+	DisableOpenSSL    bool
 }
 
 type NodeCollector struct{}
@@ -41,6 +43,8 @@ func (nc *NodeCollector) Loader() *loader.Loader    { return nil }
 func (nc *NodeCollector) Thermostat() *Thermostat   { return nil }
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nil }
 
+func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) { return jvm.AttachStats{}, false }
+
 func (nc *NodeCollector) Subscribe(
 	_ context.Context,
 	_ <-chan discovery.Target,
@@ -48,6 +52,7 @@ func (nc *NodeCollector) Subscribe(
 	_ chan<- akinet.ParsedNetworkTraffic,
 	_ string,
 	_ uint64,
+	_ func(string, uint64),
 ) (context.CancelFunc, *events.Adapter) {
 	return func() {}, nil
 }

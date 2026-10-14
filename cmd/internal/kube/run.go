@@ -1,7 +1,10 @@
 package kube
 
 import (
+	"slices"
+
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/daemonset"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/cobra"
 )
@@ -21,9 +24,14 @@ var (
 	httpsBodySizeCap     uint32
 	httpsCBPFExcludePort uint16
 	httpsNoThermostat    bool
+	httpsLibraries       []string
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
+	var libraries ebpf.Libraries
+	if enableHTTPSCapture {
+		libraries = ebpf.LibrariesFromFlag(httpsLibraries)
+	}
 	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
 		ReproMode:            reproMode,
 		RateLimit:            rateLimit,
@@ -37,6 +45,7 @@ func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 		HTTPSBodySizeCap:     httpsBodySizeCap,
 		HTTPSCBPFExcludePort: httpsCBPFExcludePort,
 		HTTPSNoThermostat:    httpsNoThermostat,
+		HTTPSLibraries:       libraries,
 	})
 	if err == nil {
 		return nil
@@ -127,6 +136,13 @@ func init() {
 		"no-thermostat",
 		false,
 		"Disable the CPU thermostat that lowers max-capture-bytes under load.",
+	)
+	runCmd.PersistentFlags().StringSliceVar(
+		&httpsLibraries,
+		"https-libraries",
+		slices.Clone(ebpf.DefaultLibraries),
+		"TLS libraries to capture HTTPS traffic from: openssl, java (preview). Without java, the Java agent "+
+			"in running JVMs of monitored pods goes dormant.",
 	)
 	runCmd.PersistentFlags().Uint16Var(
 		&httpsCBPFExcludePort,

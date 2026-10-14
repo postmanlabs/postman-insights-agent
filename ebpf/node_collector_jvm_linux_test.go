@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -243,7 +244,8 @@ func (j *testJVM) waitLog(t *testing.T, what string, d time.Duration) {
 }
 
 // subscribe subscribes this netns, where the test JVMs run, as a pod.
-func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector) (<-chan akinet.ParsedNetworkTraffic, context.CancelFunc) {
+// reportCount, when not nil, receives the pod's telemetry counters.
+func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector, reportCount func(string, uint64)) (<-chan akinet.ParsedNetworkTraffic, context.CancelFunc) {
 	t.Helper()
 	subCtx, cancel := context.WithCancel(ctx)
 	out := make(chan akinet.ParsedNetworkTraffic, 64)
@@ -253,7 +255,7 @@ func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector) (<-chan aki
 		NetnsInodeFilter: ownNetns(t),
 		JVMs:             true,
 	})
-	unsubscribe, _ := nc.Subscribe(subCtx, disco, httpSelector(t), out, "", ownNetns(t))
+	unsubscribe, _ := nc.Subscribe(subCtx, disco, httpSelector(t), out, "", ownNetns(t), reportCount)
 	return out, func() {
 		unsubscribe()
 		cancel()
@@ -306,7 +308,7 @@ func TestNodeCollectorJVMStatic(t *testing.T) {
 	j := f.start(t, 1000, nil, "-javaagent:"+f.agentJar)
 	j.waitLog(t, "dormant, not capturing: no control file", 10*time.Second)
 
-	out, unsubscribe := subscribe(t, ctx, nc)
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
 	// The agent checks its control file every 5 s.
 	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
 	expectCaptured(t, j, out, "from=static")
@@ -314,6 +316,29 @@ func TestNodeCollectorJVMStatic(t *testing.T) {
 	// The pod is no longer monitored: the agent is told to go dormant now,
 	// not when the file goes stale.
 	unsubscribe()
+	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
+}
+
+// TestNodeCollectorJVMJavaOff: an Insights agent with Java capture off
+// (--https-libraries=openssl) switches off the Java agent an earlier Insights
+// agent left capturing, at once rather than when its control file goes stale,
+// and attaches nothing.
+func TestNodeCollectorJVMJavaOff(t *testing.T) {
+	f := newJVMFixture(t)
+	j := f.start(t, 1000, nil, "-javaagent:"+f.agentJar)
+	// The earlier Insights agent, killed before it could switch the agent
+	// off: its control file stays enabled.
+	earlier := jvm.NewController(func() javatls.Control { return javatls.Control{Enabled: true, CaptureCap: 4096} })
+	earlier.Add(j.inspect(t))
+	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+
+	nc, ctx := testCollector(t, false)
+	if nc.attacher != nil {
+		t.Fatal("an attacher with Java capture off")
+	}
+	_, unsubscribe := subscribe(t, ctx, nc, nil)
+	defer unsubscribe()
+	// The agent checks its control file every 5 s; it goes stale after 60 s.
 	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
 }
 
@@ -344,7 +369,8 @@ func TestNodeCollectorJVMAttach(t *testing.T) {
 			go nc.attacher.Run(attachCtx)
 
 			j := f.start(t, 1000, tc.env, tc.jvmArgs...)
-			out, unsubscribe := subscribe(t, ctx, nc)
+			var counts eventCounts
+			out, unsubscribe := subscribe(t, ctx, nc, counts.add)
 			defer unsubscribe()
 			// The attacher waits until the JVM has run for 5 s.
 			j.waitLog(t, "loaded (attach)", 30*time.Second)
@@ -352,6 +378,8 @@ func TestNodeCollectorJVMAttach(t *testing.T) {
 			// The agent logs before the JVM answers the helper.
 			waitStats(t, nc.attacher, func(st jvm.AttachStats) bool { return st.Attached == 1 })
 			expectCaptured(t, j, out, "from="+strings.TrimPrefix(tc.name, "-"))
+			// The pod's telemetry shows the JVM and its attach.
+			counts.wait(t, map[string]uint64{jvm.EventSeen: 1, jvm.EventAttached: 1})
 			if strings.Contains(j.stdout.String(), "Full thread dump") {
 				t.Error("the attach printed a thread dump into the application's output")
 			}
@@ -359,7 +387,7 @@ func TestNodeCollectorJVMAttach(t *testing.T) {
 			// A restarted DaemonSet attaches nothing.
 			again := f.attacher(t)
 			go again.Run(attachCtx)
-			again.Add(j.inspect(t))
+			again.Add(j.inspect(t), nil)
 			waitStats(t, again, func(st jvm.AttachStats) bool { return st.AlreadyRunning == 1 })
 			if n := strings.Count(j.stderr.String(), "loaded (attach)"); n != 1 {
 				t.Errorf("agent loaded %d times", n)
@@ -387,7 +415,7 @@ func TestNodeCollectorJVMAttachInProgress(t *testing.T) {
 
 	nc.attacher = f.attacher(t)
 	go nc.attacher.Run(ctx)
-	_, unsubscribe := subscribe(t, ctx, nc)
+	_, unsubscribe := subscribe(t, ctx, nc, nil)
 	defer unsubscribe()
 	// 5 s until the JVM is old enough, then up to 10 s waiting for the
 	// other attach's listener.
@@ -439,7 +467,7 @@ func TestNodeCollectorJVMAttachDisabled(t *testing.T) {
 			go nc.attacher.Run(ctx)
 
 			j := f.start(t, tc.uid, tc.env, tc.jvmArgs...)
-			_, unsubscribe := subscribe(t, ctx, nc)
+			_, unsubscribe := subscribe(t, ctx, nc, nil)
 			defer unsubscribe()
 			waitStats(t, nc.attacher, func(st jvm.AttachStats) bool { return st.Skipped[jvm.SkipAttachDisabled] == 1 })
 			time.Sleep(time.Second)
@@ -483,4 +511,38 @@ func (j *testJVM) inspect(t *testing.T) *jvm.Process {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// eventCounts records telemetry counters.
+type eventCounts struct {
+	mu     sync.Mutex
+	counts map[string]uint64
+}
+
+func (c *eventCounts) add(event string, n uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = make(map[string]uint64)
+	}
+	c.counts[event] += n
+}
+
+func (c *eventCounts) get() map[string]uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.counts)
+}
+
+// wait waits until the counters are want: the attacher reports just after
+// it counts.
+func (c *eventCounts) wait(t *testing.T, want map[string]uint64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !maps.Equal(c.get(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("telemetry counters %v, want %v", c.get(), want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

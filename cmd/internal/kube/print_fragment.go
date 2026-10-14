@@ -41,32 +41,34 @@ var printTerraformFragmentCmd = &cobra.Command{
 	PersistentPreRun: kubeCommandPreRun,
 }
 
-func validateFragmentFlags() error {
+// validateFragmentFlags checks the flags and returns the --https-libraries
+// value for the generated agent.
+func validateFragmentFlags() (string, error) {
 	if !onboardDiscoveryMode && insightsProjectID == "" && onboardWorkspaceID == "" {
-		return cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
+		return "", cmderr.AkitaErr{Err: errors.New("exactly one of --project, --workspace-id, or --discovery-mode must be specified")}
 	}
 	if onboardWorkspaceID != "" {
 		if _, err := uuid.Parse(onboardWorkspaceID); err != nil {
-			return cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
+			return "", cmderr.AkitaErr{Err: errors.Wrap(err, "--workspace-id must be a valid UUID")}
 		}
 		if _, err := uuid.Parse(onboardSystemEnv); err != nil {
-			return cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
+			return "", cmderr.AkitaErr{Err: errors.Wrap(err, "--system-env must be a valid UUID")}
 		}
 	}
 	// API key is required for all onboarding modes.
 	if _, err := cmderr.RequirePostmanAPICredentials("The Postman Insights Agent must have an API key in order to capture traces."); err != nil {
-		return err
+		return "", err
 	}
 	// In project mode, also validate that the project exists.
 	if !onboardDiscoveryMode && onboardWorkspaceID == "" {
 		if err := cmderr.CheckAPIKeyAndInsightsProjectID(insightsProjectID); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return onboardHTTPSLibrariesArg()
 }
 
-func buildFragmentSidecarOpts(apidumpArgs []string) SidecarOpts {
+func buildFragmentSidecarOpts(apidumpArgs []string, httpsLibraries string) SidecarOpts {
 	return SidecarOpts{
 		ProjectID:          insightsProjectID,
 		WorkspaceID:        onboardWorkspaceID,
@@ -77,16 +79,18 @@ func buildFragmentSidecarOpts(apidumpArgs []string) SidecarOpts {
 		ClusterName:        onboardClusterName,
 		ApidumpArgs:        apidumpArgs,
 		EnableHTTPSCapture: onboardEnableHTTPSCapture,
+		HTTPSLibraries:     httpsLibraries,
 	}
 }
 
 func printHelmChartFragment(_ *cobra.Command, _ []string) error {
-	if err := validateFragmentFlags(); err != nil {
+	httpsLibraries, err := validateFragmentFlags()
+	if err != nil {
 		return err
 	}
 
 	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printHelmApidumpFlags)
-	opts := buildFragmentSidecarOpts(apidumpArgs)
+	opts := buildFragmentSidecarOpts(apidumpArgs, httpsLibraries)
 	container := createPostmanSidecar(opts)
 	containerArray := []v1.Container{container}
 
@@ -121,12 +125,13 @@ func printHelmChartFragment(_ *cobra.Command, _ []string) error {
 }
 
 func printTerraformFragment(_ *cobra.Command, _ []string) error {
-	if err := validateFragmentFlags(); err != nil {
+	httpsLibraries, err := validateFragmentFlags()
+	if err != nil {
 		return err
 	}
 
 	apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(printTFApidumpFlags)
-	opts := buildFragmentSidecarOpts(apidumpArgs)
+	opts := buildFragmentSidecarOpts(apidumpArgs, httpsLibraries)
 	hclBlockConfig := createTerraformContainer(opts)
 	hclBlockConfigString := indentCodeFragment(hclBlockConfig.Bytes(), 4)
 
@@ -186,15 +191,18 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 	for _, arg := range opts.ApidumpArgs {
 		argList = append(argList, cty.StringVal(arg))
 	}
-	// Append --enable-https-capture to args when requested.
-	if opts.EnableHTTPSCapture {
-		argList = append(argList, cty.StringVal("--enable-https-capture"))
+	// Append the HTTPS capture flags when requested.
+	for _, arg := range opts.httpsArgs() {
+		argList = append(argList, cty.StringVal(arg))
 	}
 	containerBody.SetAttributeValue("args", cty.ListVal(argList))
 
 	// Volume mounts required when HTTPS capture is enabled.
 	if opts.EnableHTTPSCapture {
-		for _, vm := range []struct{ name, path string; ro bool }{
+		for _, vm := range []struct {
+			name, path string
+			ro         bool
+		}{
 			{"sys-kernel-debug", "/sys/kernel/debug", false},
 			{"sys-fs-bpf", "/sys/fs/bpf", false},
 			{"host-proc", "/host/proc", true},
@@ -208,7 +216,7 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 		}
 		// Reminder comment for the human reading the generated TF.
 		rootBody.AppendUnstructuredTokens(hclwrite.Tokens{{
-			Type:  hclsyntax.TokenComment,
+			Type: hclsyntax.TokenComment,
 			Bytes: []byte("\n# When --enable-https-capture is used, also set spec.template.spec.host_pid = true\n" +
 				"# and add these volumes to spec.template.spec:\n" +
 				"#   volume { name = \"sys-kernel-debug\" host_path { path = \"/sys/kernel/debug\" } }\n" +
