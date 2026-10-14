@@ -61,24 +61,35 @@ struct {
     __type(value, struct java_rate_bucket);
 } java_rate_buckets SEC(".maps");
 
-#define NSEC_PER_SEC 1000000000ULL
+// Per-PID HEARTBEAT buckets, separate from the rate cap so that a busy agent
+// never looks dead, but still bounded: any process in an allowed netns can
+// write frames, and unlimited heartbeats would fill the shared ring buffer.
+// The agent sends one every 30 s; the bucket allows HEARTBEAT_BURST per
+// window, which leaves room for timing jitter at a window boundary.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u32);                   // tgid
+    __type(value, struct java_rate_bucket);
+} java_heartbeat_buckets SEC(".maps");
 
-// Takes one event from tgid's bucket; returns 0 when the bucket is empty.
-// Concurrent senders on other CPUs can race on a window change; the cap is
-// approximate there, never unbounded.
-static __always_inline int java_rate_take(__u32 tgid) {
-    __u32 cap = rate_cap_per_sec;
-    if (cap == 0) {
-        return 1;
-    }
+#define NSEC_PER_SEC 1000000000ULL
+#define HEARTBEAT_WINDOW_NS (30 * NSEC_PER_SEC)
+#define HEARTBEAT_BURST     3
+
+// Takes one event from tgid's bucket in buckets, which holds cap events per
+// window_ns; returns 0 when the bucket is empty. Concurrent senders on other
+// CPUs can race on a window change; the cap is approximate there, never
+// unbounded.
+static __always_inline int bucket_take(void *buckets, __u32 tgid, __u64 cap, __u64 window_ns) {
     __u64 now = bpf_ktime_get_ns();
-    struct java_rate_bucket *b = bpf_map_lookup_elem(&java_rate_buckets, &tgid);
+    struct java_rate_bucket *b = bpf_map_lookup_elem(buckets, &tgid);
     if (!b) {
         struct java_rate_bucket fresh = { .window_start_ns = now, .tokens = cap - 1 };
-        bpf_map_update_elem(&java_rate_buckets, &tgid, &fresh, BPF_NOEXIST);
+        bpf_map_update_elem(buckets, &tgid, &fresh, BPF_NOEXIST);
         return 1;
     }
-    if (now - b->window_start_ns >= NSEC_PER_SEC) {
+    if (now - b->window_start_ns >= window_ns) {
         b->window_start_ns = now;
         b->tokens = cap - 1;
         return 1;
@@ -89,6 +100,15 @@ static __always_inline int java_rate_take(__u32 tgid) {
         return 0;
     }
     return 1;
+}
+
+// Takes one data or CLOSE event from tgid's rate-cap bucket.
+static __always_inline int java_rate_take(__u32 tgid) {
+    __u32 cap = rate_cap_per_sec;
+    if (cap == 0) {
+        return 1;
+    }
+    return bucket_take(&java_rate_buckets, tgid, cap, NSEC_PER_SEC);
 }
 
 // Telemetry counters, per-CPU so increments are lock-free; userspace sums
@@ -102,7 +122,8 @@ static __always_inline int java_rate_take(__u32 tgid) {
 #define JAVA_CTR_NETNS_REJECTED    6  // sender not in an allowed netns
 #define JAVA_CTR_MALFORMED         7  // failed validation
 #define JAVA_CTR_CONTROL_FRAMES    8  // HEARTBEAT and CLOSE frames
-#define JAVA_CTR_MAX               9
+#define JAVA_CTR_HEARTBEAT_LIMITED 9  // HEARTBEATs over the per-PID limit
+#define JAVA_CTR_MAX               10
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -125,7 +146,8 @@ volatile const __u32 enforce_netns_allowlist = 1;
 
 // Emits a HEARTBEAT or CLOSE frame as a control_event. A CLOSE takes a token
 // from the sender's rate-cap bucket, like data; a HEARTBEAT (one per JVM every
-// 30 s) never does, so a busy agent never looks dead.
+// 30 s) takes one from its own bucket instead, so a busy agent never looks
+// dead.
 static __always_inline int emit_control(const struct java_frame_header *h, const __u8 *buf, __u32 netns) {
     java_counter_inc(JAVA_CTR_CONTROL_FRAMES, 1);
     __u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -138,6 +160,9 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
         }
         kind = EVENT_KIND_JAVA_CLOSE;
         to_copy = 0;
+    } else if (!bucket_take(&java_heartbeat_buckets, pid_tgid >> 32, HEARTBEAT_BURST, HEARTBEAT_WINDOW_NS)) {
+        java_counter_inc(JAVA_CTR_HEARTBEAT_LIMITED, 1);
+        return 0;
     }
     if (to_copy > MAX_CONTROL_PAYLOAD) {
         to_copy = MAX_CONTROL_PAYLOAD;
