@@ -31,9 +31,12 @@ func ParseHeartbeat(payload []byte) Heartbeat {
 		if !ok {
 			continue
 		}
-		num := func() uint64 {
-			n, _ := strconv.ParseUint(v, 10, 64)
-			return n
+		// num sets *field only when v is a valid number, so a malformed
+		// value never replaces a good one.
+		num := func(field *uint64) {
+			if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+				*field = n
+			}
 		}
 		switch k {
 		case HeartbeatKeyAgentVersion:
@@ -47,13 +50,13 @@ func ParseHeartbeat(payload []byte) Heartbeat {
 		case HeartbeatKeyState:
 			h.State = v
 		case HeartbeatKeyFrames:
-			h.Frames = num()
+			num(&h.Frames)
 		case HeartbeatKeyDropped:
-			h.Dropped = num()
+			num(&h.Dropped)
 		case HeartbeatKeyErrors:
-			h.Errors = num()
+			num(&h.Errors)
 		case HeartbeatKeyConnections:
-			h.Connections = num()
+			num(&h.Connections)
 		}
 	}
 	return h

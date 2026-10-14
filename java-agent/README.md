@@ -11,14 +11,16 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
 - **Hooks:** every public `wrap` and `unwrap` shape, not only the abstract 4-argument ones.
   Engines may override the other shapes without delegating to the abstract ones: Netty's OpenSSL engine does, and its `SslHandler` never calls the abstract `unwrap`.
   Only the outermost hooked call on a thread emits, so an overload that delegates to another, or a wrapper engine that delegates to another engine, does not emit twice.
-- **No allocation per call:** the per-thread call state is reused, and frames are built in a small pool of direct buffers shared by all threads (twice the CPUs, 4 to 32), each with its own `/dev/null` channel.
+- **No allocation per call on JDK 16+:** the per-thread call state is reused, and frames are built in a small pool of direct buffers shared by all threads (twice the CPUs, 4 to 32), each with its own `/dev/null` channel.
+  On JDK 8 to 15, copying from a direct or read-only buffer (Netty uses direct buffers) needs a view of it: one small, short-lived object per such buffer per call.
+  Heap buffers, which Tomcat and the JDK's HTTP server use, are copied without one on every JDK.
   When every buffer is busy, the frame is dropped and counted rather than making the application wait.
 - **Control file:** the agent captures only while `/tmp/.postman-insights/control` is fresh (under 60 s old), has a version it knows and says `enabled=1`; otherwise it is dormant, and the hooks return at once.
   The Insights Agent writes the file for monitored pods, so capture stops on its own when the pod is no longer monitored or the Insights Agent is removed.
   The agent checks it every 5 s, on its own daemon thread (`postman-insights-agent`).
 - **HEARTBEAT frames:** at start and every 30 s, whether capturing or dormant, the agent sends its version, the JVM's version and vendor, its state and its counters.
 - **JDK tools:** loaded through `JAVA_TOOL_OPTIONS`, the agent starts in every JVM in the container; it does nothing in the JDK's own tools (`jcmd`, `keytool`, `javac` and so on).
-- **Safety:** the advice never throws into application code, and 100 internal errors within 10 minutes switch the agent off until the JVM restarts.
+- **Safety:** the advice never throws into application code, and 100 internal errors within any 10 minutes switch the agent off until the JVM restarts.
 
 ## Contract with the Insights Agent
 

@@ -28,14 +28,16 @@ import javax.net.ssl.SSLEngine;
  * <p>Never throws into application code: every entry point catches
  * everything, and too many internal errors switch the bridge off.
  *
- * <p>A hooked call allocates nothing in the steady state: per-thread call
- * state is reused, and frames are built in a small pool of direct buffers
- * shared by all threads (not one per thread, which virtual threads would
- * multiply). When every buffer is busy the frame is dropped and counted,
- * rather than making the application wait.
+ * <p>A hooked call allocates nothing in the steady state on JDK 16+:
+ * per-thread call state is reused, and frames are built in a small pool of
+ * direct buffers shared by all threads (not one per thread, which virtual
+ * threads would multiply). On JDK 8 to 15, copying from a direct or read-only
+ * buffer needs a view of it, one small object per such buffer per call. When
+ * every frame buffer is busy the frame is dropped and counted, rather than
+ * making the application wait.
  */
 public final class Bridge {
-    /** Internal errors within ERROR_WINDOW_NANOS after which the bridge switches itself off. */
+    /** Internal errors within any ERROR_WINDOW_NANOS after which the bridge switches itself off. */
     static final int ERROR_BUDGET = 100;
     private static final long ERROR_WINDOW_NANOS = TimeUnit.MINUTES.toNanos(10);
 
@@ -85,8 +87,10 @@ public final class Bridge {
     private static final LongAdder DROPPED = new LongAdder();
     private static final LongAdder ERRORS = new LongAdder();
     private static final Object ERROR_LOCK = new Object();
-    private static long errorWindowStart;
-    private static int errorsInWindow;
+    /** When the last ERROR_BUDGET errors happened (System.nanoTime); the oldest is at errorNext once full. */
+    private static final long[] ERROR_TIMES = new long[ERROR_BUDGET];
+    private static int errorNext;
+    private static int errorCount;
 
     private Bridge() {}
 
@@ -181,7 +185,8 @@ public final class Bridge {
         controlEnabled = false;
         broken = false;
         synchronized (ERROR_LOCK) {
-            errorsInWindow = 0;
+            errorNext = 0;
+            errorCount = 0;
         }
         started = true;
         update();
@@ -500,15 +505,29 @@ public final class Bridge {
     }
 
     static void error() {
+        error(System.nanoTime());
+    }
+
+    /**
+     * Counts an internal error at {@code now}. Switches the bridge off once
+     * ERROR_BUDGET errors fall within ERROR_WINDOW_NANOS of each other: a
+     * rolling window over the last ERROR_BUDGET errors, so a burst is caught
+     * wherever it starts.
+     */
+    static void error(long now) {
         ERRORS.increment();
-        long now = System.nanoTime();
         boolean switchOff;
         synchronized (ERROR_LOCK) {
-            if (errorsInWindow == 0 || now - errorWindowStart > ERROR_WINDOW_NANOS) {
-                errorWindowStart = now;
-                errorsInWindow = 0;
+            ERROR_TIMES[errorNext] = now;
+            errorNext = (errorNext + 1) % ERROR_BUDGET;
+            if (errorCount < ERROR_BUDGET) {
+                errorCount++;
             }
-            switchOff = ++errorsInWindow == ERROR_BUDGET && !broken;
+            // Once full, errorNext is the oldest of the last ERROR_BUDGET errors.
+            switchOff = errorCount == ERROR_BUDGET && now - ERROR_TIMES[errorNext] <= ERROR_WINDOW_NANOS && !broken;
+            if (switchOff) {
+                broken = true;
+            }
         }
         if (switchOff) {
             switchOff();

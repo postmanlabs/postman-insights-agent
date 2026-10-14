@@ -333,6 +333,31 @@ class BridgeTest {
         assertTrue(log.frames().isEmpty());
     }
 
+    /** 100 errors within any 10 minutes, however they line up with the first error. */
+    @Test
+    void errorBudgetIsARollingWindow() throws Exception {
+        long minute = java.util.concurrent.TimeUnit.MINUTES.toNanos(1);
+        long t0 = System.nanoTime();
+        // Errors spread out: never 100 within 10 minutes.
+        for (int i = 0; i < 3 * Bridge.ERROR_BUDGET; i++) {
+            Bridge.error(t0 + i * minute / 9);
+        }
+        assertEquals(Contract.HEARTBEAT_STATE_ACTIVE, Bridge.state());
+
+        // One error, then a burst that straddles the 10-minute mark after it.
+        Bridge.start(CAP, log.path());
+        Bridge.control(true, CAP);
+        Bridge.error(t0);
+        for (int i = 0; i < Bridge.ERROR_BUDGET - 2; i++) {
+            Bridge.error(t0 + 9 * minute + 59 * minute / 60);
+        }
+        assertEquals(Contract.HEARTBEAT_STATE_ACTIVE, Bridge.state());
+        Bridge.error(t0 + 10 * minute + minute / 60);
+        assertEquals(Contract.HEARTBEAT_STATE_ACTIVE, Bridge.state(), "99 errors in the last 10 minutes");
+        Bridge.error(t0 + 10 * minute + minute / 60);
+        assertEquals(Contract.HEARTBEAT_STATE_OFF, Bridge.state(), "100 errors within 2 minutes");
+    }
+
     @Test
     void heartbeatIsSentWhileDormant() throws Exception {
         Bridge.control(false, CAP);

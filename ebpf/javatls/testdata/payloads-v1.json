@@ -118,6 +118,22 @@
         "errors": 0,
         "connections": 0
       }
+    },
+    {
+      "name": "a malformed number keeps the earlier value",
+      "canonical": false,
+      "payload": "agent_version=0.3.0\nframes=12\nframes=lots\ndropped=-1\n",
+      "fields": {
+        "agent_version": "0.3.0",
+        "java_version": "",
+        "java_vendor": "",
+        "source": "",
+        "state": "",
+        "frames": 12,
+        "dropped": 0,
+        "errors": 0,
+        "connections": 0
+      }
     }
   ]
 }
