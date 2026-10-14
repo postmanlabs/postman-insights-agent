@@ -15,7 +15,10 @@ import (
 // JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS and argument files, which the command
 // line does not show.
 
-// perfDataMagic is the file's first four bytes, in either byte order.
+// perfDataMagic is the file's first four bytes, whatever its byte order:
+// HotSpot stores the magic big-endian on every platform (on little-endian
+// ones it writes 0xc0c0feca), and the byte after it gives the order of
+// everything else. A little-endian file starts ca fe c0 c0 01.
 var perfDataMagic = []byte{0xca, 0xfe, 0xc0, 0xc0}
 
 const (
