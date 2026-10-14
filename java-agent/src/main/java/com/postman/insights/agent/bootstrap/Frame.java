@@ -35,7 +35,7 @@ public final class Frame {
 
     public static final byte OP_SEND = 1;
     public static final byte OP_RECV = 2;
-    public static final byte OP_HELLO = 3;
+    public static final byte OP_HEARTBEAT = 3;
     public static final byte OP_CLOSE = 4;
 
     public static final short FLAG_ROLE_KNOWN = 0x1;

@@ -191,7 +191,7 @@ func TestKernelHeaderInSync(t *testing.T) {
 		"JAVA_FRAME_HEADER_SIZE":      HeaderSize,
 		"JAVA_FRAME_OP_SEND":          uint64(OpSend),
 		"JAVA_FRAME_OP_RECV":          uint64(OpRecv),
-		"JAVA_FRAME_OP_HELLO":         uint64(OpHello),
+		"JAVA_FRAME_OP_HEARTBEAT":     uint64(OpHeartbeat),
 		"JAVA_FRAME_OP_CLOSE":         uint64(OpClose),
 		"JAVA_FRAME_FLAG_ROLE_KNOWN":  uint64(FlagRoleKnown),
 		"JAVA_FRAME_FLAG_CLIENT_MODE": uint64(FlagClientMode),

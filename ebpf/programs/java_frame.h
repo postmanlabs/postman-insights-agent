@@ -32,10 +32,10 @@
 #define JAVA_FRAME_HEADER_SIZE 40
 
 // op values.
-#define JAVA_FRAME_OP_SEND  1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
-#define JAVA_FRAME_OP_RECV  2 // plaintext the JVM received (produced by SSLEngine.unwrap)
-#define JAVA_FRAME_OP_HELLO 3 // agent heartbeat; payload is key=value lines
-#define JAVA_FRAME_OP_CLOSE 4 // connection closed; no payload
+#define JAVA_FRAME_OP_SEND      1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
+#define JAVA_FRAME_OP_RECV      2 // plaintext the JVM received (produced by SSLEngine.unwrap)
+#define JAVA_FRAME_OP_HEARTBEAT 3 // agent liveness and status; payload is key=value lines
+#define JAVA_FRAME_OP_CLOSE     4 // connection closed; no payload
 
 // flags bits.
 #define JAVA_FRAME_FLAG_ROLE_KNOWN  0x1 // the client/server role is known

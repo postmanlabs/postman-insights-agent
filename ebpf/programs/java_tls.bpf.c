@@ -101,7 +101,7 @@ static __always_inline int java_rate_take(__u32 tgid) {
 #define JAVA_CTR_RATE_CAPPED       5  // dropped by the per-PID rate cap
 #define JAVA_CTR_NETNS_REJECTED    6  // sender not in an allowed netns
 #define JAVA_CTR_MALFORMED         7  // failed validation
-#define JAVA_CTR_CONTROL_FRAMES    8  // HELLO and CLOSE frames (not forwarded yet)
+#define JAVA_CTR_CONTROL_FRAMES    8  // HEARTBEAT and CLOSE frames (not forwarded yet)
 #define JAVA_CTR_MAX               9
 
 struct {
@@ -158,7 +158,7 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     } else if (h.op == JAVA_FRAME_OP_RECV) {
         direction = DIR_INGRESS;
     } else {
-        // TODO(INS-363): forward HELLO (agent telemetry) and CLOSE (free the
+        // TODO(INS-363): forward HEARTBEAT (agent telemetry) and CLOSE (free the
         // connection's flow state early) to userspace.
         java_counter_inc(JAVA_CTR_CONTROL_FRAMES, 1);
         return 0;

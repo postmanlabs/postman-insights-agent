@@ -66,7 +66,7 @@ func TestJavaFrameInSync(t *testing.T) {
 		"HEADER_SIZE":      num(HeaderSize),
 		"OP_SEND":          num(uint64(OpSend)),
 		"OP_RECV":          num(uint64(OpRecv)),
-		"OP_HELLO":         num(uint64(OpHello)),
+		"OP_HEARTBEAT":     num(uint64(OpHeartbeat)),
 		"OP_CLOSE":         num(uint64(OpClose)),
 		"FLAG_ROLE_KNOWN":  num(uint64(FlagRoleKnown)),
 		"FLAG_CLIENT_MODE": num(uint64(FlagClientMode)),

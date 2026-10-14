@@ -37,10 +37,10 @@ const HeaderSize = 40
 
 // Op values.
 const (
-	OpSend  uint8 = 1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
-	OpRecv  uint8 = 2 // plaintext the JVM received (produced by SSLEngine.unwrap)
-	OpHello uint8 = 3 // agent heartbeat; payload is key=value lines
-	OpClose uint8 = 4 // connection closed; no payload
+	OpSend      uint8 = 1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
+	OpRecv      uint8 = 2 // plaintext the JVM received (produced by SSLEngine.unwrap)
+	OpHeartbeat uint8 = 3 // agent liveness and status; payload is key=value lines
+	OpClose     uint8 = 4 // connection closed; no payload
 )
 
 // Flag bits.
