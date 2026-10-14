@@ -28,6 +28,7 @@ package ebpf
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -121,6 +122,10 @@ type NodeCollectorConfig struct {
 // NewNodeCollector loads the eBPF programs once and returns a NodeCollector
 // ready to run. The caller must call Run(ctx) to start the event loop, and
 // Close() when done (typically deferred).
+//
+// The Java programs failing to load is not an error: the collector then
+// captures without Java (Libraries). It fails when that leaves nothing to
+// capture.
 func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 	if cfg.MaxCaptureBytes == 0 {
 		cfg.MaxCaptureBytes = 4096
@@ -145,6 +150,11 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		return nil, err
 	}
 	logJavaTLSStatus(cfg.EnableJava, l)
+	if !l.JavaEnabled() && cfg.DisableOpenSSL {
+		_ = l.Close()
+		return nil, fmt.Errorf("ebpf: none of the TLS libraries asked for (%s) can be captured",
+			Libraries{OpenSSL: !cfg.DisableOpenSSL, Java: cfg.EnableJava})
+	}
 
 	var therm *Thermostat
 	if !cfg.DisableThermostat {
@@ -240,14 +250,10 @@ func (nc *NodeCollector) releasePID(pid uint32, sub *podSub) (bool, error) {
 	return true, nc.mgr.Detach(pid)
 }
 
-// allowJavaNetns accepts Java frames from a subscribed pod's netns. It
-// refuses the node's own netns, shared by hostNetwork pods and host processes.
+// allowJavaNetns accepts Java frames from a subscribed pod's netns, when
+// JavaPodSkipReason allows Java for the pod.
 func (nc *NodeCollector) allowJavaNetns(netnsInode uint64) bool {
-	if !nc.ldr.JavaEnabled() || netnsInode == 0 {
-		return false
-	}
-	if netnsInode == nc.hostNetns {
-		printer.Stderr.Infof("ebpf: Java HTTPS capture skipped for a pod on the host network (netns %d)\n", netnsInode)
+	if !nc.ldr.JavaEnabled() || JavaPodSkipReason(netnsInode, nc.hostNetns) != "" {
 		return false
 	}
 	nc.mu.Lock()
@@ -320,6 +326,10 @@ func (nc *NodeCollector) Thermostat() *Thermostat { return nc.therm }
 
 // Manager returns the uprobe manager handle, e.g. for telemetry.
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nc.mgr }
+
+// HostNetns returns the network namespace inode of the node, or 0 when
+// unknown; see JavaPodSkipReason.
+func (nc *NodeCollector) HostNetns() uint64 { return nc.hostNetns }
 
 // Libraries returns the TLS libraries nc captures from: those it was
 // configured for, without Java when the Java programs did not load.
@@ -468,9 +478,8 @@ func (nc *NodeCollector) Subscribe(
 	// Java frames are accepted per pod netns, the same key events route on.
 	javaNetns := nc.allowJavaNetns(netnsInode)
 	// The JVMs of a pod known by its own netns get control files, also with
-	// Java capture off (to switch earlier agents off). Never on the host
-	// network, where a netns does not identify one pod.
-	jvmScope := netnsInode != 0 && netnsInode != nc.hostNetns
+	// Java capture off (to switch earlier agents off).
+	jvmScope := JavaPodSkipReason(netnsInode, nc.hostNetns) == ""
 
 	go func() {
 		// Track which PIDs this subscription registered so we can clean up on

@@ -108,15 +108,31 @@ type recordingTracker struct {
 
 func (r *recordingTracker) WorkflowStep(step, detail string) { r.onStep(step, detail) }
 
-// With no TLS library selected HTTPS capture is off, so pcap must keep the
-// TLS port.
-func TestHTTPSSelected(t *testing.T) {
+// prepareHTTPSCapture decides whether HTTPS capture runs, before the pcap
+// filters are final: pcap leaves out the TLS port only when it does.
+func TestPrepareHTTPSCapture(t *testing.T) {
 	var a Args
-	assert.False(t, a.httpsSelected())
+	assert.Nil(t, prepareHTTPSCapture(&a), "HTTPS capture off")
+
+	// The DaemonSet chose the pod's libraries, and the NodeCollector loaded
+	// the programs for the node.
 	a.HTTPS.Enabled = true
-	assert.False(t, a.httpsSelected(), "enabled with no library")
 	a.HTTPS.Libraries = ebpf.Libraries{Java: true}
-	assert.True(t, a.httpsSelected())
-	a.HTTPS.Enabled = false
-	assert.False(t, a.httpsSelected())
+	a.HTTPS.NodeCollector = &ebpf.NodeCollector{}
+	h := prepareHTTPSCapture(&a)
+	if assert.NotNil(t, h) {
+		assert.Equal(t, ebpf.Libraries{Java: true}, h.libraries)
+		assert.Nil(t, h.standalone)
+	}
+}
+
+// pcap leaves out the TLS port only when HTTPS capture runs.
+func TestHTTPSCapturePcapFilters(t *testing.T) {
+	filters := map[string]string{"eth0": "tcp"}
+	var off *httpsCapture
+	assert.Equal(t, filters, off.pcapFilters(filters, 443), "HTTPS capture not running")
+	on := &httpsCapture{libraries: ebpf.Libraries{OpenSSL: true}}
+	assert.Equal(t, filters, on.pcapFilters(filters, 0), "no port to leave out")
+	assert.Equal(t, excludePortFromBPF(filters, 443), on.pcapFilters(filters, 443))
+	assert.NotEqual(t, filters, on.pcapFilters(filters, 443))
 }

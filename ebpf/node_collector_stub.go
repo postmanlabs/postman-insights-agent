@@ -44,6 +44,7 @@ func (nc *NodeCollector) Thermostat() *Thermostat   { return nil }
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nil }
 
 func (nc *NodeCollector) Libraries() Libraries { return Libraries{} }
+func (nc *NodeCollector) HostNetns() uint64    { return 0 }
 
 func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) { return jvm.AttachStats{}, false }
 

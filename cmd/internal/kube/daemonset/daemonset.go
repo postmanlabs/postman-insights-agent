@@ -48,8 +48,8 @@ type DaemonsetArgs struct {
 	HTTPSBodySizeCap     uint32 // 0 = default (16384 bytes)
 	HTTPSCBPFExcludePort uint16 // 0 = no cBPF port exclusion; kube run defaults to 443
 	HTTPSNoThermostat    bool
-	// HTTPSLibraries are the TLS libraries to capture; with none, HTTPS
-	// capture is off.
+	// HTTPSLibraries are the TLS libraries to capture, at least one when
+	// EnableHTTPSCapture is set (ebpf.HTTPSCaptureFromFlags).
 	HTTPSLibraries ebpf.Libraries
 }
 
@@ -75,7 +75,12 @@ type Daemonset struct {
 	HTTPSBodySizeCap     uint32
 	HTTPSCBPFExcludePort uint16
 	HTTPSNoThermostat    bool
-	HTTPSLibraries       ebpf.Libraries
+	// HTTPSLibraries are the TLS libraries the node captures from: those
+	// asked for, without Java when its programs did not load.
+	HTTPSLibraries ebpf.Libraries
+	// httpsHostNetns is the node's network namespace inode, for
+	// ebpf.Libraries.ForPod.
+	httpsHostNetns uint64
 
 	// EBPFNodeCollector is a node-scoped shared eBPF collector initialised once
 	// per agent pod when EnableHTTPSCapture is true. Nil when HTTPS capture is
@@ -370,9 +375,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 	// Initialise a shared NodeCollector once per agent pod when HTTPS capture
 	// is enabled. This loads the eBPF programs exactly once for all pods on
 	// this node, instead of once per monitored pod.
-	// With no library selected there is nothing to capture, and every pod
-	// runs without HTTPS capture (buildHTTPSArgs).
-	if args.EnableHTTPSCapture && !args.HTTPSLibraries.None() {
+	if args.EnableHTTPSCapture {
 		nc, err := ebpf.NewNodeCollector(ebpf.NodeCollectorConfig{
 			MaxCaptureBytes:   args.HTTPSBodySizeCap,
 			RateCapPerSec:     args.HTTPSRateCapPerSec,
@@ -380,21 +383,16 @@ func StartDaemonset(args DaemonsetArgs) error {
 			EnableJava:        args.HTTPSLibraries.Java,
 			DisableOpenSSL:    !args.HTTPSLibraries.OpenSSL,
 		})
-		// The Java programs failing to load is not an error: the collector
-		// then captures without Java, and pods are captured from what it has.
-		switch {
-		case err != nil:
+		if err != nil {
 			printer.Warningf(
 				"ebpf: failed to initialise node-scoped BPF collector (%v); "+
 					"HTTPS capture will be disabled for all monitored pods on this node.\n", err)
-		case nc.Libraries().None():
-			_ = nc.Close()
-			printer.Warningf(
-				"ebpf: none of the selected TLS libraries (%s) can be captured on this node; "+
-					"HTTPS capture will be disabled for all monitored pods on this node.\n", args.HTTPSLibraries)
-		default:
+		} else {
+			// Pods are captured from what the collector captures from:
+			// without Java when its programs did not load (buildHTTPSArgs).
 			daemonsetRun.EBPFNodeCollector = nc
 			daemonsetRun.HTTPSLibraries = nc.Libraries()
+			daemonsetRun.httpsHostNetns = nc.HostNetns()
 			printer.Infof("ebpf: node-scoped BPF collector initialised for %s (one loader for all pods on this node)\n",
 				daemonsetRun.HTTPSLibraries)
 		}
