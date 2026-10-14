@@ -13,6 +13,8 @@ import (
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -172,6 +174,17 @@ func Collect(ctx context.Context, args Args) error {
 		args.HookLoader(l, therm, mgr, adapter)
 	}
 
+	// Collect captures the whole host, so with Java capture on it controls
+	// every JVM it discovers.
+	var jvms *jvm.Controller
+	if args.EnableJava {
+		jvms = jvm.NewController(func() javatls.Control {
+			return javaControl(true, l, therm, args.MaxCaptureBytes)
+		})
+		go jvms.Run(ctx)
+	}
+	ownedJVMs := make(map[uint32]jvm.Key)
+
 	var disco <-chan discovery.Target
 	if args.Discovery != nil {
 		disco = args.Discovery
@@ -184,6 +197,7 @@ func Collect(ctx context.Context, args Args) error {
 		// root-ns PIDs separately and reads /host/proc directly.
 		disco = discovery.WatchWith(ctx, discovery.WatchOpts{
 			Interval: args.DiscoveryInterval,
+			JVMs:     args.EnableJava,
 		})
 	}
 
@@ -213,6 +227,10 @@ func Collect(ctx context.Context, args Args) error {
 				continue
 			}
 			if tgt.Removed {
+				if k, ok := ownedJVMs[tgt.PID]; ok {
+					delete(ownedJVMs, tgt.PID)
+					jvms.Remove(k)
+				}
 				if err := mgr.Detach(tgt.PID); err != nil {
 					printer.Debugf("ebpf: detach pid=%d failed: %v\n", tgt.PID, err)
 				} else {
@@ -221,6 +239,15 @@ func Collect(ctx context.Context, args Args) error {
 				if adapter.Resolver != nil {
 					adapter.Resolver.Forget(tgt.PID)
 				}
+				continue
+			}
+			// Discovery emits a PID again when it gains libssl or becomes
+			// a JVM; the uprobes manager attaches a PID's libssl once.
+			if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvms != nil && !owned {
+				jvms.Add(tgt.JVM)
+				ownedJVMs[tgt.PID] = tgt.JVM.Key()
+			}
+			if tgt.Lib == nil {
 				continue
 			}
 			if err := mgr.AttachLibSSL(tgt.PID, tgt.Lib.HostPath, tgt.Lib.Static); err != nil {
