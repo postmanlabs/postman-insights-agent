@@ -32,8 +32,16 @@ func writeFakeProc(t *testing.T, root string, pid uint32, startTime uint64, maps
 		"ns/net": "",
 	}
 	for name, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
+		writeAtomic(t, filepath.Join(dir, name), content)
 	}
+}
+
+// writeAtomic replaces a fake /proc file in one step, as the kernel does: a
+// scan running meanwhile must not read it empty.
+func writeAtomic(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path+".tmp", []byte(content), 0o644))
+	require.NoError(t, os.Rename(path+".tmp", path))
 }
 
 const libjvmMaps = "7f00-7f01 r-xp 00000000 fd:00 1 /opt/java/openjdk/lib/server/libjvm.so\n"
@@ -101,6 +109,43 @@ func TestWatchPIDReuse(t *testing.T) {
 	gone = next(t, ch)
 	assert.True(t, gone.Removed)
 	assert.Equal(t, uint64(2000), gone.StartTime)
+}
+
+// A JVM that loads libssl after it was first seen is emitted again, with
+// libssl, so its uprobes get attached; a scan that misses the mapping once
+// emits nothing.
+func TestWatchEmitsLibSSLLoadedLater(t *testing.T) {
+	root := t.TempDir()
+	writeFakeProc(t, root, 4242, 1000, libjvmMaps)
+	lib := filepath.Join(root, "4242", "root", "usr", "lib", "libssl.so.3")
+	require.NoError(t, os.MkdirAll(filepath.Dir(lib), 0o755))
+	require.NoError(t, os.WriteFile(lib, nil, 0o644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := WatchWith(ctx, WatchOpts{Interval: 20 * time.Millisecond, ProcRoot: root, JVMs: true})
+	first := next(t, ch)
+	require.NotNil(t, first.JVM)
+	require.Nil(t, first.Lib)
+
+	withSSL := libjvmMaps + "7f02-7f03 r-xp 00000000 fd:00 2 /usr/lib/libssl.so.3\n"
+	writeAtomic(t, filepath.Join(root, "4242", "maps"), withSSL)
+	update := next(t, ch)
+	assert.False(t, update.Removed)
+	assert.Equal(t, uint32(4242), update.PID)
+	assert.Equal(t, uint64(1000), update.StartTime)
+	require.NotNil(t, update.Lib)
+	assert.NotNil(t, update.JVM)
+
+	// Missing once, then back: no events.
+	writeAtomic(t, filepath.Join(root, "4242", "maps"), libjvmMaps)
+	time.Sleep(100 * time.Millisecond)
+	writeAtomic(t, filepath.Join(root, "4242", "maps"), withSSL)
+	select {
+	case tgt := <-ch:
+		t.Fatalf("unexpected event %+v", tgt)
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 // The netns filter is applied before a process's maps are read.

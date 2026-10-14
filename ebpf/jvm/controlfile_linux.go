@@ -7,6 +7,7 @@ package jvm
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strconv"
@@ -34,14 +35,46 @@ var errNoControlDir = errors.New("no control directory")
 // (openat2 RESOLVE_IN_ROOT). Otherwise the container could plant a symlink
 // that sends root's write anywhere on the node.
 
-// openRoot opens the root directory of p's container.
+// errExited is returned when a JVM exited, even if its PID now belongs to
+// another process.
+var errExited = errors.New("the JVM exited")
+
+// openRoot opens the root directory of p's container. It opens it through
+// p's /proc/<pid> directory after checking the process's start time: the open
+// directory keeps referring to the process it was opened for, so when p has
+// exited and its PID was reused, this fails rather than opening the new
+// process's container.
 func openRoot(p *Process) (int, error) {
-	rootPath := path.Join(p.ProcRoot, strconv.FormatUint(uint64(p.PID), 10), "root")
-	root, err := unix.Open(rootPath, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	dirPath := path.Join(p.ProcRoot, strconv.FormatUint(uint64(p.PID), 10))
+	dir, err := unix.Open(dirPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return -1, fmt.Errorf("open %s: %w", rootPath, err)
+		return -1, fmt.Errorf("open %s: %w", dirPath, err)
+	}
+	defer unix.Close(dir)
+	if start, err := startTimeAt(dir); err != nil || start != p.StartTime {
+		return -1, errExited
+	}
+	root, err := unix.Openat(dir, "root", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open %s/root: %w", dirPath, err)
 	}
 	return root, nil
+}
+
+// startTimeAt returns the start time of the process whose /proc directory is
+// open as dir.
+func startTimeAt(dir int) (uint64, error) {
+	fd, err := unix.Openat(dir, "stat", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return 0, err
+	}
+	f := os.NewFile(uintptr(fd), "stat")
+	defer f.Close()
+	stat, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return 0, err
+	}
+	return parseStartTime(stat)
 }
 
 // openIn opens name inside the container whose root is open as root.

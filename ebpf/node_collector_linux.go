@@ -483,11 +483,13 @@ func (nc *NodeCollector) Subscribe(
 					continue
 				}
 
-				if tgt.JVM != nil && jvmScope {
+				// Discovery emits a PID again when it gains libssl or
+				// becomes a JVM: add only what is new.
+				if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvmScope && !owned {
 					nc.addJVM(tgt.JVM)
 					ownedJVMs[tgt.PID] = tgt.JVM.Key()
 				}
-				if tgt.Lib == nil {
+				if _, owned := ownedPIDs[tgt.PID]; tgt.Lib == nil || owned {
 					continue
 				}
 				if err := nc.attachPID(tgt, sub); err != nil {

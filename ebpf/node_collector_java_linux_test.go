@@ -19,6 +19,7 @@ import (
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 )
@@ -306,4 +307,26 @@ func TestNodeCollectorSharedPIDKeepsProbes(t *testing.T) {
 	discoB <- discovery.Target{PID: pid, Removed: true, Seen: time.Now()}
 	waitFor("probes still attached after the last subscription released the PID",
 		func() bool { return nc.mgr.ProbeCount(pid) == 0 })
+}
+
+// TestNodeCollectorRepeatedJVMTarget: discovery emits a JVM again when it
+// loads libssl; the JVM is still added once, so one Removed forgets it.
+func TestNodeCollectorRepeatedJVMTarget(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	disco := make(chan discovery.Target)
+	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t))
+	defer unsubscribe()
+
+	// A PID that does not exist: the control file cannot be written, which
+	// only logs.
+	p := &jvm.Process{ProcRoot: "/proc", PID: 1 << 30, StartTime: 1, Kind: jvm.HotSpot, MountNS: 1}
+	tgt := discovery.Target{PID: p.PID, StartTime: p.StartTime, JVM: p, Seen: time.Now()}
+	disco <- tgt
+	disco <- tgt
+	disco <- discovery.Target{PID: p.PID, StartTime: p.StartTime, Removed: true, Seen: time.Now()}
+	// Handled one at a time: once the next is taken, the Removed is done.
+	disco <- discovery.Target{PID: 1<<30 + 1, Removed: true, Seen: time.Now()}
+	if n := nc.jvms.Len(); n != 0 {
+		t.Fatalf("%d JVMs still controlled after the JVM was removed", n)
+	}
 }

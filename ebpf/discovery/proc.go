@@ -24,7 +24,10 @@ import (
 )
 
 // Target represents a discovery event: a process newly seen, or a process
-// that disappeared. The receiver branches on Removed.
+// that disappeared. The receiver branches on Removed. A process is emitted
+// again, with the same PID and start time, when it gains a libssl mapping or
+// becomes a JVM after it was first emitted, so receivers must treat a PID
+// they already have as an update.
 type Target struct {
 	PID uint32
 	// StartTime is when the process started (clock ticks after boot). A PID
@@ -166,6 +169,13 @@ func Watch(ctx context.Context, interval time.Duration) <-chan Target {
 	return WatchWith(ctx, WatchOpts{Interval: interval})
 }
 
+// gained reports whether a process seen as prev is now also something it was
+// not: a libssl user or a JVM. A mapping that is missing from one scan (the
+// process is changing its maps) is not a change.
+func gained(prev, now Target) bool {
+	return (prev.Lib == nil && now.Lib != nil) || (prev.JVM == nil && now.JVM != nil)
+}
+
 // pidNetnsInode returns the network-namespace inode for pid by stat-ing
 // <procRoot>/<pid>/ns/net. Returns 0 on any error (treated as "no match").
 func pidNetnsInode(procRoot string, pid uint32) uint64 {
@@ -232,6 +242,18 @@ func WatchWith(ctx context.Context, opts WatchOpts) <-chan Target {
 			for pid, tgt := range current {
 				if prev, was := seen[pid]; was {
 					if prev.StartTime == tgt.StartTime {
+						if !gained(prev, tgt) {
+							continue
+						}
+						// Seen before, but it now maps libssl (loaded
+						// after start) or is a JVM (exec'd): emit the
+						// update.
+						select {
+						case out <- tgt:
+							seen[pid] = tgt
+						case <-ctx.Done():
+							return
+						}
 						continue
 					}
 					// The PID was reused: the process seen before is gone.

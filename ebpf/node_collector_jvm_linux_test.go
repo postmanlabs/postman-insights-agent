@@ -368,6 +368,47 @@ func TestNodeCollectorJVMAttach(t *testing.T) {
 	}
 }
 
+// TestNodeCollectorJVMAttachInProgress: while another attach owns the JVM's
+// trigger file (an Insights agent being replaced, or jcmd), the attacher does
+// not signal the JVM, since a second SIGQUIT could print a thread dump; it
+// retries, and attaches once the trigger is gone.
+func TestNodeCollectorJVMAttachInProgress(t *testing.T) {
+	f := newJVMFixture(t)
+	nc, ctx := javaTestCollector(t)
+	j := f.start(t, 1000, nil)
+	p := j.inspect(t)
+	trigger := filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", "tmp", ".attach_pid"+strconv.Itoa(int(p.NSPID)))
+	if err := os.WriteFile(trigger, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(trigger, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	nc.attacher = f.attacher(t)
+	go nc.attacher.Run(ctx)
+	_, unsubscribe := subscribe(t, ctx, nc)
+	defer unsubscribe()
+	// 5 s until the JVM is old enough, then up to 10 s waiting for the
+	// other attach's listener.
+	time.Sleep(17 * time.Second)
+	if st := nc.attacher.Stats(); st.Attached != 0 || len(st.Failed) != 0 {
+		t.Fatalf("attacher stats %+v while another attach owned the trigger", st)
+	}
+	if strings.Contains(j.stdout.String(), "Full thread dump") || strings.Contains(j.stderr.String(), "postman-insights-agent") {
+		t.Fatal("the JVM was signalled or attached")
+	}
+
+	// The other attach gave up: the retry, 30 s after the first try, signals.
+	if err := os.Remove(trigger); err != nil {
+		t.Fatal(err)
+	}
+	waitStatsFor(t, nc.attacher, 45*time.Second, func(st jvm.AttachStats) bool { return st.Attached == 1 })
+	if strings.Contains(j.stdout.String(), "Full thread dump") {
+		t.Error("the attach printed a thread dump into the application's output")
+	}
+}
+
 // TestNodeCollectorJVMAttachDisabled: a JVM with attach disabled where its
 // command line does not show it is never signalled: a signal would print a
 // thread dump into its log.
@@ -412,7 +453,13 @@ func TestNodeCollectorJVMAttachDisabled(t *testing.T) {
 // waitStats waits until the attacher's counters satisfy ok.
 func waitStats(t *testing.T, a *jvm.Attacher, ok func(jvm.AttachStats) bool) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	waitStatsFor(t, a, 30*time.Second, ok)
+}
+
+// waitStatsFor is waitStats with a deadline d away.
+func waitStatsFor(t *testing.T, a *jvm.Attacher, d time.Duration, ok func(jvm.AttachStats) bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
 	for !ok(a.Stats()) {
 		if time.Now().After(deadline) {
 			t.Fatalf("attacher stats %+v", a.Stats())

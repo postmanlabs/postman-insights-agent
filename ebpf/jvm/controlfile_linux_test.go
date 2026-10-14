@@ -177,6 +177,22 @@ func TestWriteControlThroughProc(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "written to this process's /tmp instead of the child's")
 }
 
+// A JVM's PID can belong to another process by the time its container is
+// written: the start time must match.
+func TestOpenRootChecksStartTime(t *testing.T) {
+	pid := uint32(os.Getpid())
+	start, err := StartTime("/proc", pid)
+	require.NoError(t, err)
+
+	root, err := openRoot(&Process{ProcRoot: "/proc", PID: pid, StartTime: start})
+	require.NoError(t, err)
+	unix.Close(root)
+
+	_, err = openRoot(&Process{ProcRoot: "/proc", PID: pid, StartTime: start + 1})
+	assert.ErrorIs(t, err, errExited)
+	assert.ErrorIs(t, writeControl(&Process{ProcRoot: "/proc", PID: pid, StartTime: start + 1}, []byte("x"), true), errExited)
+}
+
 func TestStageJar(t *testing.T) {
 	root, fd := containerRoot(t)
 	jar := []byte("PK\x03\x04 a jar")

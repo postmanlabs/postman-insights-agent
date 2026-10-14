@@ -241,7 +241,9 @@ func Collect(ctx context.Context, args Args) error {
 				}
 				continue
 			}
-			if tgt.JVM != nil && jvms != nil {
+			// Discovery emits a PID again when it gains libssl or becomes
+			// a JVM; the uprobes manager attaches a PID's libssl once.
+			if _, owned := ownedJVMs[tgt.PID]; tgt.JVM != nil && jvms != nil && !owned {
 				jvms.Add(tgt.JVM)
 				ownedJVMs[tgt.PID] = tgt.JVM.Key()
 			}
