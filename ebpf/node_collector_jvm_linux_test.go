@@ -89,8 +89,8 @@ public class Server {
             public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
         }}, null);
         System.out.println("client started");
-        for (;;) {
-            HttpsURLConnection c = (HttpsURLConnection) new java.net.URL(url).openConnection();
+        for (int n = 0;; n++) {
+            HttpsURLConnection c = (HttpsURLConnection) new java.net.URL(url + "?n=" + n).openConnection();
             c.setSSLSocketFactory(ctx.getSocketFactory());
             c.setHostnameVerifier((h, sess) -> true);
             c.setRequestProperty("Connection", "close");
@@ -355,26 +355,59 @@ func expectCaptured(t *testing.T, j *testJVM, out <-chan akinet.ParsedNetworkTra
 	if string(body) != `{"hello":"jvm"}` {
 		t.Fatalf("body %q", body)
 	}
-	// Other processes on the host netns may use libssl too: look for ours.
-	var gotRequest, gotResponse bool
+	// Other processes on the host netns may use libssl too: look for ours,
+	// the request by its query and the response by its connection. Each
+	// must come out once: not also through the libssl uprobes, nor twice
+	// through nested hooks.
+	from := clientAddr.Load().(*net.TCPAddr)
+	expectOnce(t, out, func(pnt akinet.ParsedNetworkTraffic) (request, response bool) {
+		switch c := pnt.Content.(type) {
+		case akinet.HTTPRequest:
+			if c.URL.Path == "/hello" && c.URL.RawQuery == query {
+				expectAddrs(t, pnt, from, j.addr)
+				return true, false
+			}
+		case akinet.HTTPResponse:
+			if pnt.DstPort == from.Port && pnt.DstIP.Equal(from.IP) {
+				expectAddrs(t, pnt, mustTCPAddr(t, j.addr), from.String())
+				if c.StatusCode != 200 || !strings.Contains(c.Body.String(), `"jvm"`) {
+					t.Errorf("response %d %q", c.StatusCode, c.Body.String())
+				}
+				return false, true
+			}
+		}
+		return false, false
+	})
+}
+
+// expectOnce reads out until match has found a request and a response, and
+// a second more, and fails unless each came exactly once.
+func expectOnce(t *testing.T, out <-chan akinet.ParsedNetworkTraffic,
+	match func(akinet.ParsedNetworkTraffic) (request, response bool)) {
+	t.Helper()
+	var requests, responses int
 	deadline := time.After(10 * time.Second)
-	for !gotRequest || !gotResponse {
+	var settle <-chan time.Time
+	for {
 		select {
 		case pnt := <-out:
-			switch c := pnt.Content.(type) {
-			case akinet.HTTPRequest:
-				if c.URL.Path == "/hello" && c.URL.RawQuery == query {
-					gotRequest = true
-					expectAddrs(t, pnt, clientAddr.Load().(*net.TCPAddr), j.addr)
-				}
-			case akinet.HTTPResponse:
-				if c.StatusCode == 200 && strings.Contains(c.Body.String(), `"jvm"`) {
-					gotResponse = true
-					expectAddrs(t, pnt, mustTCPAddr(t, j.addr), clientAddr.Load().(*net.TCPAddr).String())
-				}
+			req, resp := match(pnt)
+			if req {
+				requests++
 			}
+			if resp {
+				responses++
+			}
+			if requests > 1 || responses > 1 {
+				t.Fatalf("captured %d requests and %d responses, want one each", requests, responses)
+			}
+			if requests == 1 && responses == 1 && settle == nil {
+				settle = time.After(time.Second)
+			}
+		case <-settle:
+			return
 		case <-deadline:
-			t.Fatalf("captured request %v, response %v", gotRequest, gotResponse)
+			t.Fatalf("captured %d requests and %d responses, want one each", requests, responses)
 		}
 	}
 }
@@ -434,15 +467,16 @@ func TestNodeCollectorJVMBlockingClient(t *testing.T) {
 	expectClientRequest(t, j, out, srv, accepted)
 }
 
-// acceptRecordingServer starts an HTTPS server for /client and returns the
-// client addresses it accepted connections from, recorded at accept: before
-// the handshake, so before a client can send a request on one.
+// acceptRecordingServer starts an HTTPS server for /client, answering
+// /client?n=N with {"n":N}, and returns the client addresses it accepted
+// connections from, recorded at accept: before the handshake, so before a
+// client can send a request on one.
 func acceptRecordingServer(t *testing.T) (*httptest.Server, func(addr string) bool) {
 	t.Helper()
 	var mu sync.Mutex
 	clients := map[string]bool{}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"hello":"client"}`)
+		_, _ = io.WriteString(w, `{"n":`+strconv.Quote(r.URL.Query().Get("n"))+`}`)
 	}))
 	srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
 		if state == http.StateNew {
@@ -460,28 +494,42 @@ func acceptRecordingServer(t *testing.T) (*httptest.Server, func(addr string) bo
 	}
 }
 
-// expectClientRequest waits for a request the JVM's client sent to srv, from
-// the address of a connection srv accepted.
+// expectClientRequest takes the first request the JVM's client sent to srv
+// (it sends /client?n=0, n=1, ... every 200 ms) and checks that it, and its
+// response, came out once each, with the addresses of a connection srv
+// accepted, reversed for the response.
 func expectClientRequest(t *testing.T, j *testJVM, out <-chan akinet.ParsedNetworkTraffic,
 	srv *httptest.Server, accepted func(string) bool) {
 	t.Helper()
-	deadline := time.After(15 * time.Second)
-	for {
-		select {
-		case pnt := <-out:
-			req, ok := pnt.Content.(akinet.HTTPRequest)
-			if !ok || req.URL.Path != "/client" {
-				continue
+	server := srv.Listener.Addr().String()
+	var n string
+	var client *net.TCPAddr
+	expectOnce(t, out, func(pnt akinet.ParsedNetworkTraffic) (request, response bool) {
+		switch c := pnt.Content.(type) {
+		case akinet.HTTPRequest:
+			if c.URL.Path != "/client" || (n != "" && c.URL.Query().Get("n") != n) {
+				return false, false
 			}
-			src := &net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}
-			if !accepted(src.String()) {
-				t.Fatalf("request from %s, which the server never accepted a connection from", src)
+			if n == "" {
+				n = c.URL.Query().Get("n")
+				client = &net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}
+				if !accepted(client.String()) {
+					t.Fatalf("request from %s, which the server never accepted a connection from", client)
+				}
 			}
-			expectAddrs(t, pnt, src, srv.Listener.Addr().String())
-			return
-		case <-deadline:
-			t.Fatalf("no request from the JVM's client captured; JVM stdout:\n%s", j.stdout)
+			expectAddrs(t, pnt, client, server)
+			return true, false
+		case akinet.HTTPResponse:
+			if n == "" || c.Body.String() != `{"n":`+strconv.Quote(n)+`}` {
+				return false, false
+			}
+			expectAddrs(t, pnt, mustTCPAddr(t, server), client.String())
+			return false, true
 		}
+		return false, false
+	})
+	if t.Failed() {
+		t.Logf("JVM stdout:\n%s", j.stdout)
 	}
 }
 
@@ -511,10 +559,9 @@ func TestNodeCollectorJVMFrameworks(t *testing.T) {
 			defer unsubscribe()
 			j := f.startApp(t, app.name, "", "-javaagent:"+f.agentJar)
 			j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+			// Once each: not also through the libssl uprobes (Netty's
+			// BoringSSL is its own library), nor twice through nested hooks.
 			expectCaptured(t, j, out, "from="+app.name)
-			// Once: not also through libssl uprobes (Netty's BoringSSL is
-			// its own library), nor twice through nested hooks.
-			expectNoMore(t, out, "from="+app.name)
 		})
 	}
 }
@@ -535,21 +582,6 @@ func TestNodeCollectorJVMHttpClient(t *testing.T) {
 	expectClientRequest(t, j, out, srv, accepted)
 }
 
-// expectNoMore fails if another request with query comes out within a second.
-func expectNoMore(t *testing.T, out <-chan akinet.ParsedNetworkTraffic, query string) {
-	t.Helper()
-	deadline := time.After(time.Second)
-	for {
-		select {
-		case pnt := <-out:
-			if req, ok := pnt.Content.(akinet.HTTPRequest); ok && req.URL.RawQuery == query {
-				t.Fatalf("request %s captured twice", query)
-			}
-		case <-deadline:
-			return
-		}
-	}
-}
 
 // TestNodeCollectorJVMControlFrames: a real JVM's agent reaches the pod's
 // adapter through the kernel with HEARTBEAT and CLOSE frames. Its first

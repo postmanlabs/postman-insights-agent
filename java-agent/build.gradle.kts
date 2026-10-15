@@ -64,9 +64,9 @@ dependencies {
         "testAppsRuntimeOnly"("io.netty:netty-transport-native-epoll:4.1.139.Final:$platform")
     }
     // Spring Boot 3's Tomcat, Jetty 12, Undertow 2.3.
-    "testApps17Implementation"("org.apache.tomcat.embed:tomcat-embed-core:10.1.34")
-    "testApps17Implementation"("org.eclipse.jetty:jetty-server:12.0.16")
-    "testApps17Implementation"("io.undertow:undertow-core:2.3.18.Final")
+    "testApps17Implementation"("org.apache.tomcat.embed:tomcat-embed-core:10.1.59")
+    "testApps17Implementation"("org.eclipse.jetty:jetty-server:12.0.36")
+    "testApps17Implementation"("io.undertow:undertow-core:2.3.21.Final")
 }
 
 tasks.withType<JavaCompile>().configureEach {

@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import org.apache.catalina.Context;
+import org.apache.catalina.Wrapper;
 import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.tomcat.util.net.SSLHostConfig;
@@ -38,7 +39,7 @@ public final class TomcatServer {
         tomcat.setConnector(https);
 
         Context ctx = tomcat.addContext("", base.getAbsolutePath());
-        Tomcat.addServlet(ctx, "hello", new HttpServlet() {
+        Wrapper hello = Tomcat.addServlet(ctx, "hello", new HttpServlet() {
             private static final long serialVersionUID = 1L;
 
             @Override
@@ -48,7 +49,7 @@ public final class TomcatServer {
                 resp.getOutputStream().write(Main.BODY);
             }
         });
-        ctx.addServletMappingDecoded("/hello", "hello");
+        hello.addMapping("/hello");
         tomcat.start();
         Main.listening(https.getLocalPort());
         tomcat.getServer().await();
