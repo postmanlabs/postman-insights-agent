@@ -23,21 +23,20 @@ final class Connections {
         /** Frame flags describing the role, or 0 until the role is known. */
         volatile short roleFlags;
         /**
-         * Whether a RECV, and a SEND, frame was sent for the connection. The
-         * kernel ties a connection to its socket at a RECV frame, from the
-         * socket the thread just read, or after a SEND frame, at the
-         * thread's next socket write. The first of each comes at the first
-         * unwrap and wrap, in the handshake, so the tie exists before any
-         * request or response.
+         * Whether an engine's RECV, and SEND, frame was sent. The kernel ties
+         * a connection to its socket at a RECV frame, from the socket the
+         * thread just read, or after a SEND frame, at the thread's next
+         * socket write. The first of each comes at the first unwrap and wrap,
+         * in the handshake, so the tie exists before any request or response.
          */
         volatile boolean recvSent;
+        volatile boolean sendSent;
         /**
          * The address epoch (see Bridge) in which a blocking socket's ADDRESS
          * frame was last sent, or -1: the kernel takes a socket's addresses
          * from it rather than from its thread's reads.
          */
         volatile int addressEpoch = -1;
-        volatile boolean sendSent;
 
         /**
          * Which directions the engine reported CLOSED for, whether a thread is

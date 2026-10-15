@@ -31,8 +31,8 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
     The agent sends an empty RECV frame at each connection's first unwrap that consumed TLS bytes, in the handshake, so the connection is tied to its socket before the first request or response, whichever side sends first.
     Clients that read on one thread and unwrap on another (the JDK's `HttpClient`) still write on the thread that wrapped: a wrap's SEND frame, whose bytes are yet to be written (`FLAG_BEFORE_WRITE`), leaves its connection waiting for the thread's next socket write (`tcp_sendmsg`) within 10 ms, and the agent sends an empty one at a connection's first wrap that produced TLS bytes.
     A connection unwrapped on another thread than the one that read it stays without addresses rather than getting wrong ones, unless that thread read another TCP socket (a database's, a downstream call's) within 50 ms: then it gets that socket's addresses.
-    The `ebpf-stats` line counts frames without addresses (`java_conn_unbound`) and reads of another socket on a connection's thread before its frames (`java_conn_mismatch`), which shows the wrong case.
-    A wrap whose bytes another thread writes, while the wrapping thread writes another socket within 10 ms, gets that socket's addresses too.
+    So does a wrap whose bytes another thread writes, while the wrapping thread writes another socket within 10 ms.
+    The `ebpf-stats` line counts frames without addresses (`java_conn_unbound`) and reads of another socket on a connection's thread before its frames (`java_conn_mismatch`), which shows the first wrong case.
 - **CLOSE frames:** once a connection can carry no more responses (the server's side closed, or the client's inbound side), the agent sends a CLOSE frame.
   The Insights Agent then completes a response delimited by the close and frees the connection's state at once, instead of after 30 s idle.
   Connections that end without a TLS close_notify are freed when idle.
