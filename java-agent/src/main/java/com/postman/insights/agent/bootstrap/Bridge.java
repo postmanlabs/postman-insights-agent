@@ -460,7 +460,13 @@ public final class Bridge {
                 c.arrayLen = n;
                 emit(c, op, flags, conn.id, n);
             } else if (n < 0 && op == Frame.OP_RECV) {
-                closed(c, socket, op);
+                // The end of the stream: a CLOSE when the inbound side ends
+                // the connection (a client's), after any read in flight.
+                Connections.Info conn = c.stream != null ? c.stream : CONNECTIONS.get(socket, c.lookup);
+                short role = flags(conn, socket);
+                if (conn.closed(false, role) && !conn.deferClose(c.stream != null)) {
+                    sendClose(c, conn, role);
+                }
             }
         } catch (Throwable t) {
             error();
@@ -468,9 +474,13 @@ public final class Bridge {
             // Whether or not capture is still on, so the count cannot stick.
             Connections.Info conn = c.stream;
             c.clear();
-            if (conn != null && conn.streamExited() && active) {
+            if (conn != null && conn.streamExited()) {
                 try {
-                    sendSocketClose(c, conn, socket);
+                    if (active) {
+                        sendClose(c, conn, flags(conn, socket));
+                    } else {
+                        conn.closeAttempted(false);
+                    }
                 } catch (Throwable t) {
                     error();
                 }
@@ -508,7 +518,8 @@ public final class Bridge {
      * A read or write on another thread can have done its I/O but not yet
      * sent its frame; then the last of them sends the CLOSE after its frame,
      * so the Insights agent does not complete a response before its last
-     * bytes. A CLOSE dropped there is not retried, as here.
+     * bytes (the same holds for a CLOSE at the end of the stream). A CLOSE
+     * dropped there is not retried, as here.
      */
     public static void socketClosed(Object socket) {
         if (!active) {
@@ -520,25 +531,25 @@ public final class Bridge {
         }
         try {
             Connections.Info conn = CONNECTIONS.find(socket, c.lookup);
-            if (conn == null || conn.deferClose()) {
+            if (conn == null) {
                 return;
             }
-            sendSocketClose(c, conn, socket);
+            short role = flags(conn, socket);
+            if ((conn.closed(true, role) || conn.closed(false, role)) && !conn.deferClose(false)) {
+                sendClose(c, conn, role);
+            }
         } catch (Throwable t) {
             error();
         }
     }
 
-    /** Sends a closed socket's CLOSE frame, if it has not been sent. */
-    private static void sendSocketClose(Call c, Connections.Info conn, Object socket) throws Throwable {
-        short role = flags(conn, socket);
-        if (conn.closed(true, role) || conn.closed(false, role)) {
-            boolean written = false;
-            try {
-                written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
-            } finally {
-                conn.closeAttempted(written);
-            }
+    /** Sends a CLOSE that {@link Connections.Info#closed} said is due. */
+    private static void sendClose(Call c, Connections.Info conn, short role) throws Throwable {
+        boolean written = false;
+        try {
+            written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
+        } finally {
+            conn.closeAttempted(written);
         }
     }
 
@@ -567,14 +578,8 @@ public final class Bridge {
     private static void closed(Call c, Object engine, byte op) throws Throwable {
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
         short role = flags(conn, engine);
-        if (!conn.closed(op == Frame.OP_SEND, role)) {
-            return;
-        }
-        boolean written = false;
-        try {
-            written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
-        } finally {
-            conn.closeAttempted(written);
+        if (conn.closed(op == Frame.OP_SEND, role)) {
+            sendClose(c, conn, role);
         }
     }
 
