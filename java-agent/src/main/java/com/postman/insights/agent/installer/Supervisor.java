@@ -61,6 +61,16 @@ final class Supervisor implements Runnable {
     void check(long nowMillis) {
         ControlFile.Settings s = control.check(nowMillis);
         int cap = s.captureCap > 0 ? s.captureCap : argCap;
+        boolean due = checks++ % CHECKS_PER_HEARTBEAT == 0;
+        // Switching capture on: a heartbeat first. The Insights agent's
+        // kernel programs record a process's socket reads and writes only once
+        // it has sent them a frame, and the heartbeat at start may have come
+        // before they ran; recorded from now, the first connections are tied
+        // to their sockets.
+        if (s.enabled && !Bridge.capturing()) {
+            heartbeat(Bridge.stateWhenEnabled());
+            due = false;
+        }
         Bridge.control(s.enabled, cap);
         String now = s.enabled ? "" : s.dormantReason;
         if (!now.equals(logged)) {
@@ -68,11 +78,15 @@ final class Supervisor implements Runnable {
                     : "dormant, not capturing: " + s.dormantReason);
             logged = now;
         }
-        if (checks++ % CHECKS_PER_HEARTBEAT == 0) {
-            Bridge.heartbeat(heartbeat(version, System.getProperty("java.version"), System.getProperty("java.vendor"),
-                    source, Bridge.state(), Bridge.framesWritten(), Bridge.framesDropped(), Bridge.errors(),
-                    Bridge.connections()));
+        if (due) {
+            heartbeat(Bridge.state());
         }
+    }
+
+    private void heartbeat(String state) {
+        Bridge.heartbeat(heartbeat(version, System.getProperty("java.version"), System.getProperty("java.vendor"),
+                source, state, Bridge.framesWritten(), Bridge.framesDropped(), Bridge.errors(),
+                Bridge.connections()));
     }
 
     /** The HEARTBEAT payload: key=value lines, in a fixed order. */

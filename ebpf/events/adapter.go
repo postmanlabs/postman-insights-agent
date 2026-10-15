@@ -55,9 +55,11 @@ const MaxPendingPerFlow = 1 * 1024 * 1024
 // the adapter keeps each agent's last status, for Stats and a log line when
 // an agent appears or changes state.
 //
-// IP/port synthesis: when a Resolver is set, SrcIP/DstIP/ports are filled from
-// /proc/<pid>/net/tcp via the SSL*→fd map. When Resolver is nil, IPs are left
-// zero and "ebpf-pid-<N>" is stored in the Interface field for traceability.
+// IP/port synthesis: Java events carry their connection's addresses from the
+// kernel (SSLEvent.Tuple) when it knows them. Otherwise, when a Resolver is
+// set, SrcIP/DstIP/ports are filled from /proc/<pid>/net/tcp via the
+// SSL*→fd map. When neither is available, IPs are left zero and
+// "ebpf-pid-<N>" is stored in the Interface field for traceability.
 // See docs/https-capture-design.md §5.4.
 type Adapter struct {
 	// FactorySelector picks the right parser for a new flow. Pass the same
@@ -247,6 +249,12 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 		a.javaHeartbeat(ev, time.Now())
 		return
 	case KindJavaClose:
+		// The CLOSE carries the connection's addresses: the first to, when
+		// they came after the connection's data (an ADDRESS frame dropped
+		// until then), so the messages it completes have them.
+		if conn := a.conns[connKey{PID: ev.PID, SSLCtx: ev.SSLCtx}]; conn != nil {
+			a.tryResolveConn(conn, ev)
+		}
 		a.closeConn(ev.PID, ev.SSLCtx, ev.Time(monoEpoch))
 		return
 	default:
@@ -662,7 +670,16 @@ func (a *Adapter) PreResolve(pid uint32, sslCtx uint64, fd int32, info SocketInf
 }
 
 func (a *Adapter) tryResolveConn(conn *tlsConnState, ev *SSLEvent) {
-	if conn.socketResolved || a.Resolver == nil || ev.FD < 0 {
+	if conn.socketResolved {
+		return
+	}
+	// The kernel's own addresses for the connection (Java events), else the
+	// fd's through /proc (libssl events).
+	if info, ok := ev.Tuple.SocketInfo(); ok {
+		a.applySocketInfo(conn, info)
+		return
+	}
+	if a.Resolver == nil || ev.FD < 0 {
 		return
 	}
 	rk := resolvedKey{PID: ev.PID, SSLCtx: ev.SSLCtx, FD: ev.FD}

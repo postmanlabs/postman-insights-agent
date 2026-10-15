@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.lang.management.ManagementFactory;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -17,6 +19,7 @@ import java.util.concurrent.CountDownLatch;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
+import javax.net.ssl.SSLSocket;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -507,5 +510,323 @@ class BridgeTest {
         result(server, Frame.OP_SEND, CLOSED);
         result(server, Frame.OP_SEND, CLOSED);
         assertEquals(1, closes().size());
+    }
+
+    /** A handshake unwrap: TLS bytes consumed, no plaintext produced. */
+    private static final SSLEngineResult HANDSHAKE_UNWRAP = new SSLEngineResult(
+            SSLEngineResult.Status.OK, SSLEngineResult.HandshakeStatus.NEED_WRAP, 120, 0);
+
+    /** One hooked unwrap call that produces nothing, as in a handshake. */
+    private static void emptyRecv(Object engine) {
+        ByteBuffer dst = ByteBuffer.allocate(8);
+        Bridge.exit(Bridge.enter(dst), engine, Frame.OP_RECV, HANDSHAKE_UNWRAP);
+    }
+
+    /**
+     * An unwrap that consumed no TLS bytes (BUFFER_UNDERFLOW, or it threw) is
+     * no evidence the thread read the socket: it does not tie.
+     */
+    @Test
+    void unwrapWithoutBytesDoesNotTie() throws Exception {
+        SSLEngine server = engine(false);
+        ByteBuffer dst = ByteBuffer.allocate(8);
+        Bridge.exit(Bridge.enter(dst), server, Frame.OP_RECV, new SSLEngineResult(
+                SSLEngineResult.Status.BUFFER_UNDERFLOW, SSLEngineResult.HandshakeStatus.NEED_UNWRAP, 0, 0));
+        Bridge.exit(Bridge.enter(dst), server, Frame.OP_RECV, null);
+        assertEquals(0, log.frames().size());
+        emptyRecv(server);
+        assertEquals(1, ops(Frame.OP_RECV).size());
+    }
+
+    private static List<LoggedFrame> ops(byte op) throws Exception {
+        List<LoggedFrame> out = new ArrayList<LoggedFrame>();
+        for (LoggedFrame f : log.frames()) {
+            if (f.op == op) {
+                out.add(f);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * A connection's first unwrap sends an empty RECV frame, which ties the
+     * connection to its socket in the kernel; later empty unwraps send
+     * nothing, and neither do empty wraps.
+     */
+    @Test
+    void firstUnwrapTiesTheConnection() throws Exception {
+        SSLEngine server = engine(false);
+        emptyRecv(server);
+        emptyRecv(server);
+        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
+
+        List<LoggedFrame> frames = log.frames();
+        assertEquals(1, frames.size());
+        LoggedFrame f = frames.get(0);
+        assertEquals(Frame.OP_RECV, f.op);
+        assertEquals(Frame.FLAG_ROLE_KNOWN, f.flags);
+        assertEquals(0, f.payload.length);
+        assertEquals(0, f.totalLen);
+
+        // Another connection is tied on its own.
+        emptyRecv(engine(true));
+        assertEquals(2, ops(Frame.OP_RECV).size());
+        assertTrue(ops(Frame.OP_RECV).get(1).connId != f.connId);
+    }
+
+    /** A connection whose first unwrap had plaintext was tied by that frame. */
+    @Test
+    void dataRecvTiesTheConnection() throws Exception {
+        SSLEngine server = engine(false);
+        ByteBuffer dst = ByteBuffer.allocate(8);
+        Bridge.Call c = Bridge.enter(dst);
+        dst.put(ascii("GET"));
+        Bridge.exit(c, server, Frame.OP_RECV, OK);
+        emptyRecv(server);
+
+        List<LoggedFrame> recvs = ops(Frame.OP_RECV);
+        assertEquals(1, recvs.size());
+        assertArrayEquals(ascii("GET"), recvs.get(0).payload);
+    }
+
+    /** Dormant, nothing is sent, and the first unwrap once capturing ties the connection. */
+    @Test
+    void noTieWhileDormant() throws Exception {
+        SSLEngine server = engine(false);
+        Bridge.control(false, CAP);
+        emptyRecv(server);
+        assertEquals(0, log.frames().size());
+        Bridge.control(true, CAP);
+        emptyRecv(server);
+        assertEquals(1, ops(Frame.OP_RECV).size());
+    }
+
+    /**
+     * A tie frame that could not be written (here: the thread was
+     * interrupted) is retried at the connection's next handshake unwrap.
+     */
+    @Test
+    void droppedTieIsRetried() throws Exception {
+        SSLEngine client = engine(true);
+        Thread.currentThread().interrupt();
+        try {
+            emptyRecv(client);
+        } finally {
+            Thread.interrupted();
+        }
+        assertEquals(0, log.frames().size(), "a frame written from an interrupted thread");
+        emptyRecv(client);
+        emptyRecv(client);
+        assertEquals(1, ops(Frame.OP_RECV).size());
+    }
+
+    /** One hooked SSLSocket stream call that read (RECV) or wrote (SEND) text. */
+    private static void stream(Object socket, byte op, String text) {
+        byte[] b = ascii(text);
+        Bridge.Call c = Bridge.enterStream(socket);
+        Bridge.exitStream(c, socket, op, b, 0, b.length);
+    }
+
+    /**
+     * A blocking client socket connected to listener (the kernel completes
+     * the connection in the listener's backlog), before its handshake.
+     */
+    private static SSLSocket connect(ServerSocket listener) throws Exception {
+        SSLSocket socket = (SSLSocket) SSLContext.getDefault().getSocketFactory()
+                .createSocket(InetAddress.getLoopbackAddress(), listener.getLocalPort());
+        socket.setUseClientMode(true);
+        return socket;
+    }
+
+    /**
+     * A blocking socket's first frame is an ADDRESS frame with the socket's
+     * own addresses, sent once; every frame of the connection is marked
+     * SOCKET, so the kernel never ties it to its thread's reads.
+     */
+    @Test
+    void socketSendsItsAddressesFirst() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            stream(socket, Frame.OP_RECV, "HTTP/1.1 200 OK\r\n\r\n");
+
+            List<LoggedFrame> got = log.frames();
+            assertEquals(3, got.size());
+            LoggedFrame address = got.get(0);
+            assertEquals(Frame.OP_ADDRESS, address.op);
+            assertEquals(Frame.ADDRESS_SIZE, address.totalLen);
+            ByteBuffer want = Frame.allocate(Frame.ADDRESS_SIZE);
+            Frame.putAddress(want, 0, socket.getLocalAddress(), socket.getLocalPort(),
+                    InetAddress.getLoopbackAddress(), listener.getLocalPort());
+            byte[] wantBytes = new byte[Frame.ADDRESS_SIZE];
+            want.get(wantBytes);
+            assertArrayEquals(wantBytes, address.payload);
+            assertEquals(Frame.OP_SEND, got.get(1).op);
+            assertEquals(Frame.OP_RECV, got.get(2).op);
+            for (LoggedFrame f : got) {
+                assertEquals(address.connId, f.connId);
+                assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_SOCKET, f.flags);
+            }
+        }
+    }
+
+    /**
+     * An ADDRESS frame that could not be written (here: every buffer was
+     * busy) is retried before the connection's next data frame.
+     */
+    @Test
+    void droppedAddressIsRetried() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            Bridge.holdAllBuffers(true);
+            try {
+                stream(socket, Frame.OP_SEND, "dropped");
+            } finally {
+                Bridge.holdAllBuffers(false);
+            }
+            assertEquals(0, log.frames().size());
+            stream(socket, Frame.OP_SEND, "sent");
+            stream(socket, Frame.OP_SEND, "sent again");
+            List<LoggedFrame> got = log.frames();
+            assertEquals(3, got.size());
+            assertEquals(Frame.OP_ADDRESS, got.get(0).op);
+            assertEquals(1, ops(Frame.OP_ADDRESS).size());
+        }
+    }
+
+    /**
+     * A socket in use sends its ADDRESS frame again after each heartbeat, so
+     * one the kernel dropped or forgot comes back.
+     */
+    @Test
+    void addressResentEachHeartbeat() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "first");
+            stream(socket, Frame.OP_SEND, "second");
+            assertEquals(1, ops(Frame.OP_ADDRESS).size());
+            Bridge.heartbeat(ascii("state=active\n"));
+            stream(socket, Frame.OP_SEND, "after a heartbeat");
+            stream(socket, Frame.OP_SEND, "again");
+            assertEquals(2, ops(Frame.OP_ADDRESS).size());
+        }
+    }
+
+    /**
+     * A socket closed on one thread while a read on another has done its
+     * I/O but not yet sent its frame: the CLOSE comes after the read's RECV,
+     * sent by the read, so the Insights agent does not complete a response
+     * before its last bytes.
+     */
+    @Test
+    void closeWaitsForAReadInFlight() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            CountDownLatch read = new CountDownLatch(1);
+            CountDownLatch closed = new CountDownLatch(1);
+            Thread reader = new Thread(() -> {
+                Bridge.Call c = Bridge.enterStream(socket);
+                read.countDown();
+                try {
+                    closed.await();
+                } catch (InterruptedException e) {
+                    return;
+                }
+                byte[] b = ascii("the last bytes");
+                Bridge.exitStream(c, socket, Frame.OP_RECV, b, 0, b.length);
+            });
+            reader.start();
+            read.await();
+            Bridge.socketClosed(socket);
+            assertTrue(ops(Frame.OP_CLOSE).isEmpty(), "CLOSE before the read in flight sent its frame");
+            closed.countDown();
+            reader.join();
+            List<LoggedFrame> got = log.frames();
+            assertEquals(Frame.OP_RECV, got.get(got.size() - 2).op, got.toString());
+            assertEquals(Frame.OP_CLOSE, got.get(got.size() - 1).op, got.toString());
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+
+            // With nothing in flight, the close sends CLOSE itself (here none
+            // again: one per connection).
+            Bridge.socketClosed(socket);
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+        }
+    }
+
+    /**
+     * A client socket's read that reached the end of the stream while
+     * another read on another thread has done its I/O but not yet sent its
+     * frame: the CLOSE comes after that read's RECV, sent by it.
+     */
+    @Test
+    void endOfStreamWaitsForAReadInFlight() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            CountDownLatch read = new CountDownLatch(1);
+            CountDownLatch ended = new CountDownLatch(1);
+            Thread reader = new Thread(() -> {
+                Bridge.Call c = Bridge.enterStream(socket);
+                read.countDown();
+                try {
+                    ended.await();
+                } catch (InterruptedException e) {
+                    return;
+                }
+                byte[] b = ascii("the last bytes");
+                Bridge.exitStream(c, socket, Frame.OP_RECV, b, 0, b.length);
+            });
+            reader.start();
+            read.await();
+            Bridge.exitStream(Bridge.enterStream(socket), socket, Frame.OP_RECV, new byte[8], 0, -1);
+            assertTrue(ops(Frame.OP_CLOSE).isEmpty(), "CLOSE before the read in flight sent its frame");
+            ended.countDown();
+            reader.join();
+            List<LoggedFrame> got = log.frames();
+            assertEquals(Frame.OP_RECV, got.get(got.size() - 2).op, got.toString());
+            assertEquals(Frame.OP_CLOSE, got.get(got.size() - 1).op, got.toString());
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+        }
+    }
+
+    /**
+     * A server socket's end of stream alone sends no CLOSE: the server still
+     * answers a request whose client closed its side after sending it.
+     */
+    @Test
+    void serverEndOfStreamAloneSendsNoClose() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            socket.setUseClientMode(false);
+            stream(socket, Frame.OP_RECV, "GET / HTTP/1.1\r\n\r\n");
+            Bridge.exitStream(Bridge.enterStream(socket), socket, Frame.OP_RECV, new byte[8], 0, -1);
+            assertTrue(ops(Frame.OP_CLOSE).isEmpty());
+            Bridge.socketClosed(socket);
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+        }
+    }
+
+    /** A socket closed with nothing in flight sends CLOSE at once. */
+    @Test
+    void closeWithNothingInFlight() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            Bridge.socketClosed(socket);
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+        }
+    }
+
+    /** A socket that is not connected has no addresses to send yet. */
+    @Test
+    void unconnectedSocketSendsNoAddress() throws Exception {
+        try (SSLSocket socket = (SSLSocket) SSLContext.getDefault().getSocketFactory().createSocket()) {
+            stream(socket, Frame.OP_RECV, "plaintext");
+            List<LoggedFrame> got = log.frames();
+            assertEquals(1, got.size());
+            assertEquals(Frame.OP_RECV, got.get(0).op);
+            assertEquals(Frame.FLAG_SOCKET, got.get(0).flags & Frame.FLAG_SOCKET);
+        }
     }
 }

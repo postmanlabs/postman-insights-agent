@@ -10,6 +10,7 @@ import (
 	"math"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 )
 
@@ -21,8 +22,33 @@ import (
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target native -cc clang -cflags "-O2 -g -Wall -Werror -fms-extensions -Wno-missing-declarations -Wno-microsoft-anon-tag" javatls ../programs/java_tls.bpf.c -- -I../programs
 
 type javaTLS struct {
-	objs  javatlsObjects
-	links []link.Link
+	objs javaTLSCore
+	// readHooks are the programs that record socket reads (see "Connection
+	// addresses" in java_tls.bpf.c), none when neither fexit nor kprobe
+	// could attach: then Java events carry no addresses.
+	readHooks []*ebpf.Program
+	// readHookKind is how they attached: "fexit" or "kprobe".
+	readHookKind string
+	// readHookErr is why there are none.
+	readHookErr error
+	// readHookFallback is why they are kprobes rather than fexit.
+	readHookFallback error
+	links            []link.Link
+}
+
+// javaTLSCore is the java_tls object without its tcp_recvmsg hook, which is
+// loaded on its own: fexit needs BPF trampolines (x86_64 5.5+, arm64 6.0+),
+// and a kernel without them must still run the rest.
+type javaTLSCore struct {
+	javatlsMaps
+	javatlsVariables
+	TpSysEnterPwrite64 *ebpf.Program `ebpf:"tp_sys_enter_pwrite64"`
+	TpSysEnterPwritev  *ebpf.Program `ebpf:"tp_sys_enter_pwritev"`
+	TpSysEnterPwritev2 *ebpf.Program `ebpf:"tp_sys_enter_pwritev2"`
+}
+
+func (c *javaTLSCore) Close() error {
+	return _JavatlsClose(c.TpSysEnterPwrite64, c.TpSysEnterPwritev, c.TpSysEnterPwritev2, &c.javatlsMaps)
 }
 
 func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
@@ -68,7 +94,125 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 		}
 		j.links = append(j.links, lk)
 	}
+	j.attachReadHook(spec, !cfg.javaReadHookKprobe)
 	return j, nil
+}
+
+// kretprobeMaxActive is the kernel's maximum of concurrent kretprobe
+// instances (KRETPROBE_MAXACTIVE_MAX).
+const kretprobeMaxActive = 4096
+
+// attachReadHook attaches the tcp_recvmsg hook: fexit if it can, else
+// kprobe with kretprobe. Failing both only leaves Java events without
+// addresses.
+func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFexit bool) {
+	opts := &ebpf.CollectionOptions{
+		MapReplacements: map[string]*ebpf.Map{
+			"java_senders":      j.objs.JavaSenders,
+			"java_thread_reads": j.objs.JavaThreadReads,
+		},
+	}
+	var errs []error
+	if !tryFexit {
+		errs = append(errs, errors.New("fexit: not tried"))
+	} else {
+		prog, err := loadFexitRead(spec, opts)
+		if err == nil {
+			var lk link.Link
+			if lk, err = link.AttachTracing(link.TracingOptions{Program: prog}); err == nil {
+				j.readHooks, j.readHookKind = []*ebpf.Program{prog}, "fexit"
+				j.links = append(j.links, lk)
+				return
+			}
+			_ = prog.Close()
+		}
+		errs = append(errs, fmt.Errorf("fexit: %w", err))
+		j.readHookFallback = err
+	}
+	var kprobe struct {
+		Entry  *ebpf.Program `ebpf:"kprobe_tcp_recvmsg"`
+		Return *ebpf.Program `ebpf:"kretprobe_tcp_recvmsg"`
+	}
+	err := spec.LoadAndAssign(&kprobe, opts)
+	if err == nil {
+		var entry, ret link.Link
+		if entry, err = link.Kprobe("tcp_recvmsg", kprobe.Entry, nil); err == nil {
+			// A blocking tcp_recvmsg holds a kretprobe instance until it
+			// returns, on every process of the node: with the default limit
+			// (about two per CPU), blocked readers elsewhere use them up and
+			// returns are missed. Use the kernel's maximum.
+			ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return,
+				&link.KprobeOptions{RetprobeMaxActive: kretprobeMaxActive})
+			if err != nil {
+				// The limit needs tracefs; without it, the default.
+				ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return, nil)
+			}
+			if err == nil {
+				j.readHooks, j.readHookKind = []*ebpf.Program{kprobe.Entry, kprobe.Return}, "kprobe"
+				j.links = append(j.links, entry, ret)
+				return
+			}
+			_ = entry.Close()
+		}
+		_ = kprobe.Entry.Close()
+		_ = kprobe.Return.Close()
+	}
+	errs = append(errs, fmt.Errorf("kprobe: %w", err))
+	j.readHookErr = errors.Join(errs...)
+}
+
+// loadFexitRead loads the fexit program for the kernel's tcp_recvmsg: one
+// per number of arguments, since fexit reads the return value after them.
+func loadFexitRead(spec *ebpf.CollectionSpec, opts *ebpf.CollectionOptions) (*ebpf.Program, error) {
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return nil, fmt.Errorf("kernel BTF: %w", err)
+	}
+	args, err := tcpRecvmsgArgs(kernel)
+	if err != nil {
+		return nil, err
+	}
+	switch args {
+	case 4:
+		var p struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg4"`
+		}
+		err = spec.LoadAndAssign(&p, opts)
+		return p.Prog, err
+	case 5:
+		var p struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg5"`
+		}
+		err = spec.LoadAndAssign(&p, opts)
+		return p.Prog, err
+	default:
+		var p struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg6"`
+		}
+		err = spec.LoadAndAssign(&p, opts)
+		return p.Prog, err
+	}
+}
+
+// tcpRecvmsgArgs returns the number of arguments of the kernel's
+// tcp_recvmsg, from its BTF rather than the kernel version, since
+// distributions backport changes: 6 before Linux 5.19 (with nonblock), 5
+// after (without), and 4 on later kernels (without addr_len too). Any other
+// number is an error, and the loader falls back to kprobes, whose return
+// value does not depend on the signature.
+func tcpRecvmsgArgs(kernel *btf.Spec) (int, error) {
+	var fn *btf.Func
+	if err := kernel.TypeByName("tcp_recvmsg", &fn); err != nil {
+		return 0, fmt.Errorf("tcp_recvmsg in the kernel's BTF: %w", err)
+	}
+	proto, ok := fn.Type.(*btf.FuncProto)
+	if !ok {
+		return 0, fmt.Errorf("tcp_recvmsg in the kernel's BTF is a %T, not a function prototype", fn.Type)
+	}
+	if n := len(proto.Params); n < 4 || n > 6 {
+		return 0, fmt.Errorf("tcp_recvmsg has %d arguments in the kernel's BTF, want 4 to 6", n)
+	}
+	return len(proto.Params), nil
 }
 
 var errJavaDisabled = errors.New("ebpf: Java TLS capture is not running")
@@ -87,7 +231,29 @@ func (j *javaTLS) close() error {
 		_ = lk.Close()
 	}
 	j.links = nil
+	for _, p := range j.readHooks {
+		_ = p.Close()
+	}
 	return j.objs.Close()
+}
+
+// JavaConnAddresses reports how Java events get their connection's
+// addresses: "fexit", or "kprobe" with kretprobe, on tcp_recvmsg; or "" with
+// the reason they carry none.
+func (l *Loader) JavaConnAddresses() (string, error) {
+	if l.java == nil {
+		return "", errJavaDisabled
+	}
+	return l.java.readHookKind, l.java.readHookErr
+}
+
+// JavaConnAddressesFallback returns why the tcp_recvmsg hook is attached by
+// kprobe rather than fexit, or nil when it is not (or fexit was not tried).
+func (l *Loader) JavaConnAddressesFallback() error {
+	if l.java == nil || l.java.readHookKind != "kprobe" {
+		return nil
+	}
+	return l.java.readHookFallback
 }
 
 // JavaEnabled reports whether the Java TLS programs are loaded and attached.
