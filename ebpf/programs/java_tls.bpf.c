@@ -460,7 +460,9 @@ int BPF_KPROBE(kprobe_tcp_sendmsg, struct sock *sk) {
 // when the frame's bytes are yet to be written (JAVA_FRAME_FLAG_BEFORE_WRITE)
 // and the connection is not tied. Any other SEND frame ends what was pending:
 // the thread's next write may now be another connection's, so it ties
-// nothing.
+// nothing. That includes a wrap of another connection not yet tied: with two
+// waiting (a thread that wraps for several connections, then writes them),
+// the next write could be either's.
 static __always_inline void pend_conn(__u64 conn_id, __u16 flags) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     struct java_conn_key k = current_conn_key(conn_id);
@@ -468,7 +470,13 @@ static __always_inline void pend_conn(__u64 conn_id, __u16 flags) {
         bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
         return;
     }
-    struct thread_send p = { .ts_ns = bpf_ktime_get_ns(), .conn_id = conn_id };
+    __u64 now = bpf_ktime_get_ns();
+    struct thread_send *waiting = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
+    if (waiting && waiting->conn_id != conn_id && now - waiting->ts_ns <= THREAD_SEND_MAX_AGE_NS) {
+        bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
+        return;
+    }
+    struct thread_send p = { .ts_ns = now, .conn_id = conn_id };
     bpf_map_update_elem(&java_thread_sends, &pid_tgid, &p, BPF_ANY);
 }
 
@@ -577,13 +585,20 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
     __u64 to_copy = (__u64)h->payload_len & 0xffffffffULL;
     // A CLOSE forgets its connection whether or not its event goes out, so
     // a dropped CLOSE leaves no stale tie taking up java_conns; the event, if
-    // any, carries the addresses.
+    // any, carries the addresses. It also ends the connection's wait for the
+    // thread's next write: a wrap that produced the close_notify and
+    // returned CLOSED sends its SEND frame and the CLOSE before the write,
+    // which must not tie the closed connection again.
     struct conn_tuple closed_tuple;
     __builtin_memset(&closed_tuple, 0, sizeof(closed_tuple));
     if (h->op == JAVA_FRAME_OP_CLOSE) {
         conn_tuple_of(h->conn_id, &closed_tuple);
         struct java_conn_key k = current_conn_key(h->conn_id);
         bpf_map_delete_elem(&java_conns, &k);
+        struct thread_send *p = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
+        if (p && p->conn_id == h->conn_id) {
+            bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
+        }
         if (!java_rate_take(pid_tgid >> 32)) {
             java_counter_inc(JAVA_CTR_RATE_CAPPED, 1);
             return 0;

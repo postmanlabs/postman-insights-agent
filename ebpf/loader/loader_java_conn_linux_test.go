@@ -412,7 +412,17 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		t.Fatal("the tied connection lost its addresses")
 	}
 	untied(t, conn7, "a connection pending before another's SEND")
-	// A SEND frame sent after its bytes were written (a blocking socket's)
+	// Two connections not yet tied, wrapped on one thread before it writes
+	// either: the next write could be either's, so it ties neither.
+	const conn20, conn21 = 120, 121
+	onThread(func() {
+		wrap(t, conn20, "")
+		wrap(t, conn21, "")
+		writeTo(server1, client1)
+	})
+	untied(t, conn20, "the first of two connections waiting for one write")
+	untied(t, conn21, "the second of two connections waiting for one write")
+	// A SEND frame sent after its bytes were written (not BEFORE_WRITE)
 	// leaves nothing pending.
 	onThread(func() {
 		pwrite(t, javatls.OpSend, conn8, "already written")
@@ -422,6 +432,31 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		t.Fatalf("a post-write SEND got addresses %+v", ev.Tuple)
 	}
 	untied(t, conn8, "a connection whose SEND came after its write")
+	// A CLOSE ends what its connection left pending: a wrap that produced
+	// the close_notify and returned CLOSED sends its frame and the CLOSE
+	// before the write, which must not tie the closed connection again.
+	inConns := func(conn uint64) bool {
+		var k javatlsJavaConnKey
+		var v javatlsConnTuple
+		for it := l.java.objs.JavaConns.Iterate(); it.Next(&k, &v); {
+			if k.ConnId == conn && k.Tgid == uint32(os.Getpid()) {
+				return true
+			}
+		}
+		return false
+	}
+	const conn17, conn18 = 117, 118
+	onThread(func() {
+		wrap(t, conn17, "")
+		pwrite(t, javatls.OpClose, conn17, "")
+		writeTo(server1, client1)
+	})
+	if ev := readEvent(t); ev.Kind != events.KindJavaClose {
+		t.Fatalf("kind %d, want CLOSE", ev.Kind)
+	}
+	if inConns(conn17) {
+		t.Error("the write after a CLOSE tied the closed connection")
+	}
 
 	// A blocking read that waits long for its data still ties: the read
 	// counts when it returns. A blocking socket (a dup through File, outside
@@ -565,18 +600,23 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	pwrite(t, javatls.OpSend, conn10, "takes the only token")
 	readEvent(t)
 	pwrite(t, javatls.OpClose, conn10, "")
+	// A rate-capped CLOSE ends what its connection left pending too.
+	onThread(func() {
+		wrap(t, conn18, "")
+		pwrite(t, javatls.OpClose, conn18, "")
+		writeTo(server1, client1)
+	})
+	if inConns(conn18) {
+		t.Error("the write after a rate-capped CLOSE tied the closed connection")
+	}
 	// An ADDRESS frame takes a token too: over the cap, it ties nothing.
 	const conn14 = 114
 	pwriteFlags(t, javatls.OpAddress, socketFlags, conn14, addressOf(server1))
-	var k javatlsJavaConnKey
-	var v javatlsConnTuple
-	for it := l.java.objs.JavaConns.Iterate(); it.Next(&k, &v); {
-		if k.ConnId == conn10 && k.Tgid == uint32(os.Getpid()) {
-			t.Error("a rate-capped CLOSE left its connection tied")
-		}
-		if k.ConnId == conn14 && k.Tgid == uint32(os.Getpid()) {
-			t.Error("a rate-capped ADDRESS frame tied its connection")
-		}
+	if inConns(conn10) {
+		t.Error("a rate-capped CLOSE left its connection tied")
+	}
+	if inConns(conn14) {
+		t.Error("a rate-capped ADDRESS frame tied its connection")
 	}
 	if err := l.SetRateCapPerSec(0); err != nil {
 		t.Fatal(err)
