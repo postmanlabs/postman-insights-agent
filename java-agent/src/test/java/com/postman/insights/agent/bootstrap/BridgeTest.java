@@ -157,10 +157,15 @@ class BridgeTest {
         assertArrayEquals(ascii("0123456789abcdef"), f.payload);
     }
 
+    /** A wrap that consumes nothing emits no plaintext: only the connection's empty tie frame, once. */
     @Test
     void nothingConsumedNothingEmitted() throws Exception {
-        send(engine(true), bufs("pending"), 0);
-        assertTrue(log.frames().isEmpty());
+        SSLEngine client = engine(true);
+        send(client, bufs("pending"), 0);
+        send(client, bufs("pending"), 0);
+        List<LoggedFrame> frames = log.frames();
+        assertEquals(1, frames.size());
+        assertEquals(0, frames.get(0).payload.length);
     }
 
     @Test
@@ -549,9 +554,9 @@ class BridgeTest {
     }
 
     /**
-     * A connection's first unwrap sends an empty RECV frame, which ties the
-     * connection to its socket in the kernel; later empty unwraps send
-     * nothing, and neither do empty wraps.
+     * A connection's first unwrap and first wrap each send an empty frame,
+     * which tie the connection to its socket in the kernel; later empty calls
+     * send nothing.
      */
     @Test
     void firstUnwrapTiesTheConnection() throws Exception {
@@ -559,14 +564,18 @@ class BridgeTest {
         emptyRecv(server);
         emptyRecv(server);
         Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
+        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
 
         List<LoggedFrame> frames = log.frames();
-        assertEquals(1, frames.size());
+        assertEquals(2, frames.size());
         LoggedFrame f = frames.get(0);
         assertEquals(Frame.OP_RECV, f.op);
         assertEquals(Frame.FLAG_ROLE_KNOWN, f.flags);
         assertEquals(0, f.payload.length);
         assertEquals(0, f.totalLen);
+        assertEquals(Frame.OP_SEND, frames.get(1).op);
+        assertEquals(0, frames.get(1).payload.length);
+        assertEquals(f.connId, frames.get(1).connId);
 
         // Another connection is tied on its own.
         emptyRecv(engine(true));
@@ -574,19 +583,24 @@ class BridgeTest {
         assertTrue(ops(Frame.OP_RECV).get(1).connId != f.connId);
     }
 
-    /** A connection whose first unwrap had plaintext was tied by that frame. */
+    /** A connection whose first unwrap or wrap had plaintext was tied by that frame. */
     @Test
-    void dataRecvTiesTheConnection() throws Exception {
+    void dataTiesTheConnection() throws Exception {
         SSLEngine server = engine(false);
         ByteBuffer dst = ByteBuffer.allocate(8);
         Bridge.Call c = Bridge.enter(dst);
         dst.put(ascii("GET"));
         Bridge.exit(c, server, Frame.OP_RECV, OK);
         emptyRecv(server);
+        send(server, bufs("HTTP"), 4);
+        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
 
         List<LoggedFrame> recvs = ops(Frame.OP_RECV);
         assertEquals(1, recvs.size());
         assertArrayEquals(ascii("GET"), recvs.get(0).payload);
+        List<LoggedFrame> sends = ops(Frame.OP_SEND);
+        assertEquals(1, sends.size());
+        assertArrayEquals(ascii("HTTP"), sends.get(0).payload);
     }
 
     /** Dormant, nothing is sent, and the first unwrap once capturing ties the connection. */

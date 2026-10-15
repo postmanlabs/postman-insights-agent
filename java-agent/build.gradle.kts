@@ -20,6 +20,18 @@ repositories {
 // agent's classes are deliberately not on their classpath.
 val agentTest by sourceSets.creating
 
+// HTTPS servers and clients on the frameworks the agent must capture, for the
+// Insights agent's real-JVM tests (ebpf/node_collector_jvm_linux_test.go).
+// testApps is Java 8, for the apps that run on JDK 8 (Netty) and the entry
+// point; testApps17 holds the frameworks that need a newer JDK.
+val testApps by sourceSets.creating
+val testApps17 by sourceSets.creating {
+    compileClasspath += testApps.output
+    runtimeClasspath += testApps.output
+}
+configurations[testApps17.implementationConfigurationName].extendsFrom(configurations[testApps.implementationConfigurationName])
+configurations[testApps17.runtimeOnlyConfigurationName].extendsFrom(configurations[testApps.runtimeOnlyConfigurationName])
+
 dependencies {
     implementation("net.bytebuddy:byte-buddy:1.18.15")
 
@@ -42,10 +54,23 @@ dependencies {
     for (platform in listOf("linux-x86_64", "linux-aarch_64", "osx-x86_64", "osx-aarch_64")) {
         "agentTestRuntimeOnly"("io.netty:netty-tcnative-boringssl-static:2.0.84.Final:$platform")
     }
+
+    "testAppsImplementation"(platform("io.netty:netty-bom:4.1.139.Final"))
+    "testAppsImplementation"("io.netty:netty-handler")
+    "testAppsImplementation"("io.netty:netty-codec-http")
+    "testAppsImplementation"("io.netty:netty-transport-classes-epoll")
+    for (platform in listOf("linux-x86_64", "linux-aarch_64")) {
+        "testAppsRuntimeOnly"("io.netty:netty-tcnative-boringssl-static:2.0.84.Final:$platform")
+        "testAppsRuntimeOnly"("io.netty:netty-transport-native-epoll:4.1.139.Final:$platform")
+    }
+    // Spring Boot 3's Tomcat, Jetty 12, Undertow 2.3.
+    "testApps17Implementation"("org.apache.tomcat.embed:tomcat-embed-core:10.1.34")
+    "testApps17Implementation"("org.eclipse.jetty:jetty-server:12.0.16")
+    "testApps17Implementation"("io.undertow:undertow-core:2.3.18.Final")
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    options.release.set(8)
+    options.release.set(if (name == "compileTestApps17Java") 17 else 8)
     options.encoding = "UTF-8"
     // -options: compiling for Java 8 with a newer JDK warns that release 8 is
     // obsolete; that is intended. -classfile: Byte Buddy's class files refer to
@@ -159,4 +184,26 @@ val agentTestTask = tasks.register<Test>("agentTest") {
 
 tasks.check {
     dependsOn(agentTestTask)
+}
+
+val testAppsJar by tasks.registering(Jar::class) {
+    archiveFileName.set("test-apps.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("tmp/test-apps"))
+    from(testApps.output, testApps17.output)
+}
+
+// Compiled with every check, so the apps cannot rot unnoticed; run only by the
+// Insights agent's real-JVM tests.
+tasks.check {
+    dependsOn(testAppsJar)
+}
+
+// build/test-apps: the apps' jar and every library they use, to run with
+// -cp 'build/test-apps/*'.
+tasks.register<Sync>("testAppsDist") {
+    description = "Builds the framework test apps for the Insights agent's real-JVM tests."
+    group = "build"
+    into(layout.buildDirectory.dir("test-apps"))
+    from(testAppsJar)
+    from(testApps17.runtimeClasspath.filter { it.isFile })
 }

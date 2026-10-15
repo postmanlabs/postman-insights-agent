@@ -80,6 +80,16 @@ Without a local JDK, run Gradle in Docker:
 docker run --rm -v "$PWD/..:/w" -w /w/java-agent eclipse-temurin:21-jdk ./gradlew --no-daemon check
 ```
 
+The Insights agent's real-JVM tests (`ebpf/node_collector_jvm_linux_test.go`, root and the `insights_bpf` tag) run the packaged agent in real JVMs and check what comes out of the kernel, connection addresses included.
+They need a JDK and the jar, and for the framework tests the apps in `src/testApps` (Netty on NIO, epoll and its OpenSSL engine; Tomcat, Jetty and Undertow servers; the JDK's `HttpClient`), built by `./gradlew testAppsDist` into `build/test-apps`:
+
+```sh
+POSTMAN_TEST_JAVA_HOME=/path/to/jdk17 \
+POSTMAN_TEST_AGENT_JAR=$PWD/java-agent/build/agent/postman-java-agent.jar \
+POSTMAN_TEST_APPS_DIR=$PWD/java-agent/build/test-apps \
+  go test -tags insights_bpf -p 1 -run 'TestNodeCollectorJVM' ./ebpf/
+```
+
 For an end-to-end check with the eBPF agent in kind, see `test/kind/deploy-java-service.sh`.
 
 ## Packaging
