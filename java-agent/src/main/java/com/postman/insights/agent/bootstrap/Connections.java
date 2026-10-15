@@ -44,7 +44,10 @@ final class Connections {
         private boolean outboundDone;
         private boolean closeSending;
         private boolean closeSent;
-        /** A socket's stream calls in flight, and whether its close waits for them. Guarded by this. */
+        /**
+         * A socket's stream calls in flight, and whether a CLOSE that was due
+         * waits for them. Guarded by this.
+         */
         private int streamsInFlight;
         private boolean closeDeferred;
 
@@ -93,8 +96,8 @@ final class Connections {
 
         /**
          * A socket stream call ended, its frame sent; true when it was the
-         * last in flight and a close waited for it, which the caller then
-         * sends.
+         * last in flight and a CLOSE waited for it, which the caller then
+         * sends (and reports with {@link #closeAttempted}).
          */
         synchronized boolean streamExited() {
             if (--streamsInFlight == 0 && closeDeferred) {
@@ -105,11 +108,13 @@ final class Connections {
         }
 
         /**
-         * The socket closed: true when stream calls are in flight, the last
-         * of which sends the CLOSE; false when the caller sends it now.
+         * A CLOSE is due ({@link #closed} returned true): true when other
+         * stream calls are in flight, the last of which sends it; false when
+         * the caller sends it now. inFlight: the caller is a stream call
+         * itself (a read that reached the end of the stream).
          */
-        synchronized boolean deferClose() {
-            if (streamsInFlight > 0) {
+        synchronized boolean deferClose(boolean inFlight) {
+            if (streamsInFlight > (inFlight ? 1 : 0)) {
                 closeDeferred = true;
                 return true;
             }
