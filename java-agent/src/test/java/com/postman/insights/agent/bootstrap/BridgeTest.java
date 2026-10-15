@@ -893,4 +893,20 @@ class BridgeTest {
             assertEquals(Frame.FLAG_SOCKET, got.get(0).flags & Frame.FLAG_SOCKET);
         }
     }
+
+    /** A handshake wrap's empty SEND that could not be written is retried at the next one. */
+    @Test
+    void droppedSendTieIsRetried() throws Exception {
+        SSLEngine client = engine(true);
+        Thread.currentThread().interrupt();
+        try {
+            emptySend(client);
+        } finally {
+            Thread.interrupted();
+        }
+        assertTrue(log.frames().isEmpty());
+        emptySend(client);
+        emptySend(client);
+        assertEquals(1, ops(Frame.OP_SEND).size());
+    }
 }
