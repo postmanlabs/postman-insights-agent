@@ -21,8 +21,9 @@ import (
 )
 
 // TestJavaConnAddresses: Java events carry the addresses of the socket their
-// connection's thread read from before its first RECV frame, with the
-// tcp_recvmsg hook attached by fexit and by kprobe, or those of the
+// connection's thread read from before its first RECV frame, or wrote to
+// right after a SEND frame, with the tcp_recvmsg and tcp_sendmsg hooks
+// attached by fexit and fentry, and by kprobes, or those of the
 // connection's ADDRESS frame. Frames are written the way the Java agent
 // writes them, from this process, with real TCP sockets.
 //
@@ -124,6 +125,11 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	pwrite := func(t *testing.T, op uint8, connID uint64, payload string) {
 		t.Helper()
 		pwriteFlags(t, op, javatls.FlagRoleKnown, connID, []byte(payload))
+	}
+	// A wrap's SEND frame, whose bytes the thread writes after it.
+	wrap := func(t *testing.T, connID uint64, payload string) {
+		t.Helper()
+		pwriteFlags(t, javatls.OpSend, javatls.FlagRoleKnown|javatls.FlagBeforeWrite, connID, []byte(payload))
 	}
 	readEvent := func(t *testing.T) *events.SSLEvent {
 		t.Helper()
@@ -276,13 +282,13 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	idle, _ := accept()
 	ended, endedPeer := accept()
 	_ = endedPeer.Close()
-	const conn3, conn4 = 103, 104
+	const conn15, conn16 = 115, 116
 	onThread(func() {
 		readFrom(server1, client1)
 		if n, err := rawRead(t, idle, true); err != syscall.EAGAIN {
 			t.Fatalf("non-blocking read of an idle socket = %d, %v; want EAGAIN", n, err)
 		}
-		pwrite(t, javatls.OpRecv, conn3, "GET /buffered HTTP/1.1\r\n\r\n")
+		pwrite(t, javatls.OpRecv, conn15, "GET /buffered HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server1)
 	onThread(func() {
@@ -290,7 +296,7 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		if n, err := rawRead(t, ended, false); n != 0 || err != nil {
 			t.Fatalf("read at the end of the stream = %d, %v; want 0", n, err)
 		}
-		pwrite(t, javatls.OpRecv, conn4, "GET /buffered HTTP/1.1\r\n\r\n")
+		pwrite(t, javatls.OpRecv, conn16, "GET /buffered HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server1)
 
@@ -348,6 +354,148 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	})
 	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
 		t.Errorf("a connection tied to the read before a missed return: %+v", ev.Tuple)
+	}
+
+	// A client that reads on one thread and unwraps on another (the JDK's
+	// HttpClient) still writes on the thread that wrapped: a wrap's SEND frame
+	// (BEFORE_WRITE) of a connection not yet tied leaves it pending, and the
+	// thread's next socket write ties it.
+	const conn3, conn4, conn7, conn8 = 103, 104, 107, 108
+	writeTo := func(c net.Conn, peer net.Conn) {
+		if _, err := c.Write([]byte("y")); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 1)
+		if _, err := peer.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bound = counter(t, JavaCounterConnBound)
+	onThread(func() {
+		wrap(t, conn3, "")
+		writeTo(server2, client2)
+	})
+	if got := counter(t, JavaCounterConnBound) - bound; got != 1 {
+		t.Fatalf("conn_bound grew by %d, want 1", got)
+	}
+	pwrite(t, javatls.OpSend, conn3, "GET / HTTP/1.1\r\n\r\n")
+	wantTuple(t, readEvent(t), server2)
+	// Tied, a later SEND does not move it.
+	onThread(func() {
+		wrap(t, conn3, "more")
+		writeTo(server1, client1)
+	})
+	wantTuple(t, readEvent(t), server2)
+	untied := func(t *testing.T, conn uint64, why string) {
+		t.Helper()
+		pwrite(t, javatls.OpSend, conn, "GET / HTTP/1.1\r\n\r\n")
+		if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+			t.Errorf("%s: got addresses %+v", why, ev.Tuple)
+		}
+	}
+	// A write long after the SEND frame (the bytes were written by another
+	// thread, and this one wrote something else) does not tie.
+	onThread(func() {
+		wrap(t, conn4, "")
+		time.Sleep(20 * time.Millisecond)
+		writeTo(server1, client1)
+	})
+	untied(t, conn4, "a stale pending connection")
+	// An ambiguous wait (below) outlives its test on the OS thread, which
+	// later tests reuse, until it expires.
+	settle := func() { time.Sleep(20 * time.Millisecond) }
+	// A SEND frame of another connection in between, here a tied one, makes
+	// the next write ambiguous: it may be the other connection's.
+	onThread(func() {
+		wrap(t, conn7, "")
+		wrap(t, conn3, "for the tied connection")
+		writeTo(server1, client1)
+	})
+	if ev := readEvent(t); ev.Tuple.Family == events.ConnFamilyUnknown {
+		t.Fatal("the tied connection lost its addresses")
+	}
+	untied(t, conn7, "a connection pending before another's SEND")
+	settle()
+	// Two connections not yet tied, wrapped on one thread before it writes
+	// either: the next write could be either's, so it ties neither. Nor
+	// does a third announcement after them, nor the second again: the
+	// ambiguity lasts until it expires.
+	const conn20, conn21, conn23, conn24 = 120, 121, 123, 124
+	onThread(func() {
+		wrap(t, conn20, "")
+		wrap(t, conn21, "")
+		wrap(t, conn23, "")
+		writeTo(server1, client1)
+	})
+	untied(t, conn20, "the first of three connections waiting for one write")
+	untied(t, conn21, "the second of three connections waiting for one write")
+	untied(t, conn23, "the third of three connections waiting for one write")
+	settle()
+	onThread(func() {
+		wrap(t, conn20, "")
+		wrap(t, conn24, "")
+		wrap(t, conn24, "")
+		writeTo(server1, client1)
+	})
+	untied(t, conn24, "a connection announced again after another's")
+	settle()
+	// A tied connection's wrap announces its write too: a connection
+	// wrapped after it, before that write, is not tied to the tied one's
+	// socket.
+	const conn25 = 125
+	onThread(func() {
+		wrap(t, conn3, "for the tied connection")
+		wrap(t, conn25, "")
+		writeTo(server1, client1)
+	})
+	wantTuple(t, readEvent(t), server2)
+	untied(t, conn25, "a connection wrapped after a tied one's wrap")
+	settle()
+	// An ambiguous wait expires, and a wrap after it ties again.
+	const conn26 = 126
+	onThread(func() {
+		wrap(t, conn20, "")
+		wrap(t, conn21, "")
+		settle()
+		wrap(t, conn26, "")
+		writeTo(server2, client2)
+	})
+	pwrite(t, javatls.OpSend, conn26, "GET / HTTP/1.1\r\n\r\n")
+	wantTuple(t, readEvent(t), server2)
+	// A SEND frame sent after its bytes were written (not BEFORE_WRITE)
+	// leaves nothing pending.
+	onThread(func() {
+		pwrite(t, javatls.OpSend, conn8, "already written")
+		writeTo(server1, client1)
+	})
+	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+		t.Fatalf("a post-write SEND got addresses %+v", ev.Tuple)
+	}
+	untied(t, conn8, "a connection whose SEND came after its write")
+	// A CLOSE ends what its connection left pending: a wrap that produced
+	// the close_notify and returned CLOSED sends its frame and the CLOSE
+	// before the write, which must not tie the closed connection again.
+	inConns := func(conn uint64) bool {
+		var k javatlsJavaConnKey
+		var v javatlsConnTuple
+		for it := l.java.objs.JavaConns.Iterate(); it.Next(&k, &v); {
+			if k.ConnId == conn && k.Tgid == uint32(os.Getpid()) {
+				return true
+			}
+		}
+		return false
+	}
+	const conn17, conn18 = 117, 118
+	onThread(func() {
+		wrap(t, conn17, "")
+		pwrite(t, javatls.OpClose, conn17, "")
+		writeTo(server1, client1)
+	})
+	if ev := readEvent(t); ev.Kind != events.KindJavaClose {
+		t.Fatalf("kind %d, want CLOSE", ev.Kind)
+	}
+	if inConns(conn17) {
+		t.Error("the write after a CLOSE tied the closed connection")
 	}
 
 	// A blocking read that waits long for its data still ties: the read
@@ -492,18 +640,23 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	pwrite(t, javatls.OpSend, conn10, "takes the only token")
 	readEvent(t)
 	pwrite(t, javatls.OpClose, conn10, "")
+	// A rate-capped CLOSE ends what its connection left pending too.
+	onThread(func() {
+		wrap(t, conn18, "")
+		pwrite(t, javatls.OpClose, conn18, "")
+		writeTo(server1, client1)
+	})
+	if inConns(conn18) {
+		t.Error("the write after a rate-capped CLOSE tied the closed connection")
+	}
 	// An ADDRESS frame takes a token too: over the cap, it ties nothing.
 	const conn14 = 114
 	pwriteFlags(t, javatls.OpAddress, socketFlags, conn14, addressOf(server1))
-	var k javatlsJavaConnKey
-	var v javatlsConnTuple
-	for it := l.java.objs.JavaConns.Iterate(); it.Next(&k, &v); {
-		if k.ConnId == conn10 && k.Tgid == uint32(os.Getpid()) {
-			t.Error("a rate-capped CLOSE left its connection tied")
-		}
-		if k.ConnId == conn14 && k.Tgid == uint32(os.Getpid()) {
-			t.Error("a rate-capped ADDRESS frame tied its connection")
-		}
+	if inConns(conn10) {
+		t.Error("a rate-capped CLOSE left its connection tied")
+	}
+	if inConns(conn14) {
+		t.Error("a rate-capped ADDRESS frame tied its connection")
 	}
 	if err := l.SetRateCapPerSec(0); err != nil {
 		t.Fatal(err)

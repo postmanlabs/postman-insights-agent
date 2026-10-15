@@ -1,5 +1,6 @@
 package com.postman.insights.agent;
 
+import static com.postman.insights.agent.Frames.BEFORE_WRITE;
 import static com.postman.insights.agent.Frames.CLIENT_MODE;
 import static com.postman.insights.agent.Frames.OP_ADDRESS;
 import static com.postman.insights.agent.Frames.OP_CLOSE;
@@ -117,16 +118,20 @@ class AgentEndToEndTest {
         Frame clientRecv = Frames.find(got, OP_RECV, response);
         assertEquals(4, got.size(), got.toString());
 
-        assertEquals(ROLE_KNOWN | CLIENT_MODE, clientSend.flags);
+        // A wrap's output is written to the socket after the frame.
+        assertEquals(ROLE_KNOWN | CLIENT_MODE | BEFORE_WRITE, clientSend.flags);
         assertEquals(ROLE_KNOWN, serverRecv.flags);
         assertEquals(clientSend.connId, clientRecv.connId);
         assertEquals(serverSend.connId, serverRecv.connId);
         assertNotEquals(clientSend.connId, serverSend.connId);
 
         // Each engine's first unwrap, in the handshake, sent one empty RECV
-        // frame, before any plaintext: it ties the connection to its socket.
+        // before any plaintext, which ties the connection to its socket; each
+        // of its handshake wraps sent an empty SEND, which announces the
+        // write after it.
         List<Frame> all = frames.read();
-        List<Long> tied = new java.util.ArrayList<Long>();
+        java.util.Map<Long, Integer> emptyRecvs = new java.util.HashMap<Long, Integer>();
+        java.util.Map<Long, Integer> emptySends = new java.util.HashMap<Long, Integer>();
         boolean plaintext = false;
         for (Frame f : all) {
             if (f.op != OP_SEND && f.op != OP_RECV) {
@@ -135,12 +140,16 @@ class AgentEndToEndTest {
             if (f.payload.length > 0) {
                 plaintext = true;
             } else if (f.op == OP_RECV) {
-                tied.add(f.connId);
+                emptyRecvs.merge(f.connId, 1, Integer::sum);
                 assertFalse(plaintext, "tie after the first plaintext: " + all);
+            } else {
+                emptySends.merge(f.connId, 1, Integer::sum);
             }
         }
-        assertEquals(2, tied.size(), all.toString());
-        assertTrue(tied.contains(clientSend.connId) && tied.contains(serverSend.connId), all.toString());
+        for (long conn : new long[] {clientSend.connId, serverSend.connId}) {
+            assertEquals(Integer.valueOf(1), emptyRecvs.get(conn), all.toString());
+            assertTrue(emptySends.getOrDefault(conn, 0) >= 1, all.toString());
+        }
     }
 
     /**

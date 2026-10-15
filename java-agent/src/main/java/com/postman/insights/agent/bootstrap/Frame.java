@@ -56,6 +56,13 @@ public final class Frame {
      * read, which a read that returns already decrypted plaintext did not.
      */
     public static final short FLAG_SOCKET = 0x8;
+    /**
+     * On a SEND: the frame's bytes are written to the socket after it, by the
+     * thread that sent it when the framework writes inline (a wrap). The
+     * kernel ties a connection not yet tied to the thread's next socket write
+     * only then.
+     */
+    public static final short FLAG_BEFORE_WRITE = 0x10;
 
     private static final byte FAMILY_INET = 2;
     private static final byte FAMILY_INET6 = 10;
