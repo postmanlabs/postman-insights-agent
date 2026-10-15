@@ -186,9 +186,11 @@ volatile const __u32 enforce_netns_allowlist = 1;
 // socket on the thread that wrapped. So a SEND frame whose bytes are yet to be
 // written (JAVA_FRAME_FLAG_BEFORE_WRITE: a wrap) of a connection not yet tied
 // leaves the connection pending on its thread, and the thread's next socket
-// write (tcp_sendmsg) ties it; any other SEND frame on the thread ends it.
-// The agent also sends an empty SEND frame at a connection's first wrap that
-// produced bytes to write, in the handshake.
+// write (tcp_sendmsg) ties it; another connection's wrap before that write
+// makes it ambiguous (see struct thread_send).
+// The agent also sends an empty SEND frame at every wrap that produced bytes
+// to write without plaintext (the handshake's), so every wrap announces its
+// write.
 //
 // When a thread did not read a socket just before (an engine unwrapped on
 // another thread than the one that read), nor write one just after a SEND,

@@ -345,8 +345,10 @@ public final class Bridge {
      * Advice exit: at the outermost call, emits the bytes between each
      * buffer's entry position and its current position, which is the
      * plaintext the call consumed (wrap) or produced (unwrap). A connection's
-     * first unwrap sends a RECV frame even without plaintext (a handshake
-     * unwrap), which ties the connection to its socket in the kernel. When
+     * first unwrap that consumed TLS bytes sends a RECV frame even without
+     * plaintext (a handshake unwrap), which ties the connection to its socket
+     * in the kernel; so does every wrap that produced TLS bytes without
+     * plaintext, with an empty SEND, which announces the write after it. When
      * the call's result is CLOSED, records that direction as closed, and
      * sends a CLOSE frame once the connection can carry no more responses.
      *
@@ -393,14 +395,10 @@ public final class Bridge {
             // A wrap's output is written to the socket after it.
             flags |= Frame.FLAG_BEFORE_WRITE;
         }
-        // Only a written frame tied the connection (or will, at the write
-        // after it); a dropped one leaves the next to try.
-        if (emit(c, op, flags, conn.id, (int) Math.min(total, Integer.MAX_VALUE))) {
-            if (op == Frame.OP_RECV) {
-                conn.recvSent = true;
-            } else {
-                conn.sendSent = true;
-            }
+        // Only a written RECV frame tied the connection; a dropped one
+        // leaves the next to try.
+        if (emit(c, op, flags, conn.id, (int) Math.min(total, Integer.MAX_VALUE)) && op == Frame.OP_RECV) {
+            conn.recvSent = true;
         }
     }
 
@@ -578,10 +576,14 @@ public final class Bridge {
     }
 
     /**
-     * Sends an empty frame of op at a connection's first unwrap (RECV) that
-     * consumed TLS bytes, or wrap (SEND) that produced some, without
-     * plaintext: a handshake call, by whose socket read just before or write
-     * just after the kernel ties the connection to its socket.
+     * Sends an empty frame of op for an unwrap (RECV) that consumed TLS bytes,
+     * or a wrap (SEND) that produced some, without plaintext: a handshake
+     * call, by whose socket read just before or write just after the kernel
+     * ties the connection to its socket. A RECV only at the connection's
+     * first such unwrap (retried until written). A SEND at every such wrap:
+     * each announces the thread's next write as this connection's, which the
+     * kernel needs to see to tell when another connection's wrap waits for
+     * the same write.
      */
     private static void tie(Call c, Object engine, byte op) throws Throwable {
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
@@ -596,12 +598,7 @@ public final class Bridge {
             }
             return;
         }
-        if (conn.sendSent) {
-            return;
-        }
-        if (emitHeader(c, op, (short) (flags(conn, engine) | Frame.FLAG_BEFORE_WRITE), conn.id)) {
-            conn.sendSent = true;
-        }
+        emitHeader(c, op, (short) (flags(conn, engine) | Frame.FLAG_BEFORE_WRITE), conn.id);
     }
 
     /** Records a CLOSED result, and sends CLOSE when the connection is done. */
