@@ -52,6 +52,11 @@ const (
 	// FlagSocket marks a blocking socket's frames: the connection's addresses
 	// come in an ADDRESS frame, never from the thread's socket reads.
 	FlagSocket uint16 = 0x8
+	// FlagBeforeWrite, on a SEND, says the frame's bytes are written to the
+	// socket after it, by the thread that sent it when the framework writes
+	// inline (a wrap). Only then is a connection not yet tied tied to the
+	// thread's next socket write.
+	FlagBeforeWrite uint16 = 0x10
 )
 
 // ConnIDTag is set on a Java connection id when it becomes an ssl_event's

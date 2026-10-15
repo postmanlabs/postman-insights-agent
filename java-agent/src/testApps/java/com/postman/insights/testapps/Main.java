@@ -21,8 +21,8 @@ import javax.net.ssl.X509TrustManager;
  *
  * A server serves {@code GET /hello} with {@code {"hello":"jvm"}} on an
  * ephemeral port on 127.0.0.1 and prints {@code listening <port>}. A client
- * prints {@code client started} and requests url every 200 ms, trusting any
- * certificate. The keystore's password is {@code changeit}.
+ * prints {@code client started} and requests url?n=0, url?n=1, ... every 200
+ * ms, trusting any certificate. The keystore's password is {@code changeit}.
  *
  * <p>Compiled for Java 8, so the apps that run on JDK 8 (Netty) start there;
  * the others (Java 11 or 17 frameworks) are in a separate source set and

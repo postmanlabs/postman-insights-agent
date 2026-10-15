@@ -1,5 +1,6 @@
 package com.postman.insights.agent;
 
+import static com.postman.insights.agent.Frames.BEFORE_WRITE;
 import static com.postman.insights.agent.Frames.CLIENT_MODE;
 import static com.postman.insights.agent.Frames.OP_ADDRESS;
 import static com.postman.insights.agent.Frames.OP_CLOSE;
@@ -117,7 +118,8 @@ class AgentEndToEndTest {
         Frame clientRecv = Frames.find(got, OP_RECV, response);
         assertEquals(4, got.size(), got.toString());
 
-        assertEquals(ROLE_KNOWN | CLIENT_MODE, clientSend.flags);
+        // A wrap's output is written to the socket after the frame.
+        assertEquals(ROLE_KNOWN | CLIENT_MODE | BEFORE_WRITE, clientSend.flags);
         assertEquals(ROLE_KNOWN, serverRecv.flags);
         assertEquals(clientSend.connId, clientRecv.connId);
         assertEquals(serverSend.connId, serverRecv.connId);

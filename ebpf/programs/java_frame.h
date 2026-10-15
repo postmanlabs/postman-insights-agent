@@ -52,11 +52,14 @@
 #define JAVA_FRAME_ADDRESS_SIZE 40
 
 // flags bits.
-#define JAVA_FRAME_FLAG_ROLE_KNOWN  0x1 // the client/server role is known
-#define JAVA_FRAME_FLAG_CLIENT_MODE 0x2 // the JVM is the TLS client (valid with ROLE_KNOWN)
-#define JAVA_FRAME_FLAG_PEER_KNOWN  0x4 // peer_addr and peer_port are set
-#define JAVA_FRAME_FLAG_SOCKET      0x8 // a blocking socket's frame: its addresses come in an
-                                        // ADDRESS frame, never from the thread's socket reads
+#define JAVA_FRAME_FLAG_ROLE_KNOWN   0x1  // the client/server role is known
+#define JAVA_FRAME_FLAG_CLIENT_MODE  0x2  // the JVM is the TLS client (valid with ROLE_KNOWN)
+#define JAVA_FRAME_FLAG_PEER_KNOWN   0x4  // peer_addr and peer_port are set
+#define JAVA_FRAME_FLAG_SOCKET       0x8  // a blocking socket's frame: its addresses come in an
+                                          // ADDRESS frame, never from the thread's socket reads
+#define JAVA_FRAME_FLAG_BEFORE_WRITE 0x10 // SEND: the frame's bytes are written to the
+                                          // socket after it, by the thread that sent it
+                                          // when the framework writes inline (a wrap)
 
 // Java connection ids are tagged with the top bit when they become an
 // ssl_event's ssl_ctx. User-space pointers never set bit 63, so Java ids can

@@ -365,7 +365,7 @@ public final class Bridge {
                 long total = consumed(c);
                 if (total > 0 && active) {
                     emitData(c, engine, op, total);
-                } else if (active && (op == Frame.OP_SEND || consumed(result))) {
+                } else if (active && (op == Frame.OP_SEND ? produced(result) : consumed(result))) {
                     tie(c, engine, op);
                 }
             }
@@ -388,13 +388,15 @@ public final class Bridge {
             return;
         }
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        short flags = flags(conn, engine);
         if (op == Frame.OP_SEND) {
             conn.sendSent = true;
+            // A wrap's output is written to the socket after it.
+            flags |= Frame.FLAG_BEFORE_WRITE;
         }
         // Only a written RECV frame tied the connection; a dropped one leaves
         // the next to try.
-        if (emit(c, op, flags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE))
-                && op == Frame.OP_RECV) {
+        if (emit(c, op, flags, conn.id, (int) Math.min(total, Integer.MAX_VALUE)) && op == Frame.OP_RECV) {
             conn.recvSent = true;
         }
     }
@@ -565,9 +567,18 @@ public final class Bridge {
     }
 
     /**
-     * Sends an empty frame of op at a connection's first unwrap (RECV) or wrap
-     * (SEND) without plaintext: a handshake call, after which the kernel ties
-     * the connection to its socket.
+     * Whether a wrap produced TLS bytes, which the socket write after it
+     * carries: the evidence a SEND tie frame needs.
+     */
+    private static boolean produced(Object result) {
+        return result instanceof SSLEngineResult && ((SSLEngineResult) result).bytesProduced() > 0;
+    }
+
+    /**
+     * Sends an empty frame of op at a connection's first unwrap (RECV) that
+     * consumed TLS bytes, or wrap (SEND) that produced some, without
+     * plaintext: a handshake call, by whose socket read just before or write
+     * just after the kernel ties the connection to its socket.
      */
     private static void tie(Call c, Object engine, byte op) throws Throwable {
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
@@ -586,7 +597,7 @@ public final class Bridge {
             return;
         }
         conn.sendSent = true;
-        emitHeader(c, op, flags(conn, engine), conn.id);
+        emitHeader(c, op, (short) (flags(conn, engine) | Frame.FLAG_BEFORE_WRITE), conn.id);
     }
 
     /** Records a CLOSED result, and sends CLOSE when the connection is done. */

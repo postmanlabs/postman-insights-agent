@@ -25,6 +25,7 @@ final class Frames {
     static final short ROLE_KNOWN = 0x1;
     static final short CLIENT_MODE = 0x2;
     static final short SOCKET = 0x8;
+    static final short BEFORE_WRITE = 0x10;
 
     static final class Frame {
         byte op;
