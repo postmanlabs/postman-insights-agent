@@ -29,8 +29,8 @@ final class SocketAdvice {
         private Read() {}
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        static Bridge.Call enter() {
-            return Bridge.enterStream();
+        static Bridge.Call enter(@Advice.FieldValue("this$0") Object socket) {
+            return Bridge.enterStream(socket);
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
@@ -46,8 +46,8 @@ final class SocketAdvice {
         private Write() {}
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        static Bridge.Call enter() {
-            return Bridge.enterStream();
+        static Bridge.Call enter(@Advice.FieldValue("this$0") Object socket) {
+            return Bridge.enterStream(socket);
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)

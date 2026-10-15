@@ -125,6 +125,8 @@ public final class Bridge {
         int[] pos = new int[4];
         ByteBuffer single;
         int singlePos;
+        /** A socket stream call's connection, counted in flight until its exit. */
+        Connections.Info stream;
         /** A socket stream call's bytes: array[arrayOff, arrayOff + arrayLen). */
         byte[] array;
         int arrayOff;
@@ -139,6 +141,7 @@ public final class Bridge {
             bufs = null;
             single = null;
             array = null;
+            stream = null;
         }
     }
 
@@ -395,9 +398,12 @@ public final class Bridge {
 
     /**
      * Advice entry for the JDK's blocking {@code SSLSocket} streams: a read or
-     * a write of a byte array. Returns null when the exit has nothing to do.
+     * a write of a byte array. The call counts as in flight on its socket
+     * until its exit has sent its frame, so a close on another thread sends
+     * CLOSE after it (see {@link #socketClosed}). Returns null when the exit
+     * has nothing to do.
      */
-    public static Call enterStream() {
+    public static Call enterStream(Object socket) {
         if (!active) {
             return null;
         }
@@ -407,6 +413,13 @@ public final class Bridge {
         }
         c.clear();
         c.recording = true;
+        try {
+            Connections.Info conn = CONNECTIONS.get(socket, c.lookup);
+            conn.streamEntered();
+            c.stream = conn;
+        } catch (Throwable t) {
+            error();
+        }
         return c;
     }
 
@@ -436,7 +449,7 @@ public final class Bridge {
                     DROPPED.increment();
                     return;
                 }
-                Connections.Info conn = CONNECTIONS.get(socket, c.lookup);
+                Connections.Info conn = c.stream != null ? c.stream : CONNECTIONS.get(socket, c.lookup);
                 short flags = flags(conn, socket);
                 int epoch = addressEpoch;
                 if (conn.addressEpoch != epoch) {
@@ -452,7 +465,16 @@ public final class Bridge {
         } catch (Throwable t) {
             error();
         } finally {
+            // Whether or not capture is still on, so the count cannot stick.
+            Connections.Info conn = c.stream;
             c.clear();
+            if (conn != null && conn.streamExited() && active) {
+                try {
+                    sendSocketClose(c, conn, socket);
+                } catch (Throwable t) {
+                    error();
+                }
+            }
         }
     }
 
@@ -483,6 +505,10 @@ public final class Bridge {
     /**
      * Advice exit for {@code SSLSocket.close}: both directions are done, so a
      * connection that carried traffic gets its CLOSE frame, if it has not yet.
+     * A read or write on another thread can have done its I/O but not yet
+     * sent its frame; then the last of them sends the CLOSE after its frame,
+     * so the Insights agent does not complete a response before its last
+     * bytes. A CLOSE dropped there is not retried, as here.
      */
     public static void socketClosed(Object socket) {
         if (!active) {
@@ -494,20 +520,25 @@ public final class Bridge {
         }
         try {
             Connections.Info conn = CONNECTIONS.find(socket, c.lookup);
-            if (conn == null) {
+            if (conn == null || conn.deferClose()) {
                 return;
             }
-            short role = flags(conn, socket);
-            if (conn.closed(true, role) || conn.closed(false, role)) {
-                boolean written = false;
-                try {
-                    written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
-                } finally {
-                    conn.closeAttempted(written);
-                }
-            }
+            sendSocketClose(c, conn, socket);
         } catch (Throwable t) {
             error();
+        }
+    }
+
+    /** Sends a closed socket's CLOSE frame, if it has not been sent. */
+    private static void sendSocketClose(Call c, Connections.Info conn, Object socket) throws Throwable {
+        short role = flags(conn, socket);
+        if (conn.closed(true, role) || conn.closed(false, role)) {
+            boolean written = false;
+            try {
+                written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
+            } finally {
+                conn.closeAttempted(written);
+            }
         }
     }
 

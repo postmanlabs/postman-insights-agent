@@ -321,6 +321,34 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
 		t.Errorf("a connection tied while its thread's read return was missed: %+v", ev.Tuple)
 	}
+	// The read after a missed return (here one that gets EAGAIN) does not
+	// bring back the record before the missed one either: with kprobes it
+	// clears the mark the missed return left. (With fexit nothing clears the
+	// mark, so the injected one alone stops the tie.)
+	const conn22 = 122
+	onThread(func() {
+		readFrom(server1, client1)
+		key := uint64(os.Getpid())<<32 | uint64(unix.Gettid())
+		var r javatlsThreadRead
+		if err := l.java.objs.JavaThreadReads.Lookup(&key, &r); err != nil {
+			t.Fatal(err)
+		}
+		r.ReadingSk = 1
+		if err := l.java.objs.JavaThreadReads.Put(&key, &r); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := rawRead(t, idle, true); err != syscall.EAGAIN {
+			t.Fatalf("non-blocking read of an idle socket = %d, %v; want EAGAIN", n, err)
+		}
+		pwrite(t, javatls.OpRecv, conn22, "GET / HTTP/1.1\r\n\r\n")
+		r.ReadingSk, r.TsNs = 0, 0
+		if err := l.java.objs.JavaThreadReads.Put(&key, &r); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+		t.Errorf("a connection tied to the read before a missed return: %+v", ev.Tuple)
+	}
 
 	// A blocking read that waits long for its data still ties: the read
 	// counts when it returns. A blocking socket (a dup through File, outside

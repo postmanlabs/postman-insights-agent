@@ -623,7 +623,7 @@ class BridgeTest {
     /** One hooked SSLSocket stream call that read (RECV) or wrote (SEND) text. */
     private static void stream(Object socket, byte op, String text) {
         byte[] b = ascii(text);
-        Bridge.Call c = Bridge.enterStream();
+        Bridge.Call c = Bridge.enterStream(socket);
         Bridge.exitStream(c, socket, op, b, 0, b.length);
     }
 
@@ -709,6 +709,59 @@ class BridgeTest {
             stream(socket, Frame.OP_SEND, "after a heartbeat");
             stream(socket, Frame.OP_SEND, "again");
             assertEquals(2, ops(Frame.OP_ADDRESS).size());
+        }
+    }
+
+    /**
+     * A socket closed on one thread while a read on another has done its
+     * I/O but not yet sent its frame: the CLOSE comes after the read's RECV,
+     * sent by the read, so the Insights agent does not complete a response
+     * before its last bytes.
+     */
+    @Test
+    void closeWaitsForAReadInFlight() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            CountDownLatch read = new CountDownLatch(1);
+            CountDownLatch closed = new CountDownLatch(1);
+            Thread reader = new Thread(() -> {
+                Bridge.Call c = Bridge.enterStream(socket);
+                read.countDown();
+                try {
+                    closed.await();
+                } catch (InterruptedException e) {
+                    return;
+                }
+                byte[] b = ascii("the last bytes");
+                Bridge.exitStream(c, socket, Frame.OP_RECV, b, 0, b.length);
+            });
+            reader.start();
+            read.await();
+            Bridge.socketClosed(socket);
+            assertTrue(ops(Frame.OP_CLOSE).isEmpty(), "CLOSE before the read in flight sent its frame");
+            closed.countDown();
+            reader.join();
+            List<LoggedFrame> got = log.frames();
+            assertEquals(Frame.OP_RECV, got.get(got.size() - 2).op, got.toString());
+            assertEquals(Frame.OP_CLOSE, got.get(got.size() - 1).op, got.toString());
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+
+            // With nothing in flight, the close sends CLOSE itself (here none
+            // again: one per connection).
+            Bridge.socketClosed(socket);
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
+        }
+    }
+
+    /** A socket closed with nothing in flight sends CLOSE at once. */
+    @Test
+    void closeWithNothingInFlight() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            Bridge.socketClosed(socket);
+            assertEquals(1, ops(Frame.OP_CLOSE).size());
         }
     }
 
