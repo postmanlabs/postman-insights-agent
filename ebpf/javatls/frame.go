@@ -38,7 +38,7 @@ const HeaderSize = 40
 // Op values.
 const (
 	OpSend      uint8 = 1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
-	OpRecv      uint8 = 2 // plaintext the JVM received (produced by SSLEngine.unwrap)
+	OpRecv      uint8 = 2 // plaintext the JVM received (produced by SSLEngine.unwrap); empty at a connection's first unwrap, which ties it to its socket
 	OpHeartbeat uint8 = 3 // agent liveness and status; payload is key=value lines
 	OpClose     uint8 = 4 // connection closed; no payload
 )

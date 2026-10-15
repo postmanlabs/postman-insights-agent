@@ -12,13 +12,16 @@ import (
 	"encoding/hex"
 	"io"
 	"maps"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +53,10 @@ import javax.net.ssl.*;
 
 public class Server {
     public static void main(String[] args) throws Exception {
+        if (args[0].equals("client")) {
+            client(args[1]);
+            return;
+        }
         char[] pw = "changeit".toCharArray();
         KeyStore ks = KeyStore.getInstance("PKCS12");
         try (InputStream in = new FileInputStream(args[0])) {
@@ -69,6 +76,30 @@ public class Server {
         });
         s.start();
         System.out.println("listening " + s.getAddress().getPort());
+    }
+
+    // A blocking client (HttpsURLConnection, on SSLSocket): a request every
+    // 200 ms, each on a new connection, trusting any certificate.
+    static void client(String url) throws Exception {
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, new TrustManager[] {new X509TrustManager() {
+            public void checkClientTrusted(java.security.cert.X509Certificate[] c, String a) {}
+            public void checkServerTrusted(java.security.cert.X509Certificate[] c, String a) {}
+            public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+        }}, null);
+        System.out.println("client started");
+        for (;;) {
+            HttpsURLConnection c = (HttpsURLConnection) new java.net.URL(url).openConnection();
+            c.setSSLSocketFactory(ctx.getSocketFactory());
+            c.setHostnameVerifier((h, sess) -> true);
+            c.setRequestProperty("Connection", "close");
+            try (InputStream in = c.getInputStream()) {
+                while (in.read() >= 0) {}
+            } catch (IOException e) {
+                System.out.println("client error " + e);
+            }
+            Thread.sleep(200);
+        }
     }
 }
 `
@@ -187,13 +218,27 @@ type testJVM struct {
 // with the given JVM options and environment.
 func (f *jvmFixture) start(t *testing.T, uid int, env []string, jvmArgs ...string) *testJVM {
 	t.Helper()
+	return f.startMain(t, uid, env, []string{f.keystore}, jvmArgs...)
+}
+
+// startClient starts a JVM running the blocking HTTPS client, requesting url.
+func (f *jvmFixture) startClient(t *testing.T, uid int, url string, jvmArgs ...string) *testJVM {
+	t.Helper()
+	return f.startMain(t, uid, nil, []string{"client", url}, jvmArgs...)
+}
+
+// startMain starts the test program with mainArgs and waits until it says
+// it is listening (the server, whose address it records) or started (the
+// client).
+func (f *jvmFixture) startMain(t *testing.T, uid int, env []string, mainArgs []string, jvmArgs ...string) *testJVM {
+	t.Helper()
 	ctx, stop := context.WithCancel(context.Background())
 	id := strconv.Itoa(uid)
 	args := append([]string{"--mount", "--propagation", "private", "sh", "-ec",
 		`mount -t tmpfs tmpfs /tmp
 exec setpriv --reuid "$0" --regid "$0" --clear-groups "$@"`, id,
 		filepath.Join(f.javaHome, "bin", "java")}, jvmArgs...)
-	args = append(args, "-cp", f.dir, "Server", f.keystore)
+	args = append(append(args, "-cp", f.dir, "Server"), mainArgs...)
 	cmd := exec.CommandContext(ctx, "unshare", args...)
 	cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
 	j := &testJVM{stdout: &syncBuffer{}, stderr: &syncBuffer{}, cmd: cmd}
@@ -220,12 +265,16 @@ exec setpriv --reuid "$0" --regid "$0" --clear-groups "$@"`, id,
 			_, _ = j.stdout.Write([]byte(line + "\n"))
 			if p, ok := strings.CutPrefix(line, "listening "); ok {
 				port <- p
+			} else if line == "client started" {
+				port <- ""
 			}
 		}
 	}()
 	select {
 	case p := <-port:
-		j.addr = "127.0.0.1:" + p
+		if p != "" {
+			j.addr = "127.0.0.1:" + p
+		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("the JVM did not start")
 	}
@@ -264,10 +313,23 @@ func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector, reportCount
 }
 
 // expectCaptured sends an HTTPS request to the JVM and waits for the request
-// and response to come out of the subscription.
+// and response to come out of the subscription, with the connection's
+// addresses: the kernel ties the JVM's connection to its socket.
 func expectCaptured(t *testing.T, j *testJVM, out <-chan akinet.ParsedNetworkTraffic, query string) {
 	t.Helper()
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	var clientAddr atomic.Value
+	dialer := &net.Dialer{}
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := dialer.DialContext(ctx, network, addr)
+			if err == nil {
+				clientAddr.Store(c.LocalAddr().(*net.TCPAddr))
+			}
+			return c, err
+		},
+	}}
+	defer client.CloseIdleConnections()
 	resp, err := client.Get("https://" + j.addr + "/hello?" + query)
 	if err != nil {
 		t.Fatal(err)
@@ -287,16 +349,37 @@ func expectCaptured(t *testing.T, j *testJVM, out <-chan akinet.ParsedNetworkTra
 			case akinet.HTTPRequest:
 				if c.URL.Path == "/hello" && c.URL.RawQuery == query {
 					gotRequest = true
+					expectAddrs(t, pnt, clientAddr.Load().(*net.TCPAddr), j.addr)
 				}
 			case akinet.HTTPResponse:
 				if c.StatusCode == 200 && strings.Contains(c.Body.String(), `"jvm"`) {
 					gotResponse = true
+					expectAddrs(t, pnt, mustTCPAddr(t, j.addr), clientAddr.Load().(*net.TCPAddr).String())
 				}
 			}
 		case <-deadline:
 			t.Fatalf("captured request %v, response %v", gotRequest, gotResponse)
 		}
 	}
+}
+
+// expectAddrs checks that pnt went from src to dst.
+func expectAddrs(t *testing.T, pnt akinet.ParsedNetworkTraffic, src *net.TCPAddr, dst string) {
+	t.Helper()
+	want := mustTCPAddr(t, dst)
+	if !pnt.SrcIP.Equal(src.IP) || pnt.SrcPort != src.Port || !pnt.DstIP.Equal(want.IP) || pnt.DstPort != want.Port {
+		t.Errorf("%T from %s:%d to %s:%d, want from %s to %s",
+			pnt.Content, pnt.SrcIP, pnt.SrcPort, pnt.DstIP, pnt.DstPort, src, want)
+	}
+}
+
+func mustTCPAddr(t *testing.T, addr string) *net.TCPAddr {
+	t.Helper()
+	a, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
 
 // TestNodeCollectorJVMStatic: a JVM started with -javaagent. The agent is
@@ -318,6 +401,58 @@ func TestNodeCollectorJVMStatic(t *testing.T) {
 	// not when the file goes stale.
 	unsubscribe()
 	j.waitLog(t, "dormant, not capturing: disabled by the Insights agent", 15*time.Second)
+}
+
+// TestNodeCollectorJVMBlockingClient: a JVM's blocking HTTPS client
+// (HttpsURLConnection, on the JDK's SSLSocket) is captured, its requests
+// with the addresses of the connection they went over.
+func TestNodeCollectorJVMBlockingClient(t *testing.T) {
+	f := newJVMFixture(t)
+	nc, ctx := javaTestCollector(t)
+
+	// The client connections the server accepted, recorded at accept: before
+	// the handshake, so before the client can send a request on one.
+	var mu sync.Mutex
+	clients := map[string]bool{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"hello":"client"}`)
+	}))
+	srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			mu.Lock()
+			clients[c.RemoteAddr().String()] = true
+			mu.Unlock()
+		}
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
+	defer unsubscribe()
+	j := f.startClient(t, 1000, srv.URL+"/client", "-javaagent:"+f.agentJar)
+	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case pnt := <-out:
+			req, ok := pnt.Content.(akinet.HTTPRequest)
+			if !ok || req.URL.Path != "/client" {
+				continue
+			}
+			src := (&net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}).String()
+			mu.Lock()
+			seen := clients[src]
+			mu.Unlock()
+			if !seen {
+				t.Fatalf("request from %s, which the server never saw a connection from", src)
+			}
+			expectAddrs(t, pnt, &net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}, srv.Listener.Addr().String())
+			return
+		case <-deadline:
+			t.Fatalf("no request from the JVM's client captured; JVM stdout:\n%s", j.stdout)
+		}
+	}
 }
 
 // TestNodeCollectorJVMControlFrames: a real JVM's agent reaches the pod's

@@ -120,6 +120,22 @@ class AgentEndToEndTest {
         assertEquals(clientSend.connId, clientRecv.connId);
         assertEquals(serverSend.connId, serverRecv.connId);
         assertNotEquals(clientSend.connId, serverSend.connId);
+
+        // Each engine's first unwrap, in the handshake, sent one empty RECV
+        // frame, before any plaintext: it ties the connection to its socket.
+        List<Frame> all = frames.read();
+        List<Long> tied = new java.util.ArrayList<Long>();
+        boolean plaintext = false;
+        for (Frame f : all) {
+            if (f.payload.length > 0) {
+                plaintext = true;
+            } else if (f.op == OP_RECV) {
+                tied.add(f.connId);
+                assertFalse(plaintext, "tie after the first plaintext: " + all);
+            }
+        }
+        assertEquals(2, tied.size(), all.toString());
+        assertTrue(tied.contains(clientSend.connId) && tied.contains(serverSend.connId), all.toString());
     }
 
     /**
@@ -204,18 +220,113 @@ class AgentEndToEndTest {
             server.stop(0);
         }
 
-        // HttpsServer uses SSLEngine; the client (SSLSocket) is not hooked yet.
+        // The server (HttpsServer, on SSLEngine) and the client
+        // (HttpsURLConnection, on SSLSocket) are both captured, each once.
         List<Frame> got = frames.traffic();
         Frame req = Frames.findPrefix(got, OP_RECV, "GET /hello?x=1 HTTP/1.1");
         Frame resp = Frames.findPrefix(got, OP_SEND, "HTTP/1.1 200 OK");
         assertEquals(req.connId, resp.connId);
         assertEquals(ROLE_KNOWN, req.flags);
         assertEquals(1, Frames.count(got, OP_RECV, "GET /hello?x=1"), got.toString());
+        Frame clientReq = Frames.findPrefix(got, OP_SEND, "GET /hello?x=1 HTTP/1.1");
+        Frame clientResp = Frames.findPrefix(got, OP_RECV, "HTTP/1.1 200 OK");
+        assertEquals(clientReq.connId, clientResp.connId);
+        assertNotEquals(req.connId, clientReq.connId);
+        assertEquals(ROLE_KNOWN | CLIENT_MODE, clientReq.flags);
+        assertEquals(1, Frames.count(got, OP_SEND, "GET /hello?x=1"), got.toString());
         boolean sawBody = false;
         for (Frame f : got) {
             sawBody |= f.op == OP_SEND && f.connId == resp.connId && f.text().contains("{\"hello\":\"world\"}");
         }
         assertTrue(sawBody, "response body not captured");
+    }
+
+    /**
+     * A blocking SSLSocket server and client (the JDK's SSLSocketImpl, which
+     * uses no SSLEngine): each socket is a connection, its first frame is an
+     * empty RECV that ties it to its socket, its reads and writes are its
+     * plaintext, and closing it sends CLOSE.
+     */
+    @Test
+    void sslSocketServerAndClient() throws Exception {
+        String request = "GET /socket HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        String response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        try (javax.net.ssl.SSLServerSocket listener = (javax.net.ssl.SSLServerSocket)
+                Tls.get().context.getServerSocketFactory().createServerSocket(0, 1,
+                        java.net.InetAddress.getLoopbackAddress())) {
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                java.util.concurrent.Future<String> served = pool.submit(() -> {
+                    try (java.net.Socket s = listener.accept()) {
+                        byte[] buf = new byte[request.length()];
+                        int n = 0;
+                        InputStream in = s.getInputStream();
+                        while (n < buf.length) {
+                            n += in.read(buf, n, buf.length - n);
+                        }
+                        s.getOutputStream().write(response.getBytes(StandardCharsets.ISO_8859_1));
+                        s.getOutputStream().flush();
+                        return new String(buf, StandardCharsets.ISO_8859_1);
+                    }
+                });
+                try (javax.net.ssl.SSLSocket client = (javax.net.ssl.SSLSocket) Tls.get().context.getSocketFactory()
+                        .createSocket(java.net.InetAddress.getLoopbackAddress(), listener.getLocalPort())) {
+                    // An explicit handshake, as HttpsURLConnection does.
+                    client.startHandshake();
+                    client.getOutputStream().write(request.getBytes(StandardCharsets.ISO_8859_1));
+                    // One byte at a time: read() delegates to the hooked read(byte[], int, int).
+                    StringBuilder got = new StringBuilder();
+                    InputStream in = client.getInputStream();
+                    while (got.length() < response.length()) {
+                        got.append((char) in.read());
+                    }
+                    assertEquals(response, got.toString());
+                }
+                assertEquals(request, served.get(10, TimeUnit.SECONDS));
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+
+        List<Frame> all = frames.read();
+        Frame clientSend = Frames.find(all, OP_SEND, request);
+        Frame serverRecv = Frames.find(all, OP_RECV, request);
+        Frame serverSend = Frames.find(all, OP_SEND, response);
+        assertEquals(ROLE_KNOWN | CLIENT_MODE, clientSend.flags);
+        assertEquals(ROLE_KNOWN, serverRecv.flags);
+        assertEquals(serverRecv.connId, serverSend.connId);
+        assertNotEquals(clientSend.connId, serverSend.connId);
+        // The client read the response one byte per frame.
+        StringBuilder clientRecv = new StringBuilder();
+        for (Frame f : all) {
+            if (f.op == OP_RECV && f.connId == clientSend.connId) {
+                clientRecv.append(f.text());
+            }
+        }
+        assertEquals(response, clientRecv.toString());
+        // Each connection's first frame is a RECV, which ties it to its
+        // socket: an empty one for the client, which sends first after the
+        // handshake read the socket; the request itself for the server. Its
+        // last frame is its one CLOSE.
+        for (long conn : new long[] {clientSend.connId, serverSend.connId}) {
+            List<Frame> mine = new java.util.ArrayList<Frame>();
+            for (Frame f : all) {
+                if (f.connId == conn) {
+                    mine.add(f);
+                }
+            }
+            assertEquals(OP_RECV, mine.get(0).op, mine.toString());
+            assertEquals(conn == clientSend.connId ? 0 : request.length(), mine.get(0).payload.length, mine.toString());
+            assertEquals(OP_CLOSE, mine.get(mine.size() - 1).op, mine.toString());
+            int ties = 0;
+            int closes = 0;
+            for (Frame f : mine) {
+                ties += f.op == OP_RECV && f.payload.length == 0 ? 1 : 0;
+                closes += f.op == OP_CLOSE ? 1 : 0;
+            }
+            assertEquals(conn == clientSend.connId ? 1 : 0, ties, mine.toString());
+            assertEquals(1, closes, mine.toString());
+        }
     }
 
     /**
