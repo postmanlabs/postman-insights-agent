@@ -117,12 +117,17 @@ func TestJavaTLSFrames(t *testing.T) {
 		Payload:  request,
 	}.Append(nil)
 
+	// The counters are the kernel's, for every process: JVMs elsewhere on the
+	// machine (a kind cluster on the same VM) send frames too, which are
+	// rejected for their netns. So frames_seen and netns_rejected are never
+	// asserted exactly; the counters past the netns check only count frames
+	// from this process's netns.
 	t.Run("netns not allowed", func(t *testing.T) {
 		before := counter(t, JavaCounterNetnsRejected)
 		pwrite(t, send)
 		expectNoEvent(t)
-		if got := counter(t, JavaCounterNetnsRejected) - before; got != 1 {
-			t.Errorf("netns_rejected grew by %d, want 1", got)
+		if got := counter(t, JavaCounterNetnsRejected) - before; got < 1 {
+			t.Errorf("netns_rejected grew by %d, want at least 1", got)
 		}
 	})
 
@@ -210,15 +215,22 @@ func TestJavaTLSFrames(t *testing.T) {
 	})
 
 	t.Run("ordinary positional writes are ignored", func(t *testing.T) {
-		before := counter(t, JavaCounterFramesSeen)
+		// Not a frame: never parsed (frames that fail parsing are counted as
+		// malformed, only for this process's netns, so other JVMs on the
+		// machine cannot disturb the count) and never an event.
+		malformed := counter(t, JavaCounterMalformed)
 		if _, err := unix.Pwrite(fd, send, 0); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := unix.Pwrite(fd, []byte("not a frame at all"), int64(javatls.Magic)+1); err != nil {
+			t.Fatal(err)
+		}
 		expectNoEvent(t)
-		if got := counter(t, JavaCounterFramesSeen) - before; got != 0 {
-			t.Errorf("frames_seen grew by %d, want 0", got)
+		if got := counter(t, JavaCounterMalformed) - malformed; got != 0 {
+			t.Errorf("malformed grew by %d, want 0", got)
 		}
 	})
+
 
 	t.Run("rate cap applies to Java senders and refills every second", func(t *testing.T) {
 		if err := l.SetRateCapPerSec(2); err != nil {
