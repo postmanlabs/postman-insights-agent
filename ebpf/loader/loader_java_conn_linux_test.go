@@ -401,8 +401,11 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		writeTo(server1, client1)
 	})
 	untied(t, conn4, "a stale pending connection")
-	// A SEND frame of another connection in between ends the pending one:
-	// the next write may be the other connection's.
+	// An ambiguous wait (below) outlives its test on the OS thread, which
+	// later tests reuse, until it expires.
+	settle := func() { time.Sleep(20 * time.Millisecond) }
+	// A SEND frame of another connection in between, here a tied one, makes
+	// the next write ambiguous: it may be the other connection's.
 	onThread(func() {
 		wrap(t, conn7, "")
 		wrap(t, conn3, "for the tied connection")
@@ -412,16 +415,53 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		t.Fatal("the tied connection lost its addresses")
 	}
 	untied(t, conn7, "a connection pending before another's SEND")
+	settle()
 	// Two connections not yet tied, wrapped on one thread before it writes
-	// either: the next write could be either's, so it ties neither.
-	const conn20, conn21 = 120, 121
+	// either: the next write could be either's, so it ties neither. Nor
+	// does a third announcement after them, nor the second again: the
+	// ambiguity lasts until it expires.
+	const conn20, conn21, conn23, conn24 = 120, 121, 123, 124
 	onThread(func() {
 		wrap(t, conn20, "")
 		wrap(t, conn21, "")
+		wrap(t, conn23, "")
 		writeTo(server1, client1)
 	})
-	untied(t, conn20, "the first of two connections waiting for one write")
-	untied(t, conn21, "the second of two connections waiting for one write")
+	untied(t, conn20, "the first of three connections waiting for one write")
+	untied(t, conn21, "the second of three connections waiting for one write")
+	untied(t, conn23, "the third of three connections waiting for one write")
+	settle()
+	onThread(func() {
+		wrap(t, conn20, "")
+		wrap(t, conn24, "")
+		wrap(t, conn24, "")
+		writeTo(server1, client1)
+	})
+	untied(t, conn24, "a connection announced again after another's")
+	settle()
+	// A tied connection's wrap announces its write too: a connection
+	// wrapped after it, before that write, is not tied to the tied one's
+	// socket.
+	const conn25 = 125
+	onThread(func() {
+		wrap(t, conn3, "for the tied connection")
+		wrap(t, conn25, "")
+		writeTo(server1, client1)
+	})
+	wantTuple(t, readEvent(t), server2)
+	untied(t, conn25, "a connection wrapped after a tied one's wrap")
+	settle()
+	// An ambiguous wait expires, and a wrap after it ties again.
+	const conn26 = 126
+	onThread(func() {
+		wrap(t, conn20, "")
+		wrap(t, conn21, "")
+		settle()
+		wrap(t, conn26, "")
+		writeTo(server2, client2)
+	})
+	pwrite(t, javatls.OpSend, conn26, "GET / HTTP/1.1\r\n\r\n")
+	wantTuple(t, readEvent(t), server2)
 	// A SEND frame sent after its bytes were written (not BEFORE_WRITE)
 	// leaves nothing pending.
 	onThread(func() {

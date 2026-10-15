@@ -553,7 +553,7 @@ class BridgeTest {
         socket.setUseClientMode(true);
         byte[] b = ascii("GET / HTTP/1.1");
         for (int i = 0; i < 2; i++) {
-            Bridge.Call c = Bridge.enterStream();
+            Bridge.Call c = Bridge.enterStream(socket);
             Bridge.exitStream(c, socket, Frame.OP_SEND, b, 0, b.length);
         }
         List<LoggedFrame> frames = log.frames();

@@ -196,9 +196,11 @@ volatile const __u32 enforce_netns_allowlist = 1;
 // wrong ones. Two cases are tied wrongly, and cannot be told apart here: an
 // engine unwrapped on a thread that read another TCP socket (a database's, a
 // downstream call's) within THREAD_READ_MAX_AGE_NS, and not its own, is tied
-// to that socket; and a wrap whose bytes another thread writes, while the
-// wrapping thread writes another socket within THREAD_SEND_MAX_AGE_NS, ties
-// the connection to that socket. Later frames of a connection after reads of
+// to that socket; and a wrap of a connection not yet tied is tied to the
+// socket the wrapping thread writes next within THREAD_SEND_MAX_AGE_NS (with
+// no other connection's wrap in between), which is another socket when
+// another thread writes the wrap's bytes, or the thread first writes another
+// connection's leftover bytes. Later frames of a connection after reads of
 // another socket are counted (JAVA_CTR_CONN_MISMATCH), which shows the first.
 // ---------------------------------------------------------------------------
 
@@ -255,13 +257,21 @@ struct {
 // returning, but a GC pause can come in between.
 #define THREAD_READ_MAX_AGE_NS (50ULL * 1000 * 1000)
 
-// A connection a thread just wrapped for, before the connection is tied: the
-// thread's next socket write, within THREAD_SEND_MAX_AGE_NS, ties it. Shorter
-// than for reads: a frame whose bytes another thread writes later must not
-// tie the connection to this thread's next, unrelated write.
+// Whose bytes a thread's next socket write carries, as its SEND frames
+// announce them (JAVA_FRAME_FLAG_BEFORE_WRITE: a wrap, written after the
+// frame): the write, within THREAD_SEND_MAX_AGE_NS of the last announcement,
+// ties that connection if it is not tied yet. When announcements of two
+// connections are outstanding (a thread that wraps for several connections,
+// then writes them), the next write could be either's: the entry is then
+// ambiguous, every later SEND frame keeps it so, and it only expires, so a
+// write cannot end it and leave a later announcement to tie to the wrong
+// write. The window is shorter than for reads: a frame whose bytes another
+// thread writes must not tie to this thread's next, unrelated write.
 struct thread_send {
-    __u64 ts_ns;
-    __u64 conn_id;
+    __u64 ts_ns;                          // the last SEND frame
+    __u64 conn_id;                        // whose write is next, unless ambiguous
+    __u8  ambiguous;
+    __u8  _pad[7];
 };
 
 struct {
@@ -425,8 +435,11 @@ static __always_inline void record_thread_send(struct sock *sk) {
     if (!p) {
         return;
     }
-    __u64 conn_id = p->conn_id;
     __u64 age = bpf_ktime_get_ns() - p->ts_ns;
+    if (age <= THREAD_SEND_MAX_AGE_NS && p->ambiguous) {
+        return;                           // ends only by expiring
+    }
+    __u64 conn_id = p->conn_id;
     bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
     if (age > THREAD_SEND_MAX_AGE_NS) {
         return;
@@ -456,24 +469,27 @@ int BPF_KPROBE(kprobe_tcp_sendmsg, struct sock *sk) {
     return 0;
 }
 
-// On a SEND frame: leaves connection conn_id pending on the current thread
-// when the frame's bytes are yet to be written (JAVA_FRAME_FLAG_BEFORE_WRITE)
-// and the connection is not tied. Any other SEND frame ends what was pending:
-// the thread's next write may now be another connection's, so it ties
-// nothing. That includes a wrap of another connection not yet tied: with two
-// waiting (a thread that wraps for several connections, then writes them),
-// the next write could be either's.
+// On a SEND frame of connection conn_id: one whose bytes are yet to be
+// written (JAVA_FRAME_FLAG_BEFORE_WRITE) announces the thread's next write
+// as the connection's, tied or not (a tied one's write must not tie another
+// that announces after it). A second connection's announcement before that
+// write makes the entry ambiguous (see struct thread_send). A SEND frame
+// whose bytes were written already announces nothing.
 static __always_inline void pend_conn(__u64 conn_id, __u16 flags) {
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct java_conn_key k = current_conn_key(conn_id);
-    if (!(flags & JAVA_FRAME_FLAG_BEFORE_WRITE) || bpf_map_lookup_elem(&java_conns, &k)) {
-        bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
+    if (!(flags & JAVA_FRAME_FLAG_BEFORE_WRITE)) {
         return;
     }
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u64 now = bpf_ktime_get_ns();
-    struct thread_send *waiting = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
-    if (waiting && waiting->conn_id != conn_id && now - waiting->ts_ns <= THREAD_SEND_MAX_AGE_NS) {
-        bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
+    struct thread_send *w = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
+    if (w) {
+        if (now - w->ts_ns <= THREAD_SEND_MAX_AGE_NS && (w->ambiguous || w->conn_id != conn_id)) {
+            w->ambiguous = 1;
+        } else {
+            w->conn_id = conn_id;
+            w->ambiguous = 0;
+        }
+        w->ts_ns = now;
         return;
     }
     struct thread_send p = { .ts_ns = now, .conn_id = conn_id };
@@ -596,7 +612,7 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
         struct java_conn_key k = current_conn_key(h->conn_id);
         bpf_map_delete_elem(&java_conns, &k);
         struct thread_send *p = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
-        if (p && p->conn_id == h->conn_id) {
+        if (p && !p->ambiguous && p->conn_id == h->conn_id) {
             bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
         }
         if (!java_rate_take(pid_tgid >> 32)) {
@@ -682,8 +698,8 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     __u8 direction;
     if (h.op == JAVA_FRAME_OP_SEND) {
         direction = DIR_EGRESS;
-        // An empty SEND frame (a handshake wrap) only leaves the connection
-        // pending, for the thread's next socket write.
+        // An empty SEND frame (a handshake wrap) only announces the thread's
+        // next socket write.
         pend_conn(h.conn_id, h.flags);
     } else if (h.op == JAVA_FRAME_OP_RECV) {
         direction = DIR_INGRESS;
