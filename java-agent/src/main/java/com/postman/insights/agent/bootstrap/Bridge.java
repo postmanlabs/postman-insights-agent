@@ -390,14 +390,17 @@ public final class Bridge {
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
         short flags = flags(conn, engine);
         if (op == Frame.OP_SEND) {
-            conn.sendSent = true;
             // A wrap's output is written to the socket after it.
             flags |= Frame.FLAG_BEFORE_WRITE;
         }
-        // Only a written RECV frame tied the connection; a dropped one leaves
-        // the next to try.
-        if (emit(c, op, flags, conn.id, (int) Math.min(total, Integer.MAX_VALUE)) && op == Frame.OP_RECV) {
-            conn.recvSent = true;
+        // Only a written frame tied the connection (or will, at the write
+        // after it); a dropped one leaves the next to try.
+        if (emit(c, op, flags, conn.id, (int) Math.min(total, Integer.MAX_VALUE))) {
+            if (op == Frame.OP_RECV) {
+                conn.recvSent = true;
+            } else {
+                conn.sendSent = true;
+            }
         }
     }
 
@@ -596,8 +599,9 @@ public final class Bridge {
         if (conn.sendSent) {
             return;
         }
-        conn.sendSent = true;
-        emitHeader(c, op, (short) (flags(conn, engine) | Frame.FLAG_BEFORE_WRITE), conn.id);
+        if (emitHeader(c, op, (short) (flags(conn, engine) | Frame.FLAG_BEFORE_WRITE), conn.id)) {
+            conn.sendSent = true;
+        }
     }
 
     /** Records a CLOSED result, and sends CLOSE when the connection is done. */
