@@ -231,7 +231,6 @@ func TestJavaTLSFrames(t *testing.T) {
 		}
 	})
 
-
 	t.Run("rate cap applies to Java senders and refills every second", func(t *testing.T) {
 		if err := l.SetRateCapPerSec(2); err != nil {
 			t.Fatal(err)

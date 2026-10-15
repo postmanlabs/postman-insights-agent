@@ -461,3 +461,28 @@ func TestAdapter_KernelTuple(t *testing.T) {
 		t.Errorf("response %s:%d -> %s:%d", resp.SrcIP, resp.SrcPort, resp.DstIP, resp.DstPort)
 	}
 }
+
+// A connection's addresses that first come with its CLOSE (its earlier
+// events had none) are those of the response the close completes.
+func TestAdapter_KernelTupleOnClose(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const ssl = 1<<63 | 10
+	feed(t, a, 100, ssl, DirIngress, []byte("GET /late HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+	feed(t, a, 100, ssl, DirEgress, []byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nall of it"))
+	if req := <-out; req.SrcIP != nil && !req.SrcIP.IsUnspecified() {
+		t.Fatalf("the request has addresses %s:%d before any event carried them", req.SrcIP, req.SrcPort)
+	}
+
+	tuple := ConnTuple{Family: ConnFamilyInet, LocalPort: 8443, RemotePort: 51234}
+	copy(tuple.LocalAddr[:], []byte{10, 0, 0, 5})
+	copy(tuple.RemoteAddr[:], []byte{10, 0, 0, 9})
+	a.Feed(&SSLEvent{PID: 100, TID: 100, SSLCtx: ssl, Kind: KindJavaClose, FD: -1, Tuple: tuple}, time.Unix(0, 0))
+	select {
+	case resp := <-out:
+		if resp.SrcIP.String() != "10.0.0.5" || resp.SrcPort != 8443 || resp.DstIP.String() != "10.0.0.9" || resp.DstPort != 51234 {
+			t.Errorf("response %s:%d -> %s:%d", resp.SrcIP, resp.SrcPort, resp.DstIP, resp.DstPort)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the close did not complete the response")
+	}
+}

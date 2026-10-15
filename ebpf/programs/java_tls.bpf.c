@@ -134,7 +134,7 @@ static __always_inline int java_rate_take(__u32 tgid) {
 #define JAVA_CTR_MALFORMED         7  // failed validation
 #define JAVA_CTR_CONTROL_FRAMES    8  // HEARTBEAT and CLOSE frames
 #define JAVA_CTR_HEARTBEAT_LIMITED 9  // HEARTBEATs over the per-PID limit
-#define JAVA_CTR_CONN_BOUND        10 // connections tied to their socket
+#define JAVA_CTR_CONN_BOUND        10 // connections tied to their socket (or given their addresses)
 #define JAVA_CTR_CONN_UNBOUND      11 // data frames of connections not tied to a socket
 #define JAVA_CTR_CONN_MISMATCH     12 // a later read on a connection's thread was another socket's
 #define JAVA_CTR_MAX               13
@@ -161,20 +161,34 @@ volatile const __u32 enforce_netns_allowlist = 1;
 // ---------------------------------------------------------------------------
 // Connection addresses
 //
-// The Java agent sees SSLEngines, not sockets, so its frames carry no
-// addresses. The servers and clients we capture read the socket on the thread
-// that then unwraps what it read (Tomcat NIO, Netty, Jetty, Undertow, the JDK's
-// blocking SSLSocket): so the socket a thread read from just before a RECV
-// frame is the frame's connection. tcp_recvmsg records, for the threads of
-// processes that send frames, the addresses of the socket each last read; a
-// connection's first RECV frame ties it to them (java_conns), and every event
-// of the connection then carries them. The agent sends an empty RECV frame at
-// a connection's first unwrap, during the handshake, so the tie exists before
-// the first request or response, whichever side sends first.
+// Every event of a connection carries its addresses, from java_conns, which
+// gets them in one of two ways.
+//
+// A blocking socket's (the JDK's SSLSocket): the agent has the socket, so it
+// sends its addresses in an ADDRESS frame before the connection's first data
+// frame. Its frames are marked JAVA_FRAME_FLAG_SOCKET and are never tied by
+// the thread's reads below: a socket read can return plaintext that an
+// earlier read already decrypted, without reading the socket.
+//
+// An SSLEngine's: the agent sees engines, not sockets. The servers and
+// clients we capture read the socket on the thread that then unwraps what it
+// read (Tomcat NIO, Netty, Jetty, Undertow): so the socket a thread read from
+// just before a RECV frame is the frame's connection. tcp_recvmsg records,
+// for the threads of processes that send frames, the addresses of the socket
+// each last read bytes from; a connection's first RECV frame ties it to them,
+// and every event of the connection then carries them. The agent sends an
+// empty RECV frame at a connection's first unwrap that consumed TLS bytes,
+// during the handshake, so the tie exists before the first request or
+// response, whichever side sends first.
 //
 // When a thread did not read a socket just before (an engine unwrapped on
 // another thread than the one that read), the connection stays untied, and
-// its events carry no addresses rather than wrong ones.
+// its events carry no addresses rather than wrong ones. One case is tied
+// wrongly, and cannot be told apart here: an engine unwrapped on a thread
+// that read another TCP socket (a database's, a downstream call's) within
+// THREAD_READ_MAX_AGE_NS, and not its own, is tied to that socket. Later
+// frames of the connection after reads of another socket are counted
+// (JAVA_CTR_CONN_MISMATCH), which shows it.
 // ---------------------------------------------------------------------------
 
 // Processes that sent a valid frame: only their socket reads are recorded,
@@ -186,11 +200,17 @@ struct {
     __type(value, __u8);
 } java_senders SEC(".maps");
 
-// The socket a thread of a java_senders process last read from, and when the
-// read returned (0 while it is still waiting: a blocking read can wait long
-// before the data that its RECV frame decrypts arrives).
+// The socket a thread of a java_senders process last read bytes from, and
+// when that read returned (a blocking read can wait long before the data that
+// its RECV frame decrypts arrives). A read that returned none (EAGAIN from a
+// non-blocking read, the end of the stream, an error) read nothing to
+// decrypt, so it changes nothing: it is not the socket of what the thread
+// unwraps next, and the read before it may be (Tomcat reads again, and gets
+// EAGAIN, before unwrapping bytes an earlier read buffered). With kprobes,
+// reading_sk holds the socket of the read in progress until it returns.
 struct thread_read {
     __u64 ts_ns;
+    __u64 reading_sk;
     struct conn_tuple tuple;
 };
 
@@ -245,47 +265,77 @@ static __always_inline void sock_tuple(struct sock *sk, struct conn_tuple *t) {
     t->remote_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 }
 
-// Records sk as the socket the current thread reads: the read has returned
-// (done), or is still waiting.
-static __always_inline void record_thread_read(struct sock *sk, int done) {
+// The current thread's read record, when it belongs to a java_senders process.
+static __always_inline struct thread_read *thread_read_of(__u64 pid_tgid) {
+    __u32 tgid = pid_tgid >> 32;
+    if (!bpf_map_lookup_elem(&java_senders, &tgid)) {
+        return 0;
+    }
+    return bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
+}
+
+// Records sk as the socket the current thread last read bytes from, now.
+static __always_inline void record_thread_read(struct sock *sk) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 tgid = pid_tgid >> 32;
     if (!bpf_map_lookup_elem(&java_senders, &tgid)) {
         return;
     }
-    __u64 read_done_ns = done ? bpf_ktime_get_ns() : 0;
+    __u64 now = bpf_ktime_get_ns();
     // A thread's entry is rewritten in place: an LRU update on every read
     // would cost several times the rest.
     struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
     if (r) {
         sock_tuple(sk, &r->tuple);
-        r->ts_ns = read_done_ns;
+        r->ts_ns = now;
         return;
     }
-    struct thread_read fresh = { .ts_ns = read_done_ns };
+    struct thread_read fresh = { .ts_ns = now };
     sock_tuple(sk, &fresh.tuple);
     bpf_map_update_elem(&java_thread_reads, &pid_tgid, &fresh, BPF_ANY);
 }
 
-// int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, ...);
-// The first argument is the same on every kernel, the others are not. The
-// read counts when it returns: fexit where the kernel supports BPF
-// trampolines (x86_64 5.5+, arm64 6.0+); else kprobe, which records the
-// socket, and kretprobe, which records the return. The loader picks.
+// The read counts when it returns, and only when it returned bytes: fexit
+// where the kernel supports BPF trampolines (x86_64 5.5+, arm64 6.0+); else
+// kprobe, which remembers the socket, and kretprobe, which records it. An
+// fexit program reads the return value after the arguments, whose number has
+// changed (Linux 5.19 removed nonblock, a later kernel addr_len), so there is
+// one program per number of arguments. The loader picks from the kernel's
+// BTF. Only the first argument and the return value are used.
+
+// int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags);
 SEC("fexit/tcp_recvmsg")
-int BPF_PROG(fexit_tcp_recvmsg, struct sock *sk) {
-    record_thread_read(sk, 1);
+int BPF_PROG(fexit_tcp_recvmsg4, struct sock *sk, struct msghdr *msg, size_t len, int flags, int ret) {
+    if (ret > 0) {
+        record_thread_read(sk);
+    }
+    return 0;
+}
+
+// int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
+//                 int *addr_len);                               (Linux 5.19+)
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(fexit_tcp_recvmsg5, struct sock *sk, struct msghdr *msg, size_t len, int flags,
+             int *addr_len, int ret) {
+    if (ret > 0) {
+        record_thread_read(sk);
+    }
+    return 0;
+}
+
+// int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
+//                 int flags, int *addr_len);                    (before Linux 5.19)
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(fexit_tcp_recvmsg6, struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
+             int flags, int *addr_len, int ret) {
+    if (ret > 0) {
+        record_thread_read(sk);
+    }
     return 0;
 }
 
 SEC("kprobe/tcp_recvmsg")
 int BPF_KPROBE(kprobe_tcp_recvmsg, struct sock *sk) {
-    record_thread_read(sk, 0);
-    return 0;
-}
-
-SEC("kretprobe/tcp_recvmsg")
-int BPF_KRETPROBE(kretprobe_tcp_recvmsg) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 tgid = pid_tgid >> 32;
     if (!bpf_map_lookup_elem(&java_senders, &tgid)) {
@@ -293,8 +343,27 @@ int BPF_KRETPROBE(kretprobe_tcp_recvmsg) {
     }
     struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
     if (r) {
+        r->reading_sk = (__u64)sk;
+        return 0;
+    }
+    struct thread_read fresh = { .reading_sk = (__u64)sk };
+    bpf_map_update_elem(&java_thread_reads, &pid_tgid, &fresh, BPF_ANY);
+    return 0;
+}
+
+// The socket stays referenced by the read until it returns, so the kprobe's
+// pointer is still the read's socket here.
+SEC("kretprobe/tcp_recvmsg")
+int BPF_KRETPROBE(kretprobe_tcp_recvmsg, int ret) {
+    struct thread_read *r = thread_read_of(bpf_get_current_pid_tgid());
+    if (!r || !r->reading_sk) {
+        return 0;
+    }
+    if (ret > 0) {
+        sock_tuple((struct sock *)r->reading_sk, &r->tuple);
         r->ts_ns = bpf_ktime_get_ns();
     }
+    r->reading_sk = 0;
     return 0;
 }
 
@@ -324,10 +393,16 @@ static __always_inline int tuple_equal(const struct conn_tuple *a, const struct 
 // Ties connection conn_id of the current process to the socket the current
 // thread just read, on a RECV frame. A connection is tied once; a later read
 // of another socket before one of its RECV frames is counted, not followed.
+//
+// With kprobes, a read whose kretprobe was missed (the kernel's limit of
+// concurrent instances reached) leaves reading_sk set: the record is the read
+// before it, of another socket maybe, so nothing ties until the next read
+// returns. A frame always follows its read's return, so reading_sk is
+// otherwise 0 here.
 static __always_inline void bind_conn(__u64 conn_id) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
-    if (!r || r->tuple.family == CONN_FAMILY_UNKNOWN || r->ts_ns == 0 ||
+    if (!r || r->tuple.family == CONN_FAMILY_UNKNOWN || r->ts_ns == 0 || r->reading_sk != 0 ||
         bpf_ktime_get_ns() - r->ts_ns > THREAD_READ_MAX_AGE_NS) {
         return;
     }
@@ -343,6 +418,47 @@ static __always_inline void bind_conn(__u64 conn_id) {
         java_counter_inc(JAVA_CTR_CONN_MISMATCH, 1);
     }
 }
+
+// Gives connection conn_id of the current process the addresses an ADDRESS
+// frame carries (a blocking socket's, which the agent has). They replace any
+// the connection had. The kernel trusts them as it trusts the plaintext: a
+// process can misdescribe only its own connections, whose pod the kernel
+// stamps itself. The agent sends one again every heartbeat interval while
+// the connection is in use, so one dropped here, or forgotten (LRU eviction,
+// an Insights agent restart), comes back. Like a data frame, the frame takes a token from the
+// sender's rate-cap bucket: it is the one frame that adds to java_conns
+// without a socket read.
+static __always_inline int set_conn_address(const struct java_frame_header *h, const __u8 *buf) {
+    struct conn_tuple t;
+    if (h->payload_len != JAVA_FRAME_ADDRESS_SIZE) {
+        java_counter_inc(JAVA_CTR_MALFORMED, 1);
+        return 0;
+    }
+    if (bpf_probe_read_user(&t, sizeof(t), buf + JAVA_FRAME_HEADER_SIZE) != 0) {
+        java_counter_inc(JAVA_CTR_READ_FAILED, 1);
+        return 0;
+    }
+    const __u32 *local = (const __u32 *)t.local_addr, *remote = (const __u32 *)t.remote_addr;
+    if ((t.family != CONN_FAMILY_INET && t.family != CONN_FAMILY_INET6) ||
+        t._pad[0] != 0 || t._pad[1] != 0 || t._pad[2] != 0 ||
+        (t.family == CONN_FAMILY_INET &&
+         (local[1] | local[2] | local[3] | remote[1] | remote[2] | remote[3]) != 0)) {
+        java_counter_inc(JAVA_CTR_MALFORMED, 1);
+        return 0;
+    }
+    if (!java_rate_take(bpf_get_current_pid_tgid() >> 32)) {
+        java_counter_inc(JAVA_CTR_RATE_CAPPED, 1);
+        return 0;
+    }
+    struct java_conn_key k = current_conn_key(h->conn_id);
+    if (bpf_map_update_elem(&java_conns, &k, &t, BPF_ANY) == 0) {
+        java_counter_inc(JAVA_CTR_CONN_BOUND, 1);
+    }
+    return 0;
+}
+
+_Static_assert(sizeof(struct conn_tuple) == JAVA_FRAME_ADDRESS_SIZE,
+               "an ADDRESS frame's payload is a struct conn_tuple");
 
 // Copies the current process's connection conn_id's addresses into t, or
 // marks them unknown.
@@ -417,8 +533,8 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
 }
 
 // Validates one frame (buf, count: the whole positional write) and emits its
-// payload as an ssl_event, or a control frame as a control_event. The checks
-// match javatls.Parse in Go.
+// payload as an ssl_event, or a control frame as a control_event, or applies
+// an ADDRESS frame. The checks match javatls.Parse in Go.
 static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     java_counter_inc(JAVA_CTR_FRAMES_SEEN, 1);
 
@@ -438,7 +554,7 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
         return 0;
     }
     if (h.version != JAVA_FRAME_VERSION_1 ||
-        h.op < JAVA_FRAME_OP_SEND || h.op > JAVA_FRAME_OP_CLOSE ||
+        h.op < JAVA_FRAME_OP_SEND || h.op > JAVA_FRAME_OP_ADDRESS ||
         h._reserved != 0 ||
         (__u64)h.payload_len + JAVA_FRAME_HEADER_SIZE != count ||
         h.total_len < h.payload_len) {
@@ -460,7 +576,12 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     } else if (h.op == JAVA_FRAME_OP_RECV) {
         direction = DIR_INGRESS;
         // An empty RECV frame (a handshake unwrap) only ties the connection.
-        bind_conn(h.conn_id);
+        // A socket's come with an ADDRESS frame instead.
+        if (!(h.flags & JAVA_FRAME_FLAG_SOCKET)) {
+            bind_conn(h.conn_id);
+        }
+    } else if (h.op == JAVA_FRAME_OP_ADDRESS) {
+        return set_conn_address(&h, buf);
     } else {
         return emit_control(&h, buf, netns);
     }

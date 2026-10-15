@@ -41,6 +41,7 @@ const (
 	OpRecv      uint8 = 2 // plaintext the JVM received (produced by SSLEngine.unwrap); empty at a connection's first unwrap, which ties it to its socket
 	OpHeartbeat uint8 = 3 // agent liveness and status; payload is key=value lines
 	OpClose     uint8 = 4 // connection closed; no payload
+	OpAddress   uint8 = 5 // the connection's addresses, from the agent; payload is an Address (AddressSize bytes)
 )
 
 // Flag bits.
@@ -48,6 +49,9 @@ const (
 	FlagRoleKnown  uint16 = 0x1 // the client/server role is known
 	FlagClientMode uint16 = 0x2 // the JVM is the TLS client (valid with FlagRoleKnown)
 	FlagPeerKnown  uint16 = 0x4 // PeerAddr and PeerPort are set
+	// FlagSocket marks a blocking socket's frames: the connection's addresses
+	// come in an ADDRESS frame, never from the thread's socket reads.
+	FlagSocket uint16 = 0x8
 )
 
 // ConnIDTag is set on a Java connection id when it becomes an ssl_event's
@@ -124,6 +128,7 @@ var (
 	ErrLength       = errors.New("javatls: payload length does not match the write length")
 	ErrTotalLength  = errors.New("javatls: total length smaller than payload length")
 	ErrReservedBits = errors.New("javatls: reserved field is not zero")
+	ErrAddress      = errors.New("javatls: malformed ADDRESS payload")
 )
 
 // Parse decodes one frame from a whole positional write, applying the same
@@ -145,7 +150,7 @@ func Parse(b []byte) (Frame, error) {
 	if f.Version != Version1 {
 		return Frame{}, fmt.Errorf("%w: %d", ErrVersion, f.Version)
 	}
-	if f.Op < OpSend || f.Op > OpClose {
+	if f.Op < OpSend || f.Op > OpAddress {
 		return Frame{}, fmt.Errorf("%w: %d", ErrOp, f.Op)
 	}
 	if binary.LittleEndian.Uint16(b[offReserved:]) != 0 {
@@ -159,5 +164,83 @@ func Parse(b []byte) (Frame, error) {
 		return Frame{}, fmt.Errorf("%w: total_len=%d, payload_len=%d", ErrTotalLength, f.TotalLen, payloadLen)
 	}
 	f.Payload = b[HeaderSize:]
+	if f.Op == OpAddress {
+		if _, err := ParseAddress(f.Payload); err != nil {
+			return Frame{}, err
+		}
+	}
 	return f, nil
+}
+
+// AddressSize is the size of an ADDRESS frame's payload.
+const AddressSize = 40
+
+// Address families in an ADDRESS payload (the kernel's AF_INET and AF_INET6).
+const (
+	addressFamilyInet  = 2
+	addressFamilyInet6 = 10
+)
+
+// Address is an ADDRESS frame's payload: the connection's TCP addresses,
+// which the agent knows for a blocking socket. It has the layout of the
+// kernel's struct conn_tuple, which the kernel copies it into:
+//
+//	 0  u8      family       2 (IPv4) or 10 (IPv6, including IPv4-mapped)
+//	 1  u8[3]   zero
+//	 4  u16     local_port   little-endian
+//	 6  u16     remote_port  little-endian
+//	 8  u8[16]  local_addr   network byte order; IPv4 in the first 4 bytes, the rest zero
+//	24  u8[16]  remote_addr  the same
+type Address struct {
+	Local, Remote netip.AddrPort
+}
+
+// Append encodes a onto b and returns the extended slice: family 2 when both
+// addresses are IPv4 (or IPv4-mapped), else 10, with IPv4 addresses mapped.
+func (a Address) Append(b []byte) []byte {
+	var p [AddressSize]byte
+	local, remote := a.Local.Addr().Unmap(), a.Remote.Addr().Unmap()
+	binary.LittleEndian.PutUint16(p[4:], a.Local.Port())
+	binary.LittleEndian.PutUint16(p[6:], a.Remote.Port())
+	if local.Is4() && remote.Is4() {
+		p[0] = addressFamilyInet
+		l, r := local.As4(), remote.As4()
+		copy(p[8:], l[:])
+		copy(p[24:], r[:])
+	} else {
+		p[0] = addressFamilyInet6
+		l, r := local.As16(), remote.As16()
+		copy(p[8:], l[:])
+		copy(p[24:], r[:])
+	}
+	return append(b, p[:]...)
+}
+
+// ParseAddress decodes an ADDRESS frame's payload, applying the kernel's
+// checks: the size, a known family, zero padding, and zero bytes after an
+// IPv4 address. IPv4-mapped addresses are unmapped.
+func ParseAddress(p []byte) (Address, error) {
+	if len(p) != AddressSize {
+		return Address{}, fmt.Errorf("%w: %d bytes, want %d", ErrAddress, len(p), AddressSize)
+	}
+	if p[1] != 0 || p[2] != 0 || p[3] != 0 {
+		return Address{}, fmt.Errorf("%w: padding is not zero", ErrAddress)
+	}
+	var local, remote netip.Addr
+	switch p[0] {
+	case addressFamilyInet:
+		var zero [12]byte
+		if [12]byte(p[12:24]) != zero || [12]byte(p[28:40]) != zero {
+			return Address{}, fmt.Errorf("%w: IPv4 address with trailing bytes", ErrAddress)
+		}
+		local, remote = netip.AddrFrom4([4]byte(p[8:12])), netip.AddrFrom4([4]byte(p[24:28]))
+	case addressFamilyInet6:
+		local, remote = netip.AddrFrom16([16]byte(p[8:24])).Unmap(), netip.AddrFrom16([16]byte(p[24:40])).Unmap()
+	default:
+		return Address{}, fmt.Errorf("%w: family %d", ErrAddress, p[0])
+	}
+	return Address{
+		Local:  netip.AddrPortFrom(local, binary.LittleEndian.Uint16(p[4:])),
+		Remote: netip.AddrPortFrom(remote, binary.LittleEndian.Uint16(p[6:])),
+	}, nil
 }

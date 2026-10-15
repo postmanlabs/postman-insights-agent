@@ -9,8 +9,9 @@ import com.postman.insights.agent.bootstrap.Frame;
  * Advice for the JDK's blocking {@code SSLSocket} ({@code sun.security.ssl.SSLSocketImpl},
  * JDK 8u261 and newer), which does not use an {@code SSLEngine}: its
  * application streams' reads and writes carry the plaintext, and the socket
- * is the connection. Blocking clients use it: {@code HttpsURLConnection},
- * Apache HttpClient's classic API, OkHttp.
+ * is the connection, whose addresses the agent takes from it; {@code close}
+ * is hooked for the CLOSE frame. Blocking clients use it:
+ * {@code HttpsURLConnection}, Apache HttpClient's classic API, OkHttp.
  *
  * <p>The streams are inner classes; {@code this$0} is their socket. Their
  * one-byte {@code read()} and {@code write(int)} delegate to the array forms
@@ -54,18 +55,6 @@ final class SocketAdvice {
                          @Advice.Argument(0) byte[] b, @Advice.Argument(1) int off,
                          @Advice.Argument(2) int len, @Advice.Thrown Throwable thrown) {
             Bridge.exitStream(call, socket, Frame.OP_SEND, b, off, thrown == null ? len : 0);
-        }
-    }
-
-    /** {@code SSLSocketImpl.startHandshake()}. */
-    static final class Handshake {
-        private Handshake() {}
-
-        @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        static void exit(@Advice.This Object socket, @Advice.Thrown Throwable thrown) {
-            if (thrown == null) {
-                Bridge.handshakeDone(socket);
-            }
         }
     }
 

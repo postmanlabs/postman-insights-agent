@@ -5,6 +5,7 @@
 package loader
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"runtime"
@@ -21,8 +22,9 @@ import (
 
 // TestJavaConnAddresses: Java events carry the addresses of the socket their
 // connection's thread read from before its first RECV frame, with the
-// tcp_recvmsg hook attached by fexit and by kprobe. Frames are written the
-// way the Java agent writes them, from this process, with real TCP sockets.
+// tcp_recvmsg hook attached by fexit and by kprobe, or those of the
+// connection's ADDRESS frame. Frames are written the way the Java agent
+// writes them, from this process, with real TCP sockets.
 //
 // Requires root (CAP_BPF + CAP_PERFMON) and tracefs; skipped otherwise.
 func TestJavaConnAddresses(t *testing.T) {
@@ -40,6 +42,27 @@ func TestJavaConnAddresses(t *testing.T) {
 			testJavaConnAddresses(t, tc.kprobe)
 		})
 	}
+}
+
+// hasTrampolines reports whether the kernel supports BPF trampolines, which
+// fexit needs: x86_64 5.5+, arm64 6.0+.
+func hasTrampolines(t *testing.T) bool {
+	t.Helper()
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		t.Fatal(err)
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(unix.ByteSliceToString(u.Release[:]), "%d.%d", &major, &minor); err != nil {
+		t.Fatalf("kernel release %q: %v", u.Release, err)
+	}
+	switch runtime.GOARCH {
+	case "amd64":
+		return major > 5 || major == 5 && minor >= 5
+	case "arm64":
+		return major >= 6
+	}
+	return false
 }
 
 func testJavaConnAddresses(t *testing.T, kprobe bool) {
@@ -63,6 +86,11 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	if kprobe && kind != "kprobe" {
 		t.Fatalf("hook attached by %s, want kprobe", kind)
 	}
+	// A kernel with BPF trampolines attaches fexit: a fallback there hides a
+	// bug, such as a tcp_recvmsg signature the loader does not know.
+	if !kprobe && kind != "fexit" && hasTrampolines(t) {
+		t.Fatalf("hook attached by %s on a kernel with BPF trampolines: %v", kind, l.JavaConnAddressesFallback())
+	}
 	t.Logf("tcp_recvmsg hook attached by %s", kind)
 
 	var st syscall.Stat_t
@@ -83,15 +111,19 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	}
 	defer devNull.Close()
 
-	pwrite := func(t *testing.T, op uint8, connID uint64, payload string) {
+	pwriteFlags := func(t *testing.T, op uint8, flags uint16, connID uint64, payload []byte) {
 		t.Helper()
 		frame := javatls.Frame{
-			Version: javatls.Version1, Op: op, Flags: javatls.FlagRoleKnown, ConnID: connID,
-			TotalLen: uint32(len(payload)), Payload: []byte(payload),
+			Version: javatls.Version1, Op: op, Flags: flags, ConnID: connID,
+			TotalLen: uint32(len(payload)), Payload: payload,
 		}.Append(nil)
 		if _, err := unix.Pwrite(int(devNull.Fd()), frame, int64(javatls.Magic)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	pwrite := func(t *testing.T, op uint8, connID uint64, payload string) {
+		t.Helper()
+		pwriteFlags(t, op, javatls.FlagRoleKnown, connID, []byte(payload))
 	}
 	readEvent := func(t *testing.T) *events.SSLEvent {
 		t.Helper()
@@ -219,6 +251,77 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		t.Errorf("conn_unbound grew by %d, want 1", got)
 	}
 
+	// A read that returned no bytes does not count: what the thread unwraps
+	// next is not its socket's, and the read before it still ties (Tomcat
+	// reads again, and gets EAGAIN, before unwrapping what an earlier read
+	// buffered). A non-blocking read with nothing to read (EAGAIN), and one
+	// at the end of the stream (0), each on a dup of the socket, outside Go's
+	// poller.
+	rawRead := func(t *testing.T, c net.Conn, nonblock bool) (int, error) {
+		t.Helper()
+		f, err := c.(*net.TCPConn).File()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		// Fd puts the file in blocking mode: once, before setting the mode.
+		fd := int(f.Fd())
+		if nonblock {
+			if err := syscall.SetNonblock(fd, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return syscall.Read(fd, make([]byte, 1))
+	}
+	idle, _ := accept()
+	ended, endedPeer := accept()
+	_ = endedPeer.Close()
+	const conn3, conn4 = 103, 104
+	onThread(func() {
+		readFrom(server1, client1)
+		if n, err := rawRead(t, idle, true); err != syscall.EAGAIN {
+			t.Fatalf("non-blocking read of an idle socket = %d, %v; want EAGAIN", n, err)
+		}
+		pwrite(t, javatls.OpRecv, conn3, "GET /buffered HTTP/1.1\r\n\r\n")
+	})
+	wantTuple(t, readEvent(t), server1)
+	onThread(func() {
+		readFrom(server1, client1)
+		if n, err := rawRead(t, ended, false); n != 0 || err != nil {
+			t.Fatalf("read at the end of the stream = %d, %v; want 0", n, err)
+		}
+		pwrite(t, javatls.OpRecv, conn4, "GET /buffered HTTP/1.1\r\n\r\n")
+	})
+	wantTuple(t, readEvent(t), server1)
+
+	// A read whose return the kretprobe missed (more blocked readers on the
+	// node than the kernel's limit of instances) leaves the socket being read
+	// recorded: then the record is the read before it, maybe of another
+	// socket, and nothing ties until a read returns. Simulated in both modes
+	// by setting the field on this thread's record.
+	const conn19 = 119
+	onThread(func() {
+		readFrom(server1, client1)
+		key := uint64(os.Getpid())<<32 | uint64(unix.Gettid())
+		var r javatlsThreadRead
+		if err := l.java.objs.JavaThreadReads.Lookup(&key, &r); err != nil {
+			t.Fatal(err)
+		}
+		r.ReadingSk = 1
+		if err := l.java.objs.JavaThreadReads.Put(&key, &r); err != nil {
+			t.Fatal(err)
+		}
+		pwrite(t, javatls.OpRecv, conn19, "GET / HTTP/1.1\r\n\r\n")
+		// Only kprobes ever clear it: put the thread back for the rest.
+		r.ReadingSk = 0
+		if err := l.java.objs.JavaThreadReads.Put(&key, &r); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+		t.Errorf("a connection tied while its thread's read return was missed: %+v", ev.Tuple)
+	}
+
 	// A blocking read that waits long for its data still ties: the read
 	// counts when it returns. A blocking socket (a dup through File, outside
 	// Go's poller) so the receive itself waits in the kernel, as a JVM's
@@ -290,6 +393,62 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	})
 	wantTuple(t, readEvent(t), server1)
 
+	// A blocking socket's connection has the addresses of its ADDRESS frame,
+	// with no read at all. Its frames (marked SOCKET) are never tied by the
+	// thread's reads: a read of another socket before one neither moves the
+	// connection nor counts as a mismatch, and one without its ADDRESS frame
+	// (dropped) stays unknown.
+	addressOf := func(c net.Conn) []byte {
+		return javatls.Address{
+			Local:  c.LocalAddr().(*net.TCPAddr).AddrPort(),
+			Remote: c.RemoteAddr().(*net.TCPAddr).AddrPort(),
+		}.Append(nil)
+	}
+	const socketFlags = javatls.FlagRoleKnown | javatls.FlagClientMode | javatls.FlagSocket
+	const conn11, conn12 = 111, 112
+	bound = counter(t, JavaCounterConnBound)
+	onThread(func() { pwriteFlags(t, javatls.OpAddress, socketFlags, conn11, addressOf(server1)) })
+	if got := counter(t, JavaCounterConnBound) - bound; got != 1 {
+		t.Fatalf("conn_bound grew by %d at an ADDRESS frame, want 1", got)
+	}
+	mismatch = counter(t, JavaCounterConnMismatch)
+	onThread(func() {
+		readFrom(server2, client2)
+		pwriteFlags(t, javatls.OpRecv, socketFlags, conn11, []byte("HTTP/1.1 200 OK\r\n\r\n"))
+		readFrom(server2, client2)
+		pwriteFlags(t, javatls.OpRecv, socketFlags, conn12, []byte("HTTP/1.1 200 OK\r\n\r\n"))
+	})
+	wantTuple(t, readEvent(t), server1)
+	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+		t.Errorf("a socket's frame was tied by its thread's read: %+v", ev.Tuple)
+	}
+	if got := counter(t, JavaCounterConnMismatch) - mismatch; got != 0 {
+		t.Errorf("conn_mismatch grew by %d on a socket's frame, want 0", got)
+	}
+
+	// An ADDRESS frame replaces a tie the kernel made.
+	pwriteFlags(t, javatls.OpAddress, socketFlags, conn9, addressOf(server2))
+	pwrite(t, javatls.OpSend, conn9, "HTTP/1.1 200 OK\r\n\r\n")
+	wantTuple(t, readEvent(t), server2)
+
+	// A malformed ADDRESS frame is rejected and ties nothing.
+	const conn13 = 113
+	malformed := counter(t, JavaCounterMalformed)
+	badFamily := addressOf(server1)
+	badFamily[0] = 7
+	trailing := addressOf(server1)
+	trailing[8+4] = 1 // a byte after the IPv4 local address
+	pwriteFlags(t, javatls.OpAddress, socketFlags, conn13, addressOf(server1)[:javatls.AddressSize-1])
+	pwriteFlags(t, javatls.OpAddress, socketFlags, conn13, badFamily)
+	pwriteFlags(t, javatls.OpAddress, socketFlags, conn13, trailing)
+	if got := counter(t, JavaCounterMalformed) - malformed; got != 3 {
+		t.Errorf("malformed grew by %d for three malformed ADDRESS frames, want 3", got)
+	}
+	pwrite(t, javatls.OpSend, conn13, "HTTP/1.1 200 OK\r\n\r\n")
+	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+		t.Errorf("a malformed ADDRESS frame tied its connection: %+v", ev.Tuple)
+	}
+
 	// A CLOSE whose event is dropped (here, by the rate cap) still forgets
 	// its connection, so a closed connection takes no room in java_conns.
 	const conn10 = 110
@@ -305,11 +464,17 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	pwrite(t, javatls.OpSend, conn10, "takes the only token")
 	readEvent(t)
 	pwrite(t, javatls.OpClose, conn10, "")
+	// An ADDRESS frame takes a token too: over the cap, it ties nothing.
+	const conn14 = 114
+	pwriteFlags(t, javatls.OpAddress, socketFlags, conn14, addressOf(server1))
 	var k javatlsJavaConnKey
 	var v javatlsConnTuple
 	for it := l.java.objs.JavaConns.Iterate(); it.Next(&k, &v); {
 		if k.ConnId == conn10 && k.Tgid == uint32(os.Getpid()) {
 			t.Error("a rate-capped CLOSE left its connection tied")
+		}
+		if k.ConnId == conn14 && k.Tgid == uint32(os.Getpid()) {
+			t.Error("a rate-capped ADDRESS frame tied its connection")
 		}
 	}
 	if err := l.SetRateCapPerSec(0); err != nil {

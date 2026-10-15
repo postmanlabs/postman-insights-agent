@@ -10,6 +10,7 @@ import (
 	"math"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 )
 
@@ -30,7 +31,9 @@ type javaTLS struct {
 	readHookKind string
 	// readHookErr is why there are none.
 	readHookErr error
-	links       []link.Link
+	// readHookFallback is why they are kprobes rather than fexit.
+	readHookFallback error
+	links            []link.Link
 }
 
 // javaTLSCore is the java_tls object without its tcp_recvmsg hook, which is
@@ -113,20 +116,18 @@ func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFexit bool) {
 	if !tryFexit {
 		errs = append(errs, errors.New("fexit: not tried"))
 	} else {
-		var fexit struct {
-			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg"`
-		}
-		err := spec.LoadAndAssign(&fexit, opts)
+		prog, err := loadFexitRead(spec, opts)
 		if err == nil {
 			var lk link.Link
-			if lk, err = link.AttachTracing(link.TracingOptions{Program: fexit.Prog}); err == nil {
-				j.readHooks, j.readHookKind = []*ebpf.Program{fexit.Prog}, "fexit"
+			if lk, err = link.AttachTracing(link.TracingOptions{Program: prog}); err == nil {
+				j.readHooks, j.readHookKind = []*ebpf.Program{prog}, "fexit"
 				j.links = append(j.links, lk)
 				return
 			}
-			_ = fexit.Prog.Close()
+			_ = prog.Close()
 		}
 		errs = append(errs, fmt.Errorf("fexit: %w", err))
+		j.readHookFallback = err
 	}
 	var kprobe struct {
 		Entry  *ebpf.Program `ebpf:"kprobe_tcp_recvmsg"`
@@ -160,6 +161,60 @@ func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFexit bool) {
 	j.readHookErr = errors.Join(errs...)
 }
 
+// loadFexitRead loads the fexit program for the kernel's tcp_recvmsg: one
+// per number of arguments, since fexit reads the return value after them.
+func loadFexitRead(spec *ebpf.CollectionSpec, opts *ebpf.CollectionOptions) (*ebpf.Program, error) {
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		return nil, fmt.Errorf("kernel BTF: %w", err)
+	}
+	args, err := tcpRecvmsgArgs(kernel)
+	if err != nil {
+		return nil, err
+	}
+	switch args {
+	case 4:
+		var p struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg4"`
+		}
+		err = spec.LoadAndAssign(&p, opts)
+		return p.Prog, err
+	case 5:
+		var p struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg5"`
+		}
+		err = spec.LoadAndAssign(&p, opts)
+		return p.Prog, err
+	default:
+		var p struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg6"`
+		}
+		err = spec.LoadAndAssign(&p, opts)
+		return p.Prog, err
+	}
+}
+
+// tcpRecvmsgArgs returns the number of arguments of the kernel's
+// tcp_recvmsg, from its BTF rather than the kernel version, since
+// distributions backport changes: 6 before Linux 5.19 (with nonblock), 5
+// after (without), and 4 on later kernels (without addr_len too). Any other
+// number is an error, and the loader falls back to kprobes, whose return
+// value does not depend on the signature.
+func tcpRecvmsgArgs(kernel *btf.Spec) (int, error) {
+	var fn *btf.Func
+	if err := kernel.TypeByName("tcp_recvmsg", &fn); err != nil {
+		return 0, fmt.Errorf("tcp_recvmsg in the kernel's BTF: %w", err)
+	}
+	proto, ok := fn.Type.(*btf.FuncProto)
+	if !ok {
+		return 0, fmt.Errorf("tcp_recvmsg in the kernel's BTF is a %T, not a function prototype", fn.Type)
+	}
+	if n := len(proto.Params); n < 4 || n > 6 {
+		return 0, fmt.Errorf("tcp_recvmsg has %d arguments in the kernel's BTF, want 4 to 6", n)
+	}
+	return len(proto.Params), nil
+}
+
 var errJavaDisabled = errors.New("ebpf: Java TLS capture is not running")
 
 // netnsKey converts a netns inode (as returned by stat) to the BPF map key.
@@ -190,6 +245,15 @@ func (l *Loader) JavaConnAddresses() (string, error) {
 		return "", errJavaDisabled
 	}
 	return l.java.readHookKind, l.java.readHookErr
+}
+
+// JavaConnAddressesFallback returns why the tcp_recvmsg hook is attached by
+// kprobe rather than fexit, or nil when it is not (or fexit was not tried).
+func (l *Loader) JavaConnAddressesFallback() error {
+	if l.java == nil || l.java.readHookKind != "kprobe" {
+		return nil
+	}
+	return l.java.readHookFallback
 }
 
 // JavaEnabled reports whether the Java TLS programs are loaded and attached.
