@@ -51,7 +51,7 @@ struct {
 // exited processes age out.
 struct java_rate_bucket {
     __u64 window_start_ns;
-    __u64 tokens;                         // left in the current window
+    __s64 tokens;                         // left in the current window; signed, see bucket_take
 };
 
 struct {
@@ -78,24 +78,34 @@ struct {
 #define HEARTBEAT_BURST     3
 
 // Takes one event from tgid's bucket in buckets, which holds cap events per
-// window_ns; returns 0 when the bucket is empty. Concurrent senders on other
-// CPUs can race on a window change; the cap is approximate there, never
-// unbounded.
-static __always_inline int bucket_take(void *buckets, __u32 tgid, __u64 cap, __u64 window_ns) {
+// window_ns; returns 0 when the bucket is empty.
+//
+// tokens is signed, and an empty bucket is restored after a failed take: a
+// take racing on another CPU then sees zero or less and fails too, so the
+// count can dip below zero for an instant but never wraps around to "full".
+// Only one CPU creates a bucket; the others take from it. Two CPUs can both
+// start a new window, each with a full bucket: the cap is approximate there,
+// by at most the number of CPUs per window, and never unbounded.
+static __always_inline int bucket_take(void *buckets, __u32 tgid, __s64 cap, __u64 window_ns) {
     __u64 now = bpf_ktime_get_ns();
     struct java_rate_bucket *b = bpf_map_lookup_elem(buckets, &tgid);
     if (!b) {
         struct java_rate_bucket fresh = { .window_start_ns = now, .tokens = cap - 1 };
-        bpf_map_update_elem(buckets, &tgid, &fresh, BPF_NOEXIST);
-        return 1;
+        if (bpf_map_update_elem(buckets, &tgid, &fresh, BPF_NOEXIST) == 0) {
+            return 1;
+        }
+        // Another CPU created it first.
+        b = bpf_map_lookup_elem(buckets, &tgid);
+        if (!b) {
+            return 0;
+        }
     }
     if (now - b->window_start_ns >= window_ns) {
         b->window_start_ns = now;
         b->tokens = cap - 1;
         return 1;
     }
-    // Same underflow guard as rate_take in libssl.bpf.c.
-    if (__sync_fetch_and_sub(&b->tokens, 1) == 0) {
+    if (__sync_fetch_and_sub(&b->tokens, 1) <= 0) {
         __sync_fetch_and_add(&b->tokens, 1);
         return 0;
     }
