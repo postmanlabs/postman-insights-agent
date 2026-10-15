@@ -376,10 +376,12 @@ public final class Bridge {
             return;
         }
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
-        if (op == Frame.OP_RECV) {
+        // Only a written RECV frame tied the connection; a dropped one leaves
+        // the next to try.
+        if (emit(c, op, roleFlags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE))
+                && op == Frame.OP_RECV) {
             conn.recvSent = true;
         }
-        emit(c, op, roleFlags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE));
     }
 
     /**
@@ -428,13 +430,12 @@ public final class Bridge {
                 }
                 Connections.Info conn = CONNECTIONS.get(socket, c.lookup);
                 short role = roleFlags(conn, socket);
-                if (op == Frame.OP_RECV) {
-                    conn.recvSent = true;
-                }
                 c.array = b;
                 c.arrayOff = off;
                 c.arrayLen = n;
-                emit(c, op, role, conn.id, n);
+                if (emit(c, op, role, conn.id, n) && op == Frame.OP_RECV) {
+                    conn.recvSent = true;
+                }
             } else if (n < 0 && op == Frame.OP_RECV) {
                 closed(c, socket, op);
             }
@@ -510,8 +511,11 @@ public final class Bridge {
         if (conn.recvSent) {
             return;
         }
-        conn.recvSent = true;
-        emitHeader(c, Frame.OP_RECV, roleFlags(conn, engine), conn.id);
+        // Set once written: a dropped tie (interrupted thread, every buffer
+        // busy) is retried at the next such unwrap.
+        if (emitHeader(c, Frame.OP_RECV, roleFlags(conn, engine), conn.id)) {
+            conn.recvSent = true;
+        }
     }
 
     /** Records a CLOSED result, and sends CLOSE when the connection is done. */
@@ -592,12 +596,13 @@ public final class Bridge {
         return flags;
     }
 
-    private static void emit(Call c, byte op, short flags, long connId, int total) throws Throwable {
+    /** Writes a frame with the call's bytes; false when it was dropped. */
+    private static boolean emit(Call c, byte op, short flags, long connId, int total) throws Throwable {
         Pool p = pool;
         int idx = p.acquire(c);
         if (idx < 0) {
             DROPPED.increment();
-            return;
+            return false;
         }
         try {
             Slot s = p.slots[idx];
@@ -624,9 +629,10 @@ public final class Bridge {
             f.flip();
             if (write(s, f)) {
                 FRAMES.increment();
-            } else {
-                DROPPED.increment();
+                return true;
             }
+            DROPPED.increment();
+            return false;
         } finally {
             p.release(idx);
         }

@@ -81,8 +81,8 @@ func BenchmarkJavaReadHook(b *testing.B) {
 }
 
 // benchRoundTrips runs b.N one-byte round trips over a loopback TCP
-// connection, each with two tcp_recvmsg calls, and reports the hooks' run
-// time per tcp_recvmsg call.
+// connection, each with two tcp_recvmsg calls (the echo's and the
+// client's), and reports the hooks' run time per tcp_recvmsg call.
 func benchRoundTrips(b *testing.B, hooks []*ebpf.Program) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -95,7 +95,17 @@ func benchRoundTrips(b *testing.B, hooks []*ebpf.Program) {
 			return
 		}
 		defer c.Close()
-		_, _ = io.Copy(c, c)
+		// Explicit reads and writes: io.Copy between TCP connections
+		// splices, bypassing tcp_recvmsg.
+		buf := make([]byte, 1)
+		for {
+			if _, err := c.Read(buf); err != nil {
+				return
+			}
+			if _, err := c.Write(buf); err != nil {
+				return
+			}
+		}
 	}()
 	c, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {

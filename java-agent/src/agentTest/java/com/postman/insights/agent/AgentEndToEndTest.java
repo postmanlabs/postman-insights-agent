@@ -127,6 +127,9 @@ class AgentEndToEndTest {
         List<Long> tied = new java.util.ArrayList<Long>();
         boolean plaintext = false;
         for (Frame f : all) {
+            if (f.op != OP_SEND && f.op != OP_RECV) {
+                continue; // a HEARTBEAT has a payload too
+            }
             if (f.payload.length > 0) {
                 plaintext = true;
             } else if (f.op == OP_RECV) {
