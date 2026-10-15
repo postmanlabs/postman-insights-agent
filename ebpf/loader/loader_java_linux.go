@@ -95,6 +95,10 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 	return j, nil
 }
 
+// kretprobeMaxActive is the kernel's maximum of concurrent kretprobe
+// instances (KRETPROBE_MAXACTIVE_MAX).
+const kretprobeMaxActive = 4096
+
 // attachReadHook attaches the tcp_recvmsg hook: fexit if it can, else
 // kprobe with kretprobe. Failing both only leaves Java events without
 // addresses.
@@ -132,7 +136,17 @@ func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFexit bool) {
 	if err == nil {
 		var entry, ret link.Link
 		if entry, err = link.Kprobe("tcp_recvmsg", kprobe.Entry, nil); err == nil {
-			if ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return, nil); err == nil {
+			// A blocking tcp_recvmsg holds a kretprobe instance until it
+			// returns, on every process of the node: with the default limit
+			// (about two per CPU), blocked readers elsewhere use them up and
+			// returns are missed. Use the kernel's maximum.
+			ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return,
+				&link.KprobeOptions{RetprobeMaxActive: kretprobeMaxActive})
+			if err != nil {
+				// The limit needs tracefs; without it, the default.
+				ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return, nil)
+			}
+			if err == nil {
 				j.readHooks, j.readHookKind = []*ebpf.Program{kprobe.Entry, kprobe.Return}, "kprobe"
 				j.links = append(j.links, entry, ret)
 				return

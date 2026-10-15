@@ -220,20 +220,60 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	}
 
 	// A blocking read that waits long for its data still ties: the read
-	// counts when it returns.
-	const conn5, conn6 = 105, 106
+	// counts when it returns. A blocking socket (a dup through File, outside
+	// Go's poller) so the receive itself waits in the kernel, as a JVM's
+	// blocking SSLSocket read does.
+	blockingRead := func(t *testing.T, c net.Conn) {
+		t.Helper()
+		f, err := c.(*net.TCPConn).File()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		buf := make([]byte, 1)
+		if _, err := syscall.Read(int(f.Fd()), buf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const conn5, conn6, conn9 = 105, 106, 109
 	onThread(func() {
 		go func() {
 			time.Sleep(150 * time.Millisecond)
 			_, _ = client2.Write([]byte("z"))
 		}()
-		buf := make([]byte, 1)
-		if _, err := server2.Read(buf); err != nil {
-			t.Fatal(err)
+		start := time.Now()
+		blockingRead(t, server2)
+		if waited := time.Since(start); waited < 100*time.Millisecond {
+			t.Fatalf("the read returned after %v, without waiting for the peer", waited)
 		}
 		pwrite(t, javatls.OpRecv, conn5, "GET /slow HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server2)
+
+	// Many threads of the node blocked in tcp_recvmsg at once do not use up
+	// the kretprobe's instances, so a read still counts.
+	others := make([]net.Conn, 0, 64)
+	for i := 0; i < cap(others); i++ {
+		server, client := accept()
+		others = append(others, client)
+		go func() {
+			f, err := server.(*net.TCPConn).File()
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			_, _ = syscall.Read(int(f.Fd()), make([]byte, 1))
+		}()
+	}
+	time.Sleep(200 * time.Millisecond) // until they block
+	onThread(func() {
+		readFrom(server1, client1)
+		pwrite(t, javatls.OpRecv, conn9, "GET /busy HTTP/1.1\r\n\r\n")
+	})
+	wantTuple(t, readEvent(t), server1)
+	for _, c := range others {
+		_, _ = c.Write([]byte("w"))
+	}
 
 	// A dead process's connection with the same PID and connection id (a
 	// reused PID) is not inherited: the key has the process's start time.
@@ -249,6 +289,32 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		pwrite(t, javatls.OpRecv, conn6, "GET / HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server1)
+
+	// A CLOSE whose event is dropped (here, by the rate cap) still forgets
+	// its connection, so a closed connection takes no room in java_conns.
+	const conn10 = 110
+	onThread(func() {
+		readFrom(server1, client1)
+		pwrite(t, javatls.OpRecv, conn10, "GET / HTTP/1.1\r\n\r\n")
+	})
+	wantTuple(t, readEvent(t), server1)
+	if err := l.SetRateCapPerSec(1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond) // a fresh window
+	pwrite(t, javatls.OpSend, conn10, "takes the only token")
+	readEvent(t)
+	pwrite(t, javatls.OpClose, conn10, "")
+	var k javatlsJavaConnKey
+	var v javatlsConnTuple
+	for it := l.java.objs.JavaConns.Iterate(); it.Next(&k, &v); {
+		if k.ConnId == conn10 && k.Tgid == uint32(os.Getpid()) {
+			t.Error("a rate-capped CLOSE left its connection tied")
+		}
+	}
+	if err := l.SetRateCapPerSec(0); err != nil {
+		t.Fatal(err)
+	}
 
 	// CLOSE carries the addresses and forgets the connection.
 	pwrite(t, javatls.OpClose, conn1, "")

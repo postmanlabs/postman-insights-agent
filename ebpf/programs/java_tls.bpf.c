@@ -365,7 +365,15 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u8 kind = EVENT_KIND_JAVA_HEARTBEAT;
     __u64 to_copy = (__u64)h->payload_len & 0xffffffffULL;
+    // A CLOSE forgets its connection whether or not its event goes out, so
+    // a dropped CLOSE leaves no stale tie taking up java_conns; the event, if
+    // any, carries the addresses.
+    struct conn_tuple closed_tuple;
+    __builtin_memset(&closed_tuple, 0, sizeof(closed_tuple));
     if (h->op == JAVA_FRAME_OP_CLOSE) {
+        conn_tuple_of(h->conn_id, &closed_tuple);
+        struct java_conn_key k = current_conn_key(h->conn_id);
+        bpf_map_delete_elem(&java_conns, &k);
         if (!java_rate_take(pid_tgid >> 32)) {
             java_counter_inc(JAVA_CTR_RATE_CAPPED, 1);
             return 0;
@@ -396,14 +404,7 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
     e->kind         = kind;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
     e->netns        = netns;
-    if (kind == EVENT_KIND_JAVA_CLOSE) {
-        // The connection is done: its addresses go with the CLOSE.
-        conn_tuple_of(h->conn_id, &e->tuple);
-        struct java_conn_key k = current_conn_key(h->conn_id);
-        bpf_map_delete_elem(&java_conns, &k);
-    } else {
-        __builtin_memset(&e->tuple, 0, sizeof(e->tuple));
-    }
+    __builtin_memcpy(&e->tuple, &closed_tuple, sizeof(e->tuple));
     if (to_copy > 0 &&
         bpf_probe_read_user(e->payload, to_copy, buf + JAVA_FRAME_HEADER_SIZE) != 0) {
         bpf_ringbuf_discard(e, 0);

@@ -597,4 +597,23 @@ class BridgeTest {
         emptyRecv(server);
         assertEquals(1, ops(Frame.OP_RECV).size());
     }
+
+    /**
+     * A tie frame that could not be written (here: the thread was
+     * interrupted) is retried at the connection's next handshake unwrap.
+     */
+    @Test
+    void droppedTieIsRetried() throws Exception {
+        SSLEngine client = engine(true);
+        Thread.currentThread().interrupt();
+        try {
+            emptyRecv(client);
+        } finally {
+            Thread.interrupted();
+        }
+        assertEquals(0, log.frames().size(), "a frame written from an interrupted thread");
+        emptyRecv(client);
+        emptyRecv(client);
+        assertEquals(1, ops(Frame.OP_RECV).size());
+    }
 }
