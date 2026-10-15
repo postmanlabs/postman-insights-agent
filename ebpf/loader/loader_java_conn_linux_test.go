@@ -21,7 +21,7 @@ import (
 
 // TestJavaConnAddresses: Java events carry the addresses of the socket their
 // connection's thread read from before its first RECV frame, with the
-// tcp_recvmsg hook attached by fentry and by kprobe. Frames are written the
+// tcp_recvmsg hook attached by fexit and by kprobe. Frames are written the
 // way the Java agent writes them, from this process, with real TCP sockets.
 //
 // Requires root (CAP_BPF + CAP_PERFMON) and tracefs; skipped otherwise.
@@ -218,6 +218,37 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	if got := counter(t, JavaCounterConnUnbound) - unbound; got != 1 {
 		t.Errorf("conn_unbound grew by %d, want 1", got)
 	}
+
+	// A blocking read that waits long for its data still ties: the read
+	// counts when it returns.
+	const conn5, conn6 = 105, 106
+	onThread(func() {
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			_, _ = client2.Write([]byte("z"))
+		}()
+		buf := make([]byte, 1)
+		if _, err := server2.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		pwrite(t, javatls.OpRecv, conn5, "GET /slow HTTP/1.1\r\n\r\n")
+	})
+	wantTuple(t, readEvent(t), server2)
+
+	// A dead process's connection with the same PID and connection id (a
+	// reused PID) is not inherited: the key has the process's start time.
+	stale := javatlsJavaConnKey{Tgid: uint32(os.Getpid()), StartNs: 1, ConnId: conn6}
+	var staleTuple javatlsConnTuple
+	staleTuple.Family = events.ConnFamilyInet
+	staleTuple.LocalPort, staleTuple.RemotePort = 1, 2
+	if err := l.java.objs.JavaConns.Put(&stale, &staleTuple); err != nil {
+		t.Fatal(err)
+	}
+	onThread(func() {
+		readFrom(server1, client1)
+		pwrite(t, javatls.OpRecv, conn6, "GET / HTTP/1.1\r\n\r\n")
+	})
+	wantTuple(t, readEvent(t), server1)
 
 	// CLOSE carries the addresses and forgets the connection.
 	pwrite(t, javatls.OpClose, conn1, "")

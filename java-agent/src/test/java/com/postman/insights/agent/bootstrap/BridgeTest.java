@@ -509,10 +509,30 @@ class BridgeTest {
         assertEquals(1, closes().size());
     }
 
+    /** A handshake unwrap: TLS bytes consumed, no plaintext produced. */
+    private static final SSLEngineResult HANDSHAKE_UNWRAP = new SSLEngineResult(
+            SSLEngineResult.Status.OK, SSLEngineResult.HandshakeStatus.NEED_WRAP, 120, 0);
+
     /** One hooked unwrap call that produces nothing, as in a handshake. */
     private static void emptyRecv(Object engine) {
         ByteBuffer dst = ByteBuffer.allocate(8);
-        Bridge.exit(Bridge.enter(dst), engine, Frame.OP_RECV, OK);
+        Bridge.exit(Bridge.enter(dst), engine, Frame.OP_RECV, HANDSHAKE_UNWRAP);
+    }
+
+    /**
+     * An unwrap that consumed no TLS bytes (BUFFER_UNDERFLOW, or it threw) is
+     * no evidence the thread read the socket: it does not tie.
+     */
+    @Test
+    void unwrapWithoutBytesDoesNotTie() throws Exception {
+        SSLEngine server = engine(false);
+        ByteBuffer dst = ByteBuffer.allocate(8);
+        Bridge.exit(Bridge.enter(dst), server, Frame.OP_RECV, new SSLEngineResult(
+                SSLEngineResult.Status.BUFFER_UNDERFLOW, SSLEngineResult.HandshakeStatus.NEED_UNWRAP, 0, 0));
+        Bridge.exit(Bridge.enter(dst), server, Frame.OP_RECV, null);
+        assertEquals(0, log.frames().size());
+        emptyRecv(server);
+        assertEquals(1, ops(Frame.OP_RECV).size());
     }
 
     private static List<LoggedFrame> ops(byte op) throws Exception {

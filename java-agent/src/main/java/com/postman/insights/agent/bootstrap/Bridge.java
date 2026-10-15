@@ -225,6 +225,19 @@ public final class Bridge {
         return active ? Contract.HEARTBEAT_STATE_ACTIVE : Contract.HEARTBEAT_STATE_DORMANT;
     }
 
+    /** Whether the hooks capture now. */
+    public static boolean capturing() {
+        return active;
+    }
+
+    /** The state once the control file enables capture. */
+    public static String stateWhenEnabled() {
+        if (broken) {
+            return Contract.HEARTBEAT_STATE_OFF;
+        }
+        return started ? Contract.HEARTBEAT_STATE_ACTIVE : Contract.HEARTBEAT_STATE_DORMANT;
+    }
+
     public static long framesWritten() {
         return FRAMES.sum();
     }
@@ -340,7 +353,7 @@ public final class Bridge {
                 long total = consumed(c);
                 if (total > 0 && active) {
                     emitData(c, engine, op, total);
-                } else if (op == Frame.OP_RECV && active) {
+                } else if (op == Frame.OP_RECV && active && consumed(result)) {
                     tie(c, engine);
                 }
             }
@@ -390,10 +403,9 @@ public final class Bridge {
      * Advice exit for {@code SSLSocket} streams: emits the plaintext the call
      * read (RECV) or wrote (SEND), b[off, off + n). The socket is the
      * connection. A read that reached the end of the stream (n == -1) records
-     * the inbound side as closed. A socket's first frame is preceded by an
-     * empty RECV frame, which ties the connection to its socket in the
-     * kernel: the handshake, inside the first read or write or in
-     * {@link #handshakeDone}, has just read the socket on this thread.
+     * the inbound side as closed. A read's RECV frame ties the connection to
+     * its socket in the kernel: the read has just read the socket on this
+     * thread. So does {@link #handshakeDone}, after an explicit handshake.
      *
      * @param n bytes read or written; -1 at the end of the stream; 0 when the call threw
      */
@@ -416,11 +428,8 @@ public final class Bridge {
                 }
                 Connections.Info conn = CONNECTIONS.get(socket, c.lookup);
                 short role = roleFlags(conn, socket);
-                if (!conn.recvSent) {
+                if (op == Frame.OP_RECV) {
                     conn.recvSent = true;
-                    if (op == Frame.OP_SEND) {
-                        emitHeader(c, Frame.OP_RECV, role, conn.id);
-                    }
                 }
                 c.array = b;
                 c.arrayOff = off;
@@ -485,6 +494,14 @@ public final class Bridge {
         } catch (Throwable t) {
             error();
         }
+    }
+
+    /**
+     * Whether an unwrap consumed TLS bytes, which the socket read just
+     * before: the evidence a tie frame needs.
+     */
+    private static boolean consumed(Object result) {
+        return result instanceof SSLEngineResult && ((SSLEngineResult) result).bytesConsumed() > 0;
     }
 
     /** Sends an empty RECV frame at a connection's first unwrap without plaintext. */

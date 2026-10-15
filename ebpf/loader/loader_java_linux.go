@@ -22,19 +22,19 @@ import (
 
 type javaTLS struct {
 	objs javaTLSCore
-	// readHook is the program that records socket reads (see "Connection
-	// addresses" in java_tls.bpf.c), nil when neither fentry nor kprobe
+	// readHooks are the programs that record socket reads (see "Connection
+	// addresses" in java_tls.bpf.c), none when neither fexit nor kprobe
 	// could attach: then Java events carry no addresses.
-	readHook *ebpf.Program
-	// readHookKind is how readHook attached: "fentry" or "kprobe".
+	readHooks []*ebpf.Program
+	// readHookKind is how they attached: "fexit" or "kprobe".
 	readHookKind string
-	// readHookErr is why readHook is nil.
+	// readHookErr is why there are none.
 	readHookErr error
 	links       []link.Link
 }
 
 // javaTLSCore is the java_tls object without its tcp_recvmsg hook, which is
-// loaded on its own: fentry needs BPF trampolines (x86_64 5.5+, arm64 6.0+),
+// loaded on its own: fexit needs BPF trampolines (x86_64 5.5+, arm64 6.0+),
 // and a kernel without them must still run the rest.
 type javaTLSCore struct {
 	javatlsMaps
@@ -95,9 +95,10 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 	return j, nil
 }
 
-// attachReadHook attaches the tcp_recvmsg hook, with fentry if it can, else
-// kprobe. Failing both only leaves Java events without addresses.
-func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFentry bool) {
+// attachReadHook attaches the tcp_recvmsg hook: fexit if it can, else
+// kprobe with kretprobe. Failing both only leaves Java events without
+// addresses.
+func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFexit bool) {
 	opts := &ebpf.CollectionOptions{
 		MapReplacements: map[string]*ebpf.Map{
 			"java_senders":      j.objs.JavaSenders,
@@ -105,34 +106,43 @@ func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFentry bool) {
 		},
 	}
 	var errs []error
-	var fentry struct {
-		Prog *ebpf.Program `ebpf:"fentry_tcp_recvmsg"`
-	}
-	if !tryFentry {
-		errs = append(errs, errors.New("fentry: not tried"))
-	} else if err := spec.LoadAndAssign(&fentry, opts); err != nil {
-		errs = append(errs, fmt.Errorf("fentry: %w", err))
-	} else if lk, err := link.AttachTracing(link.TracingOptions{Program: fentry.Prog}); err != nil {
-		_ = fentry.Prog.Close()
-		errs = append(errs, fmt.Errorf("fentry: %w", err))
+	if !tryFexit {
+		errs = append(errs, errors.New("fexit: not tried"))
 	} else {
-		j.readHook, j.readHookKind = fentry.Prog, "fentry"
-		j.links = append(j.links, lk)
-		return
+		var fexit struct {
+			Prog *ebpf.Program `ebpf:"fexit_tcp_recvmsg"`
+		}
+		err := spec.LoadAndAssign(&fexit, opts)
+		if err == nil {
+			var lk link.Link
+			if lk, err = link.AttachTracing(link.TracingOptions{Program: fexit.Prog}); err == nil {
+				j.readHooks, j.readHookKind = []*ebpf.Program{fexit.Prog}, "fexit"
+				j.links = append(j.links, lk)
+				return
+			}
+			_ = fexit.Prog.Close()
+		}
+		errs = append(errs, fmt.Errorf("fexit: %w", err))
 	}
 	var kprobe struct {
-		Prog *ebpf.Program `ebpf:"kprobe_tcp_recvmsg"`
+		Entry  *ebpf.Program `ebpf:"kprobe_tcp_recvmsg"`
+		Return *ebpf.Program `ebpf:"kretprobe_tcp_recvmsg"`
 	}
-	if err := spec.LoadAndAssign(&kprobe, opts); err != nil {
-		errs = append(errs, fmt.Errorf("kprobe: %w", err))
-	} else if lk, err := link.Kprobe("tcp_recvmsg", kprobe.Prog, nil); err != nil {
-		_ = kprobe.Prog.Close()
-		errs = append(errs, fmt.Errorf("kprobe: %w", err))
-	} else {
-		j.readHook, j.readHookKind = kprobe.Prog, "kprobe"
-		j.links = append(j.links, lk)
-		return
+	err := spec.LoadAndAssign(&kprobe, opts)
+	if err == nil {
+		var entry, ret link.Link
+		if entry, err = link.Kprobe("tcp_recvmsg", kprobe.Entry, nil); err == nil {
+			if ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return, nil); err == nil {
+				j.readHooks, j.readHookKind = []*ebpf.Program{kprobe.Entry, kprobe.Return}, "kprobe"
+				j.links = append(j.links, entry, ret)
+				return
+			}
+			_ = entry.Close()
+		}
+		_ = kprobe.Entry.Close()
+		_ = kprobe.Return.Close()
 	}
+	errs = append(errs, fmt.Errorf("kprobe: %w", err))
 	j.readHookErr = errors.Join(errs...)
 }
 
@@ -152,15 +162,15 @@ func (j *javaTLS) close() error {
 		_ = lk.Close()
 	}
 	j.links = nil
-	if j.readHook != nil {
-		_ = j.readHook.Close()
+	for _, p := range j.readHooks {
+		_ = p.Close()
 	}
 	return j.objs.Close()
 }
 
 // JavaConnAddresses reports how Java events get their connection's
-// addresses: "fentry" or "kprobe" on tcp_recvmsg, or "" with the reason they
-// carry none.
+// addresses: "fexit", or "kprobe" with kretprobe, on tcp_recvmsg; or "" with
+// the reason they carry none.
 func (l *Loader) JavaConnAddresses() (string, error) {
 	if l.java == nil {
 		return "", errJavaDisabled
