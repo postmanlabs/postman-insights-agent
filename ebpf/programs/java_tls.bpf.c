@@ -343,6 +343,13 @@ int BPF_KPROBE(kprobe_tcp_recvmsg, struct sock *sk) {
     }
     struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
     if (r) {
+        // A read still marked in progress had its return missed: the record
+        // is the read before it, which may not be the socket the thread
+        // unwraps next, so it is no longer evidence, whatever this read
+        // returns. A read that returns bytes records its socket again.
+        if (r->reading_sk) {
+            r->ts_ns = 0;
+        }
         r->reading_sk = (__u64)sk;
         return 0;
     }

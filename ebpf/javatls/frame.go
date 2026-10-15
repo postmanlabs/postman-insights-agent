@@ -84,7 +84,10 @@ type Frame struct {
 	Version uint8
 	Op      uint8
 	Flags   uint16
-	ConnID  uint64
+	// ConnID is unique per connection within the JVM. Ids count from a
+	// random start below 2^62, so a JVM that reuses an exited one's PID
+	// does not reuse its ids.
+	ConnID uint64
 	// PeerAddr is the peer's address as 16 bytes (IPv4 addresses are
 	// IPv4-mapped). The zero value means unknown.
 	PeerAddr [16]byte

@@ -70,7 +70,8 @@ struct java_frame_header {
     __u8  op;            // JAVA_FRAME_OP_*
     __u16 flags;         // JAVA_FRAME_FLAG_*
     __u32 payload_len;   // payload bytes in this frame
-    __u64 conn_id;       // agent-assigned id, unique per connection within the JVM
+    __u64 conn_id;       // agent-assigned id, unique per connection within the JVM, from a
+                         // random start below 2^62, so a reused PID does not reuse ids
     __u8  peer_addr[16]; // IPv6, or IPv4-mapped IPv6; zero when unknown
     __u16 peer_port;     // network byte order; zero when unknown
     __u16 _reserved;     // zero

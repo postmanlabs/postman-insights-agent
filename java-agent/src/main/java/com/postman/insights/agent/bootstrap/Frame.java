@@ -20,7 +20,7 @@ import java.nio.ByteOrder;
  *  1  u8      op
  *  2  u16     flags
  *  4  u32     payload_len   payload bytes in this frame
- *  8  u64     conn_id       unique per connection within the JVM
+ *  8  u64     conn_id       unique per connection within the JVM, from a random start (below 2^62)
  * 16  u8[16]  peer_addr     IPv6 or IPv4-mapped; zero when unknown
  * 32  u16     peer_port     network byte order; zero when unknown
  * 34  u16     reserved      zero

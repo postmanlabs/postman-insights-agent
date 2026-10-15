@@ -5,6 +5,7 @@ import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -43,6 +44,9 @@ final class Connections {
         private boolean outboundDone;
         private boolean closeSending;
         private boolean closeSent;
+        /** A socket's stream calls in flight, and whether its close waits for them. Guarded by this. */
+        private int streamsInFlight;
+        private boolean closeDeferred;
 
         Info(long id) {
             this.id = id;
@@ -82,6 +86,36 @@ final class Connections {
             return responsesDone;
         }
 
+        /** A socket stream call started. */
+        synchronized void streamEntered() {
+            streamsInFlight++;
+        }
+
+        /**
+         * A socket stream call ended, its frame sent; true when it was the
+         * last in flight and a close waited for it, which the caller then
+         * sends.
+         */
+        synchronized boolean streamExited() {
+            if (--streamsInFlight == 0 && closeDeferred) {
+                closeDeferred = false;
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * The socket closed: true when stream calls are in flight, the last
+         * of which sends the CLOSE; false when the caller sends it now.
+         */
+        synchronized boolean deferClose() {
+            if (streamsInFlight > 0) {
+                closeDeferred = true;
+                return true;
+            }
+            return false;
+        }
+
         /** Ends the attempt {@link #closed} started: written, or to retry. */
         synchronized void closeAttempted(boolean written) {
             closeSending = false;
@@ -91,7 +125,13 @@ final class Connections {
 
     private final ConcurrentHashMap<Object, Info> map = new ConcurrentHashMap<Object, Info>();
     private final ReferenceQueue<Object> queue = new ReferenceQueue<Object>();
-    private final AtomicLong nextId = new AtomicLong(1);
+    /**
+     * Ids count up from a random start in [1, 2^62): a JVM that reuses an
+     * exited one's PID must not reuse its ids, which the Insights agent
+     * keys connections by, with the PID. ThreadLocalRandom, not
+     * SecureRandom, which can block for entropy at JVM start.
+     */
+    private final AtomicLong nextId = new AtomicLong(ThreadLocalRandom.current().nextLong(1, 1L << 62));
 
     Info get(Object engine) {
         return get(engine, new Lookup());
