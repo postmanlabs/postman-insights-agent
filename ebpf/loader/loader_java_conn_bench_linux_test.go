@@ -19,7 +19,7 @@ import (
 
 // BenchmarkJavaReadHook measures what the tcp_recvmsg hook costs: TCP round
 // trips over loopback without the Java programs, then with the hook attached
-// by fentry and by kprobe, for a process that sends no frames (every other
+// by fexit and by kprobe with kretprobe, for a process that sends no frames (every other
 // process on the node: one map lookup) and for one that does (a JVM with the
 // agent: the read's addresses recorded). It reports the hook's own run time
 // per call from the kernel's BPF statistics.
@@ -38,7 +38,7 @@ func BenchmarkJavaReadHook(b *testing.B) {
 	b.Run("no-hook", func(b *testing.B) { benchRoundTrips(b, nil) })
 	for _, kprobe := range []bool{false, true} {
 		for _, sender := range []bool{false, true} {
-			name := "fentry"
+			name := "fexit"
 			if kprobe {
 				name = "kprobe"
 			}
@@ -74,16 +74,16 @@ func BenchmarkJavaReadHook(b *testing.B) {
 					}
 					devNull.Close()
 				}
-				benchRoundTrips(b, l.java.readHook)
+				benchRoundTrips(b, l.java.readHooks)
 			})
 		}
 	}
 }
 
 // benchRoundTrips runs b.N one-byte round trips over a loopback TCP
-// connection, each with two tcp_recvmsg calls, and reports hook-ns/call for
-// hook.
-func benchRoundTrips(b *testing.B, hook *ebpf.Program) {
+// connection, each with two tcp_recvmsg calls, and reports the hooks' run
+// time per tcp_recvmsg call.
+func benchRoundTrips(b *testing.B, hooks []*ebpf.Program) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		b.Fatal(err)
@@ -103,17 +103,21 @@ func benchRoundTrips(b *testing.B, hook *ebpf.Program) {
 	}
 	defer c.Close()
 
+	// The run time of all the hooks, and the calls of the first (each
+	// tcp_recvmsg runs every hook once).
 	runTime := func() (ns, calls uint64) {
-		if hook == nil {
-			return 0, 0
+		for i, hook := range hooks {
+			info, err := hook.Info()
+			if err != nil {
+				b.Fatal(err)
+			}
+			rt, _ := info.Runtime()
+			ns += uint64(rt)
+			if i == 0 {
+				calls, _ = info.RunCount()
+			}
 		}
-		info, err := hook.Info()
-		if err != nil {
-			b.Fatal(err)
-		}
-		rt, _ := info.Runtime()
-		rc, _ := info.RunCount()
-		return uint64(rt), rc
+		return ns, calls
 	}
 	ns0, calls0 := runTime()
 	buf := []byte{'x'}

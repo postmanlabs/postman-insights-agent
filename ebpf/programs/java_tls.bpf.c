@@ -186,7 +186,9 @@ struct {
     __type(value, __u8);
 } java_senders SEC(".maps");
 
-// The socket a thread of a java_senders process last read from.
+// The socket a thread of a java_senders process last read from, and when the
+// read returned (0 while it is still waiting: a blocking read can wait long
+// before the data that its RECV frame decrypts arrives).
 struct thread_read {
     __u64 ts_ns;
     struct conn_tuple tuple;
@@ -200,10 +202,13 @@ struct {
 } java_thread_reads SEC(".maps");
 
 // Connections tied to their socket's addresses. Removed on CLOSE; LRU for
-// connections that end without one.
+// connections that end without one. The process's start time is part of the
+// key: connection ids restart at 1 in every JVM, and a reused PID must not
+// inherit a dead JVM's connections.
 struct java_conn_key {
     __u32 tgid;
     __u32 _pad;
+    __u64 start_ns;                       // the process's start time (group leader's start_time)
     __u64 conn_id;
 };
 
@@ -215,8 +220,8 @@ struct {
 } java_conns SEC(".maps");
 
 // How recent a thread's read must be to tie a RECV frame to its socket: an
-// unwrap follows the read it decrypts within microseconds, but a GC pause
-// can come in between.
+// unwrap follows the read it decrypts within microseconds of the read
+// returning, but a GC pause can come in between.
 #define THREAD_READ_MAX_AGE_NS (50ULL * 1000 * 1000)
 
 #define AF_INET  2
@@ -240,38 +245,68 @@ static __always_inline void sock_tuple(struct sock *sk, struct conn_tuple *t) {
     t->remote_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 }
 
-static __always_inline void record_thread_read(struct sock *sk) {
+// Records sk as the socket the current thread reads: the read has returned
+// (done), or is still waiting.
+static __always_inline void record_thread_read(struct sock *sk, int done) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 tgid = pid_tgid >> 32;
     if (!bpf_map_lookup_elem(&java_senders, &tgid)) {
         return;
     }
+    __u64 read_done_ns = done ? bpf_ktime_get_ns() : 0;
     // A thread's entry is rewritten in place: an LRU update on every read
     // would cost several times the rest.
     struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
     if (r) {
         sock_tuple(sk, &r->tuple);
-        r->ts_ns = bpf_ktime_get_ns();
+        r->ts_ns = read_done_ns;
         return;
     }
-    struct thread_read fresh = { .ts_ns = bpf_ktime_get_ns() };
+    struct thread_read fresh = { .ts_ns = read_done_ns };
     sock_tuple(sk, &fresh.tuple);
     bpf_map_update_elem(&java_thread_reads, &pid_tgid, &fresh, BPF_ANY);
 }
 
 // int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, ...);
-// The first argument is the same on every kernel. fentry where the kernel
-// supports it (x86_64 5.5+, arm64 6.0+), else kprobe; the loader picks.
-SEC("fentry/tcp_recvmsg")
-int BPF_PROG(fentry_tcp_recvmsg, struct sock *sk) {
-    record_thread_read(sk);
+// The first argument is the same on every kernel, the others are not. The
+// read counts when it returns: fexit where the kernel supports BPF
+// trampolines (x86_64 5.5+, arm64 6.0+); else kprobe, which records the
+// socket, and kretprobe, which records the return. The loader picks.
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(fexit_tcp_recvmsg, struct sock *sk) {
+    record_thread_read(sk, 1);
     return 0;
 }
 
 SEC("kprobe/tcp_recvmsg")
 int BPF_KPROBE(kprobe_tcp_recvmsg, struct sock *sk) {
-    record_thread_read(sk);
+    record_thread_read(sk, 0);
     return 0;
+}
+
+SEC("kretprobe/tcp_recvmsg")
+int BPF_KRETPROBE(kretprobe_tcp_recvmsg) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tgid = pid_tgid >> 32;
+    if (!bpf_map_lookup_elem(&java_senders, &tgid)) {
+        return 0;
+    }
+    struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
+    if (r) {
+        r->ts_ns = bpf_ktime_get_ns();
+    }
+    return 0;
+}
+
+// The key of the current process's connection conn_id.
+static __always_inline struct java_conn_key current_conn_key(__u64 conn_id) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct java_conn_key k = {
+        .tgid     = bpf_get_current_pid_tgid() >> 32,
+        .start_ns = BPF_CORE_READ(task, group_leader, start_time),
+        .conn_id  = conn_id,
+    };
+    return k;
 }
 
 // BPF has no memcmp: compare the 40 bytes as five words.
@@ -292,11 +327,11 @@ static __always_inline int tuple_equal(const struct conn_tuple *a, const struct 
 static __always_inline void bind_conn(__u64 conn_id) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     struct thread_read *r = bpf_map_lookup_elem(&java_thread_reads, &pid_tgid);
-    if (!r || r->tuple.family == CONN_FAMILY_UNKNOWN ||
+    if (!r || r->tuple.family == CONN_FAMILY_UNKNOWN || r->ts_ns == 0 ||
         bpf_ktime_get_ns() - r->ts_ns > THREAD_READ_MAX_AGE_NS) {
         return;
     }
-    struct java_conn_key k = { .tgid = pid_tgid >> 32, .conn_id = conn_id };
+    struct java_conn_key k = current_conn_key(conn_id);
     struct conn_tuple *bound = bpf_map_lookup_elem(&java_conns, &k);
     if (!bound) {
         if (bpf_map_update_elem(&java_conns, &k, &r->tuple, BPF_NOEXIST) == 0) {
@@ -309,9 +344,10 @@ static __always_inline void bind_conn(__u64 conn_id) {
     }
 }
 
-// Copies connection conn_id's addresses into t, or marks them unknown.
-static __always_inline void conn_tuple_of(__u32 tgid, __u64 conn_id, struct conn_tuple *t) {
-    struct java_conn_key k = { .tgid = tgid, .conn_id = conn_id };
+// Copies the current process's connection conn_id's addresses into t, or
+// marks them unknown.
+static __always_inline void conn_tuple_of(__u64 conn_id, struct conn_tuple *t) {
+    struct java_conn_key k = current_conn_key(conn_id);
     struct conn_tuple *bound = bpf_map_lookup_elem(&java_conns, &k);
     if (bound) {
         __builtin_memcpy(t, bound, sizeof(*t));
@@ -362,8 +398,8 @@ static __always_inline int emit_control(const struct java_frame_header *h, const
     e->netns        = netns;
     if (kind == EVENT_KIND_JAVA_CLOSE) {
         // The connection is done: its addresses go with the CLOSE.
-        conn_tuple_of(pid_tgid >> 32, h->conn_id, &e->tuple);
-        struct java_conn_key k = { .tgid = pid_tgid >> 32, .conn_id = h->conn_id };
+        conn_tuple_of(h->conn_id, &e->tuple);
+        struct java_conn_key k = current_conn_key(h->conn_id);
         bpf_map_delete_elem(&java_conns, &k);
     } else {
         __builtin_memset(&e->tuple, 0, sizeof(e->tuple));
@@ -463,7 +499,7 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     e->kind         = EVENT_KIND_DATA;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
     e->netns        = netns;
-    conn_tuple_of(pid_tgid >> 32, h.conn_id, &e->tuple);
+    conn_tuple_of(h.conn_id, &e->tuple);
     if (e->tuple.family == CONN_FAMILY_UNKNOWN) {
         java_counter_inc(JAVA_CTR_CONN_UNBOUND, 1);
     }
