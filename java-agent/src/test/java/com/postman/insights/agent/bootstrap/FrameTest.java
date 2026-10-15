@@ -64,6 +64,24 @@ class FrameTest {
         }
     }
 
+    @Test
+    void encodesExampleAddresses() throws Exception {
+        JsonArray addresses = vectors().getAsJsonArray("addresses");
+        assertFalse(addresses.isEmpty());
+        for (JsonElement e : addresses) {
+            JsonObject a = e.getAsJsonObject();
+            String name = a.get("name").getAsString();
+            ByteBuffer buf = Frame.allocate(Frame.ADDRESS_SIZE);
+            Frame.putAddress(buf, Frame.HEADER_SIZE,
+                    InetAddress.getByName(a.get("local").getAsString()), a.get("local_port").getAsInt(),
+                    InetAddress.getByName(a.get("remote").getAsString()), a.get("remote_port").getAsInt());
+            byte[] got = new byte[Frame.ADDRESS_SIZE];
+            buf.position(Frame.HEADER_SIZE);
+            buf.get(got);
+            assertArrayEquals(hex(a.get("payload_hex").getAsString()), got, name);
+        }
+    }
+
     private static byte[] mapped(byte[] addr) {
         if (addr.length == 16) {
             return addr;

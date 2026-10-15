@@ -28,6 +28,12 @@ final class Connections {
          * handshake, so the tie exists before any request or response.
          */
         volatile boolean recvSent;
+        /**
+         * The address epoch (see Bridge) in which a blocking socket's ADDRESS
+         * frame was last sent, or -1: the kernel takes a socket's addresses
+         * from it rather than from its thread's reads.
+         */
+        volatile int addressEpoch = -1;
 
         /**
          * Which directions the engine reported CLOSED for, whether a thread is

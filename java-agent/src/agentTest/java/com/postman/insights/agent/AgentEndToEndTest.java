@@ -1,11 +1,13 @@
 package com.postman.insights.agent;
 
 import static com.postman.insights.agent.Frames.CLIENT_MODE;
+import static com.postman.insights.agent.Frames.OP_ADDRESS;
 import static com.postman.insights.agent.Frames.OP_CLOSE;
 import static com.postman.insights.agent.Frames.OP_HEARTBEAT;
 import static com.postman.insights.agent.Frames.OP_RECV;
 import static com.postman.insights.agent.Frames.OP_SEND;
 import static com.postman.insights.agent.Frames.ROLE_KNOWN;
+import static com.postman.insights.agent.Frames.SOCKET;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -235,7 +237,7 @@ class AgentEndToEndTest {
         Frame clientResp = Frames.findPrefix(got, OP_RECV, "HTTP/1.1 200 OK");
         assertEquals(clientReq.connId, clientResp.connId);
         assertNotEquals(req.connId, clientReq.connId);
-        assertEquals(ROLE_KNOWN | CLIENT_MODE, clientReq.flags);
+        assertEquals(ROLE_KNOWN | CLIENT_MODE | SOCKET, clientReq.flags);
         assertEquals(1, Frames.count(got, OP_SEND, "GET /hello?x=1"), got.toString());
         boolean sawBody = false;
         for (Frame f : got) {
@@ -247,13 +249,15 @@ class AgentEndToEndTest {
     /**
      * A blocking SSLSocket server and client (the JDK's SSLSocketImpl, which
      * uses no SSLEngine): each socket is a connection, its first frame is an
-     * empty RECV that ties it to its socket, its reads and writes are its
-     * plaintext, and closing it sends CLOSE.
+     * ADDRESS frame with the socket's addresses, its reads and writes are its
+     * plaintext, and closing it sends CLOSE; every frame is marked SOCKET.
      */
     @Test
     void sslSocketServerAndClient() throws Exception {
         String request = "GET /socket HTTP/1.1\r\nHost: localhost\r\n\r\n";
         String response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        int serverPort;
+        int clientPort = 0;
         try (javax.net.ssl.SSLServerSocket listener = (javax.net.ssl.SSLServerSocket)
                 Tls.get().context.getServerSocketFactory().createServerSocket(0, 1,
                         java.net.InetAddress.getLoopbackAddress())) {
@@ -274,6 +278,7 @@ class AgentEndToEndTest {
                 });
                 try (javax.net.ssl.SSLSocket client = (javax.net.ssl.SSLSocket) Tls.get().context.getSocketFactory()
                         .createSocket(java.net.InetAddress.getLoopbackAddress(), listener.getLocalPort())) {
+                    clientPort = client.getLocalPort();
                     // An explicit handshake, as HttpsURLConnection does.
                     client.startHandshake();
                     client.getOutputStream().write(request.getBytes(StandardCharsets.ISO_8859_1));
@@ -289,14 +294,15 @@ class AgentEndToEndTest {
             } finally {
                 pool.shutdownNow();
             }
+            serverPort = listener.getLocalPort();
         }
 
         List<Frame> all = frames.read();
         Frame clientSend = Frames.find(all, OP_SEND, request);
         Frame serverRecv = Frames.find(all, OP_RECV, request);
         Frame serverSend = Frames.find(all, OP_SEND, response);
-        assertEquals(ROLE_KNOWN | CLIENT_MODE, clientSend.flags);
-        assertEquals(ROLE_KNOWN, serverRecv.flags);
+        assertEquals(ROLE_KNOWN | CLIENT_MODE | SOCKET, clientSend.flags);
+        assertEquals(ROLE_KNOWN | SOCKET, serverRecv.flags);
         assertEquals(serverRecv.connId, serverSend.connId);
         assertNotEquals(clientSend.connId, serverSend.connId);
         // The client read the response one byte per frame.
@@ -307,10 +313,9 @@ class AgentEndToEndTest {
             }
         }
         assertEquals(response, clientRecv.toString());
-        // Each connection's first frame is a RECV, which ties it to its
-        // socket: an empty one for the client, which sends first after the
-        // handshake read the socket; the request itself for the server. Its
-        // last frame is its one CLOSE.
+        // Each connection's first frame is its one ADDRESS frame, with its
+        // socket's ports (IPv4 loopback: family 2), and its last its one
+        // CLOSE. No empty frames: the kernel ties nothing for a socket.
         for (long conn : new long[] {clientSend.connId, serverSend.connId}) {
             List<Frame> mine = new java.util.ArrayList<Frame>();
             for (Frame f : all) {
@@ -318,16 +323,20 @@ class AgentEndToEndTest {
                     mine.add(f);
                 }
             }
-            assertEquals(OP_RECV, mine.get(0).op, mine.toString());
-            assertEquals(conn == clientSend.connId ? 0 : request.length(), mine.get(0).payload.length, mine.toString());
+            Frame first = mine.get(0);
+            assertEquals(OP_ADDRESS, first.op, mine.toString());
+            assertEquals(conn == clientSend.connId ? clientPort + " " + serverPort + " 2" : serverPort + " " + clientPort + " 2",
+                    first.address(), mine.toString());
             assertEquals(OP_CLOSE, mine.get(mine.size() - 1).op, mine.toString());
-            int ties = 0;
+            int addresses = 0;
             int closes = 0;
             for (Frame f : mine) {
-                ties += f.op == OP_RECV && f.payload.length == 0 ? 1 : 0;
+                assertEquals(SOCKET, f.flags & SOCKET, f.toString());
+                addresses += f.op == OP_ADDRESS ? 1 : 0;
                 closes += f.op == OP_CLOSE ? 1 : 0;
+                assertTrue(f.op == OP_ADDRESS || f.op == OP_CLOSE || f.payload.length > 0, mine.toString());
             }
-            assertEquals(conn == clientSend.connId ? 1 : 0, ties, mine.toString());
+            assertEquals(1, addresses, mine.toString());
             assertEquals(1, closes, mine.toString());
         }
     }

@@ -249,6 +249,12 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 		a.javaHeartbeat(ev, time.Now())
 		return
 	case KindJavaClose:
+		// The CLOSE carries the connection's addresses: the first to, when
+		// they came after the connection's data (an ADDRESS frame dropped
+		// until then), so the messages it completes have them.
+		if conn := a.conns[connKey{PID: ev.PID, SSLCtx: ev.SSLCtx}]; conn != nil {
+			a.tryResolveConn(conn, ev)
+		}
 		a.closeConn(ev.PID, ev.SSLCtx, ev.Time(monoEpoch))
 		return
 	default:

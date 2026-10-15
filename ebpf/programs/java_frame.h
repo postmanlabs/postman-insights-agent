@@ -38,11 +38,25 @@
                                   // connection to its socket (java_tls.bpf.c)
 #define JAVA_FRAME_OP_HEARTBEAT 3 // agent liveness and status; payload is key=value lines
 #define JAVA_FRAME_OP_CLOSE     4 // connection closed; no payload
+#define JAVA_FRAME_OP_ADDRESS   5 // the connection's addresses, from the agent; payload below
+
+// An ADDRESS frame's payload: the connection's TCP addresses, which the agent
+// knows for a blocking socket (it has the socket), laid out as the kernel's
+// struct conn_tuple (event.h):
+//    0  u8      family       2 (IPv4) or 10 (IPv6, including IPv4-mapped)
+//    1  u8[3]   zero
+//    4  u16     local_port   little-endian
+//    6  u16     remote_port  little-endian
+//    8  u8[16]  local_addr   network byte order; IPv4 in the first 4 bytes, the rest zero
+//   24  u8[16]  remote_addr  the same
+#define JAVA_FRAME_ADDRESS_SIZE 40
 
 // flags bits.
 #define JAVA_FRAME_FLAG_ROLE_KNOWN  0x1 // the client/server role is known
 #define JAVA_FRAME_FLAG_CLIENT_MODE 0x2 // the JVM is the TLS client (valid with ROLE_KNOWN)
 #define JAVA_FRAME_FLAG_PEER_KNOWN  0x4 // peer_addr and peer_port are set
+#define JAVA_FRAME_FLAG_SOCKET      0x8 // a blocking socket's frame: its addresses come in an
+                                        // ADDRESS frame, never from the thread's socket reads
 
 // Java connection ids are tagged with the top bit when they become an
 // ssl_event's ssl_ctx. User-space pointers never set bit 63, so Java ids can

@@ -21,8 +21,10 @@ final class Frames {
     static final byte OP_RECV = 2;
     static final byte OP_HEARTBEAT = 3;
     static final byte OP_CLOSE = 4;
+    static final byte OP_ADDRESS = 5;
     static final short ROLE_KNOWN = 0x1;
     static final short CLIENT_MODE = 0x2;
+    static final short SOCKET = 0x8;
 
     static final class Frame {
         byte op;
@@ -33,6 +35,12 @@ final class Frames {
 
         String text() {
             return new String(payload, StandardCharsets.ISO_8859_1);
+        }
+
+        /** An ADDRESS frame's payload, as "local-port remote-port family". */
+        String address() {
+            ByteBuffer b = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
+            return (b.getShort(4) & 0xffff) + " " + (b.getShort(6) & 0xffff) + " " + b.get(0);
         }
 
         @Override

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.lang.management.ManagementFactory;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -17,6 +19,7 @@ import java.util.concurrent.CountDownLatch;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
+import javax.net.ssl.SSLSocket;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -615,5 +618,109 @@ class BridgeTest {
         emptyRecv(client);
         emptyRecv(client);
         assertEquals(1, ops(Frame.OP_RECV).size());
+    }
+
+    /** One hooked SSLSocket stream call that read (RECV) or wrote (SEND) text. */
+    private static void stream(Object socket, byte op, String text) {
+        byte[] b = ascii(text);
+        Bridge.Call c = Bridge.enterStream();
+        Bridge.exitStream(c, socket, op, b, 0, b.length);
+    }
+
+    /**
+     * A blocking client socket connected to listener (the kernel completes
+     * the connection in the listener's backlog), before its handshake.
+     */
+    private static SSLSocket connect(ServerSocket listener) throws Exception {
+        SSLSocket socket = (SSLSocket) SSLContext.getDefault().getSocketFactory()
+                .createSocket(InetAddress.getLoopbackAddress(), listener.getLocalPort());
+        socket.setUseClientMode(true);
+        return socket;
+    }
+
+    /**
+     * A blocking socket's first frame is an ADDRESS frame with the socket's
+     * own addresses, sent once; every frame of the connection is marked
+     * SOCKET, so the kernel never ties it to its thread's reads.
+     */
+    @Test
+    void socketSendsItsAddressesFirst() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "GET / HTTP/1.1\r\n\r\n");
+            stream(socket, Frame.OP_RECV, "HTTP/1.1 200 OK\r\n\r\n");
+
+            List<LoggedFrame> got = log.frames();
+            assertEquals(3, got.size());
+            LoggedFrame address = got.get(0);
+            assertEquals(Frame.OP_ADDRESS, address.op);
+            assertEquals(Frame.ADDRESS_SIZE, address.totalLen);
+            ByteBuffer want = Frame.allocate(Frame.ADDRESS_SIZE);
+            Frame.putAddress(want, 0, socket.getLocalAddress(), socket.getLocalPort(),
+                    InetAddress.getLoopbackAddress(), listener.getLocalPort());
+            byte[] wantBytes = new byte[Frame.ADDRESS_SIZE];
+            want.get(wantBytes);
+            assertArrayEquals(wantBytes, address.payload);
+            assertEquals(Frame.OP_SEND, got.get(1).op);
+            assertEquals(Frame.OP_RECV, got.get(2).op);
+            for (LoggedFrame f : got) {
+                assertEquals(address.connId, f.connId);
+                assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_SOCKET, f.flags);
+            }
+        }
+    }
+
+    /**
+     * An ADDRESS frame that could not be written (here: every buffer was
+     * busy) is retried before the connection's next data frame.
+     */
+    @Test
+    void droppedAddressIsRetried() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            Bridge.holdAllBuffers(true);
+            try {
+                stream(socket, Frame.OP_SEND, "dropped");
+            } finally {
+                Bridge.holdAllBuffers(false);
+            }
+            assertEquals(0, log.frames().size());
+            stream(socket, Frame.OP_SEND, "sent");
+            stream(socket, Frame.OP_SEND, "sent again");
+            List<LoggedFrame> got = log.frames();
+            assertEquals(3, got.size());
+            assertEquals(Frame.OP_ADDRESS, got.get(0).op);
+            assertEquals(1, ops(Frame.OP_ADDRESS).size());
+        }
+    }
+
+    /**
+     * A socket in use sends its ADDRESS frame again after each heartbeat, so
+     * one the kernel dropped or forgot comes back.
+     */
+    @Test
+    void addressResentEachHeartbeat() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             SSLSocket socket = connect(listener)) {
+            stream(socket, Frame.OP_SEND, "first");
+            stream(socket, Frame.OP_SEND, "second");
+            assertEquals(1, ops(Frame.OP_ADDRESS).size());
+            Bridge.heartbeat(ascii("state=active\n"));
+            stream(socket, Frame.OP_SEND, "after a heartbeat");
+            stream(socket, Frame.OP_SEND, "again");
+            assertEquals(2, ops(Frame.OP_ADDRESS).size());
+        }
+    }
+
+    /** A socket that is not connected has no addresses to send yet. */
+    @Test
+    void unconnectedSocketSendsNoAddress() throws Exception {
+        try (SSLSocket socket = (SSLSocket) SSLContext.getDefault().getSocketFactory().createSocket()) {
+            stream(socket, Frame.OP_RECV, "plaintext");
+            List<LoggedFrame> got = log.frames();
+            assertEquals(1, got.size());
+            assertEquals(Frame.OP_RECV, got.get(0).op);
+            assertEquals(Frame.FLAG_SOCKET, got.get(0).flags & Frame.FLAG_SOCKET);
+        }
     }
 }
