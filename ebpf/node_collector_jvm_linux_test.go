@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,19 +219,34 @@ type testJVM struct {
 // with the given JVM options and environment.
 func (f *jvmFixture) start(t *testing.T, uid int, env []string, jvmArgs ...string) *testJVM {
 	t.Helper()
-	return f.startMain(t, uid, env, []string{f.keystore}, jvmArgs...)
+	return f.startMain(t, uid, env, f.dir, "Server", []string{f.keystore}, jvmArgs...)
 }
 
 // startClient starts a JVM running the blocking HTTPS client, requesting url.
 func (f *jvmFixture) startClient(t *testing.T, uid int, url string, jvmArgs ...string) *testJVM {
 	t.Helper()
-	return f.startMain(t, uid, nil, []string{"client", url}, jvmArgs...)
+	return f.startMain(t, uid, nil, f.dir, "Server", []string{"client", url}, jvmArgs...)
 }
 
-// startMain starts the test program with mainArgs and waits until it says
-// it is listening (the server, whose address it records) or started (the
-// client).
-func (f *jvmFixture) startMain(t *testing.T, uid int, env []string, mainArgs []string, jvmArgs ...string) *testJVM {
+// startApp starts one of the framework test apps (java-agent/src/testApps),
+// a server or, with url, a client. Skipped unless POSTMAN_TEST_APPS_DIR names
+// their build (gradlew testAppsDist: java-agent/build/test-apps).
+func (f *jvmFixture) startApp(t *testing.T, app, url string, jvmArgs ...string) *testJVM {
+	t.Helper()
+	dir := os.Getenv("POSTMAN_TEST_APPS_DIR")
+	if dir == "" {
+		t.Skip("set POSTMAN_TEST_APPS_DIR to run the framework apps")
+	}
+	args := []string{app, f.keystore}
+	if url != "" {
+		args = append(args, url)
+	}
+	return f.startMain(t, 1000, nil, filepath.Join(dir, "*"), "com.postman.insights.testapps.Main", args, jvmArgs...)
+}
+
+// startMain starts mainClass with mainArgs and waits until it says it is
+// listening (a server, whose address it records) or started (a client).
+func (f *jvmFixture) startMain(t *testing.T, uid int, env []string, classpath, mainClass string, mainArgs []string, jvmArgs ...string) *testJVM {
 	t.Helper()
 	ctx, stop := context.WithCancel(context.Background())
 	id := strconv.Itoa(uid)
@@ -238,7 +254,7 @@ func (f *jvmFixture) startMain(t *testing.T, uid int, env []string, mainArgs []s
 		`mount -t tmpfs tmpfs /tmp
 exec setpriv --reuid "$0" --regid "$0" --clear-groups "$@"`, id,
 		filepath.Join(f.javaHome, "bin", "java")}, jvmArgs...)
-	args = append(append(args, "-cp", f.dir, "Server"), mainArgs...)
+	args = append(append(args, "-cp", classpath, mainClass), mainArgs...)
 	cmd := exec.CommandContext(ctx, "unshare", args...)
 	cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
 	j := &testJVM{stdout: &syncBuffer{}, stderr: &syncBuffer{}, cmd: cmd}
@@ -410,8 +426,19 @@ func TestNodeCollectorJVMBlockingClient(t *testing.T) {
 	f := newJVMFixture(t)
 	nc, ctx := javaTestCollector(t)
 
-	// The client connections the server accepted, recorded at accept: before
-	// the handshake, so before the client can send a request on one.
+	srv, accepted := acceptRecordingServer(t)
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
+	defer unsubscribe()
+	j := f.startClient(t, 1000, srv.URL+"/client", "-javaagent:"+f.agentJar)
+	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+	expectClientRequest(t, j, out, srv, accepted)
+}
+
+// acceptRecordingServer starts an HTTPS server for /client and returns the
+// client addresses it accepted connections from, recorded at accept: before
+// the handshake, so before a client can send a request on one.
+func acceptRecordingServer(t *testing.T) (*httptest.Server, func(addr string) bool) {
+	t.Helper()
 	var mu sync.Mutex
 	clients := map[string]bool{}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -425,13 +452,19 @@ func TestNodeCollectorJVMBlockingClient(t *testing.T) {
 		}
 	}
 	srv.StartTLS()
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv, func(addr string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return clients[addr]
+	}
+}
 
-	out, unsubscribe := subscribe(t, ctx, nc, nil)
-	defer unsubscribe()
-	j := f.startClient(t, 1000, srv.URL+"/client", "-javaagent:"+f.agentJar)
-	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
-
+// expectClientRequest waits for a request the JVM's client sent to srv, from
+// the address of a connection srv accepted.
+func expectClientRequest(t *testing.T, j *testJVM, out <-chan akinet.ParsedNetworkTraffic,
+	srv *httptest.Server, accepted func(string) bool) {
+	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {
 		select {
@@ -440,17 +473,80 @@ func TestNodeCollectorJVMBlockingClient(t *testing.T) {
 			if !ok || req.URL.Path != "/client" {
 				continue
 			}
-			src := (&net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}).String()
-			mu.Lock()
-			seen := clients[src]
-			mu.Unlock()
-			if !seen {
-				t.Fatalf("request from %s, which the server never saw a connection from", src)
+			src := &net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}
+			if !accepted(src.String()) {
+				t.Fatalf("request from %s, which the server never accepted a connection from", src)
 			}
-			expectAddrs(t, pnt, &net.TCPAddr{IP: pnt.SrcIP, Port: pnt.SrcPort}, srv.Listener.Addr().String())
+			expectAddrs(t, pnt, src, srv.Listener.Addr().String())
 			return
 		case <-deadline:
 			t.Fatalf("no request from the JVM's client captured; JVM stdout:\n%s", j.stdout)
+		}
+	}
+}
+
+// TestNodeCollectorJVMFrameworks: the HTTPS servers and clients of the
+// frameworks customers run are captured, with their connections' addresses:
+// each reads its socket and unwraps on the same thread, which the kernel's
+// tie relies on. Each JVM loads the agent with -javaagent.
+func TestNodeCollectorJVMFrameworks(t *testing.T) {
+	f := newJVMFixture(t)
+	nc, ctx := javaTestCollector(t)
+	for _, app := range []struct {
+		name    string
+		minJava int
+	}{
+		{"netty-jdk", 8},
+		{"netty-openssl", 8},
+		{"netty-epoll", 8},
+		{"tomcat", 17},
+		{"jetty", 17},
+		{"undertow", 17},
+	} {
+		t.Run(app.name, func(t *testing.T) {
+			if f.javaMajor() < app.minJava {
+				t.Skipf("needs Java %d", app.minJava)
+			}
+			out, unsubscribe := subscribe(t, ctx, nc, nil)
+			defer unsubscribe()
+			j := f.startApp(t, app.name, "", "-javaagent:"+f.agentJar)
+			j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+			expectCaptured(t, j, out, "from="+app.name)
+			// Once: not also through libssl uprobes (Netty's BoringSSL is
+			// its own library), nor twice through nested hooks.
+			expectNoMore(t, out, "from="+app.name)
+		})
+	}
+}
+
+// TestNodeCollectorJVMHttpClient: the JDK's HttpClient (java.net.http).
+func TestNodeCollectorJVMHttpClient(t *testing.T) {
+	f := newJVMFixture(t)
+	if f.javaMajor() < 17 {
+		t.Skip("needs Java 17")
+	}
+	nc, ctx := javaTestCollector(t)
+	srv, accepted := acceptRecordingServer(t)
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
+	defer unsubscribe()
+	j := f.startApp(t, "jdk-httpclient", srv.URL+"/client",
+		"-javaagent:"+f.agentJar, "-Djdk.internal.httpclient.disableHostnameVerification=true")
+	j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+	expectClientRequest(t, j, out, srv, accepted)
+}
+
+// expectNoMore fails if another request with query comes out within a second.
+func expectNoMore(t *testing.T, out <-chan akinet.ParsedNetworkTraffic, query string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case pnt := <-out:
+			if req, ok := pnt.Content.(akinet.HTTPRequest); ok && req.URL.RawQuery == query {
+				t.Fatalf("request %s captured twice", query)
+			}
+		case <-deadline:
+			return
 		}
 	}
 }
@@ -750,8 +846,18 @@ func waitStatsFor(t *testing.T, a *jvm.Attacher, d time.Duration, ok func(jvm.At
 
 // jdk8 reports whether the fixture's JDK is JDK 8.
 func (f *jvmFixture) jdk8() bool {
+	return f.javaMajor() == 8
+}
+
+// javaMajor returns the JDK's feature release: 8, 17, 25.
+func (f *jvmFixture) javaMajor() int {
 	release, _ := os.ReadFile(filepath.Join(f.javaHome, "release"))
-	return strings.Contains(string(release), `JAVA_VERSION="1.8`)
+	m := regexp.MustCompile(`JAVA_VERSION="(?:1\.)?(\d+)`).FindSubmatch(release)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(string(m[1]))
+	return n
 }
 
 // inspect returns the test JVM as discovery reports it.

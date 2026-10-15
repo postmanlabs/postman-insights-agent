@@ -74,7 +74,9 @@ func BenchmarkJavaReadHook(b *testing.B) {
 					}
 					devNull.Close()
 				}
-				benchRoundTrips(b, l.java.readHooks)
+				// The read hooks: a round trip has no write by a thread
+				// with a pending connection.
+				benchRoundTrips(b, readHooks(l.java))
 			})
 		}
 	}
@@ -144,4 +146,12 @@ func benchRoundTrips(b *testing.B, hooks []*ebpf.Program) {
 	if ns1, calls1 := runTime(); calls1 > calls0 {
 		b.ReportMetric(float64(ns1-ns0)/float64(calls1-calls0), "hook-ns/call")
 	}
+}
+
+// readHooks returns the tcp_recvmsg programs of j.socketHooks.
+func readHooks(j *javaTLS) []*ebpf.Program {
+	if j.socketHooksKind == "fexit" {
+		return j.socketHooks[:1]
+	}
+	return j.socketHooks[:2]
 }

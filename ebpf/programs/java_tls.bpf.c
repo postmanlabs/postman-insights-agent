@@ -181,14 +181,21 @@ volatile const __u32 enforce_netns_allowlist = 1;
 // during the handshake, so the tie exists before the first request or
 // response, whichever side sends first.
 //
+// Some clients read on one thread and unwrap on another (the JDK's
+// HttpClient: its selector thread reads, a worker unwraps), but write the
+// socket on the thread that wrapped. So a SEND frame of a connection not yet
+// tied leaves the connection pending on its thread, and the thread's next
+// socket write (tcp_sendmsg) ties it. The agent also sends an empty SEND
+// frame at a connection's first wrap, in the handshake.
+//
 // When a thread did not read a socket just before (an engine unwrapped on
-// another thread than the one that read), the connection stays untied, and
-// its events carry no addresses rather than wrong ones. One case is tied
-// wrongly, and cannot be told apart here: an engine unwrapped on a thread
-// that read another TCP socket (a database's, a downstream call's) within
-// THREAD_READ_MAX_AGE_NS, and not its own, is tied to that socket. Later
-// frames of the connection after reads of another socket are counted
-// (JAVA_CTR_CONN_MISMATCH), which shows it.
+// another thread than the one that read), nor write one just after a SEND,
+// the connection stays untied, and its events carry no addresses rather than
+// wrong ones. One case is tied wrongly, and cannot be told apart here: an
+// engine unwrapped on a thread that read another TCP socket (a database's, a
+// downstream call's) within THREAD_READ_MAX_AGE_NS, and not its own, is tied
+// to that socket. Later frames of the connection after reads of another
+// socket are counted (JAVA_CTR_CONN_MISMATCH), which shows it.
 // ---------------------------------------------------------------------------
 
 // Processes that sent a valid frame: only their socket reads are recorded,
@@ -243,6 +250,24 @@ struct {
 // unwrap follows the read it decrypts within microseconds of the read
 // returning, but a GC pause can come in between.
 #define THREAD_READ_MAX_AGE_NS (50ULL * 1000 * 1000)
+
+// A connection a thread just wrapped for, before the connection is tied: the
+// thread's next socket write, within THREAD_SEND_MAX_AGE_NS, ties it. Shorter
+// than for reads: a frame whose bytes another thread writes later must not
+// tie the connection to this thread's next, unrelated write.
+struct thread_send {
+    __u64 ts_ns;
+    __u64 conn_id;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u64);                   // pid_tgid
+    __type(value, struct thread_send);
+} java_thread_sends SEC(".maps");
+
+#define THREAD_SEND_MAX_AGE_NS (10ULL * 1000 * 1000)
 
 #define AF_INET  2
 #define AF_INET6 10
@@ -383,6 +408,60 @@ static __always_inline struct java_conn_key current_conn_key(__u64 conn_id) {
         .conn_id  = conn_id,
     };
     return k;
+}
+
+// Ties the connection the current thread just wrapped for, if any, to sk.
+static __always_inline void record_thread_send(struct sock *sk) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tgid = pid_tgid >> 32;
+    if (!bpf_map_lookup_elem(&java_senders, &tgid)) {
+        return;
+    }
+    struct thread_send *p = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
+    if (!p) {
+        return;
+    }
+    __u64 conn_id = p->conn_id;
+    __u64 age = bpf_ktime_get_ns() - p->ts_ns;
+    bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
+    if (age > THREAD_SEND_MAX_AGE_NS) {
+        return;
+    }
+    struct conn_tuple t;
+    sock_tuple(sk, &t);
+    if (t.family == CONN_FAMILY_UNKNOWN) {
+        return;
+    }
+    struct java_conn_key k = current_conn_key(conn_id);
+    if (bpf_map_update_elem(&java_conns, &k, &t, BPF_NOEXIST) == 0) {
+        java_counter_inc(JAVA_CTR_CONN_BOUND, 1);
+    }
+}
+
+// int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size);
+// The write counts when it starts: the bytes are this thread's to write.
+SEC("fentry/tcp_sendmsg")
+int BPF_PROG(fentry_tcp_sendmsg, struct sock *sk) {
+    record_thread_send(sk);
+    return 0;
+}
+
+SEC("kprobe/tcp_sendmsg")
+int BPF_KPROBE(kprobe_tcp_sendmsg, struct sock *sk) {
+    record_thread_send(sk);
+    return 0;
+}
+
+// Leaves connection conn_id pending on the current thread, on a SEND frame,
+// unless it is tied already.
+static __always_inline void pend_conn(__u64 conn_id) {
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct java_conn_key k = current_conn_key(conn_id);
+    if (bpf_map_lookup_elem(&java_conns, &k)) {
+        return;
+    }
+    struct thread_send p = { .ts_ns = bpf_ktime_get_ns(), .conn_id = conn_id };
+    bpf_map_update_elem(&java_thread_sends, &pid_tgid, &p, BPF_ANY);
 }
 
 // BPF has no memcmp: compare the 40 bytes as five words.
@@ -580,6 +659,9 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     __u8 direction;
     if (h.op == JAVA_FRAME_OP_SEND) {
         direction = DIR_EGRESS;
+        // An empty SEND frame (a handshake wrap) only leaves the connection
+        // pending, for the thread's next socket write.
+        pend_conn(h.conn_id);
     } else if (h.op == JAVA_FRAME_OP_RECV) {
         direction = DIR_INGRESS;
         // An empty RECV frame (a handshake unwrap) only ties the connection.

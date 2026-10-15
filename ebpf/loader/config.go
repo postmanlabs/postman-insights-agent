@@ -26,9 +26,9 @@ type Config struct {
 	// from every process are accepted.
 	EnforceJavaNetnsAllowlist bool
 
-	// javaReadHookKprobe, for tests, attaches the tcp_recvmsg hook with
-	// kprobe and kretprobe even where fexit works, as on kernels without BPF
-	// trampolines.
+	// javaReadHookKprobe, for tests, attaches the tcp_recvmsg and
+	// tcp_sendmsg hooks with kprobes even where fexit and fentry work, as on
+	// kernels without BPF trampolines.
 	javaReadHookKprobe bool
 }
 

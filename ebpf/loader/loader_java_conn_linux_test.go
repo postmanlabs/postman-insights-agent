@@ -21,8 +21,9 @@ import (
 )
 
 // TestJavaConnAddresses: Java events carry the addresses of the socket their
-// connection's thread read from before its first RECV frame, with the
-// tcp_recvmsg hook attached by fexit and by kprobe, or those of the
+// connection's thread read from before its first RECV frame, or wrote to
+// right after a SEND frame, with the tcp_recvmsg and tcp_sendmsg hooks
+// attached by fexit and fentry, and by kprobes, or those of the
 // connection's ADDRESS frame. Frames are written the way the Java agent
 // writes them, from this process, with real TCP sockets.
 //
@@ -276,13 +277,13 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	idle, _ := accept()
 	ended, endedPeer := accept()
 	_ = endedPeer.Close()
-	const conn3, conn4 = 103, 104
+	const conn15, conn16 = 115, 116
 	onThread(func() {
 		readFrom(server1, client1)
 		if n, err := rawRead(t, idle, true); err != syscall.EAGAIN {
 			t.Fatalf("non-blocking read of an idle socket = %d, %v; want EAGAIN", n, err)
 		}
-		pwrite(t, javatls.OpRecv, conn3, "GET /buffered HTTP/1.1\r\n\r\n")
+		pwrite(t, javatls.OpRecv, conn15, "GET /buffered HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server1)
 	onThread(func() {
@@ -290,7 +291,7 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 		if n, err := rawRead(t, ended, false); n != 0 || err != nil {
 			t.Fatalf("read at the end of the stream = %d, %v; want 0", n, err)
 		}
-		pwrite(t, javatls.OpRecv, conn4, "GET /buffered HTTP/1.1\r\n\r\n")
+		pwrite(t, javatls.OpRecv, conn16, "GET /buffered HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server1)
 
@@ -348,6 +349,48 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	})
 	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
 		t.Errorf("a connection tied to the read before a missed return: %+v", ev.Tuple)
+	}
+
+	// A client that reads on one thread and unwraps on another (the JDK's
+	// HttpClient) still writes on the thread that wrapped: the SEND frame of a
+	// connection not yet tied leaves it pending, and the thread's next socket
+	// write ties it.
+	const conn3, conn4 = 103, 104
+	writeTo := func(c net.Conn, peer net.Conn) {
+		if _, err := c.Write([]byte("y")); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 1)
+		if _, err := peer.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bound = counter(t, JavaCounterConnBound)
+	onThread(func() {
+		pwrite(t, javatls.OpSend, conn3, "")
+		writeTo(server2, client2)
+	})
+	if got := counter(t, JavaCounterConnBound) - bound; got != 1 {
+		t.Fatalf("conn_bound grew by %d, want 1", got)
+	}
+	pwrite(t, javatls.OpSend, conn3, "GET / HTTP/1.1\r\n\r\n")
+	wantTuple(t, readEvent(t), server2)
+	// Tied, a later SEND does not move it.
+	onThread(func() {
+		pwrite(t, javatls.OpSend, conn3, "more")
+		writeTo(server1, client1)
+	})
+	wantTuple(t, readEvent(t), server2)
+	// A write long after the SEND frame (the bytes were written by another
+	// thread, and this one wrote something else) does not tie.
+	onThread(func() {
+		pwrite(t, javatls.OpSend, conn4, "")
+		time.Sleep(20 * time.Millisecond)
+		writeTo(server1, client1)
+	})
+	pwrite(t, javatls.OpSend, conn4, "GET / HTTP/1.1\r\n\r\n")
+	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
+		t.Errorf("a stale pending connection got addresses %+v", ev.Tuple)
 	}
 
 	// A blocking read that waits long for its data still ties: the read

@@ -365,8 +365,8 @@ public final class Bridge {
                 long total = consumed(c);
                 if (total > 0 && active) {
                     emitData(c, engine, op, total);
-                } else if (op == Frame.OP_RECV && active && consumed(result)) {
-                    tie(c, engine);
+                } else if (active && (op == Frame.OP_SEND || consumed(result))) {
+                    tie(c, engine, op);
                 }
             }
             if (result instanceof SSLEngineResult
@@ -388,6 +388,9 @@ public final class Bridge {
             return;
         }
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        if (op == Frame.OP_SEND) {
+            conn.sendSent = true;
+        }
         // Only a written RECV frame tied the connection; a dropped one leaves
         // the next to try.
         if (emit(c, op, flags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE))
@@ -561,17 +564,29 @@ public final class Bridge {
         return result instanceof SSLEngineResult && ((SSLEngineResult) result).bytesConsumed() > 0;
     }
 
-    /** Sends an empty RECV frame at a connection's first unwrap without plaintext. */
-    private static void tie(Call c, Object engine) throws Throwable {
+    /**
+     * Sends an empty frame of op at a connection's first unwrap (RECV) or wrap
+     * (SEND) without plaintext: a handshake call, after which the kernel ties
+     * the connection to its socket.
+     */
+    private static void tie(Call c, Object engine, byte op) throws Throwable {
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
-        if (conn.recvSent) {
+        if (op == Frame.OP_RECV) {
+            if (conn.recvSent) {
+                return;
+            }
+            // Set once written: a dropped tie (interrupted thread, every
+            // buffer busy) is retried at the next such unwrap.
+            if (emitHeader(c, Frame.OP_RECV, flags(conn, engine), conn.id)) {
+                conn.recvSent = true;
+            }
             return;
         }
-        // Set once written: a dropped tie (interrupted thread, every buffer
-        // busy) is retried at the next such unwrap.
-        if (emitHeader(c, Frame.OP_RECV, flags(conn, engine), conn.id)) {
-            conn.recvSent = true;
+        if (conn.sendSent) {
+            return;
         }
+        conn.sendSent = true;
+        emitHeader(c, op, flags(conn, engine), conn.id);
     }
 
     /** Records a CLOSED result, and sends CLOSE when the connection is done. */
