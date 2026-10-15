@@ -27,8 +27,9 @@ final class UnwrapAdvice {
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call) {
-            Bridge.exit(call, engine, Frame.OP_RECV);
+        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call,
+                         @Advice.Return Object result) {
+            Bridge.exit(call, engine, Frame.OP_RECV, result);
         }
     }
 
@@ -42,8 +43,9 @@ final class UnwrapAdvice {
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call) {
-            Bridge.exit(call, engine, Frame.OP_RECV);
+        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call,
+                         @Advice.Return Object result) {
+            Bridge.exit(call, engine, Frame.OP_RECV, result);
         }
     }
 
@@ -57,8 +59,9 @@ final class UnwrapAdvice {
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call) {
-            Bridge.exit(call, engine, Frame.OP_RECV);
+        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call,
+                         @Advice.Return Object result) {
+            Bridge.exit(call, engine, Frame.OP_RECV, result);
         }
     }
 
@@ -79,8 +82,9 @@ final class UnwrapAdvice {
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call) {
-            Bridge.exit(call, engine, Frame.OP_RECV);
+        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call,
+                         @Advice.Return Object result) {
+            Bridge.exit(call, engine, Frame.OP_RECV, result);
         }
     }
 
@@ -94,8 +98,9 @@ final class UnwrapAdvice {
         }
 
         @Advice.OnMethodExit(suppress = Throwable.class, onThrowable = Throwable.class)
-        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call) {
-            Bridge.exit(call, engine, Frame.OP_RECV);
+        static void exit(@Advice.This Object engine, @Advice.Enter Bridge.Call call,
+                         @Advice.Return Object result) {
+            Bridge.exit(call, engine, Frame.OP_RECV, result);
         }
     }
 }

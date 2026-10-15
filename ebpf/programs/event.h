@@ -12,6 +12,12 @@
 #define DIR_EGRESS  0  // data the local process is sending (SSL_write)
 #define DIR_INGRESS 1  // data the local process is receiving (SSL_read)
 
+// What an event is. Data events carry plaintext (struct ssl_event). The others
+// come from the Java agent's control frames and use struct control_event.
+#define EVENT_KIND_DATA           0
+#define EVENT_KIND_JAVA_HEARTBEAT 1  // payload: the agent's status, key=value lines
+#define EVENT_KIND_JAVA_CLOSE     2  // the connection ssl_ctx closed; no payload
+
 // Max plaintext bytes copied per event. Sized to fit an HTTP
 // request/response head plus a typical JSON body. Bodies beyond this are
 // truncated; the full length is preserved in `len_total` for accounting.
@@ -44,12 +50,43 @@ struct ssl_event {
     __u32 len_total;                      // total bytes the syscall reported
     __s32 fd;                             // socket fd associated with ssl_ctx, or -1
     __u8  direction;                      // DIR_EGRESS or DIR_INGRESS
-    __u8  _pad[3];                        // align to 8 bytes
+    __u8  kind;                           // EVENT_KIND_*
+    __u8  _pad[2];                        // align to 8 bytes
     __u32 netns;                          // network-namespace inode (task->nsproxy->net_ns->ns.inum).
                                           // Routing key: stable across PID namespaces, unlike `pid`,
                                           // so it matches the pod netns discovery filters on even in
                                           // nested environments (KIND/k3d/minikube-docker).
     __u8  payload[MAX_EVENT_PAYLOAD];
 };
+
+// Max payload bytes of a control event: a HEARTBEAT's status lines (a few
+// hundred bytes).
+#define MAX_CONTROL_PAYLOAD 1024
+
+// A control event (kind other than EVENT_KIND_DATA): struct ssl_event with a
+// small payload, so each one reserves about 1 KiB of the ring buffer rather
+// than 16 KiB. The fields before payload are identical; userspace reads the
+// kind, then only len_captured payload bytes.
+struct control_event {
+    __u64 ts_ns;
+    __u32 pid;
+    __u32 tid;
+    __u64 ssl_ctx;
+    __u32 len_captured;
+    __u32 len_total;
+    __s32 fd;
+    __u8  direction;
+    __u8  kind;
+    __u8  _pad[2];
+    __u32 netns;
+    __u8  payload[MAX_CONTROL_PAYLOAD];
+};
+
+_Static_assert(__builtin_offsetof(struct control_event, payload) ==
+               __builtin_offsetof(struct ssl_event, payload),
+               "control_event must match ssl_event up to payload");
+_Static_assert(__builtin_offsetof(struct control_event, kind) ==
+               __builtin_offsetof(struct ssl_event, kind),
+               "control_event must have ssl_event's kind offset");
 
 #endif // __POSTMAN_INSIGHTS_EBPF_EVENT_H__

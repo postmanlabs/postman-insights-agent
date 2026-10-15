@@ -6,7 +6,11 @@ package loader
 
 import (
 	"bytes"
+	"encoding/hex"
 	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -113,12 +117,17 @@ func TestJavaTLSFrames(t *testing.T) {
 		Payload:  request,
 	}.Append(nil)
 
+	// The counters are the kernel's, for every process: JVMs elsewhere on the
+	// machine (a kind cluster on the same VM) send frames too, which are
+	// rejected for their netns. So frames_seen and netns_rejected are never
+	// asserted exactly; the counters past the netns check only count frames
+	// from this process's netns.
 	t.Run("netns not allowed", func(t *testing.T) {
 		before := counter(t, JavaCounterNetnsRejected)
 		pwrite(t, send)
 		expectNoEvent(t)
-		if got := counter(t, JavaCounterNetnsRejected) - before; got != 1 {
-			t.Errorf("netns_rejected grew by %d, want 1", got)
+		if got := counter(t, JavaCounterNetnsRejected) - before; got < 1 {
+			t.Errorf("netns_rejected grew by %d, want at least 1", got)
 		}
 	})
 
@@ -166,25 +175,62 @@ func TestJavaTLSFrames(t *testing.T) {
 		}
 	})
 
-	t.Run("control frames are counted, not forwarded", func(t *testing.T) {
+	t.Run("control frames become control events", func(t *testing.T) {
 		before := counter(t, JavaCounterControlFrames)
+		status := []byte("agent_version=1.0.0\nstate=active\n")
+		pwrite(t, javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat,
+			TotalLen: uint32(len(status)), Payload: status}.Append(nil))
 		pwrite(t, javatls.Frame{Version: javatls.Version1, Op: javatls.OpClose, ConnID: 7}.Append(nil))
-		expectNoEvent(t)
-		if got := counter(t, JavaCounterControlFrames) - before; got != 1 {
-			t.Errorf("control_frames grew by %d, want 1", got)
+
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// sizeof(struct control_event), not a 16 KiB ssl_event.
+		if n := len(rec.RawSample); n != 1072 {
+			t.Errorf("heartbeat record of %d bytes, want 1072", n)
+		}
+		hb, err := events.Decode(rec.RawSample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hb.Kind != events.KindJavaHeartbeat || uint64(hb.NetNS) != netns || !bytes.Equal(hb.Bytes(), status) {
+			t.Errorf("heartbeat = kind %d netns %d payload %q", hb.Kind, hb.NetNS, hb.Bytes())
+		}
+		closed := readEvent(t)
+		if closed.Kind != events.KindJavaClose || closed.SSLCtx != javatls.SSLCtx(7) || closed.LenCaptured != 0 {
+			t.Errorf("close = kind %d ctx %#x captured %d", closed.Kind, closed.SSLCtx, closed.LenCaptured)
+		}
+		if got := counter(t, JavaCounterControlFrames) - before; got != 2 {
+			t.Errorf("control_frames grew by %d, want 2", got)
+		}
+	})
+
+	t.Run("data events are of kind data", func(t *testing.T) {
+		pwrite(t, send)
+		if ev := readEvent(t); ev.Kind != events.KindData {
+			t.Errorf("kind %d", ev.Kind)
 		}
 	})
 
 	t.Run("ordinary positional writes are ignored", func(t *testing.T) {
-		before := counter(t, JavaCounterFramesSeen)
+		// Not a frame: never parsed (frames that fail parsing are counted as
+		// malformed, only for this process's netns, so other JVMs on the
+		// machine cannot disturb the count) and never an event.
+		malformed := counter(t, JavaCounterMalformed)
 		if _, err := unix.Pwrite(fd, send, 0); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := unix.Pwrite(fd, []byte("not a frame at all"), int64(javatls.Magic)+1); err != nil {
+			t.Fatal(err)
+		}
 		expectNoEvent(t)
-		if got := counter(t, JavaCounterFramesSeen) - before; got != 0 {
-			t.Errorf("frames_seen grew by %d, want 0", got)
+		if got := counter(t, JavaCounterMalformed) - malformed; got != 0 {
+			t.Errorf("malformed grew by %d, want 0", got)
 		}
 	})
+
 
 	t.Run("rate cap applies to Java senders and refills every second", func(t *testing.T) {
 		if err := l.SetRateCapPerSec(2); err != nil {
@@ -215,6 +261,98 @@ func TestJavaTLSFrames(t *testing.T) {
 		pwrite(t, send)
 		if got := drain(); got != 1 {
 			t.Errorf("%d events after the window refilled, want 1", got)
+		}
+	})
+
+	t.Run("rate cap applies to CLOSE, not HEARTBEAT", func(t *testing.T) {
+		if err := l.SetRateCapPerSec(1); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.SetRateCapPerSec(0) }()
+		time.Sleep(1100 * time.Millisecond) // a fresh window
+		pwrite(t, send)                     // takes the only token
+		closeFrame := javatls.Frame{Version: javatls.Version1, Op: javatls.OpClose, ConnID: 7}.Append(nil)
+		pwrite(t, closeFrame)
+		hb := javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat}.Append(nil)
+		pwrite(t, hb)
+		if ev := readEvent(t); ev.Kind != events.KindData {
+			t.Fatalf("first event kind %d, want data", ev.Kind)
+		}
+		if ev := readEvent(t); ev.Kind != events.KindJavaHeartbeat {
+			t.Fatalf("second event kind %d, want the heartbeat (the close was capped)", ev.Kind)
+		}
+		expectNoEvent(t)
+	})
+
+	t.Run("heartbeats are limited per process", func(t *testing.T) {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip("needs python3, to write heartbeats from a fresh process")
+		}
+		before := counter(t, JavaCounterHeartbeatLimited)
+		// From a process of its own, so this test's earlier heartbeats do not
+		// count: three per 30 s pass, the fourth is dropped.
+		hb := javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat}.Append(nil)
+		script := "import os; fd = os.open('/dev/null', os.O_WRONLY)\nfor _ in range(4): os.pwrite(fd, bytes.fromhex('" +
+			hex.EncodeToString(hb) + "'), " + strconv.FormatUint(uint64(javatls.Magic), 10) + ")"
+		if b, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("python: %v\n%s", err, b)
+		}
+		for i := 0; i < 3; i++ {
+			if ev := readEvent(t); ev.Kind != events.KindJavaHeartbeat {
+				t.Fatalf("event %d kind %d, want a heartbeat", i, ev.Kind)
+			}
+		}
+		expectNoEvent(t)
+		if got := counter(t, JavaCounterHeartbeatLimited) - before; got != 1 {
+			t.Errorf("heartbeat_limited grew by %d, want 1", got)
+		}
+	})
+
+	// Many threads of one process hitting an empty bucket at once: the
+	// limit holds. An unsigned count wrapped around to "full" here, letting
+	// everything through.
+	hammer := func(t *testing.T, frame []byte, threads, each int) int {
+		t.Helper()
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip("needs python3, to write frames from a fresh process")
+		}
+		script := "import os, threading\nfd = os.open('/dev/null', os.O_WRONLY)\nf = bytes.fromhex('" +
+			hex.EncodeToString(frame) + "')\ndef w():\n    for _ in range(" + strconv.Itoa(each) +
+			"): os.pwrite(fd, f, " + strconv.FormatUint(uint64(javatls.Magic), 10) + ")\n" +
+			"ts = [threading.Thread(target=w) for _ in range(" + strconv.Itoa(threads) + ")]\n" +
+			"[x.start() for x in ts]\n[x.join() for x in ts]\n"
+		if b, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("python: %v\n%s", err, b)
+		}
+		n := 0
+		for {
+			rd.SetDeadline(time.Now().Add(300 * time.Millisecond))
+			if _, err := rd.Read(); err != nil {
+				return n
+			}
+			n++
+		}
+	}
+	t.Run("heartbeat limit holds under concurrent senders", func(t *testing.T) {
+		hb := javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat}.Append(nil)
+		if n := hammer(t, hb, 8, 500); n != 3 {
+			t.Errorf("%d heartbeats from 8 threads sending 500 each, want 3", n)
+		}
+	})
+	t.Run("rate cap holds under concurrent senders", func(t *testing.T) {
+		if err := l.SetRateCapPerSec(2); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.SetRateCapPerSec(0) }()
+		start := time.Now()
+		n := hammer(t, send, 8, 500)
+		// 2 per one-second window; a new window can start on several CPUs
+		// at once, each with a full bucket.
+		windows := int(time.Since(start)/time.Second) + 1
+		if limit := windows * (2 + runtime.NumCPU()); n > limit {
+			t.Errorf("%d events from 8 threads sending 500 each in %d windows, want at most %d", n, windows, limit)
 		}
 	})
 

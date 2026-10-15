@@ -64,8 +64,10 @@ func TestHTTPSCaptureStatsStringJava(t *testing.T) {
 	assert.NotContains(t, s.String(), "java_")
 
 	s.JavaEnabled = true
+	s.JavaAgentsAlive, s.JavaAgentsCapturing = 2, 1
 	assert.Contains(t, s.String(),
-		" java_frames=5 java_events=4 java_dropped_ringbuf=0 java_netns_rejected=1 java_malformed=0")
+		" java_frames=5 java_events=4 java_dropped_ringbuf=0 java_netns_rejected=1 java_malformed=0"+
+			" java_agents_alive=2 java_agents_capturing=1")
 }
 
 // The JVM attach counters appear only where JVMs are attached.

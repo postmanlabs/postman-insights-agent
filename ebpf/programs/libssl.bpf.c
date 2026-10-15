@@ -148,7 +148,7 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
 // is safe. If a PID isn't in the map (e.g. wasn't refilled yet), default to
 // "unlimited" — favours availability over strictness.
 struct rate_bucket {
-    __u64 tokens;
+    __s64 tokens;                         // signed, see rate_take
 };
 
 struct {
@@ -166,11 +166,11 @@ static __always_inline int rate_take(__u32 tgid) {
     if (!b) {
         return 1;  // unknown PID — don't drop; let userspace catch up
     }
-    __u64 prev = __sync_fetch_and_sub(&b->tokens, 1);
-    // __sync_fetch_and_sub returns the OLD value. If it was 0, our
-    // decrement just made it underflow — we should treat that as "no
-    // tokens" and reject. Restore by re-adding so the count stays at 0.
-    if (prev == 0) {
+    // __sync_fetch_and_sub returns the OLD value. At zero or less the bucket
+    // is empty: reject, and give the token back. tokens is signed, so a take
+    // racing on another CPU in between sees a negative count and fails too,
+    // rather than an unsigned count wrapped around to "full".
+    if (__sync_fetch_and_sub(&b->tokens, 1) <= 0) {
         __sync_fetch_and_add(&b->tokens, 1);
         return 0;
     }
@@ -247,6 +247,7 @@ static __always_inline int emit_event(
     e->fd           = lookup_fd(pid_tgid >> 32, ssl_ctx);
     if (e->fd >= 0) counter_inc(6, 1);
     e->direction    = direction;
+    e->kind         = EVENT_KIND_DATA;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
     // Routing key for the NodeCollector (see current_netns in common.h).

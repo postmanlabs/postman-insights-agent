@@ -22,8 +22,57 @@ final class Connections {
         /** Frame flags describing the role, or 0 until the role is known. */
         volatile short roleFlags;
 
+        /**
+         * Which directions the engine reported CLOSED for, whether a thread is
+         * sending CLOSE, and whether CLOSE was written. Guarded by this.
+         */
+        private boolean inboundDone;
+        private boolean outboundDone;
+        private boolean closeSending;
+        private boolean closeSent;
+
         Info(long id) {
             this.id = id;
+        }
+
+        /**
+         * Records that the engine reported CLOSED for one direction, and
+         * returns true when the connection can carry no more responses and a
+         * CLOSE frame should be sent: when the side that carries responses is
+         * done (the server's outbound, the client's inbound), or both sides
+         * are when the role is unknown. The request side alone is not enough:
+         * a server still answers a request whose client closed its side
+         * after sending it.
+         *
+         * <p>It returns true to one caller at a time, which must report
+         * whether it wrote the frame with {@link #closeAttempted}; until one
+         * has, a later CLOSED result retries.
+         */
+        synchronized boolean closed(boolean outbound, short role) {
+            if (closeSent || closeSending) {
+                return false;
+            }
+            if (outbound) {
+                outboundDone = true;
+            } else {
+                inboundDone = true;
+            }
+            boolean responsesDone;
+            if ((role & Frame.FLAG_ROLE_KNOWN) == 0) {
+                responsesDone = inboundDone && outboundDone;
+            } else if ((role & Frame.FLAG_CLIENT_MODE) != 0) {
+                responsesDone = inboundDone;
+            } else {
+                responsesDone = outboundDone;
+            }
+            closeSending = responsesDone;
+            return responsesDone;
+        }
+
+        /** Ends the attempt {@link #closed} started: written, or to retry. */
+        synchronized void closeAttempted(boolean written) {
+            closeSending = false;
+            closeSent = written;
         }
     }
 

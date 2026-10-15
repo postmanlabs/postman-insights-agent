@@ -340,3 +340,93 @@ func TestAdapter_DistinctFlows(t *testing.T) {
 		t.Errorf("expected both /one and /two, got %v", paths)
 	}
 }
+
+// control sends a control event (KindJava*) through Feed.
+func control(a *Adapter, kind uint8, pid uint32, ssl uint64, payload string) {
+	ev := &SSLEvent{PID: pid, TID: pid, SSLCtx: ssl, Kind: kind, LenCaptured: uint32(len(payload)), LenTotal: uint32(len(payload))}
+	copy(ev.Payload[:], payload)
+	a.Feed(ev, time.Unix(0, 0))
+}
+
+// A response delimited by the connection's close (no Content-Length) is
+// emitted when the Java agent reports the close, and the connection is
+// forgotten.
+func TestAdapter_JavaCloseCompletesResponse(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const ssl = 1<<63 | 7
+	feed(t, a, 100, ssl, DirIngress, []byte("GET /stream HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+	feed(t, a, 100, ssl, DirEgress, []byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nall of it"))
+	if _, ok := (<-out).Content.(akinet.HTTPRequest); !ok {
+		t.Fatal("first message is not the request")
+	}
+	select {
+	case pnt := <-out:
+		t.Fatalf("response emitted before the close: %T", pnt.Content)
+	default:
+	}
+
+	control(a, KindJavaClose, 100, ssl, "")
+	select {
+	case pnt := <-out:
+		resp, ok := pnt.Content.(akinet.HTTPResponse)
+		if !ok {
+			t.Fatalf("got %T, want HTTPResponse", pnt.Content)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("status %d", resp.StatusCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the close did not complete the response")
+	}
+	if n, _ := a.Snapshot(); n != 0 {
+		t.Errorf("%d flows left after the close", n)
+	}
+	if len(a.conns) != 0 {
+		t.Errorf("%d connections left after the close", len(a.conns))
+	}
+
+	// A close for a connection the adapter does not know is harmless.
+	control(a, KindJavaClose, 100, 1<<63|8, "")
+}
+
+// HEARTBEATs count Java agents as alive, and capturing when active; an agent
+// not heard from for javaAgentAliveFor is no longer counted.
+func TestAdapter_JavaHeartbeats(t *testing.T) {
+	a, out := newTestAdapter(t)
+	control(a, KindJavaHeartbeat, 100, 1<<63, "agent_version=1.0.0\nstate=active\n")
+	control(a, KindJavaHeartbeat, 200, 1<<63, "agent_version=1.0.0\nstate=dormant\n")
+	control(a, KindJavaHeartbeat, 200, 1<<63, "agent_version=1.0.0\nstate=dormant\n")
+	select {
+	case pnt := <-out:
+		t.Fatalf("a heartbeat produced traffic: %T", pnt.Content)
+	default:
+	}
+	if n, _ := a.Snapshot(); n != 0 {
+		t.Errorf("a heartbeat created %d flows", n)
+	}
+	s := a.Stats()
+	if s.JavaAgentsAlive != 2 || s.JavaAgentsCapturing != 1 {
+		t.Errorf("alive %d, capturing %d; want 2, 1", s.JavaAgentsAlive, s.JavaAgentsCapturing)
+	}
+
+	a.javaAgents[200].lastSeen = time.Now().Add(-javaAgentAliveFor - time.Second)
+	s = a.Stats()
+	if s.JavaAgentsAlive != 1 || s.JavaAgentsCapturing != 1 {
+		t.Errorf("alive %d, capturing %d after one went quiet; want 1, 1", s.JavaAgentsAlive, s.JavaAgentsCapturing)
+	}
+	a.GC(time.Now(), time.Minute)
+	if len(a.javaAgents) != 1 {
+		t.Errorf("%d agents kept after GC, want 1", len(a.javaAgents))
+	}
+}
+
+// Events of a kind the adapter does not know are ignored.
+func TestAdapter_UnknownKind(t *testing.T) {
+	a, out := newTestAdapter(t)
+	control(a, 99, 100, 0xAAAA, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+	select {
+	case pnt := <-out:
+		t.Fatalf("emitted %T", pnt.Content)
+	default:
+	}
+}

@@ -55,6 +55,11 @@ type HTTPSCaptureStats struct {
 	JVMsAgentRunning uint64 // already ran the agent (-javaagent, or attached earlier)
 	JVMsSkipped      uint64 // not attachable by design (OpenJ9, attach disabled, -Xrs)
 	JVMsAttachFailed uint64
+
+	// Java agents in this target heard from recently (HEARTBEAT), and those
+	// of them capturing rather than dormant.
+	JavaAgentsAlive     int
+	JavaAgentsCapturing int
 }
 
 // String produces a single-line, customer-readable summary suitable for
@@ -69,8 +74,10 @@ func (s HTTPSCaptureStats) String() string {
 		s.H2HPACKDesyncs, s.CurrentCapBytes, s.CPUPercent)
 	if s.JavaEnabled {
 		line += fmt.Sprintf(
-			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d",
-			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed)
+			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d"+
+				" java_agents_alive=%d java_agents_capturing=%d",
+			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed,
+			s.JavaAgentsAlive, s.JavaAgentsCapturing)
 	}
 	if s.JVMAttach {
 		line += fmt.Sprintf(
@@ -119,6 +126,8 @@ func httpsTelemetryWorker(
 			s.MessagesEmitted = adapterStats.MessagesEmitted
 			s.FlowsDropped = adapterStats.FlowsDropped
 			s.H2HPACKDesyncs = adapterStats.H2HPACKDesyncs
+			s.JavaAgentsAlive = adapterStats.JavaAgentsAlive
+			s.JavaAgentsCapturing = adapterStats.JavaAgentsCapturing
 		}
 		if ldr != nil {
 			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {

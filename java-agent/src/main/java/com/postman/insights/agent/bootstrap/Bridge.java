@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.LongAdder;
 
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLEngineResult;
 
 /**
  * Called by the advice woven into {@link SSLEngine} implementations. Copies
@@ -311,9 +312,13 @@ public final class Bridge {
     /**
      * Advice exit: at the outermost call, emits the bytes between each
      * buffer's entry position and its current position, which is the
-     * plaintext the call consumed (wrap) or produced (unwrap).
+     * plaintext the call consumed (wrap) or produced (unwrap). When the call's
+     * result is CLOSED, records that direction as closed, and sends a CLOSE
+     * frame once the connection can carry no more responses.
+     *
+     * @param result the call's SSLEngineResult; null when it threw
      */
-    public static void exit(Call c, Object engine, byte op) {
+    public static void exit(Call c, Object engine, byte op, Object result) {
         if (c == null) {
             return;
         }
@@ -321,26 +326,79 @@ public final class Bridge {
             return;
         }
         c.depth = 0;
-        if (!c.recording) {
-            return;
-        }
         try {
-            long total = consumed(c);
-            if (total == 0 || !active) {
-                return;
+            if (c.recording) {
+                long total = consumed(c);
+                if (total > 0 && active) {
+                    emitData(c, engine, op, total);
+                }
             }
-            // A FileChannel write from an interrupted thread fails and closes
-            // the channel; skip this call instead.
-            if (Thread.currentThread().isInterrupted()) {
-                DROPPED.increment();
-                return;
+            if (result instanceof SSLEngineResult
+                    && ((SSLEngineResult) result).getStatus() == SSLEngineResult.Status.CLOSED && active) {
+                closed(c, engine, op);
             }
-            Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
-            emit(c, op, roleFlags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE));
         } catch (Throwable t) {
             error();
         } finally {
             c.clear();
+        }
+    }
+
+    private static void emitData(Call c, Object engine, byte op, long total) throws Throwable {
+        // A FileChannel write from an interrupted thread fails and closes
+        // the channel; skip this call instead.
+        if (Thread.currentThread().isInterrupted()) {
+            DROPPED.increment();
+            return;
+        }
+        Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        emit(c, op, roleFlags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE));
+    }
+
+    /** Records a CLOSED result, and sends CLOSE when the connection is done. */
+    private static void closed(Call c, Object engine, byte op) throws Throwable {
+        Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        short role = roleFlags(conn, engine);
+        if (!conn.closed(op == Frame.OP_SEND, role)) {
+            return;
+        }
+        boolean written = false;
+        try {
+            written = writeClose(c, role, conn.id);
+        } finally {
+            conn.closeAttempted(written);
+        }
+    }
+
+    /** Writes a CLOSE frame; false when it was dropped, so a later CLOSED result retries. */
+    private static boolean writeClose(Call c, short role, long connId) throws Throwable {
+        if (Thread.currentThread().isInterrupted()) {
+            DROPPED.increment();
+            return false;
+        }
+        Pool p = pool;
+        int idx = p.acquire(c);
+        if (idx < 0) {
+            DROPPED.increment();
+            return false;
+        }
+        try {
+            Slot s = p.slots[idx];
+            ByteBuffer f = s.buf;
+            if (f == null || f.capacity() < Frame.HEADER_SIZE + captureCap) {
+                s.buf = f = Frame.allocate(captureCap);
+            }
+            f.clear();
+            Frame.putHeader(f, Frame.OP_CLOSE, role, 0, connId, null, 0, 0);
+            f.limit(Frame.HEADER_SIZE);
+            if (write(s, f)) {
+                FRAMES.increment();
+                return true;
+            }
+            DROPPED.increment();
+            return false;
+        } finally {
+            p.release(idx);
         }
     }
 

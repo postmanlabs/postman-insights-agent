@@ -1,6 +1,7 @@
 package com.postman.insights.agent;
 
 import static com.postman.insights.agent.Frames.CLIENT_MODE;
+import static com.postman.insights.agent.Frames.OP_CLOSE;
 import static com.postman.insights.agent.Frames.OP_HEARTBEAT;
 import static com.postman.insights.agent.Frames.OP_RECV;
 import static com.postman.insights.agent.Frames.OP_SEND;
@@ -119,6 +120,42 @@ class AgentEndToEndTest {
         assertEquals(clientSend.connId, clientRecv.connId);
         assertEquals(serverSend.connId, serverRecv.connId);
         assertNotEquals(clientSend.connId, serverSend.connId);
+    }
+
+    /**
+     * The server closing the connection sends one CLOSE per engine: the
+     * server's once its outbound side is closed, the client's once the
+     * server's close_notify arrives.
+     */
+    @Test
+    void closeFramesWhenTheServerCloses() throws Exception {
+        EnginePair p = jdkPair();
+        String request = "GET /bye HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        String response = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nbye";
+        p.send(p.client, request);
+        p.send(p.server, response);
+        List<Frame> traffic = frames.traffic();
+        long serverConn = Frames.find(traffic, OP_RECV, request).connId;
+        long clientConn = Frames.find(traffic, OP_SEND, request).connId;
+
+        assertEquals(javax.net.ssl.SSLEngineResult.Status.CLOSED, p.closeOutbound(p.server).getStatus());
+        List<Frame> closes = new java.util.ArrayList<Frame>();
+        for (Frame f : frames.read()) {
+            if (f.op == OP_CLOSE) {
+                closes.add(f);
+            }
+        }
+        assertEquals(2, closes.size(), closes.toString());
+        assertEquals(serverConn, closes.get(0).connId);
+        assertEquals(ROLE_KNOWN, closes.get(0).flags);
+        assertEquals(clientConn, closes.get(1).connId);
+        assertEquals(ROLE_KNOWN | CLIENT_MODE, closes.get(1).flags);
+        assertEquals(0, closes.get(1).payload.length);
+
+        // Later calls on the closed engines send nothing more.
+        frames.mark();
+        p.server.wrap(java.nio.ByteBuffer.allocate(0), java.nio.ByteBuffer.allocate(p.server.getSession().getPacketBufferSize()));
+        assertEquals(0, frames.read().size());
     }
 
     @Test
