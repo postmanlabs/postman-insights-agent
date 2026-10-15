@@ -362,15 +362,25 @@ public final class Bridge {
         if (!conn.closed(op == Frame.OP_SEND, role)) {
             return;
         }
+        boolean written = false;
+        try {
+            written = writeClose(c, role, conn.id);
+        } finally {
+            conn.closeAttempted(written);
+        }
+    }
+
+    /** Writes a CLOSE frame; false when it was dropped, so a later CLOSED result retries. */
+    private static boolean writeClose(Call c, short role, long connId) throws Throwable {
         if (Thread.currentThread().isInterrupted()) {
             DROPPED.increment();
-            return;
+            return false;
         }
         Pool p = pool;
         int idx = p.acquire(c);
         if (idx < 0) {
             DROPPED.increment();
-            return;
+            return false;
         }
         try {
             Slot s = p.slots[idx];
@@ -379,13 +389,14 @@ public final class Bridge {
                 s.buf = f = Frame.allocate(captureCap);
             }
             f.clear();
-            Frame.putHeader(f, Frame.OP_CLOSE, role, 0, conn.id, null, 0, 0);
+            Frame.putHeader(f, Frame.OP_CLOSE, role, 0, connId, null, 0, 0);
             f.limit(Frame.HEADER_SIZE);
             if (write(s, f)) {
                 FRAMES.increment();
-            } else {
-                DROPPED.increment();
+                return true;
             }
+            DROPPED.increment();
+            return false;
         } finally {
             p.release(idx);
         }

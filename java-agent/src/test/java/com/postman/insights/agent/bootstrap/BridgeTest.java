@@ -489,4 +489,23 @@ class BridgeTest {
         Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, null);
         assertEquals(0, closes().size());
     }
+
+    /**
+     * A CLOSE that could not be written (here: the thread was interrupted)
+     * is retried at the next CLOSED result, and sent once.
+     */
+    @Test
+    void droppedCloseIsRetried() throws Exception {
+        SSLEngine server = engine(false);
+        Thread.currentThread().interrupt();
+        try {
+            result(server, Frame.OP_SEND, CLOSED);
+        } finally {
+            Thread.interrupted();
+        }
+        assertEquals(0, closes().size(), "CLOSE written from an interrupted thread");
+        result(server, Frame.OP_SEND, CLOSED);
+        result(server, Frame.OP_SEND, CLOSED);
+        assertEquals(1, closes().size());
+    }
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"syscall"
 	"testing"
@@ -293,6 +294,53 @@ func TestJavaTLSFrames(t *testing.T) {
 		expectNoEvent(t)
 		if got := counter(t, JavaCounterHeartbeatLimited) - before; got != 1 {
 			t.Errorf("heartbeat_limited grew by %d, want 1", got)
+		}
+	})
+
+	// Many threads of one process hitting an empty bucket at once: the
+	// limit holds. An unsigned count wrapped around to "full" here, letting
+	// everything through.
+	hammer := func(t *testing.T, frame []byte, threads, each int) int {
+		t.Helper()
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip("needs python3, to write frames from a fresh process")
+		}
+		script := "import os, threading\nfd = os.open('/dev/null', os.O_WRONLY)\nf = bytes.fromhex('" +
+			hex.EncodeToString(frame) + "')\ndef w():\n    for _ in range(" + strconv.Itoa(each) +
+			"): os.pwrite(fd, f, " + strconv.FormatUint(uint64(javatls.Magic), 10) + ")\n" +
+			"ts = [threading.Thread(target=w) for _ in range(" + strconv.Itoa(threads) + ")]\n" +
+			"[x.start() for x in ts]\n[x.join() for x in ts]\n"
+		if b, err := exec.Command(python, "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("python: %v\n%s", err, b)
+		}
+		n := 0
+		for {
+			rd.SetDeadline(time.Now().Add(300 * time.Millisecond))
+			if _, err := rd.Read(); err != nil {
+				return n
+			}
+			n++
+		}
+	}
+	t.Run("heartbeat limit holds under concurrent senders", func(t *testing.T) {
+		hb := javatls.Frame{Version: javatls.Version1, Op: javatls.OpHeartbeat}.Append(nil)
+		if n := hammer(t, hb, 8, 500); n != 3 {
+			t.Errorf("%d heartbeats from 8 threads sending 500 each, want 3", n)
+		}
+	})
+	t.Run("rate cap holds under concurrent senders", func(t *testing.T) {
+		if err := l.SetRateCapPerSec(2); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.SetRateCapPerSec(0) }()
+		start := time.Now()
+		n := hammer(t, send, 8, 500)
+		// 2 per one-second window; a new window can start on several CPUs
+		// at once, each with a full bucket.
+		windows := int(time.Since(start)/time.Second) + 1
+		if limit := windows * (2 + runtime.NumCPU()); n > limit {
+			t.Errorf("%d events from 8 threads sending 500 each in %d windows, want at most %d", n, windows, limit)
 		}
 	})
 
