@@ -602,9 +602,10 @@ class BridgeTest {
     }
 
     /**
-     * A connection's first unwrap and first wrap each send an empty frame,
-     * which tie the connection to its socket in the kernel; later empty calls
-     * send nothing.
+     * A connection's first unwrap sends an empty RECV, which ties the
+     * connection to its socket in the kernel, and later empty unwraps send
+     * nothing; every wrap that produced TLS bytes sends an empty SEND, which
+     * announces the write after it.
      */
     @Test
     void firstUnwrapTiesTheConnection() throws Exception {
@@ -615,7 +616,8 @@ class BridgeTest {
         emptySend(server);
 
         List<LoggedFrame> frames = log.frames();
-        assertEquals(2, frames.size());
+        assertEquals(3, frames.size());
+        assertEquals(Frame.OP_SEND, frames.get(2).op);
         LoggedFrame f = frames.get(0);
         assertEquals(Frame.OP_RECV, f.op);
         assertEquals(Frame.FLAG_ROLE_KNOWN, f.flags);
@@ -894,19 +896,26 @@ class BridgeTest {
         }
     }
 
-    /** A handshake wrap's empty SEND that could not be written is retried at the next one. */
+    /**
+     * Every handshake wrap announces its write, in order, so the kernel sees
+     * when two connections' wraps wait for one thread's next write: B wraps,
+     * A wraps, B wraps its next flight. Only the first would let B's second
+     * write tie A to B's socket.
+     */
     @Test
-    void droppedSendTieIsRetried() throws Exception {
-        SSLEngine client = engine(true);
-        Thread.currentThread().interrupt();
-        try {
-            emptySend(client);
-        } finally {
-            Thread.interrupted();
+    void everyHandshakeWrapAnnouncesItsWrite() throws Exception {
+        SSLEngine a = engine(true);
+        SSLEngine b = engine(true);
+        emptySend(b);
+        emptySend(a);
+        emptySend(b);
+        List<LoggedFrame> sends = ops(Frame.OP_SEND);
+        assertEquals(3, sends.size());
+        assertEquals(sends.get(0).connId, sends.get(2).connId);
+        assertNotEquals(sends.get(0).connId, sends.get(1).connId);
+        for (LoggedFrame f : sends) {
+            assertEquals(0, f.payload.length);
+            assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_BEFORE_WRITE, f.flags);
         }
-        assertTrue(log.frames().isEmpty());
-        emptySend(client);
-        emptySend(client);
-        assertEquals(1, ops(Frame.OP_SEND).size());
     }
 }

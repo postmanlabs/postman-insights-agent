@@ -125,11 +125,13 @@ class AgentEndToEndTest {
         assertEquals(serverSend.connId, serverRecv.connId);
         assertNotEquals(clientSend.connId, serverSend.connId);
 
-        // Each engine's first unwrap and first wrap, in the handshake, sent
-        // one empty RECV and one empty SEND frame, before any plaintext: they
-        // tie the connection to its socket.
+        // Each engine's first unwrap, in the handshake, sent one empty RECV
+        // before any plaintext, which ties the connection to its socket; each
+        // of its handshake wraps sent an empty SEND, which announces the
+        // write after it.
         List<Frame> all = frames.read();
-        List<String> tied = new java.util.ArrayList<String>();
+        java.util.Map<Long, Integer> emptyRecvs = new java.util.HashMap<Long, Integer>();
+        java.util.Map<Long, Integer> emptySends = new java.util.HashMap<Long, Integer>();
         boolean plaintext = false;
         for (Frame f : all) {
             if (f.op != OP_SEND && f.op != OP_RECV) {
@@ -137,14 +139,16 @@ class AgentEndToEndTest {
             }
             if (f.payload.length > 0) {
                 plaintext = true;
-            } else if (f.op == OP_RECV || f.op == OP_SEND) {
-                tied.add(f.op + "/" + f.connId);
+            } else if (f.op == OP_RECV) {
+                emptyRecvs.merge(f.connId, 1, Integer::sum);
                 assertFalse(plaintext, "tie after the first plaintext: " + all);
+            } else {
+                emptySends.merge(f.connId, 1, Integer::sum);
             }
         }
-        assertEquals(4, tied.size(), all.toString());
         for (long conn : new long[] {clientSend.connId, serverSend.connId}) {
-            assertTrue(tied.contains(OP_RECV + "/" + conn) && tied.contains(OP_SEND + "/" + conn), all.toString());
+            assertEquals(Integer.valueOf(1), emptyRecvs.get(conn), all.toString());
+            assertTrue(emptySends.getOrDefault(conn, 0) >= 1, all.toString());
         }
     }
 
