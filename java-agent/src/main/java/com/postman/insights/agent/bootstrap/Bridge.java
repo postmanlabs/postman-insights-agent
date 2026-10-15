@@ -14,10 +14,12 @@ import java.util.concurrent.atomic.LongAdder;
 
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
+import javax.net.ssl.SSLSocket;
 
 /**
- * Called by the advice woven into {@link SSLEngine} implementations. Copies
- * the plaintext of each {@code wrap}/{@code unwrap} call into a frame and
+ * Called by the advice woven into {@link SSLEngine} implementations and the
+ * JDK's {@link SSLSocket} streams. Copies the plaintext of each
+ * {@code wrap}/{@code unwrap} call, or socket read and write, into a frame and
  * hands it to the kernel with a positional write to {@code /dev/null} at
  * {@link Frame#MAGIC}; the Insights agent's eBPF programs read it on syscall
  * entry. Pure Java: no JNI, no {@code Unsafe}.
@@ -114,6 +116,10 @@ public final class Bridge {
         int[] pos = new int[4];
         ByteBuffer single;
         int singlePos;
+        /** A socket stream call's bytes: array[arrayOff, arrayOff + arrayLen). */
+        byte[] array;
+        int arrayOff;
+        int arrayLen;
         int slotHint;
         final Connections.Lookup lookup = new Connections.Lookup();
 
@@ -123,6 +129,7 @@ public final class Bridge {
             recording = false;
             bufs = null;
             single = null;
+            array = null;
         }
     }
 
@@ -312,9 +319,11 @@ public final class Bridge {
     /**
      * Advice exit: at the outermost call, emits the bytes between each
      * buffer's entry position and its current position, which is the
-     * plaintext the call consumed (wrap) or produced (unwrap). When the call's
-     * result is CLOSED, records that direction as closed, and sends a CLOSE
-     * frame once the connection can carry no more responses.
+     * plaintext the call consumed (wrap) or produced (unwrap). A connection's
+     * first unwrap sends a RECV frame even without plaintext (a handshake
+     * unwrap), which ties the connection to its socket in the kernel. When
+     * the call's result is CLOSED, records that direction as closed, and
+     * sends a CLOSE frame once the connection can carry no more responses.
      *
      * @param result the call's SSLEngineResult; null when it threw
      */
@@ -331,6 +340,8 @@ public final class Bridge {
                 long total = consumed(c);
                 if (total > 0 && active) {
                     emitData(c, engine, op, total);
+                } else if (op == Frame.OP_RECV && active) {
+                    tie(c, engine);
                 }
             }
             if (result instanceof SSLEngineResult
@@ -352,7 +363,138 @@ public final class Bridge {
             return;
         }
         Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        if (op == Frame.OP_RECV) {
+            conn.recvSent = true;
+        }
         emit(c, op, roleFlags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE));
+    }
+
+    /**
+     * Advice entry for the JDK's blocking {@code SSLSocket} streams: a read or
+     * a write of a byte array. Returns null when the exit has nothing to do.
+     */
+    public static Call enterStream() {
+        if (!active) {
+            return null;
+        }
+        Call c = call();
+        if (c == null || c.depth++ > 0) {
+            return c;
+        }
+        c.clear();
+        c.recording = true;
+        return c;
+    }
+
+    /**
+     * Advice exit for {@code SSLSocket} streams: emits the plaintext the call
+     * read (RECV) or wrote (SEND), b[off, off + n). The socket is the
+     * connection. A read that reached the end of the stream (n == -1) records
+     * the inbound side as closed. A socket's first frame is preceded by an
+     * empty RECV frame, which ties the connection to its socket in the
+     * kernel: the handshake, inside the first read or write or in
+     * {@link #handshakeDone}, has just read the socket on this thread.
+     *
+     * @param n bytes read or written; -1 at the end of the stream; 0 when the call threw
+     */
+    public static void exitStream(Call c, Object socket, byte op, byte[] b, int off, int n) {
+        if (c == null) {
+            return;
+        }
+        if (--c.depth > 0) {
+            return;
+        }
+        c.depth = 0;
+        try {
+            if (!c.recording || !active) {
+                return;
+            }
+            if (n > 0 && b != null && off >= 0 && n <= b.length - off) {
+                if (Thread.currentThread().isInterrupted()) {
+                    DROPPED.increment();
+                    return;
+                }
+                Connections.Info conn = CONNECTIONS.get(socket, c.lookup);
+                short role = roleFlags(conn, socket);
+                if (!conn.recvSent) {
+                    conn.recvSent = true;
+                    if (op == Frame.OP_SEND) {
+                        emitHeader(c, Frame.OP_RECV, role, conn.id);
+                    }
+                }
+                c.array = b;
+                c.arrayOff = off;
+                c.arrayLen = n;
+                emit(c, op, role, conn.id, n);
+            } else if (n < 0 && op == Frame.OP_RECV) {
+                closed(c, socket, op);
+            }
+        } catch (Throwable t) {
+            error();
+        } finally {
+            c.clear();
+        }
+    }
+
+    /**
+     * Advice exit for {@code SSLSocket.startHandshake}: the handshake has just
+     * read the socket on this thread, so an empty RECV frame ties the
+     * connection to it, before any request or response.
+     */
+    public static void handshakeDone(Object socket) {
+        if (!active) {
+            return;
+        }
+        Call c = call();
+        if (c == null || c.depth > 0) {
+            return;
+        }
+        try {
+            tie(c, socket);
+        } catch (Throwable t) {
+            error();
+        }
+    }
+
+    /**
+     * Advice exit for {@code SSLSocket.close}: both directions are done, so a
+     * connection that carried traffic gets its CLOSE frame, if it has not yet.
+     */
+    public static void socketClosed(Object socket) {
+        if (!active) {
+            return;
+        }
+        Call c = call();
+        if (c == null || c.depth > 0) {
+            return;
+        }
+        try {
+            Connections.Info conn = CONNECTIONS.find(socket, c.lookup);
+            if (conn == null) {
+                return;
+            }
+            short role = roleFlags(conn, socket);
+            if (conn.closed(true, role) || conn.closed(false, role)) {
+                boolean written = false;
+                try {
+                    written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
+                } finally {
+                    conn.closeAttempted(written);
+                }
+            }
+        } catch (Throwable t) {
+            error();
+        }
+    }
+
+    /** Sends an empty RECV frame at a connection's first unwrap without plaintext. */
+    private static void tie(Call c, Object engine) throws Throwable {
+        Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        if (conn.recvSent) {
+            return;
+        }
+        conn.recvSent = true;
+        emitHeader(c, Frame.OP_RECV, roleFlags(conn, engine), conn.id);
     }
 
     /** Records a CLOSED result, and sends CLOSE when the connection is done. */
@@ -364,14 +506,14 @@ public final class Bridge {
         }
         boolean written = false;
         try {
-            written = writeClose(c, role, conn.id);
+            written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
         } finally {
             conn.closeAttempted(written);
         }
     }
 
-    /** Writes a CLOSE frame; false when it was dropped, so a later CLOSED result retries. */
-    private static boolean writeClose(Call c, short role, long connId) throws Throwable {
+    /** Sends a frame with no payload; false when it was dropped. */
+    private static boolean emitHeader(Call c, byte op, short role, long connId) throws Throwable {
         if (Thread.currentThread().isInterrupted()) {
             DROPPED.increment();
             return false;
@@ -389,7 +531,7 @@ public final class Bridge {
                 s.buf = f = Frame.allocate(captureCap);
             }
             f.clear();
-            Frame.putHeader(f, Frame.OP_CLOSE, role, 0, connId, null, 0, 0);
+            Frame.putHeader(f, op, role, 0, connId, null, 0, 0);
             f.limit(Frame.HEADER_SIZE);
             if (write(s, f)) {
                 FRAMES.increment();
@@ -419,10 +561,12 @@ public final class Bridge {
 
     private static short roleFlags(Connections.Info conn, Object engine) {
         short flags = conn.roleFlags;
-        if (flags == 0 && engine instanceof SSLEngine) {
+        if (flags == 0 && (engine instanceof SSLEngine || engine instanceof SSLSocket)) {
             try {
-                flags = (short) (Frame.FLAG_ROLE_KNOWN
-                        | (((SSLEngine) engine).getUseClientMode() ? Frame.FLAG_CLIENT_MODE : 0));
+                boolean client = engine instanceof SSLEngine
+                        ? ((SSLEngine) engine).getUseClientMode()
+                        : ((SSLSocket) engine).getUseClientMode();
+                flags = (short) (Frame.FLAG_ROLE_KNOWN | (client ? Frame.FLAG_CLIENT_MODE : 0));
                 conn.roleFlags = flags;
             } catch (Throwable t) {
                 // Unknown role; the Insights agent infers it from the traffic.
@@ -447,7 +591,9 @@ public final class Bridge {
             }
             f.clear();
             f.position(Frame.HEADER_SIZE);
-            if (c.single != null) {
+            if (c.array != null) {
+                f.put(c.array, c.arrayOff, Math.min(c.arrayLen, cap));
+            } else if (c.single != null) {
                 copy(f, c.single, c.singlePos, cap);
             } else {
                 for (int i = 0; i < c.len && f.position() - Frame.HEADER_SIZE < cap; i++) {

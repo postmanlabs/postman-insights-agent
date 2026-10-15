@@ -67,6 +67,14 @@ func Decode(raw []byte) (*SSLEvent, error) {
 	off += 2 // _pad
 	e.NetNS = binary.LittleEndian.Uint32(raw[off:])
 	off += 4
+	e.Tuple.Family = raw[off]
+	off += 4 // family, _pad
+	e.Tuple.LocalPort = binary.LittleEndian.Uint16(raw[off:])
+	off += 2
+	e.Tuple.RemotePort = binary.LittleEndian.Uint16(raw[off:])
+	off += 2
+	off += copy(e.Tuple.LocalAddr[:], raw[off:])
+	off += copy(e.Tuple.RemoteAddr[:], raw[off:])
 
 	size, limit := rawEventSize, MaxEventPayload
 	if e.Kind != KindData {

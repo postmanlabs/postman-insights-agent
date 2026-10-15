@@ -11,6 +11,9 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
 - **Hooks:** every public `wrap` and `unwrap` shape, not only the abstract 4-argument ones.
   Engines may override the other shapes without delegating to the abstract ones: Netty's OpenSSL engine does, and its `SslHandler` never calls the abstract `unwrap`.
   Only the outermost hooked call on a thread emits, so an overload that delegates to another, or a wrapper engine that delegates to another engine, does not emit twice.
+- **Blocking `SSLSocket`:** the JDK's `SSLSocket` (`sun.security.ssl.SSLSocketImpl`, JDK 8u261 and newer) uses no `SSLEngine`, so its application streams' `read` and `write` are hooked too, with the socket as the connection; `startHandshake` and `close` are hooked for the connection's tie and CLOSE frames.
+  This covers blocking clients: `HttpsURLConnection`, Apache HttpClient's classic API, OkHttp.
+  Other providers' sockets (BouncyCastle JSSE, Conscrypt) are not hooked.
 - **No allocation per call on JDK 16+:** the per-thread call state is reused, and frames are built in a small pool of direct buffers shared by all threads (twice the CPUs, 4 to 32), each with its own `/dev/null` channel.
   On JDK 8 to 15, copying from a direct or read-only buffer (Netty uses direct buffers) needs a view of it: one small, short-lived object per such buffer per call.
   Heap buffers, which Tomcat and the JDK's HTTP server use, are copied without one on every JDK.
@@ -20,6 +23,10 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
   The agent checks it every 5 s, on its own daemon thread (`postman-insights-agent`).
 - **HEARTBEAT frames:** at start and every 30 s, whether capturing or dormant, the agent sends its version, the JVM's version and vendor, its state and its counters.
   The Insights Agent logs each agent once when it first hears from it and whenever its state changes, and its `ebpf-stats` line shows the agents alive and capturing in each pod (`java_agents_alive`, `java_agents_capturing`).
+- **Connection addresses:** the agent sees engines, not sockets, so its frames carry no IP addresses or ports.
+  The kernel fills them in: the servers and clients it captures read the socket on the thread that then unwraps what it read, so a connection's RECV frame comes from the thread that just read its socket (`tcp_recvmsg`, hooked with fentry, or kprobe on kernels without BPF trampolines).
+  The agent sends an empty RECV frame at each connection's first unwrap, in the handshake (for an `SSLSocket`, after the handshake, before its first frame), so the connection is tied to its socket before the first request or response, whichever side sends first.
+  A connection unwrapped on another thread than the one that read it stays without addresses rather than getting wrong ones; the `ebpf-stats` line counts such frames (`java_conn_unbound`) and reads of another socket on a connection's thread (`java_conn_mismatch`).
 - **CLOSE frames:** once a connection can carry no more responses (the server's side closed, or the client's inbound side), the agent sends a CLOSE frame.
   The Insights Agent then completes a response delimited by the close and frees the connection's state at once, instead of after 30 s idle.
   Connections that end without a TLS close_notify are freed when idle.

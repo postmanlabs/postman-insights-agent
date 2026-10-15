@@ -34,6 +34,23 @@
 // + CPU thermostat still throttle actual copies under load). Power of two.
 #define MAX_EVENT_PAYLOAD 16384
 
+// A TCP connection's addresses, as the kernel's socket has them. Java events
+// carry it (the Java agent sees engines, not sockets: the kernel ties each
+// Java connection to the socket its thread read from, see java_tls.bpf.c).
+// libssl events leave it unknown and are resolved from fd in userspace.
+#define CONN_FAMILY_UNKNOWN 0
+#define CONN_FAMILY_INET    2   // AF_INET: addresses in the first 4 bytes
+#define CONN_FAMILY_INET6   10  // AF_INET6, including IPv4-mapped addresses
+
+struct conn_tuple {
+    __u8  family;                         // CONN_FAMILY_*
+    __u8  _pad[3];
+    __u16 local_port;                     // host byte order
+    __u16 remote_port;                    // host byte order
+    __u8  local_addr[16];                 // network byte order
+    __u8  remote_addr[16];                // network byte order
+};
+
 // A single decrypted-bytes event emitted by an SSL_read or SSL_write
 // uretprobe. One TLS record may produce multiple events; the userspace
 // adapter reassembles by (pid, tid, ssl_ctx).
@@ -56,6 +73,7 @@ struct ssl_event {
                                           // Routing key: stable across PID namespaces, unlike `pid`,
                                           // so it matches the pod netns discovery filters on even in
                                           // nested environments (KIND/k3d/minikube-docker).
+    struct conn_tuple tuple;              // the connection's addresses, when the kernel knows them
     __u8  payload[MAX_EVENT_PAYLOAD];
 };
 
@@ -79,6 +97,7 @@ struct control_event {
     __u8  kind;
     __u8  _pad[2];
     __u32 netns;
+    struct conn_tuple tuple;
     __u8  payload[MAX_CONTROL_PAYLOAD];
 };
 
@@ -88,5 +107,9 @@ _Static_assert(__builtin_offsetof(struct control_event, payload) ==
 _Static_assert(__builtin_offsetof(struct control_event, kind) ==
                __builtin_offsetof(struct ssl_event, kind),
                "control_event must have ssl_event's kind offset");
+_Static_assert(__builtin_offsetof(struct control_event, tuple) ==
+               __builtin_offsetof(struct ssl_event, tuple),
+               "control_event must have ssl_event's tuple offset");
+_Static_assert(sizeof(struct conn_tuple) == 40, "conn_tuple is 40 bytes");
 
 #endif // __POSTMAN_INSIGHTS_EBPF_EVENT_H__

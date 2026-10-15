@@ -25,6 +25,10 @@ type Config struct {
 	// network namespaces added with Loader.AllowJavaNetns. When false, frames
 	// from every process are accepted.
 	EnforceJavaNetnsAllowlist bool
+
+	// javaReadHookKprobe, for tests, attaches the tcp_recvmsg hook with
+	// kprobe even where fentry works, as on kernels without BPF trampolines.
+	javaReadHookKprobe bool
 }
 
 // Default returns the default load config: no PID allowlist enforcement,

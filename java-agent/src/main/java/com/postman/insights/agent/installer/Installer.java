@@ -61,6 +61,14 @@ public final class Installer {
         return h;
     }
 
+    private static final Class<?> BYTES = byte[].class;
+
+    /** The JDK's SSLSocket: its application streams, its handshake and its close (SocketAdvice). */
+    private static final AsmVisitorWrapper SOCKET_READ = hook(SocketAdvice.Read.class, "read", BYTES, INT, INT);
+    private static final AsmVisitorWrapper SOCKET_WRITE = hook(SocketAdvice.Write.class, "write", BYTES, INT, INT);
+    private static final AsmVisitorWrapper SOCKET_HANDSHAKE = hook(SocketAdvice.Handshake.class, "startHandshake");
+    private static final AsmVisitorWrapper SOCKET_CLOSE = hook(SocketAdvice.Close.class, "close");
+
     private static AsmVisitorWrapper hook(Class<?> advice, String method, Class<?>... params) {
         return Advice.to(advice).on(named(method).and(not(isAbstract())).and(takesArguments(params)));
     }
@@ -118,6 +126,12 @@ public final class Installer {
                 // resolved is skipped, never an error.
                 .type(failSafe(hasSuperType(named("javax.net.ssl.SSLEngine")).and(not(isInterface()))))
                 .transform((builder, type, loader, module, pd) -> instrument(builder))
+                .type(named(SocketAdvice.INPUT))
+                .transform((builder, type, loader, module, pd) -> builder.visit(SOCKET_READ))
+                .type(named(SocketAdvice.OUTPUT))
+                .transform((builder, type, loader, module, pd) -> builder.visit(SOCKET_WRITE))
+                .type(named(SocketAdvice.SOCKET))
+                .transform((builder, type, loader, module, pd) -> builder.visit(SOCKET_HANDSHAKE).visit(SOCKET_CLOSE))
                 .installOn(inst);
 
         log("version " + version + " loaded (" + source + ") into Java " + System.getProperty("java.version")

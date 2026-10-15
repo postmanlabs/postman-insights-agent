@@ -508,4 +508,73 @@ class BridgeTest {
         result(server, Frame.OP_SEND, CLOSED);
         assertEquals(1, closes().size());
     }
+
+    /** One hooked unwrap call that produces nothing, as in a handshake. */
+    private static void emptyRecv(Object engine) {
+        ByteBuffer dst = ByteBuffer.allocate(8);
+        Bridge.exit(Bridge.enter(dst), engine, Frame.OP_RECV, OK);
+    }
+
+    private static List<LoggedFrame> ops(byte op) throws Exception {
+        List<LoggedFrame> out = new ArrayList<LoggedFrame>();
+        for (LoggedFrame f : log.frames()) {
+            if (f.op == op) {
+                out.add(f);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * A connection's first unwrap sends an empty RECV frame, which ties the
+     * connection to its socket in the kernel; later empty unwraps send
+     * nothing, and neither do empty wraps.
+     */
+    @Test
+    void firstUnwrapTiesTheConnection() throws Exception {
+        SSLEngine server = engine(false);
+        emptyRecv(server);
+        emptyRecv(server);
+        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
+
+        List<LoggedFrame> frames = log.frames();
+        assertEquals(1, frames.size());
+        LoggedFrame f = frames.get(0);
+        assertEquals(Frame.OP_RECV, f.op);
+        assertEquals(Frame.FLAG_ROLE_KNOWN, f.flags);
+        assertEquals(0, f.payload.length);
+        assertEquals(0, f.totalLen);
+
+        // Another connection is tied on its own.
+        emptyRecv(engine(true));
+        assertEquals(2, ops(Frame.OP_RECV).size());
+        assertTrue(ops(Frame.OP_RECV).get(1).connId != f.connId);
+    }
+
+    /** A connection whose first unwrap had plaintext was tied by that frame. */
+    @Test
+    void dataRecvTiesTheConnection() throws Exception {
+        SSLEngine server = engine(false);
+        ByteBuffer dst = ByteBuffer.allocate(8);
+        Bridge.Call c = Bridge.enter(dst);
+        dst.put(ascii("GET"));
+        Bridge.exit(c, server, Frame.OP_RECV, OK);
+        emptyRecv(server);
+
+        List<LoggedFrame> recvs = ops(Frame.OP_RECV);
+        assertEquals(1, recvs.size());
+        assertArrayEquals(ascii("GET"), recvs.get(0).payload);
+    }
+
+    /** Dormant, nothing is sent, and the first unwrap once capturing ties the connection. */
+    @Test
+    void noTieWhileDormant() throws Exception {
+        SSLEngine server = engine(false);
+        Bridge.control(false, CAP);
+        emptyRecv(server);
+        assertEquals(0, log.frames().size());
+        Bridge.control(true, CAP);
+        emptyRecv(server);
+        assertEquals(1, ops(Frame.OP_RECV).size());
+    }
 }

@@ -21,6 +21,13 @@ final class Connections {
         final long id;
         /** Frame flags describing the role, or 0 until the role is known. */
         volatile short roleFlags;
+        /**
+         * Whether a RECV frame was sent for the connection. The kernel ties
+         * a connection to its socket at a RECV frame, from the socket the
+         * thread just read; the first one comes at the first unwrap, in the
+         * handshake, so the tie exists before any request or response.
+         */
+        volatile boolean recvSent;
 
         /**
          * Which directions the engine reported CLOSED for, whether a thread is
@@ -89,13 +96,7 @@ final class Connections {
      * thread) as the lookup key, so a lookup allocates nothing.
      */
     Info get(Object engine, Lookup scratch) {
-        scratch.referent = engine;
-        Info info;
-        try {
-            info = map.get(scratch);
-        } finally {
-            scratch.referent = null;
-        }
+        Info info = find(engine, scratch);
         if (info != null) {
             return info;
         }
@@ -103,6 +104,16 @@ final class Connections {
         Info fresh = new Info(nextId.getAndIncrement());
         Info prev = map.putIfAbsent(new Key(engine, queue), fresh);
         return prev != null ? prev : fresh;
+    }
+
+    /** The connection's state, or null when it was never seen. */
+    Info find(Object engine, Lookup scratch) {
+        scratch.referent = engine;
+        try {
+            return map.get(scratch);
+        } finally {
+            scratch.referent = null;
+        }
     }
 
     int size() {

@@ -78,16 +78,17 @@ final class Frames {
         return out;
     }
 
-    /** Traffic frames (SEND and RECV) since the mark. */
+    /** Traffic frames (SEND and RECV with plaintext) since the mark. */
     List<Frame> traffic() throws Exception {
         List<Frame> out = new ArrayList<Frame>();
         for (Frame f : read()) {
-            if (f.op == OP_SEND || f.op == OP_RECV) {
+            if ((f.op == OP_SEND || f.op == OP_RECV) && f.payload.length > 0) {
                 out.add(f);
             }
         }
         return out;
     }
+
 
     static Frame find(List<Frame> frames, byte op, String text) {
         for (Frame f : frames) {

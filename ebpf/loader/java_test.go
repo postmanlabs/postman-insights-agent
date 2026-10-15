@@ -27,7 +27,10 @@ func TestJavaCountersInSync(t *testing.T) {
 		"JAVA_CTR_MALFORMED":         JavaCounterMalformed,
 		"JAVA_CTR_CONTROL_FRAMES":    JavaCounterControlFrames,
 		"JAVA_CTR_HEARTBEAT_LIMITED": JavaCounterHeartbeatLimited,
-		"JAVA_CTR_MAX":               uint32(10),
+		"JAVA_CTR_CONN_BOUND":        JavaCounterConnBound,
+		"JAVA_CTR_CONN_UNBOUND":      JavaCounterConnUnbound,
+		"JAVA_CTR_CONN_MISMATCH":     JavaCounterConnMismatch,
+		"JAVA_CTR_MAX":               uint32(13),
 	}
 	got := map[string]uint32{}
 	for _, m := range regexp.MustCompile(`(?m)^#define\s+(JAVA_CTR_\w+)\s+(\d+)`).FindAllStringSubmatch(string(raw), -1) {

@@ -33,7 +33,9 @@
 
 // op values.
 #define JAVA_FRAME_OP_SEND      1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
-#define JAVA_FRAME_OP_RECV      2 // plaintext the JVM received (produced by SSLEngine.unwrap)
+#define JAVA_FRAME_OP_RECV      2 // plaintext the JVM received (produced by SSLEngine.unwrap);
+                                  // empty at a connection's first unwrap, which ties the
+                                  // connection to its socket (java_tls.bpf.c)
 #define JAVA_FRAME_OP_HEARTBEAT 3 // agent liveness and status; payload is key=value lines
 #define JAVA_FRAME_OP_CLOSE     4 // connection closed; no payload
 
