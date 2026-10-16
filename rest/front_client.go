@@ -89,14 +89,17 @@ func (c *frontClientImpl) CreateService(ctx context.Context, serviceName string,
 	return resp, err
 }
 
-func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, req DaemonsetTelemetryRequest) error {
+func (c *frontClientImpl) PostDaemonsetAgentTelemetry(ctx context.Context, req DaemonsetTelemetryRequest) (DaemonsetTelemetryResponse, error) {
 	path := "/v2/agent/daemonset/telemetry"
-	var resp struct{}
+	var resp DaemonsetTelemetryResponse
 	// DaemonsetTelemetryRequest serializes `kubernetes_cluster` with the same tag
 	// and no omitempty as the legacy api_schema.PostDaemonsetTelemetryRequest,
 	// whose only field that is, so this payload is a strict superset of what
 	// older backends expect.
-	return c.Post(ctx, path, req, &resp)
+	if err := c.Post(ctx, path, req, &resp); err != nil {
+		return DaemonsetTelemetryResponse{}, err
+	}
+	return resp, nil
 }
 
 // CreateApplication creates or retrieves an Application for the given workspace ID and system environment.

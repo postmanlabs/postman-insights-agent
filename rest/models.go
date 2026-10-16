@@ -178,3 +178,9 @@ type DaemonsetTelemetryRequest struct {
 	// gets the outer request's own event -- additive, not breaking.
 	Events []DaemonsetTelemetryRequest `json:"events,omitempty"`
 }
+
+type DaemonsetTelemetryResponse struct {
+	Telemetry struct {
+		Verbose bool `json:"verbose"`
+	} `json:"telemetry"`
+}
