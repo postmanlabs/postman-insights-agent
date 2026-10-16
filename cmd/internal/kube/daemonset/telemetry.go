@@ -72,12 +72,12 @@ func (d *Daemonset) sendTelemetry() {
 		GitVersion:        version.GitVersion(),
 		AgentState:        d.agentState,
 		AgentStateSince:   &agentStateSince,
-		// Targets:           snapshot.Targets,
-		TruncatedTargets: snapshot.TruncatedTargets,
-		// StageCounts:       stageCounts,
-		Events: events,
+		TruncatedTargets:  snapshot.TruncatedTargets,
+		Events:            events,
 	}
 
+	// Targets and StageCounts carry pod identity, so they are only sent once
+	// the backend has switched this team to verbose.
 	if verboseTelemetry {
 		reqPayload.Targets = snapshot.Targets
 		reqPayload.StageCounts = stageCounts
