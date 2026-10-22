@@ -48,15 +48,18 @@ func (d *Daemonset) sendTelemetry() {
 	}
 	agentStateSince := d.agentStateSince
 
+	// reading it here, so that mode does not change during a single window
+	verboseTelemetry := d.verboseTelemetry.Load()
+
 	// The counter map accumulated since the last flush rides along as
 	// Events on this same heartbeat POST, instead of one HTTP request per
 	// (event, target) pair -- 40 pods x ~6 events used to mean ~240 requests
 	// per interval. drainTelemetryEvents resets the window unconditionally
 	// (see its own comment), so a delivery failure below still drops exactly
 	// one window's counters rather than silently growing the buffer forever.
-	events := d.drainTelemetryEvents(time.Now().UTC())
+	events := d.drainTelemetryEvents(time.Now().UTC(), verboseTelemetry)
 
-	err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, rest.DaemonsetTelemetryRequest{
+	reqPayload := rest.DaemonsetTelemetryRequest{
 		Type:              rest.TelemetryTypeSnapshot,
 		Event:             "agent_heartbeat",
 		AgentID:           snapshot.AgentID,
@@ -69,15 +72,46 @@ func (d *Daemonset) sendTelemetry() {
 		GitVersion:        version.GitVersion(),
 		AgentState:        d.agentState,
 		AgentStateSince:   &agentStateSince,
-		Targets:           snapshot.Targets,
 		TruncatedTargets:  snapshot.TruncatedTargets,
-		StageCounts:       stageCounts,
 		Events:            events,
-	})
+	}
+
+	// Targets and StageCounts carry pod identity, so they are only sent once
+	// the backend has switched this team to verbose.
+	if verboseTelemetry {
+		reqPayload.Targets = snapshot.Targets
+		reqPayload.StageCounts = stageCounts
+	}
+
+	resp, err := d.FrontClient.PostDaemonsetAgentTelemetry(ctx, reqPayload)
 	d.lastTelemetryFailed = err != nil
 	if err != nil {
 		printer.Errorf("Failed to send telemetry: %v\n", err)
+		return
 	}
+	d.verboseTelemetry.Store(resp.Telemetry.Verbose)
+}
+
+// verboseOnlyTelemetryEvents are the pod lifecycle events: they describe a
+// target's journey through onboarding rather than counting drops, so they are
+// only sent when the backend has switched this team to verbose. Every other
+// counter, including apidump_start_failed, is always sent.
+//
+// Sources: coverageEventName in coverage.go, and the reportTelemetryEvent
+// calls in apidump/apidump.go. A new lifecycle event added there belongs here.
+var verboseOnlyTelemetryEvents = map[string]struct{}{
+	"pod_discovered":            {},
+	"discovery_filter_passed":   {},
+	"discovery_filter_rejected": {},
+	"pod_configured":            {},
+	"pod_configuration_failed":  {},
+	"pod_stopped":               {},
+	"pod_failed":                {},
+
+	"service_resolution_started": {},
+	"service_resolved":           {},
+	"apidump_started":            {},
+	"capture_started":            {},
 }
 
 func (d *Daemonset) recordTelemetryEvent(targetID, event string) {
@@ -113,7 +147,7 @@ func (d *Daemonset) recordTelemetryCount(targetID, event string, count uint64) {
 // only ever be recorded when delivery worked -- unable to report the
 // failure it exists to report. A dropped window is visible via the sequence
 // gap; a silently merged one is not visible at all.
-func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time) []rest.DaemonsetTelemetryRequest {
+func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time, verboseTelemetry bool) []rest.DaemonsetTelemetryRequest {
 	d.telemetryEventsMu.Lock()
 	pending := d.telemetryEvents
 	windowStart := d.telemetryWindowStart
@@ -123,6 +157,9 @@ func (d *Daemonset) drainTelemetryEvents(windowEnd time.Time) []rest.DaemonsetTe
 
 	var events []rest.DaemonsetTelemetryRequest
 	for event, targets := range pending {
+		if _, verboseOnly := verboseOnlyTelemetryEvents[event]; verboseOnly && !verboseTelemetry {
+			continue
+		}
 		for targetID, count := range targets {
 			// Best-effort as of drain time, not as of when each increment
 			// happened: a target discovered mid-window resolves its service

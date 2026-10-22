@@ -15,9 +15,9 @@ func postDaemonsetEvent(
 	client rest.FrontClient,
 	sequence *uint64,
 	req rest.DaemonsetTelemetryRequest,
-) {
+) *rest.DaemonsetTelemetryResponse {
 	if !enabled || req.KubernetesCluster == "" || client == nil {
-		return
+		return nil
 	}
 	req.Type = rest.TelemetryTypeEvents
 	req.SchemaVersion = "v1"
@@ -25,7 +25,7 @@ func postDaemonsetEvent(
 
 	ctx, cancel := context.WithTimeout(context.Background(), apiContextTimeout)
 	defer cancel()
-	err := client.PostDaemonsetAgentTelemetry(ctx, req)
+	resp, err := client.PostDaemonsetAgentTelemetry(ctx, req)
 	if err != nil {
 		printer.Errorf("Failed to send %s telemetry: %v\n", req.Event, err)
 		if req.Event == "agent_started" {
@@ -35,7 +35,10 @@ func postDaemonsetEvent(
 					"clusters where the agent is running.\n",
 			)
 		}
+		return nil
 	}
+
+	return &resp
 }
 
 func (d *Daemonset) postEvent(req rest.DaemonsetTelemetryRequest) {
@@ -43,5 +46,7 @@ func (d *Daemonset) postEvent(req rest.DaemonsetTelemetryRequest) {
 	req.KubernetesCluster = d.ClusterName
 	req.UserID = d.InsightsUserID
 	req.TeamID = d.InsightsTeamID
-	postDaemonsetEvent(d.telemetryEnabled, d.FrontClient, &d.telemetrySequence, req)
+	if resp := postDaemonsetEvent(d.telemetryEnabled, d.FrontClient, &d.telemetrySequence, req); resp != nil {
+		d.verboseTelemetry.Store(resp.Telemetry.Verbose)
+	}
 }

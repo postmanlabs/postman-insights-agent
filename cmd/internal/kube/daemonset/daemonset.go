@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -118,6 +119,9 @@ type Daemonset struct {
 	agentState          rest.AgentState
 	agentStateSince     time.Time
 	lastTelemetryFailed bool
+
+	// verbose telemetry is updated based only on the response received for daemonset telemetry endpoint. Its default value is false
+	verboseTelemetry atomic.Bool
 }
 
 // applyEnvVarDefaults reads discovery-mode environment variables and applies
@@ -271,42 +275,9 @@ func StartDaemonset(args DaemonsetArgs) error {
 	if !auth.enabled {
 		telemetryInterval = 0
 	}
-	// Single source of sequence numbers for this run, shared by the startup event
-	// and every subsequent heartbeat and counter flush.
-	var telemetrySequence uint64
-	postEvent := func(req rest.DaemonsetTelemetryRequest) {
-		req.AgentID = agentID
-		req.KubernetesCluster = clusterName
-		req.UserID = agentUserID
-		req.TeamID = agentTeamID
-		postDaemonsetEvent(auth.enabled, frontClient, &telemetrySequence, req)
-	}
-	// No targets exist yet, so the snapshot is omitted rather than sent empty.
-	postEvent(rest.DaemonsetTelemetryRequest{
-		Event:        "agent_started",
-		AgentVersion: version.ReleaseVersion().String(),
-		GitVersion:   version.GitVersion(),
-	})
-
-	kubeClient, err := kube_apis.NewKubeClient()
-	if err != nil {
-		postEvent(rest.DaemonsetTelemetryRequest{
-			Event:           "agent_failed",
-			FailureCategory: "kubernetes_client_init_failed",
-		})
-		return errors.Wrap(err, "failed to create kube client")
-	}
-	postEvent(rest.DaemonsetTelemetryRequest{Event: "kubernetes_client_ready"})
-
-	criClient, err := cri_apis.NewCRIClient()
-	if err != nil {
-		postEvent(rest.DaemonsetTelemetryRequest{
-			Event:           "agent_failed",
-			FailureCategory: "cri_client_init_failed",
-		})
-		return errors.Wrap(err, "failed to create CRI client")
-	}
-
+	// Built before the first event so every agent-scope event goes through
+	// d.postEvent and shares one sequence counter and one verbose flag. The
+	// kube and CRI clients are filled in below once they are created.
 	daemonsetRun := &Daemonset{
 		ClusterName:              clusterName,
 		InsightsEnvironment:      os.Getenv(POSTMAN_INSIGHTS_ENV),
@@ -314,8 +285,6 @@ func StartDaemonset(args DaemonsetArgs) error {
 		InsightsTeamID:           agentTeamID,
 		InsightsReproModeEnabled: args.ReproMode,
 		InsightsRateLimit:        args.RateLimit,
-		KubeClient:               kubeClient,
-		CRIClient:                criClient,
 		FrontClient:              frontClient,
 		TelemetryInterval:        telemetryInterval,
 		PodHealthCheckInterval:   DefaultPodHealthCheckInterval,
@@ -327,18 +296,45 @@ func StartDaemonset(args DaemonsetArgs) error {
 		HTTPSNoThermostat:        args.HTTPSNoThermostat,
 		Coverage:                 coverage,
 		AgentID:                  agentID,
-		telemetrySequence:        telemetrySequence,
 		telemetryEnabled:         auth.enabled,
 		telemetryWindowStart:     time.Now().UTC(),
 		agentState:               rest.AgentStateHealthy,
 		agentStateSince:          time.Now().UTC(),
 	}
 
+	// No targets exist yet, so the snapshot is omitted rather than sent empty.
+	daemonsetRun.postEvent(rest.DaemonsetTelemetryRequest{
+		Event:        "agent_started",
+		AgentVersion: version.ReleaseVersion().String(),
+		GitVersion:   version.GitVersion(),
+	})
+
+	kubeClient, err := kube_apis.NewKubeClient()
+	if err != nil {
+		daemonsetRun.postEvent(rest.DaemonsetTelemetryRequest{
+			Event:           "agent_failed",
+			FailureCategory: "kubernetes_client_init_failed",
+		})
+		return errors.Wrap(err, "failed to create kube client")
+	}
+	daemonsetRun.KubeClient = kubeClient
+	daemonsetRun.postEvent(rest.DaemonsetTelemetryRequest{Event: "kubernetes_client_ready"})
+
+	criClient, err := cri_apis.NewCRIClient()
+	if err != nil {
+		daemonsetRun.postEvent(rest.DaemonsetTelemetryRequest{
+			Event:           "agent_failed",
+			FailureCategory: "cri_client_init_failed",
+		})
+		return errors.Wrap(err, "failed to create CRI client")
+	}
+	daemonsetRun.CRIClient = criClient
+
 	// In discovery mode, read the DaemonSet-level API key and initialize the pod filter.
 	if args.DiscoveryMode {
 		apiKey := os.Getenv(POSTMAN_INSIGHTS_API_KEY)
 		if apiKey == "" {
-			postEvent(rest.DaemonsetTelemetryRequest{
+			daemonsetRun.postEvent(rest.DaemonsetTelemetryRequest{
 				Event:           "agent_failed",
 				FailureCategory: "discovery_api_key_missing",
 			})
@@ -353,7 +349,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 			args.ExcludeLabels,
 		)
 		if err != nil {
-			postEvent(rest.DaemonsetTelemetryRequest{
+			daemonsetRun.postEvent(rest.DaemonsetTelemetryRequest{
 				Event:           "agent_failed",
 				FailureCategory: "pod_filter_init_failed",
 			})
@@ -519,7 +515,7 @@ func (d *Daemonset) sendAgentStopped() {
 		Event:        "agent_stopped",
 		AgentVersion: version.ReleaseVersion().String(),
 		GitVersion:   version.GitVersion(),
-		Events:       d.drainTelemetryEvents(time.Now().UTC()),
+		Events:       d.drainTelemetryEvents(time.Now().UTC(), d.verboseTelemetry.Load()),
 	})
 }
 

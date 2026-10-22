@@ -1,7 +1,10 @@
 package daemonset
 
 import (
+	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/golang/mock/gomock"
@@ -24,6 +27,9 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 		FrontClient:      mockClient,
 		telemetryEnabled: true,
 	}
+	// Verbose, so the lifecycle events below are not filtered out; this test
+	// is about batching, not the lean filter.
+	d.verboseTelemetry.Store(true)
 	d.recordTelemetryEvent("pod-a", "pod_discovered")
 	d.recordTelemetryEvent("pod-b", "pod_discovered")
 	d.recordTelemetryEvent("pod-a", "pod_configured")
@@ -31,9 +37,9 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 	var captured rest.DaemonsetTelemetryRequest
 	mockClient.EXPECT().
 		PostDaemonsetAgentTelemetry(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) error {
+		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) (rest.DaemonsetTelemetryResponse, error) {
 			captured = req
-			return nil
+			return rest.DaemonsetTelemetryResponse{}, nil
 		}).
 		Times(1)
 
@@ -55,14 +61,138 @@ func TestSendTelemetryBatchesCountersIntoOnePost(t *testing.T) {
 	// sends no events.
 	mockClient.EXPECT().
 		PostDaemonsetAgentTelemetry(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) error {
+		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) (rest.DaemonsetTelemetryResponse, error) {
 			captured = req
-			return nil
+			return rest.DaemonsetTelemetryResponse{}, nil
 		}).
 		Times(1)
 	d.sendTelemetry()
 	if len(captured.Events) != 0 {
 		t.Fatalf("captured.Events = %+v, want the drained buffer to stay empty", captured.Events)
+	}
+}
+
+// Lean drops the pod lifecycle events at drain time but keeps every drop
+// counter, including apidump_start_failed.
+func TestDrainTelemetryEventsLeanDropsLifecycleEvents(t *testing.T) {
+	d := &Daemonset{Coverage: NewCoverageTracker("agent-1", 10), telemetryEnabled: true}
+	d.recordTelemetryEvent("pod-a", "pod_discovered")
+	d.recordTelemetryEvent("pod-a", "capture_started")
+	d.recordTelemetryEvent("pod-a", "apidump_start_failed")
+	d.recordTelemetryCount("pod-a", "pcap_witness_paired", 5)
+
+	got := map[string]bool{}
+	for _, event := range d.drainTelemetryEvents(time.Now().UTC(), false) {
+		got[event.Event] = true
+	}
+	want := map[string]bool{"apidump_start_failed": true, "pcap_witness_paired": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lean drained events = %v, want %v", got, want)
+	}
+}
+
+// newHeartbeatTestDaemonset returns a Daemonset tracking one pod, with a mock
+// client that captures every heartbeat it is sent.
+func newHeartbeatTestDaemonset(t *testing.T) (*Daemonset, *rest.DaemonsetTelemetryRequest) {
+	ctrl := gomock.NewController(t)
+	mockClient := rest.NewMockFrontClient(ctrl)
+	d := &Daemonset{
+		ClusterName:      "test-cluster",
+		Coverage:         NewCoverageTracker("agent-1", 10),
+		FrontClient:      mockClient,
+		telemetryEnabled: true,
+	}
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "pod-a", Name: "checkout"}}
+	d.Coverage.Observe(pod, CoveragePodDiscovered, "", "")
+
+	captured := &rest.DaemonsetTelemetryRequest{}
+	mockClient.EXPECT().
+		PostDaemonsetAgentTelemetry(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ interface{}, req rest.DaemonsetTelemetryRequest) (rest.DaemonsetTelemetryResponse, error) {
+			*captured = req
+			return rest.DaemonsetTelemetryResponse{}, errors.New("keep the mode under test")
+		}).
+		AnyTimes()
+	return d, captured
+}
+
+func eventNames(events []rest.DaemonsetTelemetryRequest) map[string]bool {
+	names := map[string]bool{}
+	for _, event := range events {
+		names[event.Event] = true
+	}
+	return names
+}
+
+// Lean leaves out Targets and StageCounts but keeps the agent-scope health
+// fields; verbose sends everything.
+func TestSendTelemetryHeartbeatFieldsByMode(t *testing.T) {
+	d, captured := newHeartbeatTestDaemonset(t)
+
+	d.sendTelemetry()
+	if captured.Targets != nil || captured.StageCounts != nil {
+		t.Fatalf("lean heartbeat targets=%v stage_counts=%v, want both omitted", captured.Targets, captured.StageCounts)
+	}
+	if captured.AgentState == "" || captured.AgentStateSince == nil {
+		t.Fatalf("lean heartbeat agent_state=%q since=%v, want both present", captured.AgentState, captured.AgentStateSince)
+	}
+
+	d.verboseTelemetry.Store(true)
+	d.sendTelemetry()
+	if captured.Targets == nil || len(captured.StageCounts) == 0 {
+		t.Fatalf("verbose heartbeat targets=%v stage_counts=%v, want both present", captured.Targets, captured.StageCounts)
+	}
+}
+
+// The mode is applied when the heartbeat drains the window, not when an
+// event is recorded: a lifecycle event recorded while lean still ships once
+// the agent has flipped to verbose, and one recorded while verbose is dropped
+// once it has flipped back to lean.
+func TestSendTelemetryAppliesModeAtSendTime(t *testing.T) {
+	d, captured := newHeartbeatTestDaemonset(t)
+
+	d.recordTelemetryEvent("pod-a", "pod_discovered")
+	d.verboseTelemetry.Store(true)
+	d.sendTelemetry()
+	if !eventNames(captured.Events)["pod_discovered"] {
+		t.Fatalf("events = %+v, want pod_discovered recorded while lean to ship after the flip to verbose", captured.Events)
+	}
+
+	d.recordTelemetryEvent("pod-a", "pod_configured")
+	d.verboseTelemetry.Store(false)
+	d.sendTelemetry()
+	if eventNames(captured.Events)["pod_configured"] {
+		t.Fatalf("events = %+v, want pod_configured recorded while verbose dropped after the flip to lean", captured.Events)
+	}
+}
+
+// A heartbeat response sets the mode; a failed heartbeat keeps the last one.
+func TestSendTelemetryUpdatesModeFromResponse(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockClient := rest.NewMockFrontClient(ctrl)
+	d := &Daemonset{
+		ClusterName:      "test-cluster",
+		Coverage:         NewCoverageTracker("agent-1", 10),
+		FrontClient:      mockClient,
+		telemetryEnabled: true,
+	}
+
+	verboseResp := rest.DaemonsetTelemetryResponse{}
+	verboseResp.Telemetry.Verbose = true
+	mockClient.EXPECT().
+		PostDaemonsetAgentTelemetry(gomock.Any(), gomock.Any()).
+		Return(verboseResp, nil)
+	d.sendTelemetry()
+	if !d.verboseTelemetry.Load() {
+		t.Fatalf("verbose = false after a verbose response, want true")
+	}
+
+	mockClient.EXPECT().
+		PostDaemonsetAgentTelemetry(gomock.Any(), gomock.Any()).
+		Return(rest.DaemonsetTelemetryResponse{}, errors.New("timeout"))
+	d.sendTelemetry()
+	if !d.verboseTelemetry.Load() {
+		t.Fatalf("verbose = false after a failed heartbeat, want the last value kept")
 	}
 }
 
