@@ -60,10 +60,10 @@ func (d *Daemonset) checkPodsHealth() {
 		}
 
 		if _, ok := d.PodArgsByNameMap.Load(pod.UID); !ok {
-			// Avoid End/prune/re-add churn while a discovery TTL cooldown is active.
-			if d.isDiscoveryTTLCooldownActive(args) {
+			// Avoid End/prune/re-add churn while an ingest cooldown is active.
+			if d.isIngestCooldownActive(args) {
 				printer.Debugf(
-					"Skipping add for pod %s/%s; discovery traffic TTL cooldown active\n",
+					"Skipping add for pod %s/%s; ingest cooldown active\n",
 					pod.Namespace, pod.Name,
 				)
 				continue

@@ -113,6 +113,9 @@ func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID str
 	}
 
 	if err := c.Post(ctx, p, req, &resp); err != nil {
+		if wsErr, ok := parseWorkspaceNotLinkedHTTPError(err); ok {
+			return resp, wsErr
+		}
 		return resp, MapAPICatalogError(err)
 	}
 	return resp, nil

@@ -486,7 +486,7 @@ func (a *apidump) LookupService() error {
 			serviceName = a.Namespace + "/" + a.WorkloadName
 		}
 
-		discoveryKey := rest.DiscoveryCacheKey(a.ClusterName, a.Namespace, a.WorkloadName)
+		discoveryKey := rest.DiscoveryCooldownKey(a.ClusterName, a.Namespace, a.WorkloadName)
 
 		discoveryMode := "daemonset"
 		if _, inDaemonset := a.DaemonsetArgs.Get(); !inDaemonset {
@@ -507,7 +507,7 @@ func (a *apidump) LookupService() error {
 		)
 		if err != nil {
 			if ttlErr, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
-				rest.DiscoveryTTLCooldown.Mark(discoveryKey, ttlErr.RetryAfter)
+				rest.IngestCooldown.Mark(discoveryKey, ttlErr.RetryAfter)
 				printer.Warningf(
 					"Discovery traffic TTL expired for service %q. "+
 						"Onboard the service in Postman to resume traffic capture. "+
@@ -520,7 +520,7 @@ func (a *apidump) LookupService() error {
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
-		rest.DiscoveryTTLCooldown.Clear(discoveryKey)
+		rest.IngestCooldown.Clear(discoveryKey)
 
 		var svcID akid.ServiceID
 		if err := akid.ParseIDAs(resp.ServiceID, &svcID); err != nil {
@@ -544,11 +544,7 @@ func (a *apidump) LookupService() error {
 		a.backendSvcName = "Postman_Collection_" + a.PostmanCollectionID
 	} else if a.WorkspaceID != "" {
 		// Standalone mode with --workspace-id flag: use CreateApplication API
-		application, err := frontClient.CreateApplication(
-			context.Background(),
-			a.WorkspaceID,
-			a.SystemEnv,
-		)
+		application, err := a.createApplication(frontClient)
 		if err != nil {
 			return err
 		}
@@ -559,11 +555,7 @@ func (a *apidump) LookupService() error {
 		_, inDaemonset := a.DaemonsetArgs.Get()
 		if inDaemonset && a.WorkspaceID != "" {
 			// Daemonset mode with workspace ID (set from pod in apidump_process): use CreateApplication API
-			application, err := frontClient.CreateApplication(
-				context.Background(),
-				a.WorkspaceID,
-				a.SystemEnv,
-			)
+			application, err := a.createApplication(frontClient)
 			if err != nil {
 				return err
 			}
@@ -589,6 +581,26 @@ func (a *apidump) LookupService() error {
 
 	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler, apidumpAmplitudeTelemetry.APIError)
 	return nil
+}
+
+// createApplication starts a cooldown for the workspace when the backend
+// reports it isn't linked to a filesystem.
+func (a *apidump) createApplication(frontClient rest.FrontClient) (rest.CreateApplicationResponse, error) {
+	key := rest.WorkspaceCooldownKey(a.WorkspaceID, a.SystemEnv)
+	application, err := frontClient.CreateApplication(context.Background(), a.WorkspaceID, a.SystemEnv)
+	if wsErr, ok := rest.AsWorkspaceNotLinkedError(err); ok {
+		rest.IngestCooldown.Mark(key, wsErr.RetryAfter)
+		printer.Warningf(
+			"Workspace %s is not linked to a filesystem; not capturing. Will re-check in %s.\n",
+			a.WorkspaceID, wsErr.RetryAfter,
+		)
+		return application, wsErr
+	}
+	if err != nil {
+		return application, err
+	}
+	rest.IngestCooldown.Clear(key)
+	return application, nil
 }
 
 // Send the initial message to the backend indicating successful start
@@ -951,12 +963,11 @@ func (a *apidump) Run() error {
 	// checkpoint updates categorize every early-return site without having to
 	// annotate each one individually.
 	lastCheckpoint := "service_lookup"
-	// discoveryTTLSkipped is set when LookupService returns DiscoveryTTLExpiredError.
-	// That is an intentional skip, not a startup failure, so we must not emit
-	// apidump_start_failed.
-	discoveryTTLSkipped := false
+	// An intentional skip (ingestion disabled by the backend) is not a startup
+	// failure, so it must not emit apidump_start_failed.
+	ingestSkipped := false
 	defer func() {
-		if !startupSucceeded && !discoveryTTLSkipped {
+		if !startupSucceeded && !ingestSkipped {
 			args.reportTelemetryEvent("apidump_start_failed")
 			args.setFailureCategory(lastCheckpoint)
 		}
@@ -966,10 +977,7 @@ func (a *apidump) Run() error {
 	// surface before we touch packet capture.
 	err := a.LookupService()
 	if err != nil {
-		if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
-			discoveryTTLSkipped = true
-			return err
-		}
+		ingestSkipped = rest.IsIngestDisabledError(err)
 		return err
 	}
 	lastCheckpoint = "interface_enumeration"
