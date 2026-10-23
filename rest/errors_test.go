@@ -72,7 +72,7 @@ func TestParseDiscoveryTTLExpiredHTTPError_DefaultRetryWhenMissing(t *testing.T)
 	}
 	ttlErr, ok := parseDiscoveryTTLExpiredHTTPError(err)
 	assert.True(t, ok)
-	assert.Equal(t, DefaultDiscoveryTTLRetryAfter, ttlErr.RetryAfter)
+	assert.Equal(t, DefaultIngestRetryAfter, ttlErr.RetryAfter)
 	assert.Equal(t, "INGEST_DISABLED", ttlErr.Code)
 }
 
@@ -122,4 +122,53 @@ func TestAsDiscoveryTTLExpiredError_NoMatch_HTTPError(t *testing.T) {
 	}
 	_, ok := AsDiscoveryTTLExpiredError(err)
 	assert.False(t, ok, "HTTPError must be parsed in RegisterDiscoveredService, not via As*")
+}
+
+func TestParseWorkspaceNotLinkedHTTPError_412WithRetryAfter_UsesBodyRetryAfter(t *testing.T) {
+	err := HTTPError{
+		StatusCode: 412,
+		Body:       []byte(`{"message":"Workspace is not linked to a filesystem","code":"INGEST_DISABLED","retry_after_seconds":120}`),
+	}
+	wsErr, ok := parseWorkspaceNotLinkedHTTPError(err)
+	assert.True(t, ok)
+	assert.Equal(t, 2*time.Minute, wsErr.RetryAfter)
+	assert.Equal(t, "INGEST_DISABLED", wsErr.Code)
+	assert.Equal(t, "Workspace is not linked to a filesystem", wsErr.Message)
+}
+
+func TestParseWorkspaceNotLinkedHTTPError_412WithoutRetryAfter_UsesDefault(t *testing.T) {
+	err := HTTPError{StatusCode: 412, Body: []byte(`{"message":"Workspace is not linked to a filesystem"}`)}
+	wsErr, ok := parseWorkspaceNotLinkedHTTPError(err)
+	assert.True(t, ok)
+	assert.Equal(t, DefaultIngestRetryAfter, wsErr.RetryAfter)
+}
+
+func TestParseWorkspaceNotLinkedHTTPError_OtherBodyOrStatus_NoMatch(t *testing.T) {
+	cases := map[string]HTTPError{
+		"412 discovery TTL body": {StatusCode: 412, Body: []byte(`{"message":"discovery traffic TTL expired"}`)},
+		"412 unrelated body":     {StatusCode: 412, Body: []byte(`{"message":"ingestion is temporarily disabled"}`)},
+		"400 workspace body":     {StatusCode: 400, Body: []byte(`{"message":"Workspace is not linked to a filesystem"}`)},
+	}
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, ok := parseWorkspaceNotLinkedHTTPError(err)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestParseDiscoveryTTLExpiredHTTPError_412WorkspaceBody_NoMatch(t *testing.T) {
+	err := HTTPError{StatusCode: 412, Body: []byte(`{"message":"Workspace is not linked to a filesystem"}`)}
+	_, ok := parseDiscoveryTTLExpiredHTTPError(err)
+	assert.False(t, ok)
+}
+
+func TestIsIngestDisabledError_WrappedTypedErrors_ReturnsTrue(t *testing.T) {
+	assert.True(t, IsIngestDisabledError(fmt.Errorf("outer: %w", WorkspaceNotLinkedError{})))
+	assert.True(t, IsIngestDisabledError(fmt.Errorf("outer: %w", DiscoveryTTLExpiredError{})))
+}
+
+func TestIsIngestDisabledError_UnparsedHTTPError_ReturnsFalse(t *testing.T) {
+	err := HTTPError{StatusCode: 412, Body: []byte(`{"message":"Workspace is not linked to a filesystem"}`)}
+	assert.False(t, IsIngestDisabledError(err))
 }

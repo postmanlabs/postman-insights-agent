@@ -184,6 +184,8 @@ In workspace mode, each pod that the DaemonSet monitors is associated with a spe
 
 The DaemonSet picks up `POSTMAN_INSIGHTS_WORKSPACE_ID` and `POSTMAN_INSIGHTS_SYSTEM_ENV` from each target pod's environment and uses the Postman backend to create or link an application for that pod's service.
 
+If the workspace isn't linked to a filesystem, the backend doesn't monitor it and rejects `CreateApplication` with **412** (`code: INGEST_DISABLED`, `retry_after_seconds`, default 5 minutes). The agent logs one warning, caches that cooldown per workspace + system environment, and ends the pod as `TrafficMonitoringEnded` (coverage reason `workspace_not_linked`), not failed. While the cooldown is active, the DaemonSet skips further pods pointing at the same workspace without calling the backend; after it elapses, the next pod or healthcheck cycle checks again, so capture starts within about one `retry_after` window of linking the workspace.
+
 ---
 
 ### Sidecar (`kube inject`)
