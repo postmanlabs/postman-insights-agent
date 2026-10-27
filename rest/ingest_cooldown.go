@@ -26,15 +26,15 @@ func NewIngestCooldownCache() *IngestCooldownCache {
 }
 
 // DiscoveryCooldownKey builds a stable key for a discovered workload. The
-// "discovery/" and "workspace/" prefixes keep the two key spaces disjoint.
+// "discover:" and "workspace:" prefixes keep the two key spaces disjoint.
 func DiscoveryCooldownKey(cluster, namespace, workload string) string {
-	return "discovery/" + cluster + "/" + namespace + "/" + workload
+	return "discover:" + cluster + "/" + namespace + "/" + workload
 }
 
 // WorkspaceCooldownKey builds a key shared by every pod on the same workspace
 // and system env.
 func WorkspaceCooldownKey(workspaceID, systemEnv string) string {
-	return "workspace/" + workspaceID + "/" + systemEnv
+	return "workspace:" + workspaceID + "/" + systemEnv
 }
 
 // ShouldSkip reports whether key is still within its cooldown.

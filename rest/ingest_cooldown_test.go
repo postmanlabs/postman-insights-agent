@@ -8,7 +8,7 @@ import (
 )
 
 func TestDiscoveryCooldownKey(t *testing.T) {
-	assert.Equal(t, "discovery/prod/default/api", DiscoveryCooldownKey("prod", "default", "api"))
+	assert.Equal(t, "discover:prod/default/api", DiscoveryCooldownKey("prod", "default", "api"))
 }
 
 func TestCooldownKeys_DiscoveryAndWorkspaceNeverCollide(t *testing.T) {
