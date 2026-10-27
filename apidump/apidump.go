@@ -506,17 +506,17 @@ func (a *apidump) LookupService() error {
 			},
 		)
 		if err != nil {
-			if ttlErr, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
-				rest.IngestCooldown.Mark(discoveryKey, ttlErr.RetryAfter)
+			if ingestErr, ok := rest.AsIngestDisabledError(err); ok {
+				rest.IngestCooldown.Mark(discoveryKey, ingestErr.RetryAfter)
 				printer.Warningf(
 					"Discovery traffic TTL expired for service %q. "+
 						"Onboard the service in Postman to resume traffic capture. "+
 						"Will not retry discover for %s.\n",
-					serviceName, ttlErr.RetryAfter,
+					serviceName, ingestErr.RetryAfter,
 				)
 				// Propagate the typed error so Run/DaemonSet can end gracefully
 				// without treating this as a capture failure or continuing setup.
-				return ttlErr
+				return ingestErr
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
@@ -588,13 +588,13 @@ func (a *apidump) LookupService() error {
 func (a *apidump) createApplication(frontClient rest.FrontClient) (rest.CreateApplicationResponse, error) {
 	key := rest.WorkspaceCooldownKey(a.WorkspaceID, a.SystemEnv)
 	application, err := frontClient.CreateApplication(context.Background(), a.WorkspaceID, a.SystemEnv)
-	if wsErr, ok := rest.AsWorkspaceNotLinkedError(err); ok {
-		rest.IngestCooldown.Mark(key, wsErr.RetryAfter)
+	if ingestErr, ok := rest.AsIngestDisabledError(err); ok {
+		rest.IngestCooldown.Mark(key, ingestErr.RetryAfter)
 		printer.Warningf(
 			"Workspace %s is not linked to a filesystem; not capturing. Will re-check in %s.\n",
-			a.WorkspaceID, wsErr.RetryAfter,
+			a.WorkspaceID, ingestErr.RetryAfter,
 		)
-		return application, wsErr
+		return application, ingestErr
 	}
 	if err != nil {
 		return application, err

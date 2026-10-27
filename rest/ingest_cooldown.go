@@ -25,9 +25,10 @@ func NewIngestCooldownCache() *IngestCooldownCache {
 	}
 }
 
-// DiscoveryCooldownKey builds a stable key for a discovered workload.
+// DiscoveryCooldownKey builds a stable key for a discovered workload. The
+// "discovery/" and "workspace/" prefixes keep the two key spaces disjoint.
 func DiscoveryCooldownKey(cluster, namespace, workload string) string {
-	return cluster + "/" + namespace + "/" + workload
+	return "discovery/" + cluster + "/" + namespace + "/" + workload
 }
 
 // WorkspaceCooldownKey builds a key shared by every pod on the same workspace

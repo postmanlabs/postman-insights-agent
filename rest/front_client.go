@@ -113,8 +113,8 @@ func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID str
 	}
 
 	if err := c.Post(ctx, p, req, &resp); err != nil {
-		if wsErr, ok := parseWorkspaceNotLinkedHTTPError(err); ok {
-			return resp, wsErr
+		if ingestErr, ok := parseIngestDisabledHTTPError(err, workspaceNotLinkedMarker); ok {
+			return resp, ingestErr
 		}
 		return resp, MapAPICatalogError(err)
 	}
@@ -124,13 +124,13 @@ func (c *frontClientImpl) CreateApplication(ctx context.Context, workspaceID str
 // RegisterDiscoveredService registers a service discovered via K8s autodiscovery
 // with the backend. Returns the service/project ID and whether it was newly created.
 // On discovery traffic TTL expiry the backend returns 412; this method maps that
-// to a DiscoveryTTLExpiredError so callers can cool down without treating it as
+// to an IngestDisabledError so callers can cool down without treating it as
 // a generic API failure.
 func (c *frontClientImpl) RegisterDiscoveredService(ctx context.Context, req DiscoverServiceRequest) (DiscoverServiceResponse, error) {
 	var resp DiscoverServiceResponse
 	if err := c.Post(ctx, "/v2/agent/api-catalog/services/discover", req, &resp); err != nil {
-		if ttlErr, ok := parseDiscoveryTTLExpiredHTTPError(err); ok {
-			return resp, ttlErr
+		if ingestErr, ok := parseIngestDisabledHTTPError(err, discoveryTTLExpiredMarker); ok {
+			return resp, ingestErr
 		}
 		return resp, MapAPICatalogError(err)
 	}
