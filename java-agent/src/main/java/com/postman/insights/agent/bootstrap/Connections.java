@@ -32,7 +32,21 @@ final class Connections {
     private final AtomicLong nextId = new AtomicLong(1);
 
     Info get(Object engine) {
-        Info info = map.get(new Lookup(engine));
+        return get(engine, new Lookup());
+    }
+
+    /**
+     * Like {@link #get(Object)}, using {@code scratch} (owned by the calling
+     * thread) as the lookup key, so a lookup allocates nothing.
+     */
+    Info get(Object engine, Lookup scratch) {
+        scratch.referent = engine;
+        Info info;
+        try {
+            info = map.get(scratch);
+        } finally {
+            scratch.referent = null;
+        }
         if (info != null) {
             return info;
         }
@@ -94,13 +108,12 @@ final class Connections {
         }
     }
 
-    /** Lookup-only key, so a lookup allocates no WeakReference. */
-    private static final class Lookup {
-        final Object referent;
-
-        Lookup(Object referent) {
-            this.referent = referent;
-        }
+    /**
+     * Lookup-only key, so a lookup allocates no WeakReference. Never stored in
+     * the map, so it can be reused.
+     */
+    static final class Lookup {
+        Object referent;
 
         @Override
         public int hashCode() {

@@ -38,7 +38,9 @@ const DefaultCaptureCap = 16384
 // The control file lets the Insights agent switch running Java agents on and
 // off and change their capture cap. The Insights agent writes it inside each
 // instrumented container and refreshes it periodically; the Java agent goes
-// dormant when it is missing or stale. It holds key=value lines, one per line.
+// dormant when it is missing or stale. It holds key=value lines, one per line
+// (see Control). The Java agent also stays dormant when the version is not
+// one it knows, or when enabled is missing.
 const (
 	// ControlFilePath is the control file's path inside the container.
 	ControlFilePath = "/tmp/.postman-insights/control"
@@ -62,3 +64,51 @@ const (
 	// agent treats it as missing and goes dormant.
 	ControlStaleAfter = 60 * time.Second
 )
+
+// AgentJarChecksumPath holds the SHA-256 of the agent jar, in sha256sum
+// format, next to AgentJarPath in the Insights agent images.
+const AgentJarChecksumPath = AgentJarPath + ".sha256"
+
+// HEARTBEAT frames carry key=value lines (UTF-8, one per line) describing
+// the Java agent. The agent sends one when it starts and then every
+// HeartbeatInterval, whether it is capturing or dormant. Readers ignore
+// unknown keys, so new keys need no frame version bump.
+const (
+	// HeartbeatKeyAgentVersion is the Java agent's version.
+	HeartbeatKeyAgentVersion = "agent_version"
+	// HeartbeatKeyJavaVersion and HeartbeatKeyJavaVendor are the JVM's
+	// java.version and java.vendor system properties.
+	HeartbeatKeyJavaVersion = "java_version"
+	HeartbeatKeyJavaVendor  = "java_vendor"
+	// HeartbeatKeySource is how the agent was loaded: HeartbeatSourceStatic
+	// or HeartbeatSourceAttach.
+	HeartbeatKeySource = "source"
+	// HeartbeatKeyState is HeartbeatStateActive, HeartbeatStateDormant or
+	// HeartbeatStateOff.
+	HeartbeatKeyState = "state"
+	// HeartbeatKeyFrames, HeartbeatKeyDropped and HeartbeatKeyErrors count
+	// the traffic frames written, the frames not written (every frame buffer
+	// was busy, or the application thread was interrupted), and the agent's
+	// internal errors, since the agent started.
+	HeartbeatKeyFrames  = "frames"
+	HeartbeatKeyDropped = "dropped"
+	HeartbeatKeyErrors  = "errors"
+	// HeartbeatKeyConnections is the number of engines the agent is tracking.
+	HeartbeatKeyConnections = "connections"
+)
+
+const (
+	HeartbeatSourceStatic = "static" // -javaagent at JVM start
+	HeartbeatSourceAttach = "attach" // dynamic attach
+
+	// HeartbeatStateActive: capturing. HeartbeatStateDormant: not capturing,
+	// because the control file is missing, stale or says enabled=0.
+	// HeartbeatStateOff: the agent switched itself off after too many
+	// internal errors, until the JVM restarts.
+	HeartbeatStateActive  = "active"
+	HeartbeatStateDormant = "dormant"
+	HeartbeatStateOff     = "off"
+)
+
+// HeartbeatInterval is how often a Java agent sends a HEARTBEAT frame.
+const HeartbeatInterval = 30 * time.Second

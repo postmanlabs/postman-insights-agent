@@ -1,5 +1,10 @@
 package com.postman.insights.agent;
 
+import static com.postman.insights.agent.Frames.CLIENT_MODE;
+import static com.postman.insights.agent.Frames.OP_HEARTBEAT;
+import static com.postman.insights.agent.Frames.OP_RECV;
+import static com.postman.insights.agent.Frames.OP_SEND;
+import static com.postman.insights.agent.Frames.ROLE_KNOWN;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -8,77 +13,47 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URL;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.security.KeyStore;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLEngineResult;
-import javax.net.ssl.SSLSession;
-import javax.net.ssl.TrustManagerFactory;
 
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+
+import com.postman.insights.agent.Frames.Frame;
 
 /**
- * Runs in a JVM started with {@code -javaagent:postman-java-agent.jar=cap=4096}
- * and the frame log (see build.gradle.kts), and checks the frames the agent
- * writes for real TLS traffic through the JDK's own SSLEngine.
+ * Runs in a JVM started with {@code -javaagent:postman-java-agent.jar=cap=4096},
+ * the frame log and a control file that enables capture (see
+ * build.gradle.kts), and checks the frames the agent writes for real TLS
+ * traffic through the JDK's own SSLEngine.
  */
 class AgentEndToEndTest {
     private static final int CAP = 4096;
-    private static final byte OP_SEND = 1;
-    private static final byte OP_RECV = 2;
-    private static final short ROLE_KNOWN = 0x1;
-    private static final short CLIENT_MODE = 0x2;
-
-    @TempDir
-    static File dir;
-    private static SSLContext tls;
-    private static File log;
-    private long logStart;
-
-    static final class LoggedFrame {
-        byte op;
-        short flags;
-        long connId;
-        int totalLen;
-        byte[] payload;
-
-        String text() {
-            return new String(payload, StandardCharsets.ISO_8859_1);
-        }
-    }
-
-    @BeforeAll
-    static void setUp() throws Exception {
-        log = new File(System.getProperty("frames.log"));
-        tls = selfSignedContext(dir);
-    }
+    private final Frames frames = new Frames();
 
     @BeforeEach
-    void markLog() {
-        logStart = log.exists() ? log.length() : 0;
+    void setUp() throws Exception {
+        Control.enable();
+        frames.mark();
+    }
+
+    private static EnginePair jdkPair() throws Exception {
+        SSLEngine client = Tls.get().context.createSSLEngine("localhost", 443);
+        client.setUseClientMode(true);
+        SSLEngine server = Tls.get().context.createSSLEngine();
+        server.setUseClientMode(false);
+        return new EnginePair(client, server).handshake();
     }
 
     @Test
@@ -95,24 +70,49 @@ class AgentEndToEndTest {
     }
 
     @Test
-    void engineTrafficBothRoles() throws Exception {
-        SSLEngine client = tls.createSSLEngine("localhost", 443);
-        client.setUseClientMode(true);
-        SSLEngine server = tls.createSSLEngine();
-        server.setUseClientMode(false);
-        Pair p = new Pair(client, server);
-        p.handshake();
+    void agentThreadIsADaemon() {
+        boolean found = false;
+        for (Thread t : Thread.getAllStackTraces().keySet()) {
+            if (t.getName().equals("postman-insights-agent")) {
+                found = true;
+                assertTrue(t.isDaemon(), "the agent thread would keep the JVM alive");
+                assertNull(t.getContextClassLoader());
+            }
+        }
+        assertTrue(found, "agent thread not running");
+    }
 
+    @Test
+    void heartbeatAtStart() throws Exception {
+        Frame heartbeat = null;
+        for (Frame f : Frames.all()) {
+            if (f.op == OP_HEARTBEAT) {
+                heartbeat = f;
+                break;
+            }
+        }
+        assertNotNull(heartbeat, "no HEARTBEAT frame");
+        assertEquals(0, heartbeat.connId);
+        String text = new String(heartbeat.payload, StandardCharsets.UTF_8);
+        assertTrue(text.startsWith("agent_version=" + System.getProperty("postman.insights.agent.version") + "\n"
+                + "java_version=" + System.getProperty("java.version") + "\n"), text);
+        assertTrue(text.contains("\nsource=static\nstate=active\n"), text);
+    }
+
+    @Test
+    void engineTrafficBothRoles() throws Exception {
+        EnginePair p = jdkPair();
         String request = "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n";
         String response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi";
-        assertEquals(request, p.send(client, server, request));
-        assertEquals(response, p.send(server, client, response));
+        assertEquals(request, p.send(p.client, request));
+        assertEquals(response, p.send(p.server, response));
 
-        List<LoggedFrame> frames = appData(newFrames());
-        LoggedFrame clientSend = find(frames, OP_SEND, request);
-        LoggedFrame serverRecv = find(frames, OP_RECV, request);
-        LoggedFrame serverSend = find(frames, OP_SEND, response);
-        LoggedFrame clientRecv = find(frames, OP_RECV, response);
+        List<Frame> got = frames.traffic();
+        Frame clientSend = Frames.find(got, OP_SEND, request);
+        Frame serverRecv = Frames.find(got, OP_RECV, request);
+        Frame serverSend = Frames.find(got, OP_SEND, response);
+        Frame clientRecv = Frames.find(got, OP_RECV, response);
+        assertEquals(4, got.size(), got.toString());
 
         assertEquals(ROLE_KNOWN | CLIENT_MODE, clientSend.flags);
         assertEquals(ROLE_KNOWN, serverRecv.flags);
@@ -123,20 +123,14 @@ class AgentEndToEndTest {
 
     @Test
     void largeWritesAreCappedWithTotalKept() throws Exception {
-        SSLEngine client = tls.createSSLEngine("localhost", 443);
-        client.setUseClientMode(true);
-        SSLEngine server = tls.createSSLEngine();
-        server.setUseClientMode(false);
-        Pair p = new Pair(client, server);
-        p.handshake();
-
+        EnginePair p = jdkPair();
         char[] big = new char[10000];
         Arrays.fill(big, 'b');
         String body = "POST /upload HTTP/1.1\r\nContent-Length: 10000\r\n\r\n" + new String(big);
-        assertEquals(body, p.send(client, server, body));
+        assertEquals(body, p.send(p.client, body));
 
         boolean sawCapped = false;
-        for (LoggedFrame f : newFrames()) {
+        for (Frame f : frames.traffic()) {
             assertTrue(f.payload.length <= CAP, "payload above the cap");
             assertTrue(f.totalLen >= f.payload.length);
             if (f.op == OP_SEND && f.text().startsWith("POST /upload") && f.totalLen > CAP) {
@@ -150,7 +144,7 @@ class AgentEndToEndTest {
     @Test
     void httpsServerRequestAndResponse() throws Exception {
         HttpsServer server = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.setHttpsConfigurator(new HttpsConfigurator(tls));
+        server.setHttpsConfigurator(new HttpsConfigurator(Tls.get().context));
         server.createContext("/hello", ex -> {
             byte[] out = "{\"hello\":\"world\"}".getBytes(StandardCharsets.UTF_8);
             ex.getResponseHeaders().add("Content-Type", "application/json");
@@ -163,200 +157,70 @@ class AgentEndToEndTest {
         try {
             HttpsURLConnection conn = (HttpsURLConnection) new URL(
                     "https://localhost:" + server.getAddress().getPort() + "/hello?x=1").openConnection();
-            conn.setSSLSocketFactory(tls.getSocketFactory());
+            conn.setSSLSocketFactory(Tls.get().context.getSocketFactory());
             conn.setHostnameVerifier((host, session) -> true);
             assertEquals(200, conn.getResponseCode());
             try (InputStream in = conn.getInputStream()) {
-                assertEquals("{\"hello\":\"world\"}", new String(readAll(in), StandardCharsets.UTF_8));
+                assertEquals("{\"hello\":\"world\"}", new String(Tls.readAll(in), StandardCharsets.UTF_8));
             }
         } finally {
             server.stop(0);
         }
 
         // HttpsServer uses SSLEngine; the client (SSLSocket) is not hooked yet.
-        List<LoggedFrame> frames = newFrames();
-        LoggedFrame req = findPrefix(frames, OP_RECV, "GET /hello?x=1 HTTP/1.1");
-        LoggedFrame resp = findPrefix(frames, OP_SEND, "HTTP/1.1 200 OK");
+        List<Frame> got = frames.traffic();
+        Frame req = Frames.findPrefix(got, OP_RECV, "GET /hello?x=1 HTTP/1.1");
+        Frame resp = Frames.findPrefix(got, OP_SEND, "HTTP/1.1 200 OK");
         assertEquals(req.connId, resp.connId);
         assertEquals(ROLE_KNOWN, req.flags);
+        assertEquals(1, Frames.count(got, OP_RECV, "GET /hello?x=1"), got.toString());
         boolean sawBody = false;
-        for (LoggedFrame f : frames) {
+        for (Frame f : got) {
             sawBody |= f.op == OP_SEND && f.connId == resp.connId && f.text().contains("{\"hello\":\"world\"}");
         }
         assertTrue(sawBody, "response body not captured");
     }
 
-    // --- helpers ---
-
-    /** Drives two engines against each other in memory. */
-    private static final class Pair {
-        final SSLEngine a;
-        final SSLEngine b;
-        final ByteBuffer aToB;
-        final ByteBuffer bToA;
-
-        Pair(SSLEngine a, SSLEngine b) {
-            this.a = a;
-            this.b = b;
-            SSLSession s = a.getSession();
-            aToB = ByteBuffer.allocate(s.getPacketBufferSize() * 4);
-            bToA = ByteBuffer.allocate(s.getPacketBufferSize() * 4);
-        }
-
-        void handshake() throws Exception {
-            a.beginHandshake();
-            b.beginHandshake();
-            ByteBuffer empty = ByteBuffer.allocate(0);
-            ByteBuffer sink = ByteBuffer.allocate(a.getSession().getApplicationBufferSize() * 2);
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-            while (!done(a) || !done(b)) {
-                assertTrue(System.nanoTime() < deadline, "handshake did not finish");
-                step(a, empty, aToB, bToA, sink);
-                step(b, empty, bToA, aToB, sink);
+    /**
+     * Without an enabling control file the agent is dormant, and it resumes
+     * once the file enables it again. The agent checks the file every 5 s.
+     */
+    @Test
+    void dormantWhileDisabled() throws Exception {
+        EnginePair p = jdkPair();
+        try {
+            Control.disable();
+            assertTrue(waitFor(() -> !captured(p, "probe")), "still capturing 12 s after enabled=0");
+            for (int i = 0; i < 3; i++) {
+                assertFalse(captured(p, "dormant-" + i));
             }
-        }
 
-        private static boolean done(SSLEngine e) {
-            SSLEngineResult.HandshakeStatus hs = e.getHandshakeStatus();
-            return hs == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING
-                    || hs == SSLEngineResult.HandshakeStatus.FINISHED;
-        }
-
-        private static void step(SSLEngine e, ByteBuffer empty, ByteBuffer out, ByteBuffer in, ByteBuffer sink)
-                throws Exception {
-            switch (e.getHandshakeStatus()) {
-                case NEED_WRAP:
-                    e.wrap(empty, out);
-                    break;
-                case NEED_UNWRAP:
-                    in.flip();
-                    e.unwrap(in, sink);
-                    in.compact();
-                    break;
-                case NEED_TASK:
-                    for (Runnable r; (r = e.getDelegatedTask()) != null; ) {
-                        r.run();
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        /**
-         * Sends text from one engine to the other and returns what arrived.
-         * Uses the same in-flight buffers as the handshake, so records still
-         * queued from it (such as TLS 1.3 session tickets) are delivered first,
-         * in order.
-         */
-        String send(SSLEngine from, SSLEngine to, String text) throws Exception {
-            ByteBuffer out = from == a ? aToB : bToA;
-            ByteBuffer src = ByteBuffer.wrap(text.getBytes(StandardCharsets.ISO_8859_1));
-            ByteBuffer dst = ByteBuffer.allocate(text.length() + to.getSession().getApplicationBufferSize());
-            while (src.hasRemaining()) {
-                from.wrap(src, out);
-                out.flip();
-                while (out.hasRemaining()) {
-                    SSLEngineResult r = to.unwrap(out, dst);
-                    if (r.getStatus() == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                        break;
-                    }
-                    for (Runnable task; (task = to.getDelegatedTask()) != null; ) {
-                        task.run();
-                    }
-                }
-                out.compact();
-            }
-            dst.flip();
-            byte[] got = new byte[dst.remaining()];
-            dst.get(got);
-            return new String(got, StandardCharsets.ISO_8859_1);
+            Control.enable();
+            assertTrue(waitFor(() -> captured(p, "probe")), "not capturing 12 s after enabled=1");
+        } finally {
+            Control.enable();
         }
     }
 
-    private List<LoggedFrame> newFrames() throws Exception {
-        byte[] all = Files.readAllBytes(log.toPath());
-        ByteBuffer b = ByteBuffer.wrap(all).order(ByteOrder.LITTLE_ENDIAN);
-        b.position((int) logStart);
-        List<LoggedFrame> out = new ArrayList<LoggedFrame>();
-        while (b.remaining() >= 40) {
-            int start = b.position();
-            assertEquals(1, b.get(start), "frame version");
-            LoggedFrame f = new LoggedFrame();
-            f.op = b.get(start + 1);
-            f.flags = b.getShort(start + 2);
-            int len = b.getInt(start + 4);
-            f.connId = b.getLong(start + 8);
-            f.totalLen = b.getInt(start + 36);
-            f.payload = Arrays.copyOfRange(all, start + 40, start + 40 + len);
-            b.position(start + 40 + len);
-            out.add(f);
-        }
-        assertEquals(0, b.remaining(), "trailing bytes in the frame log");
-        return out;
+    /** Sends text from the client and says whether the agent captured it. */
+    private static boolean captured(EnginePair p, String text) throws Exception {
+        Frames f = new Frames().mark();
+        assertEquals(text, p.send(p.client, text));
+        return Frames.count(f.traffic(), OP_SEND, text) > 0;
     }
 
-    /** Drops frames that carry no application data (none expected, but be explicit). */
-    private static List<LoggedFrame> appData(List<LoggedFrame> frames) {
-        List<LoggedFrame> out = new ArrayList<LoggedFrame>();
-        for (LoggedFrame f : frames) {
-            if (f.payload.length > 0) {
-                out.add(f);
+    interface Condition {
+        boolean holds() throws Exception;
+    }
+
+    private static boolean waitFor(Condition c) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
+        while (System.nanoTime() < deadline) {
+            if (c.holds()) {
+                return true;
             }
+            Thread.sleep(250);
         }
-        assertFalse(out.isEmpty(), "no frames written");
-        return out;
-    }
-
-    private static LoggedFrame find(List<LoggedFrame> frames, byte op, String text) {
-        for (LoggedFrame f : frames) {
-            if (f.op == op && f.text().equals(text)) {
-                return f;
-            }
-        }
-        throw new AssertionError("no op " + op + " frame with " + text.trim() + " in " + frames.size() + " frames");
-    }
-
-    private static LoggedFrame findPrefix(List<LoggedFrame> frames, byte op, String prefix) {
-        for (LoggedFrame f : frames) {
-            if (f.op == op && f.text().startsWith(prefix)) {
-                return f;
-            }
-        }
-        throw new AssertionError("no op " + op + " frame starting with " + prefix + " in " + frames.size() + " frames");
-    }
-
-    private static byte[] readAll(InputStream in) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        for (int n; (n = in.read(buf)) > 0; ) {
-            out.write(buf, 0, n);
-        }
-        return out.toByteArray();
-    }
-
-    /** A self-signed localhost certificate, made with the running JDK's keytool. */
-    private static SSLContext selfSignedContext(File dir) throws Exception {
-        File ks = new File(dir, "test.p12");
-        char[] pw = "changeit".toCharArray();
-        String keytool = new File(System.getProperty("java.home"), "bin/keytool").getAbsolutePath();
-        Process p = new ProcessBuilder(keytool, "-genkeypair", "-alias", "test", "-keyalg", "RSA", "-keysize", "2048",
-                "-dname", "CN=localhost", "-ext", "SAN=dns:localhost,ip:127.0.0.1", "-validity", "2",
-                "-storetype", "PKCS12", "-keystore", ks.getAbsolutePath(), "-storepass", "changeit")
-                .redirectErrorStream(true).start();
-        String output = new String(readAll(p.getInputStream()), StandardCharsets.UTF_8);
-        assertEquals(0, p.waitFor(), "keytool failed: " + output);
-
-        KeyStore store = KeyStore.getInstance("PKCS12");
-        try (InputStream in = new FileInputStream(ks)) {
-            store.load(in, pw);
-        }
-        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-        kmf.init(store, pw);
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(store);
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
-        return ctx;
+        return false;
     }
 }

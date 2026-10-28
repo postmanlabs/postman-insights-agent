@@ -1,0 +1,139 @@
+{
+  "comment": "Example control files and HEARTBEAT payloads, checked by ebpf/javatls (Go) and java-agent (Java) tests. Entries marked canonical are byte for byte what the writer produces (Go Control.Marshal for control files, the Java agent for HEARTBEAT payloads). Edit together with contract.go and Contract.java.",
+  "control": [
+    {
+      "name": "enabled, agent's own cap",
+      "canonical": true,
+      "content": "version=1\nenabled=1\n",
+      "enabled": true,
+      "cap_bytes": 0
+    },
+    {
+      "name": "enabled with a cap",
+      "canonical": true,
+      "content": "version=1\nenabled=1\ncap_bytes=4096\n",
+      "enabled": true,
+      "cap_bytes": 4096
+    },
+    {
+      "name": "disabled",
+      "canonical": true,
+      "content": "version=1\nenabled=0\n",
+      "enabled": false,
+      "cap_bytes": 0
+    },
+    {
+      "name": "spaces, CRLF, blank lines and unknown keys",
+      "canonical": false,
+      "content": "version = 1\r\n\r\nfuture=x\r\nenabled=1\r\n",
+      "enabled": true,
+      "cap_bytes": 0
+    },
+    {
+      "name": "cap above the maximum is clamped",
+      "canonical": false,
+      "content": "version=1\nenabled=1\ncap_bytes=1000000\n",
+      "enabled": true,
+      "cap_bytes": 16384
+    },
+    {
+      "name": "cap below the minimum is clamped",
+      "canonical": false,
+      "content": "version=1\nenabled=1\ncap_bytes=10\n",
+      "enabled": true,
+      "cap_bytes": 64
+    },
+    {
+      "name": "malformed cap is ignored",
+      "canonical": false,
+      "content": "version=1\nenabled=1\ncap_bytes=lots\n",
+      "enabled": true,
+      "cap_bytes": 0
+    },
+    {
+      "name": "enabled must be exactly 1",
+      "canonical": false,
+      "content": "version=1\nenabled=yes\n",
+      "enabled": false,
+      "cap_bytes": 0
+    },
+    {
+      "name": "missing enabled",
+      "canonical": false,
+      "content": "version=1\n",
+      "enabled": false,
+      "cap_bytes": 0
+    },
+    {
+      "name": "missing version",
+      "canonical": false,
+      "content": "enabled=1\n",
+      "enabled": false,
+      "cap_bytes": 0
+    },
+    {
+      "name": "unknown version",
+      "canonical": false,
+      "content": "version=2\nenabled=1\n",
+      "enabled": false,
+      "cap_bytes": 0
+    },
+    {
+      "name": "empty",
+      "canonical": false,
+      "content": "",
+      "enabled": false,
+      "cap_bytes": 0
+    }
+  ],
+  "heartbeat": [
+    {
+      "name": "every key",
+      "canonical": true,
+      "payload": "agent_version=0.1.0\njava_version=21.0.8\njava_vendor=Eclipse Adoptium\nsource=attach\nstate=active\nframes=12\ndropped=1\nerrors=0\nconnections=3\n",
+      "fields": {
+        "agent_version": "0.1.0",
+        "java_version": "21.0.8",
+        "java_vendor": "Eclipse Adoptium",
+        "source": "attach",
+        "state": "active",
+        "frames": 12,
+        "dropped": 1,
+        "errors": 0,
+        "connections": 3
+      }
+    },
+    {
+      "name": "unknown keys, malformed lines and numbers",
+      "canonical": false,
+      "payload": "agent_version=0.2.0\nfuture=x\nframes=lots\nno equals sign\nstate=dormant\n",
+      "fields": {
+        "agent_version": "0.2.0",
+        "java_version": "",
+        "java_vendor": "",
+        "source": "",
+        "state": "dormant",
+        "frames": 0,
+        "dropped": 0,
+        "errors": 0,
+        "connections": 0
+      }
+    },
+    {
+      "name": "a malformed number keeps the earlier value",
+      "canonical": false,
+      "payload": "agent_version=0.3.0\nframes=12\nframes=lots\ndropped=-1\n",
+      "fields": {
+        "agent_version": "0.3.0",
+        "java_version": "",
+        "java_vendor": "",
+        "source": "",
+        "state": "",
+        "frames": 12,
+        "dropped": 0,
+        "errors": 0,
+        "connections": 0
+      }
+    }
+  ]
+}
