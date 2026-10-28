@@ -41,6 +41,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/util"
 	"github.com/postmanlabs/postman-insights-agent/version"
 	"github.com/spf13/viper"
+	"golang.org/x/sync/singleflight"
 )
 
 // TODO(kku): make pcap timings more robust (e.g. inject a sentinel packet to
@@ -486,7 +487,7 @@ func (a *apidump) LookupService() error {
 			serviceName = a.Namespace + "/" + a.WorkloadName
 		}
 
-		discoveryKey := rest.DiscoveryCacheKey(a.ClusterName, a.Namespace, a.WorkloadName)
+		discoveryKey := rest.DiscoveryCooldownKey(a.ClusterName, a.Namespace, a.WorkloadName)
 
 		discoveryMode := "daemonset"
 		if _, inDaemonset := a.DaemonsetArgs.Get(); !inDaemonset {
@@ -506,21 +507,21 @@ func (a *apidump) LookupService() error {
 			},
 		)
 		if err != nil {
-			if ttlErr, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
-				rest.DiscoveryTTLCooldown.Mark(discoveryKey, ttlErr.RetryAfter)
+			if ingestErr, ok := rest.AsIngestDisabledError(err); ok {
+				rest.IngestCooldown.Mark(discoveryKey, ingestErr.RetryAfter)
 				printer.Warningf(
 					"Discovery traffic TTL expired for service %q. "+
 						"Onboard the service in Postman to resume traffic capture. "+
 						"Will not retry discover for %s.\n",
-					serviceName, ttlErr.RetryAfter,
+					serviceName, ingestErr.RetryAfter,
 				)
 				// Propagate the typed error so Run/DaemonSet can end gracefully
 				// without treating this as a capture failure or continuing setup.
-				return ttlErr
+				return ingestErr
 			}
 			return errors.Wrap(err, "failed to register discovered service")
 		}
-		rest.DiscoveryTTLCooldown.Clear(discoveryKey)
+		rest.IngestCooldown.Clear(discoveryKey)
 
 		var svcID akid.ServiceID
 		if err := akid.ParseIDAs(resp.ServiceID, &svcID); err != nil {
@@ -544,11 +545,7 @@ func (a *apidump) LookupService() error {
 		a.backendSvcName = "Postman_Collection_" + a.PostmanCollectionID
 	} else if a.WorkspaceID != "" {
 		// Standalone mode with --workspace-id flag: use CreateApplication API
-		application, err := frontClient.CreateApplication(
-			context.Background(),
-			a.WorkspaceID,
-			a.SystemEnv,
-		)
+		application, err := a.createApplication(frontClient)
 		if err != nil {
 			return err
 		}
@@ -559,11 +556,7 @@ func (a *apidump) LookupService() error {
 		_, inDaemonset := a.DaemonsetArgs.Get()
 		if inDaemonset && a.WorkspaceID != "" {
 			// Daemonset mode with workspace ID (set from pod in apidump_process): use CreateApplication API
-			application, err := frontClient.CreateApplication(
-				context.Background(),
-				a.WorkspaceID,
-				a.SystemEnv,
-			)
+			application, err := a.createApplication(frontClient)
 			if err != nil {
 				return err
 			}
@@ -589,6 +582,39 @@ func (a *apidump) LookupService() error {
 
 	a.learnClient = rest.NewLearnClient(a.Domain, a.ClientID, a.backendSvc, authHandler, apidumpAmplitudeTelemetry.APIError)
 	return nil
+}
+
+var createApplicationGroup singleflight.Group
+
+// createApplication starts a cooldown for the workspace when the backend
+// reports it isn't linked to a filesystem.
+func (a *apidump) createApplication(frontClient rest.FrontClient) (rest.CreateApplicationResponse, error) {
+	key := rest.WorkspaceCooldownKey(a.WorkspaceID, a.SystemEnv)
+	if next, ok := rest.IngestCooldown.NextCheckAt(key); ok {
+		return rest.CreateApplicationResponse{}, rest.IngestDisabledError{
+			RetryAfter: time.Until(next),
+			Message:    fmt.Sprintf("workspace %s ingest cooldown active", a.WorkspaceID),
+		}
+	}
+
+	// Pods starting together on the same workspace share one request, so only
+	// one of them marks the cooldown and logs the warning.
+	v, err, _ := createApplicationGroup.Do(key, func() (any, error) {
+		application, err := frontClient.CreateApplication(context.Background(), a.WorkspaceID, a.SystemEnv)
+		if ingestErr, ok := rest.AsIngestDisabledError(err); ok {
+			rest.IngestCooldown.Mark(key, ingestErr.RetryAfter)
+			printer.Warningf(
+				"Workspace %s is not linked to a filesystem; not capturing. Will re-check in %s.\n",
+				a.WorkspaceID, ingestErr.RetryAfter,
+			)
+			return application, ingestErr
+		}
+		if err == nil {
+			rest.IngestCooldown.Clear(key)
+		}
+		return application, err
+	})
+	return v.(rest.CreateApplicationResponse), err
 }
 
 // Send the initial message to the backend indicating successful start
@@ -951,12 +977,11 @@ func (a *apidump) Run() error {
 	// checkpoint updates categorize every early-return site without having to
 	// annotate each one individually.
 	lastCheckpoint := "service_lookup"
-	// discoveryTTLSkipped is set when LookupService returns DiscoveryTTLExpiredError.
-	// That is an intentional skip, not a startup failure, so we must not emit
-	// apidump_start_failed.
-	discoveryTTLSkipped := false
+	// An intentional skip (ingestion disabled by the backend) is not a startup
+	// failure, so it must not emit apidump_start_failed.
+	ingestSkipped := false
 	defer func() {
-		if !startupSucceeded && !discoveryTTLSkipped {
+		if !startupSucceeded && !ingestSkipped {
 			args.reportTelemetryEvent("apidump_start_failed")
 			args.setFailureCategory(lastCheckpoint)
 		}
@@ -966,10 +991,7 @@ func (a *apidump) Run() error {
 	// surface before we touch packet capture.
 	err := a.LookupService()
 	if err != nil {
-		if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
-			discoveryTTLSkipped = true
-			return err
-		}
+		ingestSkipped = rest.IsIngestDisabledError(err)
 		return err
 	}
 	lastCheckpoint = "interface_enumeration"

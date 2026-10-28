@@ -17,15 +17,25 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// isDiscoveryTTLCooldownActive reports whether this discovery-mode pod's
-// workload is still inside a discovery TTL-expiry cooldown (from a prior
-// 412 on the discover API).
-func (d *Daemonset) isDiscoveryTTLCooldownActive(podArgs *PodArgs) bool {
-	if podArgs == nil || !podArgs.DiscoveryMode {
-		return false
+// ingestCooldownKey returns the cooldown key and coverage reason for the pod's
+// onboarding path; ok is false when the path has no cooldown.
+func ingestCooldownKey(podArgs *PodArgs) (key, reason string, ok bool) {
+	switch {
+	case podArgs == nil:
+		return "", "", false
+	case podArgs.WorkspaceID != "":
+		return rest.WorkspaceCooldownKey(podArgs.WorkspaceID, podArgs.SystemEnv), "workspace_not_linked", true
+	case podArgs.DiscoveryMode:
+		return rest.DiscoveryCooldownKey(podArgs.ClusterName, podArgs.Namespace, podArgs.WorkloadName), "discovery_ttl_cooldown", true
 	}
-	key := rest.DiscoveryCacheKey(podArgs.ClusterName, podArgs.Namespace, podArgs.WorkloadName)
-	return rest.DiscoveryTTLCooldown.ShouldSkip(key)
+	return "", "", false
+}
+
+// isIngestCooldownActive reports whether the backend recently refused
+// ingestion for this pod's workspace or discovered workload.
+func (d *Daemonset) isIngestCooldownActive(podArgs *PodArgs) bool {
+	key, _, ok := ingestCooldownKey(podArgs)
+	return ok && rest.IngestCooldown.ShouldSkip(key)
 }
 
 // StartApiDumpProcess initiates the API dump process for a given pod identified by its UID.
@@ -41,19 +51,19 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 	// sees every pod of a workload and can skip starting capture entirely.
 	// Terminalize coverage before pruning so a later pod delete (when the UID
 	// is no longer in PodArgsByNameMap) cannot leave a non-terminal coverage target.
-	if d.isDiscoveryTTLCooldownActive(podArgs) {
-		key := rest.DiscoveryCacheKey(podArgs.ClusterName, podArgs.Namespace, podArgs.WorkloadName)
+	if d.isIngestCooldownActive(podArgs) {
+		key, reason, _ := ingestCooldownKey(podArgs)
 		until := "the cooldown elapses"
-		if next, ok := rest.DiscoveryTTLCooldown.NextCheckAt(key); ok {
+		if next, ok := rest.IngestCooldown.NextCheckAt(key); ok {
 			until = next.Format(time.RFC3339)
 		}
 		printer.Infof(
-			"Skipping apidump for pod %s; discovery traffic TTL cooldown active until %s\n",
-			podArgs.PodName, until,
+			"Skipping apidump for pod %s; %s cooldown active until %s\n",
+			podArgs.PodName, reason, until,
 		)
-		d.observeCoverageByUID(string(podUID), CoveragePodStopped, "discovery_ttl_cooldown")
+		d.observeCoverageByUID(string(podUID), CoveragePodStopped, reason)
 		if err := podArgs.changePodTrafficMonitorState(TrafficMonitoringEnded, PodRunning); err != nil {
-			return errors.Wrapf(err, "failed to mark pod %s ended during discovery TTL cooldown", podArgs.PodName)
+			return errors.Wrapf(err, "failed to mark pod %s ended during %s cooldown", podArgs.PodName, reason)
 		}
 		return nil
 	}
@@ -185,10 +195,11 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		}
 
 		if err := apidump.Run(apidumpArgs); err != nil {
-			// Discovery TTL expiry is an intentional skip: end monitoring
-			// cleanly and terminalize coverage so pruning cannot leak a target.
-			if _, ok := rest.AsDiscoveryTTLExpiredError(err); ok {
-				d.observeCoverageByUID(string(podUID), CoveragePodStopped, "discovery_ttl_cooldown")
+			// Intentional skip: end monitoring cleanly and terminalize coverage
+			// so pruning cannot leak a target.
+			if rest.IsIngestDisabledError(err) {
+				_, reason, _ := ingestCooldownKey(podArgs)
+				d.observeCoverageByUID(string(podUID), CoveragePodStopped, reason)
 				return nil
 			}
 			funcErr = errors.Wrapf(err, "failed to run apidump process for pod %s", podArgs.PodName)
