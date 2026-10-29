@@ -52,10 +52,25 @@ class ConnectionsTest {
     }
 
     @Test
-    void idsAreSequentialFromOne() {
+    void idsAreSequential() {
         Connections c = new Connections();
-        assertEquals(1, c.get(new Object()).id);
-        assertEquals(2, c.get(new Object()).id);
+        long first = c.get(new Object()).id;
+        assertEquals(first + 1, c.get(new Object()).id);
+    }
+
+    /**
+     * Each JVM's ids start at a random place below 2^62 (the kernel tags bit
+     * 63), so a JVM that reuses an exited one's PID does not reuse its ids,
+     * which the Insights agent keys connections by. Here two JVMs' worth.
+     */
+    @Test
+    void eachJvmStartsAtARandomId() {
+        long a = new Connections().get(new Object()).id;
+        long b = new Connections().get(new Object()).id;
+        assertNotEquals(a, b);
+        for (long id : new long[] {a, b}) {
+            assertTrue(id >= 1 && id < 1L << 62, Long.toString(id));
+        }
     }
 
     /**

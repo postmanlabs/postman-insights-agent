@@ -41,3 +41,7 @@ ebpf/loader/*.o
 test/kind/webhook/tls.crt
 test/kind/webhook/tls.key
 test/kind/webhook/webhook-deployment-with-certs.yaml
+
+# Build output of the kind test services' Maven projects, which IDEs' Java
+# support builds on its own.
+test/kind/*/target/

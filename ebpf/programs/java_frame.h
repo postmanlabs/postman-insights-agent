@@ -33,14 +33,33 @@
 
 // op values.
 #define JAVA_FRAME_OP_SEND      1 // plaintext the JVM sent (consumed by SSLEngine.wrap)
-#define JAVA_FRAME_OP_RECV      2 // plaintext the JVM received (produced by SSLEngine.unwrap)
+#define JAVA_FRAME_OP_RECV      2 // plaintext the JVM received (produced by SSLEngine.unwrap);
+                                  // empty at a connection's first unwrap, which ties the
+                                  // connection to its socket (java_tls.bpf.c)
 #define JAVA_FRAME_OP_HEARTBEAT 3 // agent liveness and status; payload is key=value lines
 #define JAVA_FRAME_OP_CLOSE     4 // connection closed; no payload
+#define JAVA_FRAME_OP_ADDRESS   5 // the connection's addresses, from the agent; payload below
+
+// An ADDRESS frame's payload: the connection's TCP addresses, which the agent
+// knows for a blocking socket (it has the socket), laid out as the kernel's
+// struct conn_tuple (event.h):
+//    0  u8      family       2 (IPv4) or 10 (IPv6, including IPv4-mapped)
+//    1  u8[3]   zero
+//    4  u16     local_port   little-endian
+//    6  u16     remote_port  little-endian
+//    8  u8[16]  local_addr   network byte order; IPv4 in the first 4 bytes, the rest zero
+//   24  u8[16]  remote_addr  the same
+#define JAVA_FRAME_ADDRESS_SIZE 40
 
 // flags bits.
-#define JAVA_FRAME_FLAG_ROLE_KNOWN  0x1 // the client/server role is known
-#define JAVA_FRAME_FLAG_CLIENT_MODE 0x2 // the JVM is the TLS client (valid with ROLE_KNOWN)
-#define JAVA_FRAME_FLAG_PEER_KNOWN  0x4 // peer_addr and peer_port are set
+#define JAVA_FRAME_FLAG_ROLE_KNOWN   0x1  // the client/server role is known
+#define JAVA_FRAME_FLAG_CLIENT_MODE  0x2  // the JVM is the TLS client (valid with ROLE_KNOWN)
+#define JAVA_FRAME_FLAG_PEER_KNOWN   0x4  // peer_addr and peer_port are set
+#define JAVA_FRAME_FLAG_SOCKET       0x8  // a blocking socket's frame: its addresses come in an
+                                          // ADDRESS frame, never from the thread's socket reads
+#define JAVA_FRAME_FLAG_BEFORE_WRITE 0x10 // SEND: the frame's bytes are written to the
+                                          // socket after it, by the thread that sent it
+                                          // when the framework writes inline (a wrap)
 
 // Java connection ids are tagged with the top bit when they become an
 // ssl_event's ssl_ctx. User-space pointers never set bit 63, so Java ids can
@@ -54,7 +73,8 @@ struct java_frame_header {
     __u8  op;            // JAVA_FRAME_OP_*
     __u16 flags;         // JAVA_FRAME_FLAG_*
     __u32 payload_len;   // payload bytes in this frame
-    __u64 conn_id;       // agent-assigned id, unique per connection within the JVM
+    __u64 conn_id;       // agent-assigned id, unique per connection within the JVM, from a
+                         // random start below 2^62, so a reused PID does not reuse ids
     __u8  peer_addr[16]; // IPv6, or IPv4-mapped IPv6; zero when unknown
     __u16 peer_port;     // network byte order; zero when unknown
     __u16 _reserved;     // zero

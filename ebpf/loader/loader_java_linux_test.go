@@ -188,8 +188,8 @@ func TestJavaTLSFrames(t *testing.T) {
 			t.Fatal(err)
 		}
 		// sizeof(struct control_event), not a 16 KiB ssl_event.
-		if n := len(rec.RawSample); n != 1072 {
-			t.Errorf("heartbeat record of %d bytes, want 1072", n)
+		if n := len(rec.RawSample); n != 1112 {
+			t.Errorf("heartbeat record of %d bytes, want 1112", n)
 		}
 		hb, err := events.Decode(rec.RawSample)
 		if err != nil {
@@ -230,7 +230,6 @@ func TestJavaTLSFrames(t *testing.T) {
 			t.Errorf("malformed grew by %d, want 0", got)
 		}
 	})
-
 
 	t.Run("rate cap applies to Java senders and refills every second", func(t *testing.T) {
 		if err := l.SetRateCapPerSec(2); err != nil {

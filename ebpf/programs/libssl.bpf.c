@@ -252,6 +252,8 @@ static __always_inline int emit_event(
 
     // Routing key for the NodeCollector (see current_netns in common.h).
     e->netns = current_netns();
+    // Resolved from fd in userspace instead.
+    __builtin_memset(&e->tuple, 0, sizeof(e->tuple));
 
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);

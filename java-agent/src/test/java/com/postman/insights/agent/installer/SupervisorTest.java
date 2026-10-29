@@ -86,6 +86,25 @@ class SupervisorTest {
         assertTrue(first.contains("\nsource=attach\nstate=active\n"), first);
     }
 
+    /**
+     * Switching capture on sends a heartbeat at once, between periodic ones,
+     * so the kernel records the process's socket reads before its first
+     * captured connection.
+     */
+    @Test
+    void heartbeatWhenSwitchingOn() throws Exception {
+        long now = System.currentTimeMillis();
+        control("version=1\nenabled=0\n");
+        supervisor.check(now);
+        log.mark();
+        control("version=1\nenabled=1\n");
+        supervisor.check(now);
+        supervisor.check(now);
+        List<String> heartbeats = heartbeats();
+        assertEquals(1, heartbeats.size());
+        assertTrue(heartbeats.get(0).contains("\nstate=active\n"), heartbeats.get(0));
+    }
+
     @Test
     void heartbeatWhileDormant() throws Exception {
         log.mark();
