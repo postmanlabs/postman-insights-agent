@@ -74,6 +74,8 @@ spec:
         # Wiz rule 154c69a0-5907-4f3a-9108-6bd66f42c88b suppression:
         # /sys/kernel/debug is required for eBPF uprobe/tracepoint attachment (read-only).
         # /sys/fs/bpf is required for BPF map pinning.
+        # /proc (read-only, at /host/proc) is required to find the pods'
+        # processes, network namespaces and TLS libraries.
         # These are architecturally necessary for eBPF-based HTTPS capture — every
         # eBPF agent (Cilium, Falco, Datadog) requires the same mounts. The finding
         # is also documented in .wiz at the repo root.
@@ -141,6 +143,12 @@ spec:
         # container, so the Docker VM's /proc (mounted at /linuxkit-proc by
         # cluster.yaml) has other PIDs, and every pod failed with "no
         # network interfaces" and Java capture off.
+        # Limit: BPF events carry the VM's PIDs, so in kind the libssl event
+        # resolver, which looks sockets up by event PID in /host/proc, can
+        # miss a connection's addresses or take another process's; Java
+        # connections get theirs from the kernel and are not affected. On a
+        # real cluster both PID views are the same. (Follow-up: report event
+        # PIDs in /host/proc's PID namespace.)
         hostPath: { path: /proc, type: Directory }
       - name: cri-sock
         hostPath: { path: /run/containerd/containerd.sock, type: Socket }

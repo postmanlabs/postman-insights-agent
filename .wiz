@@ -20,9 +20,11 @@ ignores:
     reason: >
       The eBPF-based HTTPS capture feature requires hostPath mounts to
       /sys/kernel/debug (read-only, for uprobe/tracepoint attachment) and
-      /sys/fs/bpf (read-write, for BPF map pinning). These are the same mounts
-      required by Cilium, Falco, and the Datadog Agent. /sys/kernel/debug is
-      mounted read-only, mitigating write risk. There is no alternative — eBPF
+      /sys/fs/bpf (read-write, for BPF map pinning), and /proc (read-only, at
+      /host/proc, to find the pods' processes, network namespaces and TLS
+      libraries). These are the same mounts required by Cilium, Falco, and the
+      Datadog Agent. /sys/kernel/debug and /proc are mounted read-only,
+      mitigating write risk. There is no alternative — eBPF
       programs cannot be attached without access to the kernel debug filesystem.
     resources:
       - "test/kind/agent-daemonset-prod.yaml"
