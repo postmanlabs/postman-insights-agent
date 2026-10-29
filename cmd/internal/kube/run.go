@@ -1,7 +1,10 @@
 package kube
 
 import (
+	"slices"
+
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/daemonset"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/spf13/cobra"
 )
@@ -21,9 +24,12 @@ var (
 	httpsBodySizeCap     uint32
 	httpsCBPFExcludePort uint16
 	httpsNoThermostat    bool
+	httpsLibraries       []string
 )
 
 func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
+	// With no library to capture, HTTPS capture is off: decided here, once.
+	httpsEnabled, libraries := ebpf.HTTPSCaptureFromFlags(enableHTTPSCapture, httpsLibraries)
 	err := daemonset.StartDaemonset(daemonset.DaemonsetArgs{
 		ReproMode:            reproMode,
 		RateLimit:            rateLimit,
@@ -32,11 +38,12 @@ func StartDaemonsetAndHibernateOnError(_ *cobra.Command, args []string) error {
 		ExcludeNamespaces:    excludeNamespaces,
 		IncludeLabels:        includeLabels,
 		ExcludeLabels:        excludeLabels,
-		EnableHTTPSCapture:   enableHTTPSCapture,
+		EnableHTTPSCapture:   httpsEnabled,
 		HTTPSRateCapPerSec:   httpsRateCapPerSec,
 		HTTPSBodySizeCap:     httpsBodySizeCap,
 		HTTPSCBPFExcludePort: httpsCBPFExcludePort,
 		HTTPSNoThermostat:    httpsNoThermostat,
+		HTTPSLibraries:       libraries,
 	})
 	if err == nil {
 		return nil
@@ -127,6 +134,13 @@ func init() {
 		"no-thermostat",
 		false,
 		"Disable the CPU thermostat that lowers max-capture-bytes under load.",
+	)
+	runCmd.PersistentFlags().StringSliceVar(
+		&httpsLibraries,
+		"https-libraries",
+		slices.Clone(ebpf.DefaultLibraries),
+		"TLS libraries to capture HTTPS traffic from: openssl, java (preview). Without java, the Java agent "+
+			"in running JVMs of monitored pods goes dormant.",
 	)
 	runCmd.PersistentFlags().Uint16Var(
 		&httpsCBPFExcludePort,

@@ -48,6 +48,9 @@ type DaemonsetArgs struct {
 	HTTPSBodySizeCap     uint32 // 0 = default (16384 bytes)
 	HTTPSCBPFExcludePort uint16 // 0 = no cBPF port exclusion; kube run defaults to 443
 	HTTPSNoThermostat    bool
+	// HTTPSLibraries are the TLS libraries to capture, at least one when
+	// EnableHTTPSCapture is set (ebpf.HTTPSCaptureFromFlags).
+	HTTPSLibraries ebpf.Libraries
 }
 
 type Daemonset struct {
@@ -72,6 +75,12 @@ type Daemonset struct {
 	HTTPSBodySizeCap     uint32
 	HTTPSCBPFExcludePort uint16
 	HTTPSNoThermostat    bool
+	// HTTPSLibraries are the TLS libraries the node captures from: those
+	// asked for, without Java when its programs did not load.
+	HTTPSLibraries ebpf.Libraries
+	// httpsHostNetns is the node's network namespace inode, for
+	// ebpf.Libraries.ForPod.
+	httpsHostNetns uint64
 
 	// EBPFNodeCollector is a node-scoped shared eBPF collector initialised once
 	// per agent pod when EnableHTTPSCapture is true. Nil when HTTPS capture is
@@ -325,6 +334,7 @@ func StartDaemonset(args DaemonsetArgs) error {
 		HTTPSBodySizeCap:         args.HTTPSBodySizeCap,
 		HTTPSCBPFExcludePort:     args.HTTPSCBPFExcludePort,
 		HTTPSNoThermostat:        args.HTTPSNoThermostat,
+		HTTPSLibraries:           args.HTTPSLibraries,
 		Coverage:                 coverage,
 		AgentID:                  agentID,
 		telemetrySequence:        telemetrySequence,
@@ -370,15 +380,21 @@ func StartDaemonset(args DaemonsetArgs) error {
 			MaxCaptureBytes:   args.HTTPSBodySizeCap,
 			RateCapPerSec:     args.HTTPSRateCapPerSec,
 			DisableThermostat: args.HTTPSNoThermostat,
-			EnableJava:        ebpf.JavaTLSRequested(),
+			EnableJava:        args.HTTPSLibraries.Java,
+			DisableOpenSSL:    !args.HTTPSLibraries.OpenSSL,
 		})
 		if err != nil {
 			printer.Warningf(
 				"ebpf: failed to initialise node-scoped BPF collector (%v); "+
 					"HTTPS capture will be disabled for all monitored pods on this node.\n", err)
 		} else {
+			// Pods are captured from what the collector captures from:
+			// without Java when its programs did not load (buildHTTPSArgs).
 			daemonsetRun.EBPFNodeCollector = nc
-			printer.Infof("ebpf: node-scoped BPF collector initialised (one loader for all pods on this node)\n")
+			daemonsetRun.HTTPSLibraries = nc.Libraries()
+			daemonsetRun.httpsHostNetns = nc.HostNetns()
+			printer.Infof("ebpf: node-scoped BPF collector initialised for %s (one loader for all pods on this node)\n",
+				daemonsetRun.HTTPSLibraries)
 		}
 	}
 

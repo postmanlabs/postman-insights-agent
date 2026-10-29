@@ -157,6 +157,49 @@ func TestBuildHTTPSArgs_CBPFExcludePortPropagation(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPSArgs_LibrariesPropagation(t *testing.T) {
+	for _, libs := range []ebpf.Libraries{{OpenSSL: true, Java: true}, {OpenSSL: true}, {Java: true}} {
+		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: libs}
+		got := buildHTTPSArgs(d, &PodArgs{}, 42)
+		assert.Equal(t, libs, got.Libraries)
+	}
+}
+
+// A pod is captured from the node's libraries, without Java when Java cannot
+// run for it; with none left, HTTPS capture is off for it, so pcap keeps the
+// TLS port.
+func TestBuildHTTPSArgs_PodLibraries(t *testing.T) {
+	const host uint64 = 100
+	both := ebpf.Libraries{OpenSSL: true, Java: true}
+	javaOnly := ebpf.Libraries{Java: true}
+	pod := &PodArgs{PodName: "web-1", Namespace: "team-a"}
+	for _, tc := range []struct {
+		name        string
+		node        ebpf.Libraries
+		inode       uint64
+		wantEnabled bool
+		wantLibs    ebpf.Libraries
+	}{
+		{"own netns", both, 42, true, both},
+		{"netns unknown", both, 0, true, ebpf.Libraries{OpenSSL: true}},
+		{"host network", both, host, true, ebpf.Libraries{OpenSSL: true}},
+		{"Java only, own netns", javaOnly, 42, true, javaOnly},
+		{"Java only, netns unknown", javaOnly, 0, false, ebpf.Libraries{}},
+		{"Java only, host network", javaOnly, host, false, ebpf.Libraries{}},
+		{"OpenSSL only, netns unknown", ebpf.Libraries{OpenSSL: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
+	} {
+		d := &Daemonset{
+			EnableHTTPSCapture: true,
+			EBPFNodeCollector:  testNodeCollector,
+			HTTPSLibraries:     tc.node,
+			httpsHostNetns:     host,
+		}
+		got := buildHTTPSArgs(d, pod, tc.inode)
+		assert.Equal(t, tc.wantEnabled, got.Enabled, tc.name)
+		assert.Equal(t, tc.wantLibs, got.Libraries, tc.name)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DaemonsetArgs — HTTPS field zero values and propagation
 // ---------------------------------------------------------------------------

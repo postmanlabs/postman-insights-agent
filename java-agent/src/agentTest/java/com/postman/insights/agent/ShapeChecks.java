@@ -1,5 +1,6 @@
 package com.postman.insights.agent;
 
+import static com.postman.insights.agent.Frames.BEFORE_WRITE;
 import static com.postman.insights.agent.Frames.CLIENT_MODE;
 import static com.postman.insights.agent.Frames.OP_RECV;
 import static com.postman.insights.agent.Frames.OP_SEND;
@@ -72,7 +73,8 @@ final class ShapeChecks {
             assertEquals(1, got.size(), name + ": " + got);
             f = got.get(0);
             assertEquals(OP_SEND, f.op, name);
-            assertEquals(ROLE_KNOWN | CLIENT_MODE, f.flags, name);
+            // A wrap's output is written to the socket after the frame.
+            assertEquals(ROLE_KNOWN | CLIENT_MODE | BEFORE_WRITE, f.flags, name);
             sent.append(f.text());
         }
         assertEquals(all.toString(), sent.toString(), name);

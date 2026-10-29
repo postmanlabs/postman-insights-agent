@@ -64,8 +64,9 @@ func NewController(settings func() javatls.Control) *Controller {
 }
 
 // Add starts keeping p's control file fresh, and writes it now so the agent
-// in a monitored JVM captures from its first requests.
-func (c *Controller) Add(p *Process) {
+// in a monitored JVM captures from its first requests. It reports whether p
+// is new: not already added by another caller.
+func (c *Controller) Add(p *Process) bool {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
@@ -82,6 +83,7 @@ func (c *Controller) Add(p *Process) {
 	if first {
 		c.writeContainer([]*Process{p}, c.settings())
 	}
+	return first
 }
 
 // Remove undoes one Add. When no added JVM is left in the container and the
