@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -24,10 +23,6 @@ import (
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm/attach"
 )
-
-// maxPerfDataSize bounds how much of a perf data file is read (HotSpot's
-// default is 32 KiB).
-const maxPerfDataSize = 1 << 20
 
 // clockTicksPerSecond is USER_HZ, the unit of /proc/<pid>/stat times; 100 on
 // every Linux architecture the agent supports.
@@ -44,7 +39,10 @@ func platformOps(helperPath string) (attachOps, error) {
 
 func (o linuxOps) alive(p *Process) bool { return Alive(p) }
 
-func (o linuxOps) inspect(p *Process) (gateInfo, error) {
+// inspectTimeout bounds one inspect run of the helper.
+const inspectTimeout = 30 * time.Second
+
+func (o linuxOps) inspect(ctx context.Context, p *Process) (gateInfo, error) {
 	var info gateInfo
 	dir := filepath.Join(p.ProcRoot, strconv.FormatUint(uint64(p.PID), 10))
 
@@ -64,7 +62,29 @@ func (o linuxOps) inspect(p *Process) (gateInfo, error) {
 	}
 	info.sigQuitCaught = sigQuitCaught(status)
 
-	if entries, err := perfDataEntries(p); err == nil {
+	// The JVM's perf data and environment are readable only by its user.
+	// The helper reads them as that user: reading them here, as root,
+	// would take a capability that bypasses every file permission on the
+	// node (DAC_OVERRIDE or DAC_READ_SEARCH).
+	res, err := o.runHelper(ctx, p, attach.Request{
+		Version:   attach.RequestVersion1,
+		Op:        attach.OpInspect,
+		ProcRoot:  p.ProcRoot,
+		PID:       p.PID,
+		StartTime: p.StartTime,
+		NSPID:     p.NSPID,
+	}, inspectTimeout)
+	if err != nil {
+		return info, err
+	}
+	switch {
+	case res.Outcome == attach.Inspected && res.Inspection != nil:
+	case res.Reason == attach.ReasonInspectFailed:
+		return info, errors.New(res.Detail)
+	default:
+		return info, fmt.Errorf("%s: %s", res.Reason, res.Detail)
+	}
+	if entries := res.Inspection.PerfData; entries != nil {
 		// HotSpot joins the arguments with spaces, so one containing spaces
 		// splits; whether attach is on comes from the JVM itself instead.
 		info.args = strings.Fields(entries["java.rt.vmArgs"] + " " + entries["java.rt.vmFlags"])
@@ -76,11 +96,7 @@ func (o linuxOps) inspect(p *Process) (gateInfo, error) {
 	if err != nil {
 		return info, err
 	}
-	environ, err := os.ReadFile(filepath.Join(dir, "environ"))
-	if err != nil {
-		return info, err
-	}
-	info.args, info.argsSource = argsFromCmdline(cmdline, environ), "command line and environment"
+	info.args, info.argsSource = argsFromCmdline(cmdline, res.Inspection.JavaOptions), "command line and environment"
 	return info, nil
 }
 
@@ -95,70 +111,6 @@ func sigQuitCaught(status []byte) bool {
 		}
 	}
 	return false
-}
-
-// perfDataEntries returns the string entries of the JVM's perf data file
-// /tmp/hsperfdata_<user>/<nspid>, which must belong to the JVM's user and
-// have its effective arguments (java.rt.vmArgs).
-func perfDataEntries(p *Process) (map[string]string, error) {
-	root, err := openRoot(p)
-	if err != nil {
-		return nil, err
-	}
-	defer unix.Close(root)
-	return perfDataEntriesIn(root, p.NSPID, p.UID)
-}
-
-// perfDataEntriesIn is perfDataEntries in the container whose root is open as
-// root.
-func perfDataEntriesIn(root int, nspidNum, uid uint32) (map[string]string, error) {
-	tmp, err := openIn(root, "/tmp", unix.O_RDONLY|unix.O_DIRECTORY, 0)
-	if err != nil {
-		return nil, err
-	}
-	tmpDir := os.NewFile(uintptr(tmp), "/tmp")
-	names, err := tmpDir.Readdirnames(-1)
-	tmpDir.Close()
-	if err != nil {
-		return nil, err
-	}
-	nspid := strconv.FormatUint(uint64(nspidNum), 10)
-	for _, name := range names {
-		if !strings.HasPrefix(name, "hsperfdata_") {
-			continue
-		}
-		data, err := readOwnedFile(root, path.Join("/tmp", name, nspid), uid)
-		if err != nil {
-			continue
-		}
-		entries, err := parsePerfData(data)
-		if err != nil {
-			continue
-		}
-		if _, ok := entries["java.rt.vmArgs"]; ok {
-			return entries, nil
-		}
-	}
-	return nil, errors.New("no perf data")
-}
-
-// readOwnedFile reads a regular file inside the container that belongs to
-// uid.
-func readOwnedFile(root int, name string, uid uint32) ([]byte, error) {
-	fd, err := openIn(root, name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), name)
-	defer f.Close()
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return nil, err
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uid {
-		return nil, fmt.Errorf("%s: not a file of uid %d", name, uid)
-	}
-	return io.ReadAll(io.LimitReader(f, maxPerfDataSize))
 }
 
 // agentJarName is the jar's name in the container.
@@ -198,16 +150,21 @@ func stageIn(root int, jar []byte, dirName string) (string, error) {
 	return path.Join(agentDirParent, agentDirName, dirName, agentJarName), nil
 }
 
-// helperTimeout bounds one run of the helper, which bounds each of its steps
-// itself.
-const helperTimeout = 2 * time.Minute
+// attachTimeout bounds one attach run of the helper, which bounds each of its
+// steps itself.
+const attachTimeout = 2 * time.Minute
 
 func (o linuxOps) attach(ctx context.Context, p *Process, req attach.Request) (attach.Result, error) {
+	return o.runHelper(ctx, p, req, attachTimeout)
+}
+
+// runHelper runs the helper as p's user to perform req.
+func (o linuxOps) runHelper(ctx context.Context, p *Process, req attach.Request, timeout time.Duration) (attach.Result, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return attach.Result{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, helperTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, o.helperPath)
 	// The helper runs as the JVM's user, with no supplementary groups and

@@ -10,6 +10,8 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net"
@@ -27,6 +29,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	"golang.org/x/sys/unix"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
@@ -188,6 +191,12 @@ func newJVMFixture(t *testing.T) *jvmFixture {
 // DaemonSet's NodeCollector does with the files in its image.
 func (f *jvmFixture) attacher(t *testing.T) *jvm.Attacher {
 	t.Helper()
+	return newTestAttacher(t, f.helper(t), f.agentJar)
+}
+
+// helper builds the attach helper, once per fixture, and returns its path.
+func (f *jvmFixture) helper(t *testing.T) string {
+	t.Helper()
 	helper := filepath.Join(f.dir, "postman-jvm-attach")
 	if _, err := os.Stat(helper); err != nil {
 		build := exec.Command("go", "build", "-o", helper, "github.com/postmanlabs/postman-insights-agent/cmd/postman-jvm-attach")
@@ -196,10 +205,15 @@ func (f *jvmFixture) attacher(t *testing.T) *jvm.Attacher {
 			t.Fatalf("build the attach helper: %v\n%s", err, out)
 		}
 	}
+	return helper
+}
+
+func newTestAttacher(t *testing.T, helper, agentJar string) *jvm.Attacher {
+	t.Helper()
 	a, err := jvm.NewAttacher(jvm.AttacherConfig{
 		HelperPath:   helper,
-		JarPath:      f.agentJar,
-		ChecksumPath: f.agentJar + ".sha256",
+		JarPath:      agentJar,
+		ChecksumPath: agentJar + ".sha256",
 		AgentArgs:    func() string { return javatls.ArgCaptureCap + "=16384" },
 	})
 	if err != nil {
@@ -855,6 +869,127 @@ func TestNodeCollectorJVMAttachDisabled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// daemonSetCapabilities are the only capabilities of the DaemonSet's agent
+// container, which drops ALL: the released manifest's, and SETUID and SETGID
+// for the attach helper (plan 5.1). Neither DAC_OVERRIDE nor DAC_READ_SEARCH
+// is among them, so root cannot read files that only a JVM's user may read.
+var daemonSetCapabilities = []string{"net_raw", "sys_ptrace", "sys_admin", "bpf", "perfmon", "setuid", "setgid"}
+
+// The environment of TestAttachChild, which TestNodeCollectorJVMAttachDAC
+// runs in a copy of this test binary with only daemonSetCapabilities.
+const (
+	attachChildPID    = "POSTMAN_TEST_ATTACH_CHILD_PID"
+	attachChildHelper = "POSTMAN_TEST_ATTACH_CHILD_HELPER"
+	attachChildJar    = "POSTMAN_TEST_ATTACH_CHILD_JAR"
+	attachChildStats  = "attach stats: "
+)
+
+// TestNodeCollectorJVMAttachDAC attaches with the DaemonSet's capabilities
+// only, to a JVM of another user that publishes perf data (uid 65534, which
+// has a user name) and to one that does not (uid 1000, which has none): the
+// attacher reads the JVM's perf data (0600) or environment (0400) through
+// the helper, as the JVM's user.
+func TestNodeCollectorJVMAttachDAC(t *testing.T) {
+	f := newJVMFixture(t)
+	helper := f.helper(t)
+	for _, tc := range []struct {
+		name     string
+		uid      int
+		perfData bool
+	}{
+		{name: "perf data", uid: 65534, perfData: true},
+		{name: "environment", uid: 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := f.start(t, tc.uid, []string{"JAVA_TOOL_OPTIONS=-Dpostman.test=dac"})
+			p := j.inspect(t)
+			perfFiles, _ := filepath.Glob(filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", "tmp", "hsperfdata_*", strconv.Itoa(int(p.NSPID))))
+			if got := len(perfFiles) > 0; got != tc.perfData {
+				t.Fatalf("the JVM publishes perf data: %v, want %v", got, tc.perfData)
+			}
+			cmd := exec.Command("setpriv", "--bounding-set=-all,+"+strings.Join(daemonSetCapabilities, ",+"),
+				"--inh-caps=-all", "--", os.Args[0], "-test.run=^TestAttachChild$", "-test.count=1")
+			cmd.Env = append(os.Environ(),
+				attachChildPID+"="+strconv.Itoa(j.cmd.Process.Pid),
+				attachChildHelper+"="+helper,
+				attachChildJar+"="+f.agentJar)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("attach child: %v\n%s", err, out)
+			}
+			_, line, ok := strings.Cut(string(out), attachChildStats)
+			if !ok {
+				t.Fatalf("attach child printed no stats:\n%s", out)
+			}
+			line, _, _ = strings.Cut(line, "\n")
+			var st jvm.AttachStats
+			if err := json.Unmarshal([]byte(line), &st); err != nil {
+				t.Fatal(err)
+			}
+			if st.Attached != 1 {
+				t.Fatalf("attacher stats %+v\n%s", st, out)
+			}
+			j.waitLog(t, "loaded (attach)", 10*time.Second)
+		})
+	}
+}
+
+// TestAttachChild attaches to one JVM and prints the attacher's stats. Only
+// TestNodeCollectorJVMAttachDAC runs it, with a reduced capability set.
+func TestAttachChild(t *testing.T) {
+	pid, err := strconv.ParseUint(os.Getenv(attachChildPID), 10, 32)
+	if err != nil {
+		t.Skip("run by TestNodeCollectorJVMAttachDAC")
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []uint{unix.CAP_DAC_OVERRIDE, unix.CAP_DAC_READ_SEARCH} {
+		if effectiveCapability(t, status, capability) {
+			t.Fatalf("capability %d is effective; the test needs it dropped", capability)
+		}
+	}
+	a := newTestAttacher(t, os.Getenv(attachChildHelper), os.Getenv(attachChildJar))
+	p, err := jvm.Inspect("/proc", uint32(pid), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.Run(ctx)
+	a.Add(p, nil)
+	// The attacher waits until the JVM has run for 5 s; an inspect failure
+	// is retried after 30 s.
+	deadline := time.Now().Add(25 * time.Second)
+	for st := a.Stats(); st.Attached+st.AlreadyRunning == 0 && len(st.Failed)+len(st.Skipped) == 0; st = a.Stats() {
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	b, err := json.Marshal(a.Stats())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println(attachChildStats + string(b))
+}
+
+// effectiveCapability reports whether /proc/<pid>/status content shows
+// capability in the effective set.
+func effectiveCapability(t *testing.T, status []byte, capability uint) bool {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^CapEff:\s*([0-9a-f]+)$`).FindSubmatch(status)
+	if m == nil {
+		t.Fatal("no CapEff in status")
+	}
+	mask, err := strconv.ParseUint(string(m[1]), 16, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mask&(1<<capability) != 0
 }
 
 // waitStats waits until the attacher's counters satisfy ok.

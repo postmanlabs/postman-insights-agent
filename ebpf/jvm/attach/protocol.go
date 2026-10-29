@@ -2,14 +2,16 @@
 
 // Package attach loads the Java agent into a running HotSpot JVM. It is the
 // code of the postman-jvm-attach helper (cmd/postman-jvm-attach), which the
-// Insights agent runs as the JVM's own user for each attach: HotSpot accepts
-// attach requests only from that user, and the Insights agent cannot change
-// its own user without dropping root for all its threads.
+// Insights agent runs as the JVM's own user: HotSpot accepts attach requests
+// only from that user, and the Insights agent cannot change its own user
+// without dropping root for all its threads.
 //
 // The Insights agent makes every decision (which JVMs, whether a signal is
-// allowed) and stages the jar; the helper only performs the attach and
-// reports the outcome. The two talk through Request on stdin and Result on
-// stdout.
+// allowed) and stages the jar. The helper does what only the JVM's user can
+// do: it reads the JVM's files that only that user may read (its perf data
+// and environment, OpInspect), so the Insights agent needs no capability
+// that bypasses file permissions, and it performs the attach (OpAttach). The
+// two talk through Request on stdin and Result on stdout.
 package attach
 
 import (
@@ -28,26 +30,37 @@ import (
 // refuse a request it does not understand rather than guess.
 const RequestVersion1 = 1
 
+// Ops a Request can ask for.
+const (
+	// OpInspect reads what the Insights agent checks before attaching (see
+	// Inspection).
+	OpInspect = "inspect"
+	// OpAttach loads the agent.
+	OpAttach = "attach"
+)
+
 // Request is what the Insights agent asks the helper to do.
 type Request struct {
-	Version int `json:"version"`
+	Version int    `json:"version"`
+	Op      string `json:"op"`
 	// ProcRoot, PID and StartTime identify the JVM: the helper acts only on
 	// the process with that PID and start time.
 	ProcRoot  string `json:"proc_root"`
 	PID       uint32 `json:"pid"`
 	StartTime uint64 `json:"start_time"`
-	// NSPID is the JVM's PID in its own namespace, which its attach files
-	// are named after.
+	// NSPID is the JVM's PID in its own namespace, which its attach and
+	// perf data files are named after.
 	NSPID uint32 `json:"nspid"`
 	// JarPath is the agent jar's path inside the JVM's container, and
-	// AgentArgs the agent's arguments.
-	JarPath   string `json:"jar_path"`
-	AgentArgs string `json:"agent_args"`
+	// AgentArgs the agent's arguments (OpAttach).
+	JarPath   string `json:"jar_path,omitempty"`
+	AgentArgs string `json:"agent_args,omitempty"`
 	// AllowSignal permits starting the JVM's attach listener with SIGQUIT
-	// when it is not running yet. The Insights agent sets it only when the
-	// JVM catches SIGQUIT and has attach enabled; otherwise the signal would
-	// kill the JVM or dump its threads into the application's log.
-	AllowSignal bool `json:"allow_signal"`
+	// when it is not running yet (OpAttach). The Insights agent sets it only
+	// when the JVM catches SIGQUIT and has attach enabled; otherwise the
+	// signal would kill the JVM or dump its threads into the application's
+	// log.
+	AllowSignal bool `json:"allow_signal,omitempty"`
 }
 
 // Outcome is what an attach request ended in.
@@ -59,6 +72,8 @@ const (
 	// AlreadyLoaded: the agent was already running in the JVM (loaded at
 	// start with -javaagent, or by an earlier attach); nothing was loaded.
 	AlreadyLoaded Outcome = "already_loaded"
+	// Inspected: Result.Inspection holds what OpInspect read.
+	Inspected Outcome = "inspected"
 	// Failed: see Result.Reason.
 	Failed Outcome = "failed"
 )
@@ -67,6 +82,7 @@ const (
 const (
 	ReasonBadRequest      = "bad_request"
 	ReasonProcessGone     = "process_gone"
+	ReasonInspectFailed   = "inspect_failed"     // OpInspect could not read the JVM's files
 	ReasonNoListener      = "no_attach_listener" // not running, and no signal allowed
 	ReasonSignalFailed    = "signal_failed"
 	ReasonListenerTimeout = "attach_listener_timeout" // signalled, but no listener appeared
@@ -91,7 +107,29 @@ type Result struct {
 	Signalled bool `json:"signalled,omitempty"`
 	// AgentVersion is the running agent's version, when one is running.
 	AgentVersion string `json:"agent_version,omitempty"`
+	// Inspection is OpInspect's result, when Outcome is Inspected.
+	Inspection *Inspection `json:"inspection,omitempty"`
 }
+
+// Inspection is what the Insights agent checks before attaching that only the
+// JVM's user may read.
+type Inspection struct {
+	// PerfData holds the PerfDataKeys entries of the JVM's perf data file
+	// (/tmp/hsperfdata_<user>/<nspid>), when the JVM publishes one that has
+	// its effective arguments (java.rt.vmArgs).
+	PerfData map[string]string `json:"perf_data,omitempty"`
+	// JavaOptions holds the JavaOptionVars set in the JVM's environment.
+	// It is read only without perf data, whose arguments include them.
+	JavaOptions map[string]string `json:"java_options,omitempty"`
+}
+
+// PerfDataKeys are the perf data entries an Inspection reports: the JVM's
+// effective arguments and flags, and its capabilities (whether attach is on).
+var PerfDataKeys = []string{"java.rt.vmArgs", "java.rt.vmFlags", "sun.rt.jvmCapabilities"}
+
+// JavaOptionVars are the environment variables HotSpot and the java launcher
+// read options from.
+var JavaOptionVars = []string{"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"}
 
 func failed(reason string, signalled bool, format string, a ...any) Result {
 	return Result{Outcome: Failed, Reason: reason, Signalled: signalled, Detail: fmt.Sprintf(format, a...)}

@@ -20,7 +20,8 @@ import (
 // Attacher loads the Java agent into the running JVMs it is given, so their
 // HTTPS traffic is captured with no change to their pods and no restart. It
 // works through the postman-jvm-attach helper, which it runs as each JVM's
-// own user; it decides everything else itself, from /proc, as root.
+// own user to read the JVM's files that only that user may read and to
+// attach; it decides everything itself, as root.
 //
 // It never attaches twice: a JVM that already runs the agent (loaded at
 // start with -javaagent, or attached before this Insights agent restarted)
@@ -94,7 +95,7 @@ const (
 // decisions can be tested without JVMs.
 type attachOps interface {
 	alive(p *Process) bool
-	inspect(p *Process) (gateInfo, error)
+	inspect(ctx context.Context, p *Process) (gateInfo, error)
 	stage(p *Process, jar []byte, dirName string) (string, error)
 	attach(ctx context.Context, p *Process, req attach.Request) (attach.Result, error)
 }
@@ -282,7 +283,7 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 		a.skip(s, SkipOpenJ9, "an OpenJ9 JVM; start it with -javaagent to capture its HTTPS traffic")
 		return
 	}
-	info, err := a.ops.inspect(p)
+	info, err := a.ops.inspect(ctx, p)
 	if err != nil {
 		a.fail(s, FailInspect, false, err.Error())
 		return
@@ -316,6 +317,7 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 	start := time.Now()
 	res, err := a.ops.attach(ctx, p, attach.Request{
 		Version:     attach.RequestVersion1,
+		Op:          attach.OpAttach,
 		ProcRoot:    p.ProcRoot,
 		PID:         p.PID,
 		StartTime:   p.StartTime,

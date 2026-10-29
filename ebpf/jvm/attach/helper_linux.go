@@ -32,7 +32,8 @@ const staleTriggerAge = 3 * listenerTimeout
 
 // Run performs req and reports the outcome. It must run as the JVM's user.
 func Run(req Request) Result {
-	if req.Version != RequestVersion1 || req.PID == 0 || req.NSPID == 0 || req.JarPath == "" {
+	if req.Version != RequestVersion1 || req.PID == 0 || req.NSPID == 0 ||
+		(req.Op != OpInspect && req.Op != OpAttach) || (req.Op == OpAttach && req.JarPath == "") {
 		return failed(ReasonBadRequest, false, "unsupported or incomplete request")
 	}
 	procDir := filepath.Join(req.ProcRoot, strconv.FormatUint(uint64(req.PID), 10))
@@ -49,6 +50,9 @@ func Run(req Request) Result {
 	defer unix.Close(pidfd)
 	if !sameProcess(pidfd, req.StartTime) {
 		return failed(ReasonProcessGone, false, "pid %d is another process now", req.PID)
+	}
+	if req.Op == OpInspect {
+		return inspect(pidfd, req.NSPID)
 	}
 
 	nspid := strconv.FormatUint(uint64(req.NSPID), 10)
@@ -184,10 +188,7 @@ func createTrigger(procDir, name string) (release func(), owned bool, err error)
 		return nil, false, err
 	}
 	defer unix.Close(root)
-	tmp, err := unix.Openat2(root, "/tmp", &unix.OpenHow{
-		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
-		Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS,
-	})
+	tmp, err := openIn(root, "/tmp", unix.O_PATH|unix.O_DIRECTORY)
 	if err != nil {
 		return nil, false, err
 	}

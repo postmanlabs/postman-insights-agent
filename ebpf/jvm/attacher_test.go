@@ -31,8 +31,8 @@ type fakeOps struct {
 	requests []attach.Request
 }
 
-func (f *fakeOps) alive(*Process) bool                { return !f.dead }
-func (f *fakeOps) inspect(*Process) (gateInfo, error) { return f.info, f.infoErr }
+func (f *fakeOps) alive(*Process) bool                                 { return !f.dead }
+func (f *fakeOps) inspect(context.Context, *Process) (gateInfo, error) { return f.info, f.infoErr }
 func (f *fakeOps) stage(*Process, []byte, string) (string, error) {
 	return "/tmp/.postman-insights/agent-x/postman-java-agent.jar", f.stageErr
 }
@@ -71,7 +71,7 @@ func TestAttacherAttaches(t *testing.T) {
 	require.Len(t, ops.requests, 1)
 	req := ops.requests[0]
 	assert.Equal(t, attach.Request{
-		Version: attach.RequestVersion1, ProcRoot: "/host/proc", PID: 42, StartTime: 4200, NSPID: 1,
+		Version: attach.RequestVersion1, Op: attach.OpAttach, ProcRoot: "/host/proc", PID: 42, StartTime: 4200, NSPID: 1,
 		JarPath: "/tmp/.postman-insights/agent-x/postman-java-agent.jar", AgentArgs: "cap=4096", AllowSignal: true,
 	}, req)
 	assert.Equal(t, "agent-0123456789abcdef", a.jarDir)
