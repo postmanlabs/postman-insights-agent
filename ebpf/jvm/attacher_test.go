@@ -117,6 +117,24 @@ func TestAttacherGates(t *testing.T) {
 	}
 }
 
+// Where the JVM says whether attach is on (its perf data), that decides, not
+// arguments, which HotSpot joins with spaces there: an argument containing
+// " -XX:-DisableAttachMechanism" must not turn attach back on.
+func TestAttacherGateFromJVM(t *testing.T) {
+	a, ops := newTestAttacher()
+	ops.info.args = strings.Fields("-XX:+DisableAttachMechanism -Dmsg=x -XX:-DisableAttachMechanism")
+	ops.info.attachKnown, ops.info.attachOn = true, false
+	assert.True(t, attempt(t, a, hotspot()).done)
+	assert.Empty(t, ops.requests, "the helper ran")
+	assert.Equal(t, uint64(1), a.Stats().Skipped[SkipAttachDisabled])
+
+	a, ops = newTestAttacher()
+	ops.info.args = strings.Fields("-Dmsg=x -XX:+DisableAttachMechanism") // one argument, split
+	ops.info.attachKnown, ops.info.attachOn = true, true
+	attempt(t, a, hotspot())
+	assert.Len(t, ops.requests, 1, "attach is on, whatever an argument contains")
+}
+
 func TestAttacherStaticAgent(t *testing.T) {
 	a, ops := newTestAttacher()
 	ops.info.args = []string{"-javaagent:/opt/postman/postman-java-agent.jar", "-jar", "app.jar"}

@@ -156,9 +156,9 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 	containerBody.SetAttributeValue("name", cty.StringVal("postman-insights-agent"))
 	containerBody.SetAttributeValue("image", cty.StringVal(akitaImage))
 
-	caps := []cty.Value{cty.StringVal("NET_RAW")}
-	if opts.EnableHTTPSCapture {
-		caps = append(caps, cty.StringVal("BPF"), cty.StringVal("PERFMON"))
+	var caps []cty.Value
+	for _, c := range opts.capabilities() {
+		caps = append(caps, cty.StringVal(c))
 	}
 	containerBody.AppendNewBlock("security_context", []string{}).
 		Body().AppendNewBlock("capabilities", []string{}).

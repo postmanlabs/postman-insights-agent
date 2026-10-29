@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 	"github.com/spf13/cobra"
@@ -98,7 +100,8 @@ type SidecarOpts struct {
 	// EnableHTTPSCapture, when true, adds the privileges and mounts required
 	// for the eBPF-based HTTPS capture pipeline:
 	//   * hostPID: true
-	//   * caps: BPF, PERFMON (in addition to NET_RAW)
+	//   * caps: BPF, PERFMON (in addition to NET_RAW), and SYS_PTRACE when
+	//     HTTPSLibraries includes java (see capabilities)
 	//   * mounts: /sys/kernel/debug, /sys/fs/bpf, /proc (read-only)
 	//   * `--enable-https-capture` appended to apidump args
 	// Customers who don't need HTTPS capture get the existing minimal
@@ -119,6 +122,22 @@ func (opts SidecarOpts) httpsArgs() []string {
 		args = append(args, "--https-libraries="+opts.HTTPSLibraries)
 	}
 	return args
+}
+
+// capabilities returns the Linux capabilities the sidecar adds. Java capture
+// also needs SYS_PTRACE: the agent writes each JVM's control file through
+// /proc/<pid>/root, which the kernel opens for a process of another user only
+// with it, and JVMs often run as a non-root user.
+func (opts SidecarOpts) capabilities() []string {
+	caps := []string{"NET_RAW"}
+	if !opts.EnableHTTPSCapture {
+		return caps
+	}
+	caps = append(caps, "BPF", "PERFMON")
+	if libs, _ := ebpf.ParseLibraries(strings.Split(opts.HTTPSLibraries, ",")); libs.Java {
+		caps = append(caps, "SYS_PTRACE")
+	}
+	return caps
 }
 
 func createPostmanSidecar(opts SidecarOpts) v1.Container {
@@ -246,10 +265,12 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 	cpu := resource.MustParse("200m")
 	memory := resource.MustParse("500Mi")
 
-	caps := []v1.Capability{"NET_RAW"}
+	var caps []v1.Capability
+	for _, c := range opts.capabilities() {
+		caps = append(caps, v1.Capability(c))
+	}
 	var volumeMounts []v1.VolumeMount
 	if opts.EnableHTTPSCapture {
-		caps = append(caps, "BPF", "PERFMON")
 		volumeMounts = []v1.VolumeMount{
 			{Name: "sys-kernel-debug", MountPath: "/sys/kernel/debug"},
 			{Name: "sys-fs-bpf", MountPath: "/sys/fs/bpf"},

@@ -107,6 +107,10 @@ type gateInfo struct {
 	// from.
 	args       []string
 	argsSource string
+	// attachOn is whether the JVM's attach mechanism is on, when the JVM
+	// says so itself (attachKnown, from its perf data); otherwise its
+	// arguments tell.
+	attachOn, attachKnown bool
 	// sigQuitCaught: the JVM handles SIGQUIT (no -Xrs).
 	sigQuitCaught bool
 }
@@ -288,6 +292,9 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 		return
 	}
 	flags := parseFlags(info.args)
+	if info.attachKnown {
+		flags.attachDisabled = !info.attachOn
+	}
 	switch {
 	case flags.attachDisabled:
 		a.skip(s, SkipAttachDisabled, "attach is disabled (-XX:+DisableAttachMechanism, from its "+info.argsSource+")")

@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -80,5 +81,31 @@ func TestSidecarHTTPSArgs(t *testing.T) {
 		if tc.opts.HTTPSLibraries != "" && !tc.opts.EnableHTTPSCapture {
 			assert.NotContains(t, tf, "--https-libraries")
 		}
+	}
+}
+
+// Java capture adds SYS_PTRACE, which writing a non-root JVM's control file
+// needs; nothing else does.
+func TestSidecarCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		opts SidecarOpts
+		want []string
+	}{
+		{SidecarOpts{}, []string{"NET_RAW"}},
+		{SidecarOpts{HTTPSLibraries: "java"}, []string{"NET_RAW"}},
+		{SidecarOpts{EnableHTTPSCapture: true}, []string{"NET_RAW", "BPF", "PERFMON"}},
+		{SidecarOpts{EnableHTTPSCapture: true, HTTPSLibraries: "openssl"}, []string{"NET_RAW", "BPF", "PERFMON"}},
+		{SidecarOpts{EnableHTTPSCapture: true, HTTPSLibraries: "openssl,java"}, []string{"NET_RAW", "BPF", "PERFMON", "SYS_PTRACE"}},
+		{SidecarOpts{EnableHTTPSCapture: true, HTTPSLibraries: "java"}, []string{"NET_RAW", "BPF", "PERFMON", "SYS_PTRACE"}},
+	} {
+		name := fmt.Sprintf("%+v", tc.opts)
+		var yamlCaps []string
+		for _, c := range createPostmanSidecar(tc.opts).SecurityContext.Capabilities.Add {
+			yamlCaps = append(yamlCaps, string(c))
+		}
+		assert.Equal(t, tc.want, yamlCaps, name)
+
+		tf := string(createTerraformContainer(tc.opts).Bytes())
+		assert.Contains(t, tf, `add = ["`+strings.Join(tc.want, `", "`)+`"]`, name)
 	}
 }

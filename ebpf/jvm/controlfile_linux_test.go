@@ -226,22 +226,30 @@ func TestPerfDataArgsIn(t *testing.T) {
 	root, fd := containerRoot(t)
 	dir := filepath.Join(root, "tmp", "hsperfdata_app")
 	require.NoError(t, os.Mkdir(dir, 0o755))
-	data := perfData(binary.LittleEndian, map[string]string{"java.rt.vmArgs": "-XX:+DisableAttachMechanism", "java.rt.vmFlags": "-XX:Flags=.hotspotrc"})
+	data := perfData(binary.LittleEndian, map[string]string{
+		"java.rt.vmArgs":         "-XX:+DisableAttachMechanism",
+		"java.rt.vmFlags":        "-XX:Flags=.hotspotrc",
+		"sun.rt.jvmCapabilities": "0100000000000000000000000000000000000000000000000000000000000000",
+	})
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "7"), data, 0o600))
 
 	uid := uint32(os.Geteuid())
-	args, err := perfDataArgsIn(fd, 7, uid)
+	entries, err := perfDataEntriesIn(fd, 7, uid)
 	require.NoError(t, err)
-	assert.Equal(t, "-XX:+DisableAttachMechanism -XX:Flags=.hotspotrc", args)
+	assert.Equal(t, "-XX:+DisableAttachMechanism", entries["java.rt.vmArgs"])
+	assert.Equal(t, "-XX:Flags=.hotspotrc", entries["java.rt.vmFlags"])
+	on, known := perfDataAttach(entries)
+	assert.True(t, known)
+	assert.False(t, on)
 
-	_, err = perfDataArgsIn(fd, 8, uid)
+	_, err = perfDataEntriesIn(fd, 8, uid)
 	assert.Error(t, err, "another JVM's file")
-	_, err = perfDataArgsIn(fd, 7, uid+1)
+	_, err = perfDataEntriesIn(fd, 7, uid+1)
 	assert.Error(t, err, "a file of another user")
 
 	// A symlink planted in /tmp resolves inside the container.
 	require.NoError(t, os.Symlink("/etc", filepath.Join(root, "tmp", "hsperfdata_evil")))
-	_, err = perfDataArgsIn(fd, 1, uid)
+	_, err = perfDataEntriesIn(fd, 1, uid)
 	assert.Error(t, err)
 }
 

@@ -15,6 +15,18 @@ import (
 // JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS and argument files, which the command
 // line does not show.
 
+// perfDataAttach reports whether a JVM's attach mechanism is on, from the
+// first character of its sun.rt.jvmCapabilities entry ("1" when on, "0" with
+// -XX:+DisableAttachMechanism), as jps and VirtualMachine.list read it. known
+// is false without the entry.
+func perfDataAttach(entries map[string]string) (on, known bool) {
+	c := entries["sun.rt.jvmCapabilities"]
+	if c == "" {
+		return false, false
+	}
+	return c[0] == '1', true
+}
+
 // perfDataMagic is the file's first four bytes, whatever its byte order:
 // HotSpot stores the magic big-endian on every platform (on little-endian
 // ones it writes 0xc0c0feca), and the byte after it gives the order of

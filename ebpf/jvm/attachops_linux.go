@@ -64,8 +64,12 @@ func (o linuxOps) inspect(p *Process) (gateInfo, error) {
 	}
 	info.sigQuitCaught = sigQuitCaught(status)
 
-	if args, err := perfDataArgs(p); err == nil {
-		info.args, info.argsSource = strings.Fields(args), "hsperfdata"
+	if entries, err := perfDataEntries(p); err == nil {
+		// HotSpot joins the arguments with spaces, so one containing spaces
+		// splits; whether attach is on comes from the JVM itself instead.
+		info.args = strings.Fields(entries["java.rt.vmArgs"] + " " + entries["java.rt.vmFlags"])
+		info.attachOn, info.attachKnown = perfDataAttach(entries)
+		info.argsSource = "hsperfdata"
 		return info, nil
 	}
 	cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
@@ -93,28 +97,30 @@ func sigQuitCaught(status []byte) bool {
 	return false
 }
 
-// perfDataArgs returns the JVM's effective arguments from its perf data file
-// /tmp/hsperfdata_<user>/<nspid>, which must belong to the JVM's user.
-func perfDataArgs(p *Process) (string, error) {
+// perfDataEntries returns the string entries of the JVM's perf data file
+// /tmp/hsperfdata_<user>/<nspid>, which must belong to the JVM's user and
+// have its effective arguments (java.rt.vmArgs).
+func perfDataEntries(p *Process) (map[string]string, error) {
 	root, err := openRoot(p)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer unix.Close(root)
-	return perfDataArgsIn(root, p.NSPID, p.UID)
+	return perfDataEntriesIn(root, p.NSPID, p.UID)
 }
 
-// perfDataArgsIn is perfDataArgs in the container whose root is open as root.
-func perfDataArgsIn(root int, nspidNum, uid uint32) (string, error) {
+// perfDataEntriesIn is perfDataEntries in the container whose root is open as
+// root.
+func perfDataEntriesIn(root int, nspidNum, uid uint32) (map[string]string, error) {
 	tmp, err := openIn(root, "/tmp", unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	tmpDir := os.NewFile(uintptr(tmp), "/tmp")
 	names, err := tmpDir.Readdirnames(-1)
 	tmpDir.Close()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	nspid := strconv.FormatUint(uint64(nspidNum), 10)
 	for _, name := range names {
@@ -129,11 +135,11 @@ func perfDataArgsIn(root int, nspidNum, uid uint32) (string, error) {
 		if err != nil {
 			continue
 		}
-		if args, ok := entries["java.rt.vmArgs"]; ok {
-			return args + " " + entries["java.rt.vmFlags"], nil
+		if _, ok := entries["java.rt.vmArgs"]; ok {
+			return entries, nil
 		}
 	}
-	return "", errors.New("no perf data")
+	return nil, errors.New("no perf data")
 }
 
 // readOwnedFile reads a regular file inside the container that belongs to

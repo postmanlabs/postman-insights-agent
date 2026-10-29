@@ -107,6 +107,7 @@ Without `java`, the Insights Agent switches off the agents already running in th
 The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
 As a DaemonSet (`kube run`), it also loads the agent into running JVMs that do not have it, through the `postman-jvm-attach` helper (`cmd/postman-jvm-attach`), which it runs as each JVM's own user.
 Run as a sidecar (`apidump`), it loads nothing: the JVMs need `-javaagent`.
+To write the control file of a JVM running as another user, it needs the `SYS_PTRACE` capability, which the sidecars that `kube inject`, `helm-fragment` and `tf-fragment` generate get with `--https-libraries` including `java`.
 It then captures Java only in its own pod's network namespace, even with `hostPID`, and not at all in a pod on the host network.
 A pod whose network namespace is unknown, or on the host network, is captured without Java in a DaemonSet too, since its namespace does not identify one pod.
 On JDK 21 and newer, the JVM then prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr; they are harmless.

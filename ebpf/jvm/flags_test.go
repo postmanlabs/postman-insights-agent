@@ -32,6 +32,28 @@ func TestArgsFromCmdline(t *testing.T) {
 	assert.True(t, parseFlags(argsFromCmdline([]byte("java\x00-jar\x00a.jar\x00"), environ)).attachDisabled)
 }
 
+// Java options in the environment are split as HotSpot splits them: quotes
+// keep an option with spaces whole.
+func TestSplitJavaOptions(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"  -Xmx1g\t-Dx=y \n", []string{"-Xmx1g", "-Dx=y"}},
+		{`-Dmsg="a -XX:-DisableAttachMechanism" -Xmx1g`, []string{"-Dmsg=a -XX:-DisableAttachMechanism", "-Xmx1g"}},
+		{`-Dmsg='say "hi"' x`, []string{`-Dmsg=say "hi"`, "x"}},
+		{`"-Dquoted whole" -Dmid="x"y`, []string{"-Dquoted whole", "-Dmid=xy"}},
+		{`-Dempty="" -Dopen="a b`, []string{"-Dempty=", "-Dopen=a b"}},
+	} {
+		assert.Equal(t, tc.want, splitJavaOptions(tc.in), "%q", tc.in)
+	}
+
+	environ := []byte("JAVA_TOOL_OPTIONS=-XX:+DisableAttachMechanism -Dmsg='x -XX:-DisableAttachMechanism y'\x00")
+	assert.True(t, parseFlags(argsFromCmdline([]byte("java\x00-jar\x00a.jar\x00"), environ)).attachDisabled,
+		"a quoted option is not a flag")
+}
+
 // The application's arguments, after the main class, -jar file or module,
 // are not the JVM's, nor are the values of options that take one; an
 // argument with spaces stays one argument.

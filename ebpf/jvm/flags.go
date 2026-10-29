@@ -58,12 +58,49 @@ func argsFromCmdline(cmdline, environ []byte) []string {
 	}
 	// JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS come before the command line,
 	// _JAVA_OPTIONS after it.
-	args := strings.Fields(env["JAVA_TOOL_OPTIONS"])
-	args = append(args, strings.Fields(env["JDK_JAVA_OPTIONS"])...)
+	args := splitJavaOptions(env["JAVA_TOOL_OPTIONS"])
+	args = append(args, splitJavaOptions(env["JDK_JAVA_OPTIONS"])...)
 	if argv := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"); len(argv) > 1 {
 		args = append(args, launcherOptions(argv[1:])...) // argv[0] is the launcher
 	}
-	return append(args, strings.Fields(env["_JAVA_OPTIONS"])...)
+	return append(args, splitJavaOptions(env["_JAVA_OPTIONS"])...)
+}
+
+// splitJavaOptions splits a Java options environment variable into options
+// as HotSpot and the java launcher do: at whitespace, except inside single or
+// double quotes, which are removed. So -Dmsg='a -XX:-DisableAttachMechanism'
+// is one option. A JVM does not start with an unmatched quote; here the rest
+// is one option.
+func splitJavaOptions(s string) []string {
+	var opts []string
+	var opt strings.Builder
+	inOpt := false
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				opt.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote, inOpt = r, true
+		case strings.ContainsRune(" \t\n\v\f\r", r):
+			if inOpt {
+				opts = append(opts, opt.String())
+				opt.Reset()
+				inOpt = false
+			}
+		default:
+			opt.WriteRune(r)
+			inOpt = true
+		}
+	}
+	if inOpt {
+		opts = append(opts, opt.String())
+	}
+	return opts
 }
 
 // launcherOptions returns the options at the start of the java launcher's
