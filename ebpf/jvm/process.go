@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 // Package jvm finds the Java virtual machines among discovered processes and
 // keeps the Java agent's control file fresh in their containers (see
 // javatls.ControlFilePath): the agent captures only while that file says so.

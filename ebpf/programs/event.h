@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 //
 // Shared event format between BPF (kernel) and Go (userspace).
 // Keep this file ABI-stable: changes here must be matched in

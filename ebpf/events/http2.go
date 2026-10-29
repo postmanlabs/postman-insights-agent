@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Minimum-viable HTTP/2 frame decoder for the eBPF capture path.
 //
 // Why this is in the adapter rather than akinet
