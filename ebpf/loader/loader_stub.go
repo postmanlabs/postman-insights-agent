@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Stub Loader for builds without the `insights_bpf` tag, and for non-Linux
 // platforms. Returns ErrUnsupported from Load(); all accessor methods return
 // nil so callers can structure code defensively without per-call build tags.

@@ -1,4 +1,4 @@
-.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf generate-ebpf
+.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf generate-ebpf check-license-headers
 
 .DEFAULT_GOAL := build
 
@@ -77,6 +77,10 @@ mock:
 
 test: mock
 	go test ./...
+
+# Only the BPF sources carry an SPDX line; see the script.
+check-license-headers:
+	build-scripts/check-license-headers.sh
 
 # eBPF code sits behind the insights_bpf tag, so `make test` never compiles it.
 # Run the tagged tests explicitly. Requires a Linux host with the eBPF toolchain

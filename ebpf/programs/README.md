@@ -85,13 +85,28 @@ amd64 and arm64 on separate machines). This produces `libssl_bpfel.go`
 `go:embed`. These generated files are git-ignored and regenerated in every
 build environment.
 
-## Why GPL license tag
+## Licensing of the BPF programs
 
-`bpf_probe_read_user()` and several other BPF helpers require the loaded
-program to be GPL-licensed (this is a Linux kernel ABI requirement, not a
-project license decision). The `char LICENSE[] SEC("license") = "GPL"` in
-each `.bpf.c` only affects the BPF object's runtime license metadata. The
-source files themselves are Apache-2.0 (matching this repo and OBI upstream).
+`bpf_probe_read_user()` and several other BPF helpers can be called only from
+a program the kernel considers GPL-compatible, which a program declares with
+`char LICENSE[] SEC("license")` (a Linux kernel ABI requirement).
+
+- `java_tls.bpf.c` and the headers `common.h`, `event.h` and `java_frame.h`
+  are dual-licensed `(GPL-2.0-only OR BSD-2-Clause)`, the usual licence of
+  BPF programs (Cilium, libbpf-tools), and declare `"Dual BSD/GPL"` to the
+  kernel. The licence texts are `LICENSE.GPL-2.0-only` and
+  `LICENSE.BSD-2-Clause` in this directory. A program that includes them
+  under BSD-2-Clause, as `libssl.bpf.c` does, keeps its own licence.
+- `libssl.bpf.c` is Apache-2.0 and declares `"GPL"`: it follows the design of
+  OBI's Apache-2.0 `bpf/generictracer/libssl.c` (OpenTelemetry eBPF
+  Instrumentation, which declares `"Dual MIT/GPL"` for its programs) and
+  reuses some of its names, so it keeps OBI's licence.
+- The rest of the repository, including the Go code that loads these
+  programs, is Apache-2.0 (the root `LICENSE`).
+
+Only these BPF sources carry an `SPDX-License-Identifier` line, because only
+they need to say which licence applies; files under the root `LICENSE` carry
+none. `build-scripts/check-license-headers.sh` checks these rules in CI.
 
 ## Verifier hints (debugging)
 
