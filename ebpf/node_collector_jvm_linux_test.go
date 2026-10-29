@@ -888,22 +888,24 @@ const (
 
 // TestNodeCollectorJVMAttachDAC attaches with the DaemonSet's capabilities
 // only, to a JVM of another user that publishes perf data (uid 65534, which
-// has a user name) and to one that does not (uid 1000, which has none): the
-// attacher reads the JVM's perf data (0600) or environment (0400) through
-// the helper, as the JVM's user.
+// has a user name) and to one that does not (-XX:-UsePerfData): the attacher
+// reads the JVM's perf data (0600) or environment (0400) through the helper,
+// as the JVM's user.
 func TestNodeCollectorJVMAttachDAC(t *testing.T) {
 	f := newJVMFixture(t)
 	helper := f.helper(t)
 	for _, tc := range []struct {
 		name     string
 		uid      int
+		jvmArgs  []string
 		perfData bool
 	}{
 		{name: "perf data", uid: 65534, perfData: true},
-		{name: "environment", uid: 1000},
+		// Off explicitly, whether or not the host has a user name for the uid.
+		{name: "environment", uid: 1000, jvmArgs: []string{"-XX:-UsePerfData"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			j := f.start(t, tc.uid, []string{"JAVA_TOOL_OPTIONS=-Dpostman.test=dac"})
+			j := f.start(t, tc.uid, []string{"JAVA_TOOL_OPTIONS=-Dpostman.test=dac"}, tc.jvmArgs...)
 			p := j.inspect(t)
 			perfFiles, _ := filepath.Glob(filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", "tmp", "hsperfdata_*", strconv.Itoa(int(p.NSPID))))
 			if got := len(perfFiles) > 0; got != tc.perfData {
