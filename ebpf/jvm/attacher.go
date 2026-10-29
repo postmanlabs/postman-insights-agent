@@ -105,7 +105,8 @@ type gateInfo struct {
 	age time.Duration
 	// args are its effective arguments, and argsSource where they came
 	// from.
-	args, argsSource string
+	args       []string
+	argsSource string
 	// sigQuitCaught: the JVM handles SIGQUIT (no -Xrs).
 	sigQuitCaught bool
 }

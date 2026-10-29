@@ -53,6 +53,29 @@ func TestRouteSub_NoMatchReturnsNil(t *testing.T) {
 	}
 }
 
+// hostNetwork pods share the node's netns: the PID picks the pod that
+// registered it, and only among the subscribers of that netns.
+func TestRouteSub_SharedNetnsPrefersPID(t *testing.T) {
+	older, newer, elsewhere := &podSub{}, &podSub{}, &podSub{}
+	byNetns := routeTable[uint64]{7: {older, newer}, 8: {elsewhere}}
+	byPID := routeTable[uint32]{100: {older}, 200: {newer}, 300: {elsewhere}}
+
+	for _, tc := range []struct {
+		name string
+		pid  uint32
+		want *podSub
+	}{
+		{"the older pod's PID", 100, older},
+		{"the newer pod's PID", 200, newer},
+		{"an unregistered PID goes to the newest", 999, newer},
+		{"a PID of another netns's pod goes to the newest", 300, newer},
+	} {
+		if got := routeSub(byNetns, byPID, 7, tc.pid); got != tc.want {
+			t.Errorf("%s: routed to %p, want %p", tc.name, got, tc.want)
+		}
+	}
+}
+
 // Two subscriptions on one netns (hostNetwork pods, or a capture restarting
 // before the old subscription's cleanup ran): whichever leaves first, the other
 // keeps receiving events.

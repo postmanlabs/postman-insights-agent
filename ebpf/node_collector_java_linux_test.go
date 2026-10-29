@@ -31,8 +31,9 @@ import (
 //
 // Requires root (CAP_BPF + CAP_PERFMON) and tracefs; skipped otherwise.
 // javaTestCollector starts a NodeCollector with Java capture, as the
-// DaemonSet does. hostNetns is cleared, because the tests run in the host's
-// netns in the dev container (--network=host); tests that need it set it.
+// DaemonSet does. hostNetns is set to an inode no netns has, because the
+// tests run in the host's netns in the dev container (--network=host); tests
+// that need it set it.
 func javaTestCollector(t *testing.T) (*NodeCollector, context.Context) {
 	t.Helper()
 	nc, ctx := testCollector(t, true)
@@ -43,7 +44,7 @@ func javaTestCollector(t *testing.T) (*NodeCollector, context.Context) {
 }
 
 // testCollector starts a NodeCollector as the DaemonSet does, with Java
-// capture on or off. hostNetns is cleared as for javaTestCollector.
+// capture on or off. hostNetns is replaced as for javaTestCollector.
 func testCollector(t *testing.T, java bool) (*NodeCollector, context.Context) {
 	t.Helper()
 	return testCollectorWith(t, NodeCollectorConfig{EnableJava: java})
@@ -65,13 +66,16 @@ func testCollectorWith(t *testing.T, cfg NodeCollectorConfig) (*NodeCollector, c
 		t.Fatalf("NewNodeCollector: %v", err)
 	}
 	t.Cleanup(func() { _ = nc.Close() })
-	nc.hostNetns = 0
+	nc.hostNetns = fakeHostNetns
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = nc.Run(ctx) }()
 	return nc, ctx
 }
+
+// fakeHostNetns is an inode no network namespace has.
+const fakeHostNetns = 1
 
 func httpSelector(t *testing.T) akinet.TCPParserFactorySelector {
 	t.Helper()
@@ -225,7 +229,6 @@ func TestNodeCollectorJavaSharedNetns(t *testing.T) {
 				cancelFirst, cancelSecond, stayingOut = cancelNewer, cancelOlder, olderOut
 			}
 			cancelFirst()
-			time.Sleep(200 * time.Millisecond) // let the cancelled subscription's cleanup run
 
 			writeJavaFrame(t, javatls.OpRecv, "GET /still-here HTTP/1.1\r\nHost: x\r\n\r\n")
 			select {
@@ -242,6 +245,46 @@ func TestNodeCollectorJavaSharedNetns(t *testing.T) {
 			expectRejected(t, nc)
 		})
 	}
+}
+
+// TestNodeCollectorUnsubscribeIsSynchronous: when unsubscribe returns, the
+// pod's netns is no longer accepted and its adapter sends nothing more, so the
+// caller can close out at once, as apidump does, while frames keep arriving.
+func TestNodeCollectorUnsubscribeIsSynchronous(t *testing.T) {
+	nc, ctx := javaTestCollector(t)
+	out := make(chan akinet.ParsedNetworkTraffic, 1024)
+	unsubscribe, _ := nc.Subscribe(ctx, make(chan discovery.Target), httpSelector(t), out, "", ownNetns(t), nil)
+
+	stop := make(chan struct{})
+	writing := make(chan struct{})
+	go func() {
+		defer close(writing)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				writeJavaFrame(t, javatls.OpRecv, "GET /busy HTTP/1.1\r\nHost: x\r\n\r\n")
+			}
+		}
+	}()
+	select {
+	case <-out:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no parsed traffic from the subscription")
+	}
+
+	unsubscribe()
+	nc.mu.RLock()
+	refs, routed := nc.javaNetnsRefs[ownNetns(t)], len(nc.netnsToSub)
+	nc.mu.RUnlock()
+	if refs != 0 || routed != 0 {
+		t.Errorf("after unsubscribe: %d Java netns references, %d netns routes; want none", refs, routed)
+	}
+	close(out) // a later send on it panics
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	<-writing
 }
 
 // TestNodeCollectorJavaCleanupWhenDiscoveryCloses: discovery closes its channel
@@ -324,6 +367,46 @@ func TestNodeCollectorRepeatedJVMTarget(t *testing.T) {
 	disco <- discovery.Target{PID: 1<<30 + 1, Removed: true, Seen: time.Now()}
 	if n := nc.jvms.Len(); n != 0 {
 		t.Fatalf("%d JVMs still controlled after the JVM was removed", n)
+	}
+}
+
+// TestNodeCollectorJavaOffWithoutHostNetns: when the node's netns cannot be
+// read, a hostNetwork pod's netns cannot be told from a pod's own, so the
+// collector runs without Java and controls no JVMs.
+func TestNodeCollectorJavaOffWithoutHostNetns(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
+	}
+	saved := hostNetnsInode
+	hostNetnsInode = func() uint64 { return 0 }
+	defer func() { hostNetnsInode = saved }()
+
+	nc, err := NewNodeCollector(NodeCollectorConfig{MaxCaptureBytes: 16384, DisableThermostat: true, EnableJava: true})
+	if err != nil {
+		t.Fatalf("NewNodeCollector: %v", err)
+	}
+	defer nc.Close()
+	if got, want := nc.Libraries(), (Libraries{OpenSSL: true}); got != want {
+		t.Errorf("libraries %s, want %s", got, want)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = nc.Run(ctx) }()
+
+	disco := make(chan discovery.Target)
+	unsubscribe, _ := nc.Subscribe(ctx, disco, httpSelector(t), make(chan akinet.ParsedNetworkTraffic, 16), "", ownNetns(t), nil)
+	defer unsubscribe()
+	p := &jvm.Process{ProcRoot: "/proc", PID: 1 << 30, StartTime: 1, Kind: jvm.HotSpot, MountNS: 1}
+	disco <- discovery.Target{PID: p.PID, StartTime: p.StartTime, JVM: p, Seen: time.Now()}
+	// Handled one at a time: once the next is taken, the JVM target is done.
+	disco <- discovery.Target{PID: 1<<30 + 1, Removed: true, Seen: time.Now()}
+	if n := nc.jvms.Len(); n != 0 {
+		t.Errorf("%d JVMs controlled without the node's netns", n)
+	}
+
+	if nc, err := NewNodeCollector(NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true}); err == nil {
+		_ = nc.Close()
+		t.Error("a Java-only NewNodeCollector without the node's netns succeeded")
 	}
 }
 

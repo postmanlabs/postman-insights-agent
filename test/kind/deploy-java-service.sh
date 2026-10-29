@@ -25,6 +25,9 @@ JAVA_IMAGE=pia-java-service:test
 NETTY_IMAGE=pia-netty-service:test
 SERVICES="java-service netty-service java-service-attach"
 NS=test-apps
+# The client runs outside the monitored namespace, so the counters checked
+# below count only the services' traffic, not the client's own (libssl).
+CLIENT_NS=test-clients
 SKIP_BUILD=false
 REQUESTS=3 # rounds of 3 requests each
 
@@ -101,10 +104,11 @@ for svc in $SERVICES; do
   fi
 done
 
-echo "==> Sending HTTPS requests to${POD_IPS} (port 8443)"
-kubectl delete pod -n "$NS" java-client --ignore-not-found >/dev/null
+echo "==> Sending HTTPS requests to${POD_IPS} (port 8443) from namespace ${CLIENT_NS}"
+kubectl create namespace "$CLIENT_NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl delete pod -n "$CLIENT_NS" java-client --ignore-not-found >/dev/null
 # -f: an HTTP error fails curl, and -e makes that fail the pod and this script.
-kubectl run java-client --restart=Never -n "$NS" --image=curlimages/curl:latest --rm -i --quiet -- sh -ec "
+kubectl run java-client --restart=Never -n "$CLIENT_NS" --image=curlimages/curl:latest --rm -i --quiet -- sh -ec "
   for ip in ${POD_IPS}; do
     for i in \$(seq 1 ${REQUESTS}); do
       curl -fsSk https://\$ip:8443/hello?name=kind-\$i; echo
@@ -125,25 +129,32 @@ else
   grep -E 'Java HTTPS capture' <<<"$LOGS" || true
   fail=1
 fi
-# Highest value of a key=value field across ebpf-stats lines; empty when there
-# is none, so the checks below report it instead of set -e aborting here.
-max_field() { { grep -o "ebpf-stats: .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true; }
-java_events=$(max_field java_events)
-msgs=$(max_field msgs)
+# Highest value of a key=value field across the ebpf-stats lines, of one pod
+# when a second argument names it; empty when there is none, so the checks
+# below report it instead of set -e aborting here. Each monitored pod logs its
+# own line, starting with pod=<name>; the java_* fields are the node's.
+max_field() {
+  { grep -o "ebpf-stats: pod=${2:-[^ ]*} .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true
+}
 services=$(wc -w <<<"$SERVICES")
-want=$((services * REQUESTS * 3 * 2)) # a request and a response per call
+per_service=$((REQUESTS * 3 * 2)) # a request and a response per call
+java_events=$(max_field java_events)
+want=$((services * per_service))
 if [[ "${java_events:-0}" -ge "$want" ]]; then
   echo "  PASS  java_events=${java_events}"
 else
   echo "  FAIL  java_events=${java_events:-none}, want at least ${want}"
   fail=1
 fi
-if [[ "${msgs:-0}" -ge "$want" ]]; then
-  echo "  PASS  msgs=${msgs} (HTTP messages parsed for a monitored pod)"
-else
-  echo "  FAIL  msgs=${msgs:-none}, want at least ${want}"
-  fail=1
-fi
+for svc in $SERVICES; do
+  msgs=$(max_field msgs "$svc")
+  if [[ "${msgs:-0}" -ge "$per_service" ]]; then
+    echo "  PASS  ${svc}: msgs=${msgs} (HTTP messages parsed for the pod)"
+  else
+    echo "  FAIL  ${svc}: msgs=${msgs:-none}, want at least ${per_service}"
+    fail=1
+  fi
+done
 
 # The kernel ties each Java connection to its socket, so every message has
 # its IP addresses and ports: no data frame went out without them, and no

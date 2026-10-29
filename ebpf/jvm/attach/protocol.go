@@ -220,7 +220,7 @@ func unescapeProperty(v string) string {
 			b.WriteByte('\f')
 		case 'u':
 			if i+4 < len(v) {
-				if r, err := strconv.ParseUint(v[i+1:i+5], 16, 32); err == nil {
+				if r, err := strconv.ParseUint(v[i+1:i+5], 16, 16); err == nil {
 					b.WriteRune(rune(r))
 					i += 4
 					continue

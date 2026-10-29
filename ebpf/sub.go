@@ -6,6 +6,8 @@ package ebpf
 // compiled and unit-tested on every platform, independent of the BPF loader.
 
 import (
+	"slices"
+
 	"github.com/akitasoftware/akita-libs/akinet"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
@@ -20,9 +22,9 @@ type podSub struct {
 // routeTable maps a routing key (netns inode or PID) to the subscribers
 // registered under it, oldest first. Subscriptions can share a key: hostNetwork
 // pods share the node's netns and PIDs, and a pod's capture can restart before
-// the old subscription's cleanup has run. Events go to the newest subscriber,
-// and a subscriber that leaves removes only its own entry, so the others keep
-// receiving events whatever order they leave in.
+// the old subscription's cleanup has run. Events go to the newest subscriber
+// unless routeSub knows better, and a subscriber that leaves removes only its
+// own entry, so the others keep receiving events whatever order they leave in.
 type routeTable[K comparable] map[K][]*podSub
 
 // add registers s under k. Adding the same subscriber twice is a no-op.
@@ -73,11 +75,20 @@ func (r routeTable[K]) get(k K) *podSub {
 // no registered subscriber — preserving the original behaviour on non-nested
 // nodes where /host/proc is the init namespace and PIDs already match.
 //
+// When several subscribers share the netns (hostNetwork pods share the
+// node's), the PID picks among them, if one of them registered it; otherwise
+// the newest gets the event.
+//
 // Returns nil when no subscriber matches (the event is dropped).
 func routeSub(byNetns routeTable[uint64], byPID routeTable[uint32], netnsInode uint64, pid uint32) *podSub {
 	if netnsInode != 0 {
-		if s := byNetns.get(netnsInode); s != nil {
-			return s
+		if subs := byNetns[netnsInode]; len(subs) > 0 {
+			if len(subs) > 1 {
+				if s := byPID.get(pid); s != nil && slices.Contains(subs, s) {
+					return s
+				}
+			}
+			return subs[len(subs)-1]
 		}
 	}
 	return byPID.get(pid)

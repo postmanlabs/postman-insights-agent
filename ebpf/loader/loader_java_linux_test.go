@@ -7,6 +7,8 @@ package loader
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -68,8 +70,20 @@ func TestJavaTLSFrames(t *testing.T) {
 	}
 	pwritev2 := func(t *testing.T, frame []byte) {
 		t.Helper()
-		if _, err := unix.Pwritev2(fd, [][]byte{frame}, int64(javatls.Magic), unix.RWF_NOAPPEND); err != nil {
+		if _, err := unix.Pwritev2(fd, [][]byte{frame}, int64(javatls.Magic), 0); err != nil {
 			t.Fatalf("pwritev2: %v", err)
+		}
+	}
+	// muslPwrite writes the way musl's pwrite() does: pwritev2 with
+	// RWF_NOAPPEND, then pwrite64 if the kernel rejects the flag (before 6.9).
+	muslPwrite := func(t *testing.T, frame []byte) {
+		t.Helper()
+		_, err := unix.Pwritev2(fd, [][]byte{frame}, int64(javatls.Magic), unix.RWF_NOAPPEND)
+		if errors.Is(err, unix.EOPNOTSUPP) {
+			_, err = unix.Pwrite(fd, frame, int64(javatls.Magic))
+		}
+		if err != nil {
+			t.Fatalf("musl pwrite: %v", err)
 		}
 	}
 	readEvent := func(t *testing.T) *events.SSLEvent {
@@ -160,6 +174,16 @@ func TestJavaTLSFrames(t *testing.T) {
 			ev.LenTotal != 4096 || ev.LenCaptured != captureCap || !bytes.Equal(ev.Bytes(), body[:captureCap]) {
 			t.Errorf("event = ctx %#x dir %d total %d captured %d", ev.SSLCtx, ev.Direction, ev.LenTotal, ev.LenCaptured)
 		}
+	})
+
+	// On every kernel: one write with RWF_NOAPPEND where it is supported,
+	// else a rejected one and a pwrite64, which must not read the frame twice.
+	t.Run("musl pwrite gives one event", func(t *testing.T) {
+		muslPwrite(t, send)
+		if ev := readEvent(t); ev.SSLCtx != javatls.SSLCtx(7) || !bytes.Equal(ev.Bytes(), request) {
+			t.Errorf("event = ctx %#x payload %q", ev.SSLCtx, ev.Bytes())
+		}
+		expectNoEvent(t)
 	})
 
 	t.Run("malformed frames are dropped", func(t *testing.T) {
@@ -362,4 +386,100 @@ func TestJavaTLSFrames(t *testing.T) {
 		pwrite(t, send)
 		expectNoEvent(t)
 	})
+}
+
+// TestJavaTLSNoAppendRejected loads the Java TLS programs as on a kernel
+// before 6.9, which rejects pwritev2's RWF_NOAPPEND: such a pwritev2 is
+// skipped, since musl writes the frame again with pwrite64, while pwritev2
+// without the flag and pwrite64 are read.
+func TestJavaTLSNoAppendRejected(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root (CAP_BPF + CAP_PERFMON)")
+	}
+	l, err := Load(Config{
+		MaxCaptureBytes:           64,
+		EnableJava:                true,
+		EnforceJavaNetnsAllowlist: true,
+		javaNoAppendRejected:      true,
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	defer l.Close()
+	if !l.JavaEnabled() {
+		t.Fatalf("Java TLS programs did not load: %v", l.JavaError())
+	}
+	rd, err := ringbuf.NewReader(l.EventsMap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+
+	var st syscall.Stat_t
+	if err := syscall.Stat("/proc/self/ns/net", &st); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.AllowJavaNetns(st.Ino); err != nil {
+		t.Fatalf("AllowJavaNetns: %v", err)
+	}
+	defer l.DisallowJavaNetns(st.Ino)
+
+	devNull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	fd := int(devNull.Fd())
+
+	frame := func(connID uint64) []byte {
+		return javatls.Frame{Version: javatls.Version1, Op: javatls.OpSend, ConnID: connID,
+			TotalLen: 5, Payload: []byte("hello")}.Append(nil)
+	}
+	// readConn returns the conn id of the next event, or 0 when there is none.
+	readConn := func() uint64 {
+		rd.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		rec, err := rd.Read()
+		if err != nil {
+			return 0
+		}
+		ev, err := events.Decode(rec.RawSample)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return ev.SSLCtx &^ javatls.ConnIDTag
+	}
+
+	// The kernel this runs on may accept the flag; the program skips the call
+	// either way.
+	_, _ = unix.Pwritev2(fd, [][]byte{frame(1)}, int64(javatls.Magic), unix.RWF_NOAPPEND)
+	if _, err := unix.Pwritev2(fd, [][]byte{frame(2)}, int64(javatls.Magic), 0); err != nil {
+		t.Fatalf("pwritev2: %v", err)
+	}
+	if _, err := unix.Pwrite(fd, frame(3), int64(javatls.Magic)); err != nil {
+		t.Fatalf("pwrite64: %v", err)
+	}
+	var got []uint64
+	for id := readConn(); id != 0; id = readConn() {
+		got = append(got, id)
+	}
+	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Errorf("events for conn ids %v, want [2 3]", got)
+	}
+}
+
+// pwritev2RejectsNoAppend matches the kernel: RWF_NOAPPEND is Linux 6.9+.
+func TestPwritev2RejectsNoAppend(t *testing.T) {
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		t.Fatal(err)
+	}
+	release := unix.ByteSliceToString(u.Release[:])
+	var major, minor int
+	if _, err := fmt.Sscanf(release, "%d.%d", &major, &minor); err != nil {
+		t.Fatalf("kernel release %q: %v", release, err)
+	}
+	want := major < 6 || major == 6 && minor < 9
+	if got := pwritev2RejectsNoAppend(); got != want {
+		t.Errorf("kernel %s: pwritev2RejectsNoAppend() = %v, want %v", release, got, want)
+	}
 }

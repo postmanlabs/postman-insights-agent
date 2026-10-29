@@ -38,7 +38,7 @@ func TestHTTPSTelemetryWorkerReportsFinalDeltaOnCancel(t *testing.T) {
 
 	// An interval far longer than the test can run, so only the cancellation
 	// branch can possibly report.
-	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, adapter, nil, nil, reportCount)
+	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, adapter, nil, nil, reportCount, "")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -54,7 +54,7 @@ func TestHTTPSTelemetryWorkerNilReporterOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, &events.Adapter{}, nil, nil, nil)
+	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, &events.Adapter{}, nil, nil, nil, "")
 }
 
 // The Java fields appear on the ebpf-stats line only while Java capture runs,
@@ -99,8 +99,15 @@ func TestHTTPSTelemetryWorkerJVMStats(t *testing.T) {
 			Failed:  map[string]uint64{jvm.FailHelper: 1},
 		}, true
 	}
-	httpsTelemetryWorker(ctx, time.Millisecond, nil, nil, nil, nil, stats, tracker, nil)
+	httpsTelemetryWorker(ctx, time.Millisecond, nil, nil, nil, nil, stats, tracker, nil, "")
 	assert.Contains(t, line, " jvms=4 jvms_attached=1 jvms_agent_running=0 jvms_skipped=2 jvms_attach_failed=1")
+}
+
+// A DaemonSet logs one ebpf-stats line per pod, which names it.
+func TestStatsLogLine(t *testing.T) {
+	s := HTTPSCaptureStats{MessagesEmitted: 18}
+	assert.Equal(t, "ebpf-stats: "+s.String(), statsLogLine("", s))
+	assert.Equal(t, "ebpf-stats: pod=java-service "+s.String(), statsLogLine("java-service", s))
 }
 
 // recordingTracker passes WorkflowStep to onStep; nothing else may be called.

@@ -18,11 +18,10 @@ type jvmFlags struct {
 }
 
 // parseFlags reads the arguments that matter for attaching from a JVM's
-// effective arguments, separated by whitespace. When a flag repeats, the
-// last one wins, as in HotSpot.
-func parseFlags(args string) jvmFlags {
+// effective arguments. When a flag repeats, the last one wins, as in HotSpot.
+func parseFlags(args []string) jvmFlags {
 	var f jvmFlags
-	for _, a := range strings.Fields(args) {
+	for _, a := range args {
 		switch a {
 		case "-XX:+DisableAttachMechanism":
 			f.attachDisabled = true
@@ -47,8 +46,10 @@ func parseFlags(args string) jvmFlags {
 // argsFromCmdline returns a JVM's arguments from its command line
 // (NUL-separated) and the Java options in its environment (NUL-separated
 // KEY=VALUE), in the order HotSpot applies them, for JVMs that publish no perf
-// data (-XX:-UsePerfData). Argument files are not read.
-func argsFromCmdline(cmdline, environ []byte) string {
+// data (-XX:-UsePerfData). Of the command line, only the java launcher's
+// options count: what follows the main class, -jar file or module is the
+// application's. Argument files are not read.
+func argsFromCmdline(cmdline, environ []byte) []string {
 	env := map[string]string{}
 	for kv := range strings.SplitSeq(string(environ), "\x00") {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -57,8 +58,38 @@ func argsFromCmdline(cmdline, environ []byte) string {
 	}
 	// JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS come before the command line,
 	// _JAVA_OPTIONS after it.
-	parts := []string{env["JAVA_TOOL_OPTIONS"], env["JDK_JAVA_OPTIONS"]}
-	parts = append(parts, strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")...)
-	parts = append(parts, env["_JAVA_OPTIONS"])
-	return strings.Join(parts, " ")
+	args := strings.Fields(env["JAVA_TOOL_OPTIONS"])
+	args = append(args, strings.Fields(env["JDK_JAVA_OPTIONS"])...)
+	if argv := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"); len(argv) > 1 {
+		args = append(args, launcherOptions(argv[1:])...) // argv[0] is the launcher
+	}
+	return append(args, strings.Fields(env["_JAVA_OPTIONS"])...)
+}
+
+// launcherOptions returns the options at the start of the java launcher's
+// arguments argv: those before the main class (or source file), -jar or
+// -m/--module, skipping the values of the options that take the next argument.
+func launcherOptions(argv []string) []string {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "-jar" || a == "-m" || a == "--module" || strings.HasPrefix(a, "--module="):
+			return argv[:i]
+		case !strings.HasPrefix(a, "-"):
+			return argv[:i]
+		case launcherOptionsWithValue[a]:
+			i++
+		}
+	}
+	return argv
+}
+
+// launcherOptionsWithValue are the java launcher's options whose value is the
+// next argument (JDK 8 to 25, java.c).
+var launcherOptionsWithValue = map[string]bool{
+	"-cp": true, "-classpath": true, "--class-path": true,
+	"-p": true, "--module-path": true, "--upgrade-module-path": true,
+	"--add-modules": true, "--limit-modules": true, "--enable-native-access": true,
+	"--add-exports": true, "--add-opens": true, "--add-reads": true, "--patch-module": true,
+	"-d": true, "--describe-module": true, "--source": true,
 }

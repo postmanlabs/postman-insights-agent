@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 )
 
 // The Java TLS programs are a separate object so that a failure to load or
@@ -64,6 +66,10 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 	if err := spec.Variables["max_capture_bytes"].Set(cfg.bpfMaxCapture()); err != nil {
 		return nil, fmt.Errorf("ebpf: set java max_capture_bytes: %w", err)
 	}
+	noAppendRejected := cfg.javaNoAppendRejected || pwritev2RejectsNoAppend()
+	if err := spec.Variables["pwritev2_noappend_rejected"].Set(boolU32(noAppendRejected)); err != nil {
+		return nil, fmt.Errorf("ebpf: set pwritev2_noappend_rejected: %w", err)
+	}
 
 	j := &javaTLS{}
 	opts := &ebpf.CollectionOptions{
@@ -98,6 +104,27 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 	}
 	j.attachSocketHooks(spec, !cfg.javaReadHookKprobe)
 	return j, nil
+}
+
+// pwritev2RejectsNoAppend reports whether this kernel fails pwritev2 with
+// RWF_NOAPPEND (added in Linux 6.9) as an unknown flag, which makes musl's
+// pwrite() write every frame a second time with pwrite64. It writes one byte
+// to /dev/null at offset 0, which no tracepoint program reads.
+func pwritev2RejectsNoAppend() bool {
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = unix.Pwritev2(int(f.Fd()), [][]byte{{0}}, 0, unix.RWF_NOAPPEND)
+	return errors.Is(err, unix.EOPNOTSUPP)
+}
+
+func boolU32(b bool) uint32 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // kretprobeMaxActive is the kernel's maximum of concurrent kretprobe

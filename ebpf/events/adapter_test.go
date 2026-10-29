@@ -3,6 +3,7 @@
 package events
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -485,4 +486,46 @@ func TestAdapter_KernelTupleOnClose(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the close did not complete the response")
 	}
+}
+
+// Close waits for a Feed in progress, blocked sending on Out, and later Feed
+// calls send nothing, so Out can be closed after Close while events still
+// arrive.
+func TestAdapter_Close(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	out := make(chan akinet.ParsedNetworkTraffic) // unbuffered: Feed blocks in the send
+	a.Out = out
+	req := []byte("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+	fed := make(chan struct{})
+	go func() {
+		defer close(fed)
+		feed(t, a, 100, 0xAAAA, DirEgress, req)
+	}()
+	closed := make(chan struct{})
+	go func() {
+		// Close only once the Feed holds the adapter, blocked in the send.
+		for a.mu.TryLock() {
+			a.mu.Unlock()
+			runtime.Gosched()
+		}
+		a.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a Feed was still sending")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case <-out:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Feed in progress sent nothing")
+	}
+	<-fed
+	<-closed
+
+	close(out)
+	feed(t, a, 100, 0xBBBB, DirEgress, req) // would panic sending on the closed Out
 }

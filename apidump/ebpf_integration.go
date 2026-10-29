@@ -89,6 +89,14 @@ func (s HTTPSCaptureStats) String() string {
 	return line
 }
 
+// statsLogLine is the ebpf-stats log line for s, naming pod when it is set.
+func statsLogLine(pod string, s HTTPSCaptureStats) string {
+	if pod == "" {
+		return "ebpf-stats: " + s.String()
+	}
+	return "ebpf-stats: pod=" + pod + " " + s.String()
+}
+
 // sumCounts adds up per-reason counters.
 func sumCounts(m map[string]uint64) uint64 {
 	var n uint64
@@ -99,7 +107,9 @@ func sumCounts(m map[string]uint64) uint64 {
 }
 
 // httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
-// stream and to the analytics pipeline. Stops when ctx is cancelled.
+// stream and to the analytics pipeline. Stops when ctx is cancelled. pod, when
+// not empty, names the monitored pod on the log line: a DaemonSet logs one
+// line per pod, and the per-pod counters (msgs, flows_active) differ.
 func httpsTelemetryWorker(
 	ctx context.Context,
 	interval time.Duration,
@@ -110,6 +120,7 @@ func httpsTelemetryWorker(
 	jvmStats func() (jvm.AttachStats, bool),
 	tracker telemetry.Tracker,
 	reportCount func(string, uint64),
+	pod string,
 ) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -215,7 +226,7 @@ func httpsTelemetryWorker(
 			s := read()
 			reportDeltas(s)
 			previous = s
-			printer.Stderr.Infof("ebpf-stats: %s\n", s.String())
+			printer.Stderr.Infof("%s\n", statsLogLine(pod, s))
 			if tracker != nil {
 				tracker.WorkflowStep("ebpf_capture_stats", s.String())
 			}
@@ -319,6 +330,7 @@ func (h *httpsCapture) start(
 	collector trace.Collector,
 	wg *sync.WaitGroup,
 	tracker telemetry.Tracker,
+	pod string,
 ) (stop context.CancelFunc) {
 	captureCtx, cancel := context.WithCancel(ctx)
 
@@ -435,7 +447,7 @@ func (h *httpsCapture) start(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, jvmStats, tracker, args.reportTelemetryCount)
+			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, jvmStats, tracker, args.reportTelemetryCount, pod)
 		}()
 	}
 

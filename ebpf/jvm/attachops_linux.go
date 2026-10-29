@@ -65,7 +65,7 @@ func (o linuxOps) inspect(p *Process) (gateInfo, error) {
 	info.sigQuitCaught = sigQuitCaught(status)
 
 	if args, err := perfDataArgs(p); err == nil {
-		info.args, info.argsSource = args, "hsperfdata"
+		info.args, info.argsSource = strings.Fields(args), "hsperfdata"
 		return info, nil
 	}
 	cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))

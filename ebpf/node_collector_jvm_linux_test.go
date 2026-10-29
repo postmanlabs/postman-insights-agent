@@ -582,7 +582,6 @@ func TestNodeCollectorJVMHttpClient(t *testing.T) {
 	expectClientRequest(t, j, out, srv, accepted)
 }
 
-
 // TestNodeCollectorJVMControlFrames: a real JVM's agent reaches the pod's
 // adapter through the kernel with HEARTBEAT and CLOSE frames. Its first
 // heartbeat, sent as it starts, counts it as alive; when a connection closes,

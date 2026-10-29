@@ -97,6 +97,9 @@ type Adapter struct {
 
 	// javaAgents holds the last HEARTBEAT of each Java agent, by PID.
 	javaAgents map[uint32]*javaAgent
+
+	// closed is set by Close: Feed drops events from then on.
+	closed bool
 }
 
 type javaAgent struct {
@@ -241,6 +244,9 @@ func NewAdapter(fs akinet.TCPParserFactorySelector, out chan<- akinet.ParsedNetw
 func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.closed {
+		return
+	}
 
 	switch ev.Kind {
 	case KindData:
@@ -614,6 +620,15 @@ func (a *Adapter) javaHeartbeat(ev *SSLEvent, now time.Time) {
 	}
 	agent.lastSeen = now
 	agent.status = status
+}
+
+// Close stops the adapter sending on Out: it returns once a Feed in progress
+// has finished, and later Feed calls drop their events. Out can be closed
+// after it, also while other goroutines may still call Feed.
+func (a *Adapter) Close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.closed = true
 }
 
 // CloseFlow forgets state for one flow.

@@ -11,6 +11,7 @@
 //
 //   glibc: FileChannel.write(buf, pos)  ->  pwrite64(fd, buf, count, pos)
 //   musl:  FileChannel.write(buf, pos)  ->  pwritev2(fd, iov, 1, pos, 0, RWF_NOAPPEND)
+//          and, where the kernel rejects RWF_NOAPPEND (before 6.9), pwrite64
 //
 // Every positional write on the node runs these programs, so the first check
 // is the offset: one compare, then out for every normal write.
@@ -157,6 +158,15 @@ static __always_inline void java_counter_inc(__u32 idx, __u64 by) {
 // java_netns (NodeCollector); 0 = accept frames from every process
 // (standalone apidump, which captures the whole host).
 volatile const __u32 enforce_netns_allowlist = 1;
+
+// Set from userspace at load time: 1 when this kernel rejects pwritev2's
+// RWF_NOAPPEND flag (it was added in Linux 6.9). musl's pwrite() first tries
+// pwritev2 with RWF_NOAPPEND and, when the kernel fails it with EOPNOTSUPP,
+// writes again with pwrite64. The syscall tracepoints see both calls, so on
+// such a kernel the failing pwritev2 is skipped and the pwrite64 carries the
+// frame; otherwise every frame of a musl JVM would be read twice.
+volatile const __u32 pwritev2_noappend_rejected = 0;
+#define RWF_NOAPPEND_FLAG 0x00000020  // RWF_NOAPPEND, include/uapi/linux/fs.h
 
 // ---------------------------------------------------------------------------
 // Connection addresses
@@ -799,9 +809,13 @@ static __always_inline int handle_vectored(struct trace_event_raw_sys_enter *ctx
 
 // ssize_t pwritev2(unsigned long fd, const struct iovec *vec, unsigned long vlen,
 //                  unsigned long pos_l, unsigned long pos_h, rwf_t flags);
-// musl implements pwrite() with this.
+// musl implements pwrite() with this, with RWF_NOAPPEND, and falls back to
+// pwrite64 where the kernel rejects the flag (pwritev2_noappend_rejected).
 SEC("tracepoint/syscalls/sys_enter_pwritev2")
 int tp_sys_enter_pwritev2(struct trace_event_raw_sys_enter *ctx) {
+    if (pwritev2_noappend_rejected && ((__u64)ctx->args[5] & RWF_NOAPPEND_FLAG)) {
+        return 0;
+    }
     return handle_vectored(ctx);
 }
 

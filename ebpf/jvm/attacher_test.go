@@ -44,7 +44,7 @@ func (f *fakeOps) attach(_ context.Context, _ *Process, req attach.Request) (att
 
 func newTestAttacher() (*Attacher, *fakeOps) {
 	ops := &fakeOps{
-		info:   gateInfo{age: time.Minute, args: "-Xmx1g", argsSource: "hsperfdata", sigQuitCaught: true},
+		info:   gateInfo{age: time.Minute, args: []string{"-Xmx1g"}, argsSource: "hsperfdata", sigQuitCaught: true},
 		result: attach.Result{Outcome: attach.Attached, AgentVersion: "1.0.0", Signalled: true},
 	}
 	return newAttacher(ops, []byte("jar"), "0123456789abcdef0123", func() string { return "cap=4096" }), ops
@@ -107,7 +107,7 @@ func TestAttacherGates(t *testing.T) {
 		{"dynamic loading disabled", HotSpot, "-XX:-EnableDynamicAgentLoading", SkipDynamicLoadingDisabled},
 	} {
 		a, ops := newTestAttacher()
-		ops.info.args = tc.args
+		ops.info.args = strings.Fields(tc.args)
 		p := hotspot()
 		p.Kind = tc.kind
 		s := attempt(t, a, p)
@@ -119,7 +119,7 @@ func TestAttacherGates(t *testing.T) {
 
 func TestAttacherStaticAgent(t *testing.T) {
 	a, ops := newTestAttacher()
-	ops.info.args = "-javaagent:/opt/postman/postman-java-agent.jar -jar app.jar"
+	ops.info.args = []string{"-javaagent:/opt/postman/postman-java-agent.jar", "-jar", "app.jar"}
 	attempt(t, a, hotspot())
 	assert.Empty(t, ops.requests)
 	assert.Equal(t, uint64(1), a.Stats().AlreadyRunning)
@@ -249,7 +249,7 @@ func TestAttacherReportsEvents(t *testing.T) {
 	assert.Equal(t, []string{EventAttached}, run(func(*fakeOps) {}, hotspot()))
 	assert.Equal(t, []string{EventSkippedPrefix + SkipOpenJ9}, run(func(*fakeOps) {}, openj9))
 	assert.Equal(t, []string{EventAlreadyRunning}, run(func(o *fakeOps) {
-		o.info.args = "-javaagent:/opt/postman/postman-java-agent.jar"
+		o.info.args = []string{"-javaagent:/opt/postman/postman-java-agent.jar"}
 	}, hotspot()))
 	assert.Equal(t, []string{EventSkippedPrefix + attach.ReasonNoListener}, run(func(o *fakeOps) {
 		o.info.sigQuitCaught = false

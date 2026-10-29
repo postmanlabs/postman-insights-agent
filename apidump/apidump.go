@@ -1523,7 +1523,8 @@ func (a *apidump) Run() error {
 			<-stop
 			httpsCancel()
 		}()
-		_ = https.start(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry)
+		_ = https.start(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry,
+			a.traceTags[tags.XAkitaKubernetesPod])
 		printer.Stderr.Infof("HTTPS capture (eBPF) started with libraries=%s, body-cap=%d, mode=%q.\n",
 			https.libraries, args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
 	}

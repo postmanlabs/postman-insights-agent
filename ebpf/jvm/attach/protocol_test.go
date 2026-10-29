@@ -93,12 +93,14 @@ func TestProperty(t *testing.T) {
 		"java.vendor=Eclipse Adoptium",
 		`postman.insights.agent.failed=0.1.0\: java.lang.NoClassDefFoundError\: xé`,
 		"postman.insights.agent.version=0.1.0",
+		`escaped=caf\u00e9 \uffff\t\u12`,
 		"",
 	}, "\r\n")
 	assert.Equal(t, "0.1.0", property(out, "postman.insights.agent.version"))
 	assert.Equal(t, "0.1.0: java.lang.NoClassDefFoundError: xé", property(out, "postman.insights.agent.failed"))
 	assert.Equal(t, "", property(out, "postman.insights.agent"), "a prefix is not a key")
 	assert.Equal(t, "", property(out, "missing"))
+	assert.Equal(t, "café \uffff\tu12", property(out, "escaped"), "unicode escapes, a short one kept as is")
 }
 
 func TestStartTimeFromStat(t *testing.T) {

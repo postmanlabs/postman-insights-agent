@@ -30,6 +30,10 @@ type Config struct {
 	// tcp_sendmsg hooks with kprobes even where fexit and fentry work, as on
 	// kernels without BPF trampolines.
 	javaReadHookKprobe bool
+
+	// javaNoAppendRejected, for tests, skips pwritev2 calls with
+	// RWF_NOAPPEND as on kernels before 6.9, which reject the flag.
+	javaNoAppendRejected bool
 }
 
 // Default returns the default load config: no PID allowlist enforcement,

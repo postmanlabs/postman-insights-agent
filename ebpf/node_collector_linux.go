@@ -87,7 +87,8 @@ type NodeCollector struct {
 
 	// hostNetns is the node's own network namespace, which every hostNetwork
 	// pod and every host process shares. Java frames are never accepted from
-	// it: a netns there does not identify one pod. 0 when unknown.
+	// it: a netns there does not identify one pod. Never 0 while Java
+	// capture is on: NewNodeCollector does not load Java without it.
 	hostNetns uint64
 	// javaNetnsRefs counts the subscriptions that allowed each netns for Java
 	// frames, so one subscription's cancel cannot revoke another's. Guarded by
@@ -141,6 +142,18 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		return nil, err
 	}
 
+	// Without the node's own netns, a hostNetwork pod's netns cannot be told
+	// from a pod's own, so Java would capture, and control the JVMs of, every
+	// host-network workload as that pod's. Reading PID 1's needs SYS_PTRACE.
+	askedFor := Libraries{OpenSSL: !cfg.DisableOpenSSL, Java: cfg.EnableJava}
+	hostNetns := hostNetnsInode()
+	if cfg.EnableJava && hostNetns == 0 {
+		printer.Stderr.Warningf("ebpf: Java HTTPS capture is off: the node's network namespace " +
+			"(/proc/1/ns/net) cannot be read, so host-network pods cannot be told apart; " +
+			"the agent needs hostPID and the SYS_PTRACE capability\n")
+		cfg.EnableJava = false
+	}
+
 	l, err := loader.Load(loader.Config{
 		MaxCaptureBytes:           cfg.MaxCaptureBytes,
 		EnableJava:                cfg.EnableJava,
@@ -152,8 +165,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 	logJavaTLSStatus(cfg.EnableJava, l)
 	if !l.JavaEnabled() && cfg.DisableOpenSSL {
 		_ = l.Close()
-		return nil, fmt.Errorf("ebpf: none of the TLS libraries asked for (%s) can be captured",
-			Libraries{OpenSSL: !cfg.DisableOpenSSL, Java: cfg.EnableJava})
+		return nil, fmt.Errorf("ebpf: none of the TLS libraries asked for (%s) can be captured", askedFor)
 	}
 
 	var therm *Thermostat
@@ -172,7 +184,7 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 		openSSL:         !cfg.DisableOpenSSL,
 		netnsToSub:      routeTable[uint64]{},
 		pidToSub:        routeTable[uint32]{},
-		hostNetns:       hostNetnsInode(),
+		hostNetns:       hostNetns,
 		javaNetnsRefs:   make(map[uint64]int),
 	}
 	javaSettings := func() javatls.Control {
@@ -202,7 +214,8 @@ func NewNodeCollector(cfg NodeCollectorConfig) (*NodeCollector, error) {
 // sees it. With hostPID (the DaemonSet) that is the node's init, whose netns
 // hostNetwork pods share; in kind it is the node container's. Without hostPID
 // it is the agent pod's own netns, which is never a monitored pod's.
-func hostNetnsInode() uint64 { return netnsInodeAt("/proc/1/ns/net") }
+// A variable for tests.
+var hostNetnsInode = func() uint64 { return netnsInodeAt("/proc/1/ns/net") }
 
 // netnsInodeAt returns the inode of the network namespace at path (a
 // /proc/<pid>/ns/net), or 0.
@@ -438,9 +451,10 @@ func (nc *NodeCollector) Run(ctx context.Context) error {
 // the caller; it is never closed by Subscribe. reportCount, when not nil,
 // receives the pod's telemetry counters (the attach outcome of its JVMs).
 //
-// Returns a cancel func and the pod's events.Adapter. Call cancel (and drain
-// out) when the pod terminates to unregister the pod and stop the subscription
-// goroutine. The returned adapter is exposed so the caller can feed its
+// Returns a cancel func and the pod's events.Adapter. Call cancel when the pod
+// terminates, while out is still drained: it returns once the pod is
+// unregistered and its adapter sends nothing more on out, so out can be
+// closed then. The returned adapter is exposed so the caller can feed its
 // per-pod capture counters (MessagesEmitted, FlowsActive) into telemetry.
 func (nc *NodeCollector) Subscribe(
 	ctx context.Context,
@@ -478,10 +492,13 @@ func (nc *NodeCollector) Subscribe(
 	// Java frames are accepted per pod netns, the same key events route on.
 	javaNetns := nc.allowJavaNetns(netnsInode)
 	// The JVMs of a pod known by its own netns get control files, also with
-	// Java capture off (to switch earlier agents off).
-	jvmScope := JavaPodSkipReason(netnsInode, nc.hostNetns) == ""
+	// Java capture off (to switch earlier agents off). Not when the node's
+	// netns is unknown: the pod's could be it.
+	jvmScope := nc.hostNetns != 0 && JavaPodSkipReason(netnsInode, nc.hostNetns) == ""
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		// Track which PIDs this subscription registered so we can clean up on
 		// cancel even if discovery doesn't emit Removed events in time.
 		ownedPIDs := make(map[uint32]struct{})
@@ -561,5 +578,11 @@ func (nc *NodeCollector) Subscribe(
 		}
 	}()
 
-	return cancel, adapter
+	// Run may have routed an event to this pod just before cleanup and still
+	// be feeding it: the adapter's Close waits for that Feed.
+	return func() {
+		cancel()
+		<-done
+		adapter.Close()
+	}, adapter
 }
