@@ -692,7 +692,6 @@ static __always_inline int handle_frame(const __u8 *buf, __u64 count) {
     }
     if (h.version != JAVA_FRAME_VERSION_1 ||
         h.op < JAVA_FRAME_OP_SEND || h.op > JAVA_FRAME_OP_ADDRESS ||
-        h._reserved != 0 ||
         (__u64)h.payload_len + JAVA_FRAME_HEADER_SIZE != count ||
         h.total_len < h.payload_len) {
         java_counter_inc(JAVA_CTR_MALFORMED, 1);

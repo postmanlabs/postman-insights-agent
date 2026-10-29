@@ -14,19 +14,23 @@ import java.nio.ByteOrder;
  * {@code ebpf/javatls/testdata/frames-v1.json} are checked by the Go tests and
  * by {@code FrameTest}.
  *
- * <p>Layout (multi-byte fields little-endian, except the peer port):
+ * <p>Layout (multi-byte fields little-endian):
  * <pre>
  *  0  u8      version
  *  1  u8      op
  *  2  u16     flags
  *  4  u32     payload_len   payload bytes in this frame
  *  8  u64     conn_id       unique per connection within the JVM, from a random start (below 2^62)
- * 16  u8[16]  peer_addr     IPv6 or IPv4-mapped; zero when unknown
- * 32  u16     peer_port     network byte order; zero when unknown
- * 34  u16     reserved      zero
+ * 16  u8[20]  reserved      zero
  * 36  u32     total_len     bytes the engine call produced or consumed
  * 40  ...     payload
  * </pre>
+ *
+ * <p>Within a version, writers set the reserved bytes and undefined flag bits
+ * to zero, and readers ignore them. So a later agent can add an optional
+ * field in the reserved bytes, with a new flag bit saying it is set, and
+ * older readers still accept its frames. Anything a reader must understand
+ * to read a frame correctly needs a new version.
  *
  * <p>An ADDRESS frame's payload, {@link #ADDRESS_SIZE} bytes, is the
  * connection's TCP addresses (see {@link #putAddress}).
@@ -49,7 +53,7 @@ public final class Frame {
 
     public static final short FLAG_ROLE_KNOWN = 0x1;
     public static final short FLAG_CLIENT_MODE = 0x2;
-    public static final short FLAG_PEER_KNOWN = 0x4;
+    // 0x4 is free: no writer has set it.
     /**
      * A blocking socket's frame: the connection's addresses come in an
      * ADDRESS frame, so the kernel never ties it to the socket its thread
@@ -72,9 +76,8 @@ public final class Frame {
     private static final int OFF_FLAGS = 2;
     private static final int OFF_PAYLOAD_LEN = 4;
     private static final int OFF_CONN_ID = 8;
-    private static final int OFF_PEER_ADDR = 16;
-    private static final int OFF_PEER_PORT = 32;
-    private static final int OFF_RESERVED = 34;
+    /** The reserved bytes run from here to {@link #OFF_TOTAL_LEN}. */
+    private static final int OFF_RESERVED = 16;
     private static final int OFF_TOTAL_LEN = 36;
 
     private Frame() {}
@@ -87,22 +90,17 @@ public final class Frame {
     /**
      * Writes the header at the start of {@code buf}, which must be little-endian.
      * Uses absolute puts, so the buffer's position is unchanged.
-     *
-     * @param peerAddr 16 bytes (IPv6, or IPv4-mapped), or null when unknown
      */
     public static void putHeader(ByteBuffer buf, byte op, short flags, int payloadLen, long connId,
-                                 byte[] peerAddr, int peerPort, int totalLen) {
+                                 int totalLen) {
         buf.put(OFF_VERSION, VERSION_1);
         buf.put(OFF_OP, op);
         buf.putShort(OFF_FLAGS, flags);
         buf.putInt(OFF_PAYLOAD_LEN, payloadLen);
         buf.putLong(OFF_CONN_ID, connId);
-        for (int i = 0; i < 16; i++) {
-            buf.put(OFF_PEER_ADDR + i, peerAddr == null ? 0 : peerAddr[i]);
-        }
-        buf.put(OFF_PEER_PORT, (byte) (peerPort >>> 8));
-        buf.put(OFF_PEER_PORT + 1, (byte) peerPort);
-        buf.putShort(OFF_RESERVED, (short) 0);
+        buf.putLong(OFF_RESERVED, 0);
+        buf.putLong(OFF_RESERVED + 8, 0);
+        buf.putInt(OFF_RESERVED + 16, 0);
         buf.putInt(OFF_TOTAL_LEN, totalLen);
     }
 

@@ -6,6 +6,7 @@ package loader
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -196,6 +197,22 @@ func TestJavaTLSFrames(t *testing.T) {
 		expectNoEvent(t)
 		if got := counter(t, JavaCounterMalformed) - before; got != 3 {
 			t.Errorf("malformed grew by %d, want 3", got)
+		}
+	})
+
+	// A later agent may use them within version 1 (java_frame.h).
+	t.Run("reserved bytes and undefined flag bits are ignored", func(t *testing.T) {
+		later := append([]byte(nil), send...)
+		for i := 16; i < 36; i++ { // the reserved bytes
+			later[i] = byte(i)
+		}
+		binary.LittleEndian.PutUint16(later[2:], javatls.FlagRoleKnown|javatls.FlagClientMode|0x4|0x8000)
+		if _, err := javatls.Parse(later); err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		pwrite(t, later)
+		if ev := readEvent(t); ev.SSLCtx != javatls.SSLCtx(7) || !bytes.Equal(ev.Bytes(), request) {
+			t.Errorf("event = ctx %#x payload %q", ev.SSLCtx, ev.Bytes())
 		}
 	})
 

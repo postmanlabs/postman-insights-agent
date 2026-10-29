@@ -18,6 +18,7 @@ type vectorFile struct {
 	Magic      string          `json:"magic"`
 	HeaderSize int             `json:"header_size"`
 	Frames     []vectorFrame   `json:"frames"`
+	Tolerated  []vectorFrame   `json:"tolerated"`
 	Invalid    []vectorInvalid `json:"invalid"`
 	Addresses  []vectorAddress `json:"addresses"`
 }
@@ -44,8 +45,6 @@ type vectorFrame struct {
 	Op         uint8  `json:"op"`
 	Flags      uint16 `json:"flags"`
 	ConnID     string `json:"conn_id"`
-	PeerAddr   string `json:"peer_addr"`
-	PeerPort   uint16 `json:"peer_port"`
 	TotalLen   uint32 `json:"total_len"`
 	PayloadHex string `json:"payload_hex"`
 	FrameHex   string `json:"frame_hex"`
@@ -85,19 +84,14 @@ func (vf vectorFrame) frame(t *testing.T) Frame {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := Frame{
+	return Frame{
 		Version:  vf.Version,
 		Op:       vf.Op,
 		Flags:    vf.Flags,
 		ConnID:   connID,
-		PeerPort: vf.PeerPort,
 		TotalLen: vf.TotalLen,
 		Payload:  mustHex(t, vf.PayloadHex),
 	}
-	if vf.PeerAddr != "" {
-		f.PeerAddr = netip.MustParseAddr(vf.PeerAddr).As16()
-	}
-	return f
 }
 
 func TestVectorsHeader(t *testing.T) {
@@ -112,7 +106,7 @@ func TestVectorsHeader(t *testing.T) {
 	if v.HeaderSize != HeaderSize {
 		t.Errorf("vectors header_size %d, HeaderSize %d", v.HeaderSize, HeaderSize)
 	}
-	if len(v.Frames) == 0 || len(v.Invalid) == 0 || len(v.Addresses) == 0 {
+	if len(v.Frames) == 0 || len(v.Tolerated) == 0 || len(v.Invalid) == 0 || len(v.Addresses) == 0 {
 		t.Fatal("vectors file has no frames")
 	}
 }
@@ -129,7 +123,10 @@ func TestVectorsEncode(t *testing.T) {
 }
 
 func TestVectorsParse(t *testing.T) {
-	for _, vf := range loadVectors(t).Frames {
+	v := loadVectors(t)
+	// Tolerated frames have reserved bytes or undefined flag bits set, which
+	// readers ignore, so a later agent can use them within version 1.
+	for _, vf := range append(v.Frames, v.Tolerated...) {
 		t.Run(vf.Name, func(t *testing.T) {
 			got, err := Parse(mustHex(t, vf.FrameHex))
 			if err != nil {
@@ -137,16 +134,9 @@ func TestVectorsParse(t *testing.T) {
 			}
 			want := vf.frame(t)
 			if got.Version != want.Version || got.Op != want.Op || got.Flags != want.Flags ||
-				got.ConnID != want.ConnID || got.PeerAddr != want.PeerAddr ||
-				got.PeerPort != want.PeerPort || got.TotalLen != want.TotalLen ||
+				got.ConnID != want.ConnID || got.TotalLen != want.TotalLen ||
 				!bytes.Equal(got.Payload, want.Payload) {
 				t.Errorf("Parse = %+v\nwant %+v", got, want)
-			}
-			if vf.PeerAddr != "" {
-				ap, ok := got.Peer()
-				if !ok || ap.Addr().String() != vf.PeerAddr || ap.Port() != vf.PeerPort {
-					t.Errorf("Peer() = %v, %v; want %s port %d", ap, ok, vf.PeerAddr, vf.PeerPort)
-				}
 			}
 		})
 	}
@@ -157,7 +147,6 @@ func TestVectorsInvalid(t *testing.T) {
 		"short":        ErrShort,
 		"version":      ErrVersion,
 		"op":           ErrOp,
-		"reserved":     ErrReservedBits,
 		"length":       ErrLength,
 		"total_length": ErrTotalLength,
 		"address":      ErrAddress,
@@ -242,7 +231,6 @@ func TestKernelHeaderInSync(t *testing.T) {
 		"JAVA_FRAME_ADDRESS_SIZE":      AddressSize,
 		"JAVA_FRAME_FLAG_ROLE_KNOWN":   uint64(FlagRoleKnown),
 		"JAVA_FRAME_FLAG_CLIENT_MODE":  uint64(FlagClientMode),
-		"JAVA_FRAME_FLAG_PEER_KNOWN":   uint64(FlagPeerKnown),
 		"JAVA_FRAME_FLAG_SOCKET":       uint64(FlagSocket),
 		"JAVA_FRAME_FLAG_BEFORE_WRITE": uint64(FlagBeforeWrite),
 		"JAVA_CONN_ID_TAG":             ConnIDTag,
@@ -270,8 +258,7 @@ func TestKernelHeaderInSync(t *testing.T) {
 		off  int
 	}{
 		{"version", offVersion}, {"op", offOp}, {"flags", offFlags}, {"payload_len", offPayloadLen},
-		{"conn_id", offConnID}, {"peer_addr", offPeerAddr}, {"peer_port", offPeerPort},
-		{"_reserved", offReserved}, {"total_len", offTotalLen},
+		{"conn_id", offConnID}, {"_reserved", offReserved}, {"total_len", offTotalLen},
 	}
 	if len(fields) != len(wantFields) {
 		t.Fatalf("java_frame_header has %d fields, want %d", len(fields), len(wantFields))

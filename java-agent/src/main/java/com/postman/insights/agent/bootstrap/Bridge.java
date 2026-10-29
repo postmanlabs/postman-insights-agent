@@ -644,7 +644,7 @@ public final class Bridge {
                 Frame.putAddress(f, Frame.HEADER_SIZE, local, localPort, remote, remotePort);
                 len = Frame.ADDRESS_SIZE;
             }
-            Frame.putHeader(f, op, flags, len, connId, null, 0, len);
+            Frame.putHeader(f, op, flags, len, connId, len);
             f.limit(Frame.HEADER_SIZE + len);
             if (write(s, f)) {
                 FRAMES.increment();
@@ -723,7 +723,7 @@ public final class Bridge {
                     }
                 }
             }
-            Frame.putHeader(f, op, flags, f.position() - Frame.HEADER_SIZE, connId, null, 0, total);
+            Frame.putHeader(f, op, flags, f.position() - Frame.HEADER_SIZE, connId, total);
             f.flip();
             if (write(s, f)) {
                 FRAMES.increment();
@@ -810,7 +810,7 @@ public final class Bridge {
                 f.clear();
                 f.position(Frame.HEADER_SIZE);
                 f.put(payload);
-                Frame.putHeader(f, Frame.OP_HEARTBEAT, (short) 0, payload.length, 0, null, 0, payload.length);
+                Frame.putHeader(f, Frame.OP_HEARTBEAT, (short) 0, payload.length, 0, payload.length);
                 f.flip();
                 String log = frameLog;
                 if (log != null) {
