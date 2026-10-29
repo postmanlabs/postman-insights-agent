@@ -7,6 +7,7 @@ package loader
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -107,7 +108,11 @@ func (l *Loader) SetRateCapPerSec(v uint32) error {
 // RefillRateBucket sets a single PID's bucket to `tokens`. Userspace calls
 // this once per second from the per-PID refill goroutine.
 func (l *Loader) RefillRateBucket(pid uint32, tokens uint64) error {
-	return l.libssl.PidRateBuckets.Update(&pid, &tokens, ebpf.UpdateAny)
+	if tokens > math.MaxInt64 {
+		tokens = math.MaxInt64
+	}
+	signed := int64(tokens) // struct rate_bucket's tokens is signed
+	return l.libssl.PidRateBuckets.Update(&pid, &signed, ebpf.UpdateAny)
 }
 
 // DeleteRateBucket removes a PID from the rate-bucket map (called on PID exit).

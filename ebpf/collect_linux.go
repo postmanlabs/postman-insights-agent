@@ -26,7 +26,14 @@ func logJavaTLSStatus(requested bool, l *loader.Loader) {
 	switch {
 	case !requested:
 	case l.JavaEnabled():
-		printer.Stderr.Infof("ebpf: Java HTTPS capture enabled\n")
+		if kind, err := l.JavaConnAddresses(); err != nil {
+			printer.Stderr.Infof("ebpf: Java HTTPS capture enabled\n")
+			printer.Stderr.Warningf("ebpf: Java connections will have no IP addresses or ports: %v\n", err)
+		} else if fallback := l.JavaConnAddressesFallback(); fallback != nil {
+			printer.Stderr.Infof("ebpf: Java HTTPS capture enabled (connection addresses from tcp_recvmsg, by %s; fexit: %v)\n", kind, fallback)
+		} else {
+			printer.Stderr.Infof("ebpf: Java HTTPS capture enabled (connection addresses from tcp_recvmsg and tcp_sendmsg, by %s)\n", kind)
+		}
 	default:
 		printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: %v\n", l.JavaError())
 	}

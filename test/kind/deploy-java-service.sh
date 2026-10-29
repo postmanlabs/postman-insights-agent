@@ -145,6 +145,28 @@ else
   fail=1
 fi
 
+# The kernel ties each Java connection to its socket, so every message has
+# its IP addresses and ports: no data frame went out without them, and no
+# connection's thread read another socket before its frames.
+for field in java_conn_unbound java_conn_mismatch; do
+  v=$(max_field "$field")
+  if [[ -n "$v" && "$v" -eq 0 ]]; then
+    echo "  PASS  ${field}=0"
+  else
+    echo "  FAIL  ${field}=${v:-none}, want 0"
+    fail=1
+  fi
+done
+
+# Each service's Java agent reports itself through HEARTBEAT frames.
+agents=$({ grep -oE 'ebpf: Java agent [^ ]+ in pid [0-9]+ is active' <<<"$LOGS" | grep -oE 'pid [0-9]+' | sort -u | wc -l; } || true)
+if [[ "${agents// /}" -ge "$services" ]]; then
+  echo "  PASS  ${agents// /} Java agents heard from, capturing"
+else
+  echo "  FAIL  ${agents// /} Java agents heard from capturing, want ${services}"
+  fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo
   grep -E 'ebpf' <<<"$LOGS" | tail -20 || true
