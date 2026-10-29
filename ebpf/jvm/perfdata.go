@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package jvm
 
 // perfDataAttach reports whether a JVM's attach mechanism is on, from the

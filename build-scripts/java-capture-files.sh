@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
 # Builds the files Java HTTPS capture needs next to the Insights agent, under
 # the names the agent loads them by from /opt/postman (ebpf/javatls/contract.go;
 # ebpf/javatls/contract_test.go checks this script against it), and checks
@@ -16,7 +18,7 @@ JAR_NAME=postman-insights-java-agent.jar
 HELPER_NAME=postman-insights-jvm-attach
 
 if [ "$#" -lt 2 ]; then
-    awk '/^# Usage/ { p = 1 } /^set -eu/ { exit } p' "$0" >&2
+    sed -n '10,14p' "$0" >&2
     exit 2
 fi
 what=$1

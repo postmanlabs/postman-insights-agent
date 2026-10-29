@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+//
 // Stub Reader for builds without the `insights_bpf` tag, and for non-Linux
 // platforms.
 

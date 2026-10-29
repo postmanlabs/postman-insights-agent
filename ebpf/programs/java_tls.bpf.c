@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+// SPDX-License-Identifier: Apache-2.0
 //
 // Java TLS capture for the Postman Insights Agent.
 //
@@ -32,7 +32,7 @@
 #include "common.h"
 #include "java_frame.h"
 
-char LICENSE[] SEC("license") = "Dual BSD/GPL"; // GPL-compatible: required for some BPF helpers
+char LICENSE[] SEC("license") = "GPL";    // required for some BPF helpers
 
 // Network namespaces whose processes may send frames. Userspace adds a
 // monitored pod's netns inode when it starts capturing for the pod and

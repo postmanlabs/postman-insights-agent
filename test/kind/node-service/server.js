@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+//
 // Combined Node test server: REST HTTPS + gRPC-TLS in one process.
 // Capture path: kube run --enable-https-capture (libssl / static BoringSSL uprobes on node).
 

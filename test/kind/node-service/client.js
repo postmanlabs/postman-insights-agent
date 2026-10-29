@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+//
 // Combined client: one HTTPS GET + N gRPC SayHello calls (verified TLS).
 
 'use strict';

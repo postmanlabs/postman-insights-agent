@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
 # Same /phase5b2 endpoint, different query strings — validates eBPF captures
 # the full request line (path + ?params), not just the route path.
 #

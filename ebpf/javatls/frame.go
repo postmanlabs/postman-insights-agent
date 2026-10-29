@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package javatls holds the contract between the Postman Insights Java agent
 // (running inside customer JVMs) and the Insights agent: the frame format the
 // Java agent hands to the kernel, and the names both sides agree on.
