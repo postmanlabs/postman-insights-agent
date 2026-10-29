@@ -59,6 +59,12 @@ capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
   supported via Red Hat's eBPF backports). Requires `CAP_BPF` + `CAP_PERFMON`
   (or `CAP_SYS_ADMIN` on older kernels) and access to `/sys/kernel/debug`,
   `/sys/fs/bpf`, and host `/proc`.
+- **Java requirements:** `hostPID` and `CAP_SYS_PTRACE`, to read the node's
+  network namespace and to switch the Java agent of JVMs running as another
+  user on and off; without them the agent captures OpenSSL only. As a
+  DaemonSet (`kube run`), loading the Java agent into running JVMs also needs
+  `CAP_SETUID` + `CAP_SETGID`, to run the `postman-jvm-attach` helper as each
+  JVM's user.
 - **Not available on macOS** — the macOS build captures HTTP only; all eBPF
   paths compile to no-ops there.
 
