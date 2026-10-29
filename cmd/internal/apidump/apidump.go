@@ -101,9 +101,6 @@ func applyRandomizedStart() {
 
 		// Wait forever
 		select {}
-
-		// Unreachable
-		os.Exit(0)
 	}
 }
 

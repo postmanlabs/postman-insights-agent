@@ -5,8 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"strings"
 	"runtime"
+	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/pkg/errors"

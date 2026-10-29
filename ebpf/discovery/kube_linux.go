@@ -65,10 +65,10 @@ var cgroupNsRE = regexp.MustCompile(`cgroup:\[(\d+)\]`)
 // KubeNamespaceResolver implements NamespaceResolver via the Kubernetes API
 // + CRI + cgroup-namespace inode matching. Safe for concurrent use.
 type KubeNamespaceResolver struct {
-	procRoot     string // /host/proc when running as a DaemonSet (BPF event PIDs)
-	agentProc    string // /proc — agent's own view, used for CRI-reported init PIDs
-	kubeClient   *kube_apis.KubeClient
-	criClient    *cri_apis.CriClient
+	procRoot   string // /host/proc when running as a DaemonSet (BPF event PIDs)
+	agentProc  string // /proc — agent's own view, used for CRI-reported init PIDs
+	kubeClient *kube_apis.KubeClient
+	criClient  *cri_apis.CriClient
 
 	mu        sync.RWMutex
 	cgroup2ns map[uint64]string // cgroup-ns inode → k8s namespace
@@ -77,10 +77,10 @@ type KubeNamespaceResolver struct {
 
 // NewKubeNamespaceResolver builds a resolver.
 //
-//   procRoot      — /host/proc on a DaemonSet (where BPF-emitted root-ns
-//                   PIDs live). Defaults to /proc when empty.
-//   agentProcRoot — /proc (the agent's own view). CRI returns init PIDs in
-//                   this namespace. Defaults to /proc when empty.
+//	procRoot      — /host/proc on a DaemonSet (where BPF-emitted root-ns
+//	                PIDs live). Defaults to /proc when empty.
+//	agentProcRoot — /proc (the agent's own view). CRI returns init PIDs in
+//	                this namespace. Defaults to /proc when empty.
 //
 // Returns an error if either the kube client or CRI client can't be built —
 // callers should fall back to nil NamespaceResolver (no filtering) in that

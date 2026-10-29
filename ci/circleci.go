@@ -9,10 +9,10 @@ import (
 
 const (
 	CircleRepositoryURL = "CIRCLE_REPOSITORY_URL"
-	CircleBranch = "CIRCLE_BRANCH"
-	CircleSHA1 = "CIRCLE_SHA1"
-	CirclePullRequest = "CIRCLE_PULL_REQUEST"
-	CircleBuildURL = "CIRCLE_BUILD_URL"
+	CircleBranch        = "CIRCLE_BRANCH"
+	CircleSHA1          = "CIRCLE_SHA1"
+	CirclePullRequest   = "CIRCLE_PULL_REQUEST"
+	CircleBuildURL      = "CIRCLE_BUILD_URL"
 )
 
 // https://circleci.com/docs/2.0/env-vars/#built-in-environment-variables

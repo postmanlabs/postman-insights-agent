@@ -129,12 +129,12 @@ func runGetSpec(specIdentifier string) error {
 	if err := akid.ParseIDAs(specIdentifier, &specID); err != nil {
 		// Try resolving the version name.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if version, err := learnClient.GetSpecVersion(ctx, specIdentifier); err != nil {
-			return errors.Wrapf(err, "failed to get spec version %s", specIdentifier)
-		} else {
-			specID = version.APISpecID
-		}
+		version, err := learnClient.GetSpecVersion(ctx, specIdentifier)
 		cancel()
+		if err != nil {
+			return errors.Wrapf(err, "failed to get spec version %s", specIdentifier)
+		}
+		specID = version.APISpecID
 	}
 
 	// Fetch the spec, optionally waiting for pending specs to become DONE.

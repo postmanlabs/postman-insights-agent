@@ -47,7 +47,6 @@ Top-level CLI plumbing:
 - `cmd/` — Cobra command tree (`root.go`, `supervisor.go`).
 - `cmd/internal/` — subcommand implementations:
   - `apidump/` — `apidump` command: the core traffic-capture command.
-  - `apidump-ebpf/` — hidden `apidump-ebpf` command: credential-free eBPF capture for local dev/debugging.
   - `ec2/` — `ec2 setup|remove`: install agent as a systemd service on EC2.
   - `ecs/` — `ecs add|remove|cf-fragment|task-def`: AWS ECS integration.
   - `kube/` — `kube inject|run|secret|helm-fragment|tf-fragment|webhook`: Kubernetes integration (DaemonSet, sidecar injection, manifests, mutating webhook).

@@ -19,7 +19,7 @@ type Manager struct{}
 func NewManager(_ *loader.Loader) *Manager { return &Manager{} }
 
 func (*Manager) AttachLibSSL(_ uint32, _ string, _ bool) error { return ErrUnsupported }
-func (*Manager) ProbeCount(_ uint32) int                        { return 0 }
-func (*Manager) Detach(_ uint32) error                  { return nil }
-func (*Manager) Close() error                           { return nil }
-func (*Manager) AttachedPIDs() []uint32                 { return nil }
+func (*Manager) ProbeCount(_ uint32) int                       { return 0 }
+func (*Manager) Detach(_ uint32) error                         { return nil }
+func (*Manager) Close() error                                  { return nil }
+func (*Manager) AttachedPIDs() []uint32                        { return nil }

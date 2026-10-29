@@ -1,8 +1,7 @@
 # Production DaemonSet: `kube run --enable-https-capture --discovery-mode`
 #
-# This is the production code path (unlike agent-daemonset.yaml which uses the
-# apidump-ebpf spike command). It captures both HTTP and HTTPS traffic and ships
-# to the Postman Insights backend.
+# This is the production code path. It captures both HTTP and HTTPS traffic and
+# ships to the Postman Insights backend.
 #
 # Required secrets:
 #   kubectl create secret generic postman-insights-creds \

@@ -8,7 +8,7 @@ All captured traffic (Java, Node, ASP.NET) appears in **one log stream**:
 kubectl logs -n postman-insights daemonset/postman-insights-agent
 ```
 
-The DaemonSet runs `apidump-ebpf --enable-javatls` (libssl uprobes + Java ioctl kprobe). There is no separate `javatls-capture` pod.
+The DaemonSet runs `kube run --enable-https-capture` (libssl uprobes, and Java through the Java agent). There is no separate `javatls-capture` pod.
 
 ---
 
@@ -239,7 +239,7 @@ kubectl get daemonset postman-insights-agent -n postman-insights \
   -o jsonpath='{.spec.template.spec.containers[0].args}{"\n"}'
 ```
 
-Expected DaemonSet args include: `apidump-ebpf`, `--enable-javatls`, `--target-namespaces=...test-apps`.
+Expected DaemonSet args include: `kube`, `run`, `--enable-https-capture`, `--discovery-mode`, `--include-namespaces=test-apps`.
 
 ### Regenerate certs (customer-style)
 

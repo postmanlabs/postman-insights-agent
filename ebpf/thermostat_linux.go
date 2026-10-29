@@ -48,11 +48,11 @@ type Thermostat struct {
 	loader  *loader.Loader
 	ceiling uint32 // configured max (user-set --https-body-size-cap)
 
-	HighWatermark float64 // %CPU (of one core) above which we throttle (default 50.0)
-	LowWatermark  float64 // %CPU (of one core) below which we recover (default 25.0)
-	HighWindow    time.Duration
-	LowWindow     time.Duration
-	MinCap        uint32        // never below this (default 64)
+	HighWatermark  float64 // %CPU (of one core) above which we throttle (default 50.0)
+	LowWatermark   float64 // %CPU (of one core) below which we recover (default 25.0)
+	HighWindow     time.Duration
+	LowWindow      time.Duration
+	MinCap         uint32        // never below this (default 64)
 	AdjustCooldown time.Duration // min gap between adjustments (default = HighWindow)
 
 	lastAdjust time.Time     // wall time of the last cap change (cooldown gate)

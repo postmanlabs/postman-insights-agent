@@ -18,7 +18,6 @@ it on in production.
 | Process discovery (`discovery/`) | 🟡 Polling `/proc` works; CRI/Kube integration deferred to follow-up |
 | Uprobe attachment (`uprobes/`) | ✅ Dynamic libssl (OpenSSL 1.1 & 3.x); static BoringSSL in `node` exe (official Node 20+) |
 | Top-level `Collect()` | ✅ |
-| Spike command (`cmd/internal/apidump-ebpf/`) | ✅ Validated against curl, Python `requests`, Node `https.get` |
 | `apidump --enable-https-capture` integration | ✅ Wired into the production `apidump` command (dedicated collector chain reusing data_masks / rate_limit / backend_collector) |
 | cBPF port-443 exclusion | ✅ `--https-cbpf-exclude-port` (default 443) |
 | DaemonSet privileges | 🟡 Helper code present (`SidecarOpts.EnableHTTPSCapture`, `HTTPSCaptureVolumes`); not yet wired into `kube inject` / `helm-fragment` / `tf-fragment` |
@@ -41,7 +40,7 @@ The eBPF code paths are gated behind two conditions:
 
 | Tag combination | Behaviour |
 |---|---|
-| Default (`go build .`) | Stubs compile everywhere. `apidump-ebpf` prints "not compiled in". |
+| Default (`go build .`) | Stubs compile everywhere. `--enable-https-capture` warns that HTTPS capture is not supported on this build and runs without it. |
 | `-tags insights_bpf` on Linux | Real eBPF code. Requires `bpf2go` artifacts to be present. |
 | `-tags insights_bpf` on macOS | Build fails (loader_linux.go won't match). Use Linux dev VM or container. |
 
@@ -70,8 +69,6 @@ make dev-shell          # optional: open a shell inside the dev container
 
 # Inside the shell (or after generate-ebpf on the host tree):
 make build              # on Linux inside the container → insights_bpf binary
-./bin/postman-insights-agent apidump-ebpf --duration 60s          # spike
-# or for the production path:
 ./bin/postman-insights-agent apidump --enable-https-capture --project ...
 ```
 
@@ -87,7 +84,7 @@ make docker-build-ebpf
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > ebpf/programs/vmlinux.h
 cd ebpf/loader && go generate -tags insights_bpf ./...
 make   # auto-detects toolchain and builds with insights_bpf
-sudo ./bin/postman-insights-agent apidump-ebpf --duration 60s
+sudo ./bin/postman-insights-agent apidump --enable-https-capture --project ...
 ```
 
 In another terminal, generate HTTPS traffic:
