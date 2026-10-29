@@ -166,7 +166,7 @@ public final class Installer {
     }
 
     static void log(String msg) {
-        System.err.println("[postman-insights-agent] " + msg);
+        System.err.println("[postman-insights-java-agent] " + msg);
     }
 
     /**

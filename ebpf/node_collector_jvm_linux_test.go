@@ -43,7 +43,7 @@ import (
 // setpriv), Go (to build the attach helper), and:
 //
 //	POSTMAN_TEST_JAVA_HOME  a JDK, 8 or newer
-//	POSTMAN_TEST_AGENT_JAR  java-agent/build/agent/postman-java-agent.jar
+//	POSTMAN_TEST_AGENT_JAR  java-agent/build/agent/postman-insights-java-agent.jar
 //
 // They are skipped when those are not set.
 
@@ -157,11 +157,11 @@ func newJVMFixture(t *testing.T) *jvmFixture {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(jar)
-	f := &jvmFixture{javaHome: javaHome, dir: dir, agentJar: filepath.Join(dir, "postman-java-agent.jar"), keystore: filepath.Join(dir, "server.p12")}
+	f := &jvmFixture{javaHome: javaHome, dir: dir, agentJar: filepath.Join(dir, "postman-insights-java-agent.jar"), keystore: filepath.Join(dir, "server.p12")}
 	for name, content := range map[string][]byte{
-		"Server.java":                   []byte(jvmServer),
-		"postman-java-agent.jar":        jar,
-		"postman-java-agent.jar.sha256": []byte(hex.EncodeToString(sum[:]) + "  postman-java-agent.jar\n"),
+		"Server.java":                            []byte(jvmServer),
+		"postman-insights-java-agent.jar":        jar,
+		"postman-insights-java-agent.jar.sha256": []byte(hex.EncodeToString(sum[:]) + "  postman-insights-java-agent.jar\n"),
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
 			t.Fatal(err)
@@ -197,9 +197,9 @@ func (f *jvmFixture) attacher(t *testing.T) *jvm.Attacher {
 // helper builds the attach helper, once per fixture, and returns its path.
 func (f *jvmFixture) helper(t *testing.T) string {
 	t.Helper()
-	helper := filepath.Join(f.dir, "postman-jvm-attach")
+	helper := filepath.Join(f.dir, "postman-insights-jvm-attach")
 	if _, err := os.Stat(helper); err != nil {
-		build := exec.Command("go", "build", "-o", helper, "github.com/postmanlabs/postman-insights-agent/cmd/postman-jvm-attach")
+		build := exec.Command("go", "build", "-o", helper, "github.com/postmanlabs/postman-insights-agent/cmd/postman-insights-jvm-attach")
 		build.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := build.CombinedOutput(); err != nil {
 			t.Fatalf("build the attach helper: %v\n%s", err, out)
@@ -816,7 +816,7 @@ func TestNodeCollectorJVMAttachInProgress(t *testing.T) {
 	if st := nc.attacher.Stats(); st.Attached != 0 || len(st.Failed) != 0 {
 		t.Fatalf("attacher stats %+v while another attach owned the trigger", st)
 	}
-	if strings.Contains(j.stdout.String(), "Full thread dump") || strings.Contains(j.stderr.String(), "postman-insights-agent") {
+	if strings.Contains(j.stdout.String(), "Full thread dump") || strings.Contains(j.stderr.String(), "postman-insights-java-agent") {
 		t.Fatal("the JVM was signalled or attached")
 	}
 
@@ -864,7 +864,7 @@ func TestNodeCollectorJVMAttachDisabled(t *testing.T) {
 			defer unsubscribe()
 			waitStats(t, nc.attacher, func(st jvm.AttachStats) bool { return st.Skipped[jvm.SkipAttachDisabled] == 1 })
 			time.Sleep(time.Second)
-			if strings.Contains(j.stdout.String(), "Full thread dump") || strings.Contains(j.stderr.String(), "postman-insights-agent") {
+			if strings.Contains(j.stdout.String(), "Full thread dump") || strings.Contains(j.stderr.String(), "postman-insights-java-agent") {
 				t.Error("the JVM was signalled or attached")
 			}
 		})

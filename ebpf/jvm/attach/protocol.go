@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package attach loads the Java agent into a running HotSpot JVM. It is the
-// code of the postman-jvm-attach helper (cmd/postman-jvm-attach), which the
-// Insights agent runs as the JVM's own user: HotSpot accepts attach requests
-// only from that user, and the Insights agent cannot change its own user
-// without dropping root for all its threads.
+// code of the postman-insights-jvm-attach helper
+// (cmd/postman-insights-jvm-attach), which the Insights agent runs as the
+// JVM's own user: HotSpot accepts attach requests only from that user, and
+// the Insights agent cannot change its own user without dropping root for all
+// its threads.
 //
 // The Insights agent makes every decision (which JVMs, whether a signal is
 // allowed) and stages the jar. The helper does what only the JVM's user can

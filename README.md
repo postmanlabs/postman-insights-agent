@@ -63,8 +63,8 @@ capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
   network namespace and to switch the Java agent of JVMs running as another
   user on and off; without them the agent captures OpenSSL only. As a
   DaemonSet (`kube run`), loading the Java agent into running JVMs also needs
-  `CAP_SETUID` + `CAP_SETGID`, to run the `postman-jvm-attach` helper as each
-  JVM's user.
+  `CAP_SETUID` + `CAP_SETGID`, to run the `postman-insights-jvm-attach` helper
+  as each JVM's user.
 - **Not available on macOS** — the macOS build captures HTTP only; all eBPF
   paths compile to no-ops there.
 

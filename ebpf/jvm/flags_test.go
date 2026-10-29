@@ -15,8 +15,9 @@ func TestParseFlags(t *testing.T) {
 	assert.True(t, parse("-Xmx1g -XX:+DisableAttachMechanism").attachDisabled)
 	assert.False(t, parse("-XX:+DisableAttachMechanism -XX:-DisableAttachMechanism").attachDisabled, "last wins")
 	assert.True(t, parse("-XX:-EnableDynamicAgentLoading").dynamicLoadingDisabled)
-	assert.True(t, parse("-javaagent:/opt/postman/postman-java-agent.jar=cap=4096").staticAgent)
-	assert.True(t, parse("-javaagent:/agents/postman-java-agent.jar").staticAgent)
+	assert.True(t, parse("-javaagent:/opt/postman/postman-insights-java-agent.jar=cap=4096").staticAgent)
+	assert.True(t, parse("-javaagent:/agents/postman-insights-java-agent.jar").staticAgent)
+	assert.True(t, parse("-javaagent:/agents/postman-java-agent.jar").staticAgent, "the v0.42.0-rc1 name")
 	assert.False(t, parse("-javaagent:/opt/otel/opentelemetry-javaagent.jar").staticAgent, "another agent")
 }
 

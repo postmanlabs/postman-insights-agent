@@ -70,7 +70,7 @@ Core domain packages:
   - `ebpf/discovery/` — /proc-based PID watcher for auto-discovery of libssl processes and JVMs.
   - `ebpf/javatls/` — the contract with the Java agent in `java-agent/` (frame format, control file, heartbeat), kept in sync with its Java copy by tests.
   - `ebpf/jvm/` — JVM detection, the Java agent's control file kept fresh in each monitored JVM's container, and attaching the agent to running JVMs.
-  - `ebpf/jvm/attach/` — the HotSpot attach protocol, run by the separate `cmd/postman-jvm-attach` helper binary as each JVM's own user.
+  - `ebpf/jvm/attach/` — the HotSpot attach protocol, run by the separate `cmd/postman-insights-jvm-attach` helper binary as each JVM's own user.
 
 Integrations and platform helpers:
 - `integrations/cri_apis/` — Container Runtime Interface client (containerd/CRI-O).
@@ -98,7 +98,7 @@ Root: `postman-insights-agent` (see `cmd/root.go`). Notable subcommands:
 - `ec2 setup` / `ec2 remove` — Install/uninstall as systemd service on EC2.
 - `ecs add|remove|cf-fragment|task-def` — Manage agent on AWS ECS.
 - `kube inject|run|secret|helm-fragment|tf-fragment` — Kubernetes integration. `kube run` is the DaemonSet entrypoint (Linux only).
-- `kube webhook` — Run the mutating admission webhook that auto-injects the Postman Java agent into pods in opted-in namespaces. Runs as a separate Deployment in the cluster (not the DaemonSet); deployed via `charts/postman-insights-webhook/`.
+- `kube webhook` — Run the mutating admission webhook that auto-injects the Postman Insights Java agent into pods in opted-in namespaces. Runs as a separate Deployment in the cluster (not the DaemonSet); deployed via `charts/postman-insights-webhook/`.
 - `specs` (legacy) — Manage API specs.
 - `aki` — ASCII art easter egg.
 

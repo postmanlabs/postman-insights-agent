@@ -105,7 +105,7 @@ grpcurl -cacert "$CACERT" \
 
 ### Capture path
 
-- **In app pod:** `postman-java-agent.jar` (ByteBuddy on `SSLEngine`) → `ioctl()` with plaintext
+- **In app pod:** `postman-insights-java-agent.jar` (ByteBuddy on `SSLEngine`) → `ioctl()` with plaintext
 - **On node:** DaemonSet `java_tls` kprobe reads ioctl events → parses HTTP/gRPC → logs REQ/RESP
 
 ---

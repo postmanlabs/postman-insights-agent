@@ -34,7 +34,7 @@ type fakeOps struct {
 func (f *fakeOps) alive(*Process) bool                                 { return !f.dead }
 func (f *fakeOps) inspect(context.Context, *Process) (gateInfo, error) { return f.info, f.infoErr }
 func (f *fakeOps) stage(*Process, []byte, string) (string, error) {
-	return "/tmp/.postman-insights/agent-x/postman-java-agent.jar", f.stageErr
+	return "/tmp/.postman-insights/agent-x/postman-insights-java-agent.jar", f.stageErr
 }
 
 func (f *fakeOps) attach(_ context.Context, _ *Process, req attach.Request) (attach.Result, error) {
@@ -72,7 +72,7 @@ func TestAttacherAttaches(t *testing.T) {
 	req := ops.requests[0]
 	assert.Equal(t, attach.Request{
 		Version: attach.RequestVersion1, Op: attach.OpAttach, ProcRoot: "/host/proc", PID: 42, StartTime: 4200, NSPID: 1,
-		JarPath: "/tmp/.postman-insights/agent-x/postman-java-agent.jar", AgentArgs: "cap=4096", AllowSignal: true,
+		JarPath: "/tmp/.postman-insights/agent-x/postman-insights-java-agent.jar", AgentArgs: "cap=4096", AllowSignal: true,
 	}, req)
 	assert.Equal(t, "agent-0123456789abcdef", a.jarDir)
 	st := a.Stats()
@@ -137,7 +137,7 @@ func TestAttacherGateFromJVM(t *testing.T) {
 
 func TestAttacherStaticAgent(t *testing.T) {
 	a, ops := newTestAttacher()
-	ops.info.args = []string{"-javaagent:/opt/postman/postman-java-agent.jar", "-jar", "app.jar"}
+	ops.info.args = []string{"-javaagent:/opt/postman/postman-insights-java-agent.jar", "-jar", "app.jar"}
 	attempt(t, a, hotspot())
 	assert.Empty(t, ops.requests)
 	assert.Equal(t, uint64(1), a.Stats().AlreadyRunning)
@@ -267,7 +267,7 @@ func TestAttacherReportsEvents(t *testing.T) {
 	assert.Equal(t, []string{EventAttached}, run(func(*fakeOps) {}, hotspot()))
 	assert.Equal(t, []string{EventSkippedPrefix + SkipOpenJ9}, run(func(*fakeOps) {}, openj9))
 	assert.Equal(t, []string{EventAlreadyRunning}, run(func(o *fakeOps) {
-		o.info.args = []string{"-javaagent:/opt/postman/postman-java-agent.jar"}
+		o.info.args = []string{"-javaagent:/opt/postman/postman-insights-java-agent.jar"}
 	}, hotspot()))
 	assert.Equal(t, []string{EventSkippedPrefix + attach.ReasonNoListener}, run(func(o *fakeOps) {
 		o.info.sigQuitCaught = false

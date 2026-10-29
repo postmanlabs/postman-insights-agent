@@ -9,7 +9,7 @@ import "time"
 // java-agent/src/main/java/com/postman/insights/agent/bootstrap/Contract.java.
 
 // AgentJarPath is where the Java agent jar lives in the Insights agent images.
-const AgentJarPath = "/opt/postman/postman-java-agent.jar"
+const AgentJarPath = "/opt/postman/postman-insights-java-agent.jar"
 
 // MarkerProperty is the JVM system property the Java agent sets once its hooks
 // are installed. Its value is the agent version. The attacher reads it to avoid
@@ -69,9 +69,9 @@ const (
 // format, next to AgentJarPath in the Insights agent images.
 const AgentJarChecksumPath = AgentJarPath + ".sha256"
 
-// AttachHelperPath is the postman-jvm-attach helper in the Insights agent
-// images, which loads the agent into running JVMs (see ebpf/jvm/attach).
-const AttachHelperPath = "/opt/postman/postman-jvm-attach"
+// AttachHelperPath is the postman-insights-jvm-attach helper in the Insights
+// agent images, which loads the agent into running JVMs (see ebpf/jvm/attach).
+const AttachHelperPath = "/opt/postman/postman-insights-jvm-attach"
 
 // HEARTBEAT frames carry key=value lines (UTF-8, one per line) describing
 // the Java agent. The agent sends one when it starts and then every

@@ -105,8 +105,8 @@ JVM TLS (JSSE, Bouncy Castle, Netty's SslHandler, OpenJDK's `SSLEngine`) is impl
 
 **OBI's solution (which we adopt):**
 
-1. Ship a tiny Java agent JAR (`postman-java-agent.jar`).
-2. The JVM is launched with `-javaagent:/opt/postman/postman-java-agent.jar` (via `JAVA_TOOL_OPTIONS` env var, auto-injected by a Kubernetes mutating webhook).
+1. Ship a tiny Java agent JAR (`postman-insights-java-agent.jar`).
+2. The JVM is launched with `-javaagent:/opt/postman/postman-insights-java-agent.jar` (via `JAVA_TOOL_OPTIONS` env var, auto-injected by a Kubernetes mutating webhook).
 3. The Java agent uses **ByteBuddy bytecode instrumentation** to intercept:
    - `javax.net.ssl.SSLEngine.wrap()` / `unwrap()` — covers Tomcat, Jetty, JDK HttpClient, gRPC-Java
    - `javax.net.ssl.SSLSocket` read/write streams — older blocking I/O
@@ -376,7 +376,7 @@ spec:
   - { name: proc,             hostPath: { path: /proc } }
 ```
 
-For Java auto-injection: an additional `MutatingWebhookConfiguration` that adds `JAVA_TOOL_OPTIONS=-javaagent:/opt/postman/postman-java-agent.jar` to Pods in opted-in namespaces.
+For Java auto-injection: an additional `MutatingWebhookConfiguration` that adds `JAVA_TOOL_OPTIONS=-javaagent:/opt/postman/postman-insights-java-agent.jar` to Pods in opted-in namespaces.
 
 ### 8.2 Customer-facing positioning (use these exact talking points)
 
@@ -501,7 +501,7 @@ Each phase is independently demoable.
 ### Phase 5 — Java via agent + ioctl bridge (timebox: 6 weeks)
 
 **Deliverables:**
-- `java-agent/` — Gradle project building `postman-java-agent.jar`. Adapted from OBI `pkg/internal/java/agent/`.
+- `java-agent/` — Gradle project building `postman-insights-java-agent.jar`. Adapted from OBI `pkg/internal/java/agent/`.
 - `ebpf/programs/java_tls.bpf.c` — adapted from OBI `bpf/generictracer/java_tls.c`.
 - `cmd/internal/kube-webhook/` — mutating webhook adding `JAVA_TOOL_OPTIONS` to opted-in Pods.
 - DaemonSet manifest updates for webhook registration.

@@ -857,7 +857,7 @@ public final class Bridge {
         }
         if (switchOff) {
             switchOff();
-            System.err.println("[postman-insights-agent] too many internal errors; HTTPS capture switched off for this JVM");
+            System.err.println("[postman-insights-java-agent] too many internal errors; HTTPS capture switched off for this JVM");
         }
     }
 

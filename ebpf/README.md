@@ -137,7 +137,7 @@ ebpf/
 ├── javatls/                     contract with the Java agent (frames, control file, heartbeat)
 │
 └── jvm/                         JVM detection, the Java agent's control file, attaching to running JVMs
-    └── attach/                  HotSpot attach protocol (the cmd/postman-jvm-attach helper)
+    └── attach/                  HotSpot attach protocol (the cmd/postman-insights-jvm-attach helper)
 ```
 
 ## What's left after Phases 1 + 2

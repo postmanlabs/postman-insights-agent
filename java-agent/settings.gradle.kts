@@ -1,1 +1,1 @@
-rootProject.name = "postman-java-agent"
+rootProject.name = "postman-insights-java-agent"
