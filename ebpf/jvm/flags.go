@@ -44,18 +44,12 @@ func parseFlags(args []string) jvmFlags {
 }
 
 // argsFromCmdline returns a JVM's arguments from its command line
-// (NUL-separated) and the Java options in its environment (NUL-separated
-// KEY=VALUE), in the order HotSpot applies them, for JVMs that publish no perf
-// data (-XX:-UsePerfData). Of the command line, only the java launcher's
-// options count: what follows the main class, -jar file or module is the
-// application's. Argument files are not read.
-func argsFromCmdline(cmdline, environ []byte) []string {
-	env := map[string]string{}
-	for kv := range strings.SplitSeq(string(environ), "\x00") {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			env[k] = v
-		}
-	}
+// (NUL-separated) and the Java options variables of its environment (env, by
+// name: attach.JavaOptionVars), in the order HotSpot applies them, for JVMs
+// that publish no perf data (-XX:-UsePerfData). Of the command line, only the
+// java launcher's options count: what follows the main class, -jar file or
+// module is the application's. Argument files are not read.
+func argsFromCmdline(cmdline []byte, env map[string]string) []string {
 	// JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS come before the command line,
 	// _JAVA_OPTIONS after it.
 	args := splitJavaOptions(env["JAVA_TOOL_OPTIONS"])
