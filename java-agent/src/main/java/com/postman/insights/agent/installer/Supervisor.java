@@ -33,7 +33,7 @@ final class Supervisor implements Runnable {
 
     /** Starts the background thread, after the first {@link #check}. */
     void start() {
-        Thread t = new Thread(this, "postman-insights-agent");
+        Thread t = new Thread(this, "postman-insights-java-agent");
         t.setDaemon(true);
         // Keep no reference to an application class loader.
         t.setContextClassLoader(null);

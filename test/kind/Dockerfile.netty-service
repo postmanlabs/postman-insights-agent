@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Netty HTTPS service on Netty's OpenSSL (BoringSSL) engine, with the Postman
-# Java agent loaded at start through -javaagent, for Java HTTPS capture tests
-# in kind. Build from the repo root:
+# Insights Java agent loaded at start through -javaagent, for Java HTTPS
+# capture tests in kind. Build from the repo root:
 #   docker build -f test/kind/Dockerfile.netty-service -t pia-netty-service:test .
 
 FROM eclipse-temurin:21-jdk AS agent
@@ -17,7 +17,7 @@ COPY test/kind/netty-service/src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -q -B package
 
 FROM eclipse-temurin:21-jre
-COPY --from=agent /src/java-agent/build/agent/postman-java-agent.jar /opt/postman/postman-java-agent.jar
+COPY --from=agent /src/java-agent/build/agent/postman-insights-java-agent.jar /opt/postman/postman-insights-java-agent.jar
 COPY --from=app /src/target/netty-service.jar /app/app.jar
 # Test-only self-signed certificate, generated at build time.
 RUN keytool -genkeypair -alias netty-service -keyalg RSA -keysize 2048 -validity 365 \
@@ -26,4 +26,4 @@ RUN keytool -genkeypair -alias netty-service -keyalg RSA -keysize 2048 -validity
     && chmod 0644 /app/keystore.p12
 USER 1000
 EXPOSE 8443
-ENTRYPOINT ["java", "-javaagent:/opt/postman/postman-java-agent.jar", "-jar", "/app/app.jar"]
+ENTRYPOINT ["java", "-javaagent:/opt/postman/postman-insights-java-agent.jar", "-jar", "/app/app.jar"]

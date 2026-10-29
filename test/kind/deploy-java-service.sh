@@ -3,9 +3,9 @@
 # DaemonSet path (kube run --enable-https-capture, agent-daemonset-prod.yaml).
 #
 # Deploys three HTTPS services: Spring Boot on Tomcat (the JDK's SSLEngine)
-# and plain Netty (its OpenSSL engine), which load the Postman Java agent
-# through -javaagent, and the same Spring Boot service started without it,
-# into which the Insights agent attaches the Java agent. Sends each HTTPS
+# and plain Netty (its OpenSSL engine), which load the Postman Insights Java
+# agent through -javaagent, and the same Spring Boot service started without
+# it, into which the Insights agent attaches the Java agent. Sends each HTTPS
 # requests, and checks the agent's ebpf-stats lines: Java frames reached the
 # kernel programs and were parsed into HTTP messages. Captures also appear in
 # Postman Insights under the cluster "pia-kind-test".

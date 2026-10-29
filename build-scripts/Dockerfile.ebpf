@@ -2,9 +2,10 @@
 #
 # Produces a binary compiled with -tags insights_bpf so all eBPF paths
 # (HTTPS capture via SSL uprobes) are included, plus, for Java HTTPS capture,
-# in /opt/postman: the Java agent jar (postman-java-agent.jar) with its SHA-256
-# (postman-java-agent.jar.sha256), and the postman-jvm-attach helper that
-# loads it into running JVMs.
+# in /opt/postman: the Java agent jar (postman-insights-java-agent.jar) with
+# its SHA-256 (postman-insights-java-agent.jar.sha256), and the
+# postman-insights-jvm-attach helper that loads it into running JVMs, all
+# built by build-scripts/java-capture-files.sh.
 # Use this image for DaemonSet deployments that need --enable-https-capture.
 #
 # Build arg AGENT_VERSION sets the Java agent's version (default 0.0.0-dev);
@@ -16,10 +17,10 @@
 # The Java agent: Java 8 bytecode, the same jar on every architecture.
 FROM eclipse-temurin:21-jdk AS java-agent
 ARG AGENT_VERSION=0.0.0-dev
-WORKDIR /src/java-agent
-COPY java-agent/ ./
-RUN ./gradlew --no-daemon -q "-PagentVersion=${AGENT_VERSION}" agentJar \
-    && cd build/agent && sha256sum postman-java-agent.jar > postman-java-agent.jar.sha256
+WORKDIR /src
+COPY java-agent/ java-agent/
+COPY build-scripts/java-capture-files.sh build-scripts/
+RUN sh build-scripts/java-capture-files.sh jar /out/opt-postman "${AGENT_VERSION}"
 
 FROM golang:1.25-bookworm AS builder
 
@@ -61,16 +62,15 @@ RUN set -eu; \
     fi
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
     go build -tags insights_bpf -o /out/postman-insights-agent . && \
-    CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/postman-jvm-attach ./cmd/postman-jvm-attach
+    sh build-scripts/java-capture-files.sh helper /out/opt-postman
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap0.8 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
-COPY --from=java-agent /src/java-agent/build/agent/postman-java-agent.jar \
-     /src/java-agent/build/agent/postman-java-agent.jar.sha256 /opt/postman/
-COPY --from=builder /out/postman-jvm-attach /opt/postman/postman-jvm-attach
+COPY --from=java-agent /out/opt-postman/ /opt/postman/
+COPY --from=builder /out/opt-postman/ /opt/postman/
 # Requires privileged + CAP_BPF at runtime.
 # See modules/insights_agent_mns/main.tf for the full capability set.
 USER root

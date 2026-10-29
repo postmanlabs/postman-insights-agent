@@ -1,5 +1,5 @@
-// Postman Java agent: hooks javax.net.ssl.SSLEngine inside a JVM and hands the
-// plaintext to the Insights agent's eBPF programs (see
+// Postman Insights Java agent: hooks javax.net.ssl.SSLEngine inside a JVM and
+// hands the plaintext to the Insights agent's eBPF programs (see
 // ebpf/programs/java_tls.bpf.c). Built as Java 8 bytecode so it loads into
 // every supported JVM (JDK 8 through 25).
 
@@ -100,7 +100,7 @@ fun CopySpec.asClassData() {
 val agentJar by tasks.registering(Jar::class) {
     description = "Builds the Java agent jar."
     group = "build"
-    archiveFileName.set("postman-java-agent.jar")
+    archiveFileName.set("postman-insights-java-agent.jar")
     destinationDirectory.set(layout.buildDirectory.dir("agent"))
     duplicatesStrategy = DuplicatesStrategy.FAIL
 

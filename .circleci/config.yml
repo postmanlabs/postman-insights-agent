@@ -106,7 +106,7 @@ jobs:
       - store_test_results:
           path: java-agent/build/test-results
       - store_artifacts:
-          path: java-agent/build/agent/postman-java-agent.jar
+          path: java-agent/build/agent/postman-insights-java-agent.jar
 
 workflows:
   ci:

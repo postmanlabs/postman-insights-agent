@@ -1,4 +1,4 @@
-# Postman Java agent
+# Postman Insights Java agent
 
 A Java agent that captures decrypted HTTPS traffic from inside a JVM, for the Postman Insights Agent.
 
@@ -63,7 +63,7 @@ Applications therefore never see the agent's Byte Buddy, and the agent never see
 Requires JDK 17 or newer to run Gradle; the output is Java 8 bytecode.
 
 ```sh
-./gradlew agentJar   # build/agent/postman-java-agent.jar
+./gradlew agentJar   # build/agent/postman-insights-java-agent.jar
 ./gradlew check      # unit tests, then tests in a JVM started with -javaagent
 ```
 
@@ -87,7 +87,7 @@ They need a JDK and the jar, and for the framework tests the apps in `src/testAp
 
 ```sh
 POSTMAN_TEST_JAVA_HOME=/path/to/jdk17 \
-POSTMAN_TEST_AGENT_JAR=$PWD/java-agent/build/agent/postman-java-agent.jar \
+POSTMAN_TEST_AGENT_JAR=$PWD/java-agent/build/agent/postman-insights-java-agent.jar \
 POSTMAN_TEST_APPS_DIR=$PWD/java-agent/build/test-apps \
   go test -tags insights_bpf -p 1 -run 'TestNodeCollectorJVM' ./ebpf/
 ```
@@ -96,7 +96,7 @@ For an end-to-end check with the eBPF agent in kind, see `test/kind/deploy-java-
 
 ## Packaging
 
-`build-scripts/Dockerfile.ebpf` builds the jar and puts it at `/opt/postman/postman-java-agent.jar` in the eBPF image, with its SHA-256 in `postman-java-agent.jar.sha256` and the `postman-jvm-attach` helper next to it.
+`build-scripts/Dockerfile.ebpf` builds the jar and puts it at `/opt/postman/postman-insights-java-agent.jar` in the eBPF image, with its SHA-256 in `postman-insights-java-agent.jar.sha256` and the `postman-insights-jvm-attach` helper next to it.
 The build arg `AGENT_VERSION` sets the jar's version.
 
 ## Status
@@ -105,7 +105,7 @@ Java HTTPS capture is in preview, and on by default with `--enable-https-capture
 `--https-libraries=openssl` turns it off.
 Without `java`, the Insights Agent switches off the agents already running in the JVMs of the pods it monitors, at the next control-file refresh.
 The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
-As a DaemonSet (`kube run`), it also loads the agent into running JVMs that do not have it, through the `postman-jvm-attach` helper (`cmd/postman-jvm-attach`), which it runs as each JVM's own user.
+As a DaemonSet (`kube run`), it also loads the agent into running JVMs that do not have it, through the `postman-insights-jvm-attach` helper (`cmd/postman-insights-jvm-attach`), which it runs as each JVM's own user.
 Run as a sidecar (`apidump`), it loads nothing: the JVMs need `-javaagent`.
 To write the control file of a JVM running as another user, it needs the `SYS_PTRACE` capability, which the sidecars that `kube inject`, `helm-fragment` and `tf-fragment` generate get with `--https-libraries` including `java`.
 It then captures Java only in its own pod's network namespace, even with `hostPID`, and not at all in a pod on the host network.

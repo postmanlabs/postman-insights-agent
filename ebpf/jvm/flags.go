@@ -12,10 +12,14 @@ type jvmFlags struct {
 	// dynamicLoadingDisabled: -XX:-EnableDynamicAgentLoading (JDK 21+),
 	// which refuses agents loaded by attach.
 	dynamicLoadingDisabled bool
-	// staticAgent: the Postman Java agent is loaded at start through
+	// staticAgent: the Postman Insights Java agent is loaded at start through
 	// -javaagent, so there is nothing to attach.
 	staticAgent bool
 }
+
+// staticAgentJarNames are the names the Java agent's jar has had. JVMs
+// started with -javaagent on a jar copied from v0.42.0-rc1 use the old one.
+var staticAgentJarNames = []string{"postman-insights-java-agent.jar", "postman-java-agent.jar"}
 
 // parseFlags reads the arguments that matter for attaching from a JVM's
 // effective arguments. When a flag repeats, the last one wins, as in HotSpot.
@@ -34,8 +38,10 @@ func parseFlags(args []string) jvmFlags {
 		default:
 			if jar, ok := strings.CutPrefix(a, "-javaagent:"); ok {
 				jar, _, _ = strings.Cut(jar, "=")
-				if strings.HasSuffix(jar, "postman-java-agent.jar") {
-					f.staticAgent = true
+				for _, name := range staticAgentJarNames {
+					if strings.HasSuffix(jar, name) {
+						f.staticAgent = true
+					}
 				}
 			}
 		}

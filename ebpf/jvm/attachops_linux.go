@@ -114,7 +114,7 @@ func sigQuitCaught(status []byte) bool {
 }
 
 // agentJarName is the jar's name in the container.
-const agentJarName = "postman-java-agent.jar"
+const agentJarName = "postman-insights-java-agent.jar"
 
 func (o linuxOps) stage(p *Process, jar []byte, dirName string) (string, error) {
 	root, err := openRoot(p)

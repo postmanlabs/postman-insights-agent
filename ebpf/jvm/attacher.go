@@ -19,8 +19,8 @@ import (
 
 // Attacher loads the Java agent into the running JVMs it is given, so their
 // HTTPS traffic is captured with no change to their pods and no restart. It
-// works through the postman-jvm-attach helper, which it runs as each JVM's
-// own user to read the JVM's files that only that user may read and to
+// works through the postman-insights-jvm-attach helper, which it runs as each
+// JVM's own user to read the JVM's files that only that user may read and to
 // attach; it decides everything itself, as root.
 //
 // It never attaches twice: a JVM that already runs the agent (loaded at
@@ -45,7 +45,7 @@ type Attacher struct {
 
 // AttacherConfig configures an Attacher.
 type AttacherConfig struct {
-	// HelperPath is the postman-jvm-attach binary.
+	// HelperPath is the postman-insights-jvm-attach binary.
 	HelperPath string
 	// JarPath and ChecksumPath are the agent jar and its SHA-256, in
 	// sha256sum format.

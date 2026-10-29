@@ -37,7 +37,7 @@ import org.junit.jupiter.api.Test;
 import com.postman.insights.agent.Frames.Frame;
 
 /**
- * Runs in a JVM started with {@code -javaagent:postman-java-agent.jar=cap=4096},
+ * Runs in a JVM started with {@code -javaagent:postman-insights-java-agent.jar=cap=4096},
  * the frame log and a control file that enables capture (see
  * build.gradle.kts), and checks the frames the agent writes for real TLS
  * traffic through the JDK's own SSLEngine.
@@ -77,7 +77,7 @@ class AgentEndToEndTest {
     void agentThreadIsADaemon() {
         boolean found = false;
         for (Thread t : Thread.getAllStackTraces().keySet()) {
-            if (t.getName().equals("postman-insights-agent")) {
+            if (t.getName().equals("postman-insights-java-agent")) {
                 found = true;
                 assertTrue(t.isDaemon(), "the agent thread would keep the JVM alive");
                 assertNull(t.getContextClassLoader());

@@ -16,7 +16,7 @@ type Config struct {
 	MaxCaptureBytes uint32
 
 	// EnableJava also loads the Java TLS programs (java_tls.bpf.c), which
-	// read the frames the Postman Java agent writes. A failure to load or
+	// read the frames the Postman Insights Java agent writes. A failure to load or
 	// attach them disables only Java capture: Load still succeeds and reports
 	// the failure through Loader.JavaError.
 	EnableJava bool

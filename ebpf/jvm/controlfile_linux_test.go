@@ -197,7 +197,7 @@ func TestStageJar(t *testing.T) {
 	jar := []byte("PK\x03\x04 a jar")
 	got, err := stageIn(fd, jar, "agent-0123")
 	require.NoError(t, err)
-	assert.Equal(t, "/tmp/.postman-insights/agent-0123/postman-java-agent.jar", got)
+	assert.Equal(t, "/tmp/.postman-insights/agent-0123/postman-insights-java-agent.jar", got)
 	content, err := os.ReadFile(filepath.Join(root, got))
 	require.NoError(t, err)
 	assert.Equal(t, jar, content)
