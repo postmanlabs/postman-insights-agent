@@ -1,28 +1,43 @@
-# Netty HTTPS service (OpenSSL engine) with the Postman Java agent loaded at
-# start (-javaagent). Image: test/kind/Dockerfile.netty-service.
+# Netty HTTPS service (OpenSSL engine) with the Postman Insights Java agent
+# loaded at start (-javaagent). Image: test/kind/Dockerfile.netty-service.
 # Deployed by deploy-java-service.sh.
-apiVersion: v1
-kind: Pod
+# A Deployment, not a bare Pod: in discovery mode the Insights agent captures
+# only pods of long-running controllers and skips standalone pods.
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: netty-service
   namespace: test-apps
   labels:
     app: netty-service
 spec:
-  containers:
-  - name: netty-service
-    image: pia-netty-service:test
-    imagePullPolicy: Never
-    ports:
-    - containerPort: 8443
-      name: https
-    securityContext:
-      runAsNonRoot: true
-      runAsUser: 1000
-      allowPrivilegeEscalation: false
-    # TCP, not HTTPS: an HTTPS probe would itself be captured and count
-    # towards the checks in deploy-java-service.sh.
-    readinessProbe:
-      tcpSocket: { port: 8443 }
-      initialDelaySeconds: 5
-      periodSeconds: 5
+  replicas: 1
+  # The old pod is gone before the new one starts, so the deploy script sees
+  # one pod per service.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: netty-service
+  template:
+    metadata:
+      labels:
+        app: netty-service
+    spec:
+      containers:
+      - name: netty-service
+        image: pia-netty-service:test
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8443
+          name: https
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+        # TCP, not HTTPS: an HTTPS probe would itself be captured and count
+        # towards the checks in deploy-java-service.sh.
+        readinessProbe:
+          tcpSocket: { port: 8443 }
+          initialDelaySeconds: 5
+          periodSeconds: 5

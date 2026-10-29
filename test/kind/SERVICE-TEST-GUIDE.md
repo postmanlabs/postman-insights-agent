@@ -73,7 +73,7 @@ kubectl logs -n postman-insights daemonset/postman-insights-agent -f \
 ### Port-forward (Terminal 1)
 
 ```bash
-kubectl port-forward -n test-apps pod/java-service 8443:8443 8446:8446
+kubectl port-forward -n test-apps deployment/java-service 8443:8443 8446:8446
 ```
 
 ### HTTPS (Terminal 2)

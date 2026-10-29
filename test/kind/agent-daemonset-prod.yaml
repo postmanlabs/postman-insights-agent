@@ -121,8 +121,7 @@ spec:
         volumeMounts:
         - { name: sys-kernel-debug, mountPath: /sys/kernel/debug, readOnly: true }
         - { name: sys-fs-bpf,       mountPath: /sys/fs/bpf }
-        # /host/proc: LinuxKit-VM /proc bind-mounted for kind (see cluster.yaml).
-        # On a real cluster, change the hostPath below to /proc.
+        # /host/proc: the node's /proc, as on a real cluster (see the volume).
         - { name: host-proc,        mountPath: /host/proc, readOnly: true }
         - { name: cri-sock,         mountPath: /run/containerd/containerd.sock }
       volumes:
@@ -136,8 +135,12 @@ spec:
       - name: sys-fs-bpf
         hostPath: { path: /sys/fs/bpf,       type: Directory }
       - name: host-proc
-        # kind bind-mounts LinuxKit's /proc here (see cluster.yaml).
-        # On a real cluster: path: /proc
-        hostPath: { path: /linuxkit-proc, type: Directory }
+        # The node's own /proc, as on a real cluster: the CRI reports
+        # container PIDs in the node's PID namespace, and per-pod capture
+        # opens /host/proc/<pid>/ns/net with them. In kind the node is a
+        # container, so the Docker VM's /proc (mounted at /linuxkit-proc by
+        # cluster.yaml) has other PIDs, and every pod failed with "no
+        # network interfaces" and Java capture off.
+        hostPath: { path: /proc, type: Directory }
       - name: cri-sock
         hostPath: { path: /run/containerd/containerd.sock, type: Socket }
