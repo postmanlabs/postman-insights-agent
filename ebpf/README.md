@@ -131,8 +131,13 @@ ebpf/
 │   ├── attach_linux.go          Manager.AttachLibSSL (linux+insights_bpf)
 │   └── attach_stub.go           no-op (other builds)
 │
-└── discovery/                   target-PID enumeration
-    └── proc.go                  scan + watch /proc; Phase 2 adds CRI integration
+├── discovery/                   target-PID enumeration
+│   └── proc.go                  scan + watch /proc (libssl processes and JVMs)
+│
+├── javatls/                     contract with the Java agent (frames, control file, heartbeat)
+│
+└── jvm/                         JVM detection, the Java agent's control file, attaching to running JVMs
+    └── attach/                  HotSpot attach protocol (the cmd/postman-jvm-attach helper)
 ```
 
 ## What's left after Phases 1 + 2

@@ -19,6 +19,23 @@ type vectorFile struct {
 	HeaderSize int             `json:"header_size"`
 	Frames     []vectorFrame   `json:"frames"`
 	Invalid    []vectorInvalid `json:"invalid"`
+	Addresses  []vectorAddress `json:"addresses"`
+}
+
+type vectorAddress struct {
+	Name       string `json:"name"`
+	Local      string `json:"local"`
+	LocalPort  uint16 `json:"local_port"`
+	Remote     string `json:"remote"`
+	RemotePort uint16 `json:"remote_port"`
+	PayloadHex string `json:"payload_hex"`
+}
+
+func (va vectorAddress) address() Address {
+	return Address{
+		Local:  netip.AddrPortFrom(netip.MustParseAddr(va.Local), va.LocalPort),
+		Remote: netip.AddrPortFrom(netip.MustParseAddr(va.Remote), va.RemotePort),
+	}
 }
 
 type vectorFrame struct {
@@ -95,7 +112,7 @@ func TestVectorsHeader(t *testing.T) {
 	if v.HeaderSize != HeaderSize {
 		t.Errorf("vectors header_size %d, HeaderSize %d", v.HeaderSize, HeaderSize)
 	}
-	if len(v.Frames) == 0 || len(v.Invalid) == 0 {
+	if len(v.Frames) == 0 || len(v.Invalid) == 0 || len(v.Addresses) == 0 {
 		t.Fatal("vectors file has no frames")
 	}
 }
@@ -143,6 +160,7 @@ func TestVectorsInvalid(t *testing.T) {
 		"reserved":     ErrReservedBits,
 		"length":       ErrLength,
 		"total_length": ErrTotalLength,
+		"address":      ErrAddress,
 	}
 	for _, vi := range loadVectors(t).Invalid {
 		t.Run(vi.Name, func(t *testing.T) {
@@ -154,6 +172,33 @@ func TestVectorsInvalid(t *testing.T) {
 				t.Errorf("Parse error = %v, want %v", err, want)
 			}
 		})
+	}
+}
+
+func TestVectorsAddress(t *testing.T) {
+	for _, va := range loadVectors(t).Addresses {
+		t.Run(va.Name, func(t *testing.T) {
+			want := mustHex(t, va.PayloadHex)
+			if got := va.address().Append(nil); !bytes.Equal(got, want) {
+				t.Errorf("encoded\n %x\nwant\n %x", got, want)
+			}
+			got, err := ParseAddress(want)
+			if err != nil {
+				t.Fatalf("ParseAddress: %v", err)
+			}
+			if got != va.address() {
+				t.Errorf("ParseAddress = %v, want %v", got, va.address())
+			}
+		})
+	}
+	// An IPv4-mapped address is encoded as IPv4 and decoded unmapped.
+	mapped := Address{
+		Local:  netip.MustParseAddrPort("[::ffff:10.0.0.5]:51234"),
+		Remote: netip.MustParseAddrPort("10.1.2.3:8443"),
+	}
+	got, err := ParseAddress(mapped.Append(nil))
+	if err != nil || got.Local != netip.MustParseAddrPort("10.0.0.5:51234") || got.Remote != mapped.Remote {
+		t.Errorf("mapped round trip = %v, %v", got, err)
 	}
 }
 
@@ -186,17 +231,21 @@ func TestKernelHeaderInSync(t *testing.T) {
 		defines[m[1]] = v
 	}
 	want := map[string]uint64{
-		"JAVA_FRAME_MAGIC":            Magic,
-		"JAVA_FRAME_VERSION_1":        uint64(Version1),
-		"JAVA_FRAME_HEADER_SIZE":      HeaderSize,
-		"JAVA_FRAME_OP_SEND":          uint64(OpSend),
-		"JAVA_FRAME_OP_RECV":          uint64(OpRecv),
-		"JAVA_FRAME_OP_HEARTBEAT":     uint64(OpHeartbeat),
-		"JAVA_FRAME_OP_CLOSE":         uint64(OpClose),
-		"JAVA_FRAME_FLAG_ROLE_KNOWN":  uint64(FlagRoleKnown),
-		"JAVA_FRAME_FLAG_CLIENT_MODE": uint64(FlagClientMode),
-		"JAVA_FRAME_FLAG_PEER_KNOWN":  uint64(FlagPeerKnown),
-		"JAVA_CONN_ID_TAG":            ConnIDTag,
+		"JAVA_FRAME_MAGIC":             Magic,
+		"JAVA_FRAME_VERSION_1":         uint64(Version1),
+		"JAVA_FRAME_HEADER_SIZE":       HeaderSize,
+		"JAVA_FRAME_OP_SEND":           uint64(OpSend),
+		"JAVA_FRAME_OP_RECV":           uint64(OpRecv),
+		"JAVA_FRAME_OP_HEARTBEAT":      uint64(OpHeartbeat),
+		"JAVA_FRAME_OP_CLOSE":          uint64(OpClose),
+		"JAVA_FRAME_OP_ADDRESS":        uint64(OpAddress),
+		"JAVA_FRAME_ADDRESS_SIZE":      AddressSize,
+		"JAVA_FRAME_FLAG_ROLE_KNOWN":   uint64(FlagRoleKnown),
+		"JAVA_FRAME_FLAG_CLIENT_MODE":  uint64(FlagClientMode),
+		"JAVA_FRAME_FLAG_PEER_KNOWN":   uint64(FlagPeerKnown),
+		"JAVA_FRAME_FLAG_SOCKET":       uint64(FlagSocket),
+		"JAVA_FRAME_FLAG_BEFORE_WRITE": uint64(FlagBeforeWrite),
+		"JAVA_CONN_ID_TAG":             ConnIDTag,
 	}
 	for name, w := range want {
 		got, ok := defines[name]

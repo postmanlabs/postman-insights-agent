@@ -12,7 +12,15 @@ import (
 	"github.com/akitasoftware/akita-libs/memview"
 	"github.com/google/gopacket/reassembly"
 	"github.com/google/uuid"
+
+	"github.com/postmanlabs/postman-insights-agent/ebpf/javatls"
+	"github.com/postmanlabs/postman-insights-agent/printer"
 )
+
+// javaAgentAliveFor is how long after its last HEARTBEAT a Java agent counts
+// as alive: two and a half heartbeat intervals, so one lost heartbeat does
+// not count it out.
+const javaAgentAliveFor = 2*javatls.HeartbeatInterval + javatls.HeartbeatInterval/2
 
 // MaxPendingPerFlow caps the bytes we will buffer for a single flow while
 // waiting for the FactorySelector to commit to a parser. Without this cap,
@@ -39,12 +47,19 @@ const MaxPendingPerFlow = 1 * 1024 * 1024
 //	    handles HTTP keep-alive pipelining: one TCP/SSL flow carrying
 //	    N back-to-back requests or responses).
 //
-// The flow is forgotten after a configurable idle timeout (default 30s) or
-// when an SSL_shutdown event arrives.
+// The flow is forgotten after a configurable idle timeout (default 30s), or
+// when the Java agent reports that its connection closed (KindJavaClose),
+// which also completes a message delimited by the close.
 //
-// IP/port synthesis: when a Resolver is set, SrcIP/DstIP/ports are filled from
-// /proc/<pid>/net/tcp via the SSL*→fd map. When Resolver is nil, IPs are left
-// zero and "ebpf-pid-<N>" is stored in the Interface field for traceability.
+// HEARTBEAT events (KindJavaHeartbeat) from Java agents carry no traffic;
+// the adapter keeps each agent's last status, for Stats and a log line when
+// an agent appears or changes state.
+//
+// IP/port synthesis: Java events carry their connection's addresses from the
+// kernel (SSLEvent.Tuple) when it knows them. Otherwise, when a Resolver is
+// set, SrcIP/DstIP/ports are filled from /proc/<pid>/net/tcp via the
+// SSL*→fd map. When neither is available, IPs are left zero and
+// "ebpf-pid-<N>" is stored in the Interface field for traceability.
 // See docs/https-capture-design.md §5.4.
 type Adapter struct {
 	// FactorySelector picks the right parser for a new flow. Pass the same
@@ -79,6 +94,14 @@ type Adapter struct {
 	// dropped. Counted once per flow. Surfaced in ebpf-stats to quantify how
 	// much H2 traffic we currently cannot decode.
 	H2HPACKDesyncs uint64
+
+	// javaAgents holds the last HEARTBEAT of each Java agent, by PID.
+	javaAgents map[uint32]*javaAgent
+}
+
+type javaAgent struct {
+	lastSeen time.Time
+	status   javatls.Heartbeat
 }
 
 // Stats is a lock-protected snapshot of adapter counters for one target.
@@ -86,6 +109,11 @@ type Stats struct {
 	MessagesEmitted uint64
 	FlowsDropped    uint64
 	H2HPACKDesyncs  uint64
+	// JavaAgentsAlive counts the Java agents heard from recently (see
+	// javaAgentAliveFor), and JavaAgentsCapturing those of them capturing
+	// (not dormant or switched off).
+	JavaAgentsAlive     int
+	JavaAgentsCapturing int
 }
 
 // connKey identifies a TLS connection (both directions).
@@ -202,6 +230,7 @@ func NewAdapter(fs akinet.TCPParserFactorySelector, out chan<- akinet.ParsedNetw
 		flows:           make(map[FlowKey]*flowState),
 		conns:           make(map[connKey]*tlsConnState),
 		resolved:        make(map[resolvedKey]SocketInfo),
+		javaAgents:      make(map[uint32]*javaAgent),
 	}
 }
 
@@ -212,6 +241,26 @@ func NewAdapter(fs akinet.TCPParserFactorySelector, out chan<- akinet.ParsedNetw
 func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	switch ev.Kind {
+	case KindData:
+	case KindJavaHeartbeat:
+		// Agent liveness is judged on the wall clock, like Stats and GC.
+		a.javaHeartbeat(ev, time.Now())
+		return
+	case KindJavaClose:
+		// The CLOSE carries the connection's addresses: the first to, when
+		// they came after the connection's data (an ADDRESS frame dropped
+		// until then), so the messages it completes have them.
+		if conn := a.conns[connKey{PID: ev.PID, SSLCtx: ev.SSLCtx}]; conn != nil {
+			a.tryResolveConn(conn, ev)
+		}
+		a.closeConn(ev.PID, ev.SSLCtx, ev.Time(monoEpoch))
+		return
+	default:
+		// A kind this adapter does not know carries no traffic it can parse.
+		return
+	}
 
 	key := ev.Key()
 	ck := connKey{PID: ev.PID, SSLCtx: ev.SSLCtx}
@@ -495,6 +544,12 @@ func (a *Adapter) GC(now time.Time, maxIdle time.Duration) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	for pid, agent := range a.javaAgents {
+		if now.Sub(agent.lastSeen) > javaAgentAliveFor {
+			delete(a.javaAgents, pid)
+		}
+	}
+
 	dropped := 0
 	for k, st := range a.flows {
 		if now.Sub(st.lastSeen) > maxIdle {
@@ -513,8 +568,55 @@ func (a *Adapter) forgetFlow(key FlowKey, st *flowState) {
 	}
 }
 
-// CloseFlow forgets state for one flow. Called when an SSL_shutdown event
-// arrives or the parent process exits.
+// closeConn ends a connection: it completes the message in progress in each
+// direction (a response delimited by the close is complete now), then
+// forgets the connection. Caller holds a.mu.
+func (a *Adapter) closeConn(pid uint32, sslCtx uint64, now time.Time) {
+	for _, dir := range []uint8{DirIngress, DirEgress} {
+		key := FlowKey{PID: pid, SSLCtx: sslCtx, Direction: dir}
+		st := a.flows[key]
+		if st == nil {
+			continue
+		}
+		a.finishMessage(key, st, now)
+		a.forgetFlow(key, st)
+	}
+}
+
+// finishMessage parses the message in progress on st as complete, and emits
+// it when that yields one. Caller holds a.mu.
+func (a *Adapter) finishMessage(key FlowKey, st *flowState, now time.Time) {
+	if st.dropped || st.h2 != nil || st.parser == nil {
+		return
+	}
+	result, _, _, err := st.parser.Parse(st.pending, true)
+	st.parser = nil
+	st.pending.Clear()
+	if err != nil || result == nil {
+		return
+	}
+	a.Out <- a.toPNT(st, key, result, now)
+	a.MessagesEmitted++
+}
+
+// javaHeartbeat records a Java agent's status, and logs when the agent is
+// first heard from or changes state. Caller holds a.mu.
+func (a *Adapter) javaHeartbeat(ev *SSLEvent, now time.Time) {
+	status := javatls.ParseHeartbeat(ev.Bytes())
+	agent := a.javaAgents[ev.PID]
+	if agent == nil || now.Sub(agent.lastSeen) > javaAgentAliveFor || agent.status.State != status.State {
+		printer.Stderr.Infof("ebpf: Java agent %s in pid %d is %s (Java %s, %s; loaded by %s)\n",
+			status.AgentVersion, ev.PID, status.State, status.JavaVersion, status.JavaVendor, status.Source)
+	}
+	if agent == nil {
+		agent = &javaAgent{}
+		a.javaAgents[ev.PID] = agent
+	}
+	agent.lastSeen = now
+	agent.status = status
+}
+
+// CloseFlow forgets state for one flow.
 func (a *Adapter) CloseFlow(key FlowKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -537,11 +639,22 @@ func (a *Adapter) Snapshot() (numFlows int, totalBytes int) {
 func (a *Adapter) Stats() Stats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return Stats{
+	s := Stats{
 		MessagesEmitted: a.MessagesEmitted,
 		FlowsDropped:    a.FlowsDropped,
 		H2HPACKDesyncs:  a.H2HPACKDesyncs,
 	}
+	now := time.Now()
+	for _, agent := range a.javaAgents {
+		if now.Sub(agent.lastSeen) > javaAgentAliveFor {
+			continue
+		}
+		s.JavaAgentsAlive++
+		if agent.status.State == javatls.HeartbeatStateActive {
+			s.JavaAgentsCapturing++
+		}
+	}
+	return s
 }
 
 // PreResolve caches a (pid, ssl_ctx, fd) → SocketInfo mapping. Called by
@@ -557,7 +670,16 @@ func (a *Adapter) PreResolve(pid uint32, sslCtx uint64, fd int32, info SocketInf
 }
 
 func (a *Adapter) tryResolveConn(conn *tlsConnState, ev *SSLEvent) {
-	if conn.socketResolved || a.Resolver == nil || ev.FD < 0 {
+	if conn.socketResolved {
+		return
+	}
+	// The kernel's own addresses for the connection (Java events), else the
+	// fd's through /proc (libssl events).
+	if info, ok := ev.Tuple.SocketInfo(); ok {
+		a.applySocketInfo(conn, info)
+		return
+	}
+	if a.Resolver == nil || ev.FD < 0 {
 		return
 	}
 	rk := resolvedKey{PID: ev.PID, SSLCtx: ev.SSLCtx, FD: ev.FD}

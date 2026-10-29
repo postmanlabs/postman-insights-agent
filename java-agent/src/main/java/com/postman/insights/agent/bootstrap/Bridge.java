@@ -2,6 +2,7 @@ package com.postman.insights.agent.bootstrap;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -13,10 +14,13 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.LongAdder;
 
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLEngineResult;
+import javax.net.ssl.SSLSocket;
 
 /**
- * Called by the advice woven into {@link SSLEngine} implementations. Copies
- * the plaintext of each {@code wrap}/{@code unwrap} call into a frame and
+ * Called by the advice woven into {@link SSLEngine} implementations and the
+ * JDK's {@link SSLSocket} streams. Copies the plaintext of each
+ * {@code wrap}/{@code unwrap} call, or socket read and write, into a frame and
  * hands it to the kernel with a positional write to {@code /dev/null} at
  * {@link Frame#MAGIC}; the Insights agent's eBPF programs read it on syscall
  * entry. Pure Java: no JNI, no {@code Unsafe}.
@@ -64,6 +68,14 @@ public final class Bridge {
     private static volatile String frameLog;
 
     private static final Connections CONNECTIONS = new Connections();
+
+    /**
+     * Advanced at every heartbeat (every 30 s): a socket in use sends its
+     * ADDRESS frame again once per epoch, so one the kernel dropped (rate cap,
+     * netns not yet allowed) or forgot (LRU eviction, an Insights agent
+     * restart) comes back. Written under HEARTBEAT_LOCK.
+     */
+    private static volatile int addressEpoch;
 
     private static final ThreadLocal<Call> CALL = new ThreadLocal<Call>() {
         @Override
@@ -113,6 +125,12 @@ public final class Bridge {
         int[] pos = new int[4];
         ByteBuffer single;
         int singlePos;
+        /** A socket stream call's connection, counted in flight until its exit. */
+        Connections.Info stream;
+        /** A socket stream call's bytes: array[arrayOff, arrayOff + arrayLen). */
+        byte[] array;
+        int arrayOff;
+        int arrayLen;
         int slotHint;
         final Connections.Lookup lookup = new Connections.Lookup();
 
@@ -122,6 +140,8 @@ public final class Bridge {
             recording = false;
             bufs = null;
             single = null;
+            array = null;
+            stream = null;
         }
     }
 
@@ -215,6 +235,19 @@ public final class Bridge {
             return Contract.HEARTBEAT_STATE_OFF;
         }
         return active ? Contract.HEARTBEAT_STATE_ACTIVE : Contract.HEARTBEAT_STATE_DORMANT;
+    }
+
+    /** Whether the hooks capture now. */
+    public static boolean capturing() {
+        return active;
+    }
+
+    /** The state once the control file enables capture. */
+    public static String stateWhenEnabled() {
+        if (broken) {
+            return Contract.HEARTBEAT_STATE_OFF;
+        }
+        return started ? Contract.HEARTBEAT_STATE_ACTIVE : Contract.HEARTBEAT_STATE_DORMANT;
     }
 
     public static long framesWritten() {
@@ -311,9 +344,17 @@ public final class Bridge {
     /**
      * Advice exit: at the outermost call, emits the bytes between each
      * buffer's entry position and its current position, which is the
-     * plaintext the call consumed (wrap) or produced (unwrap).
+     * plaintext the call consumed (wrap) or produced (unwrap). A connection's
+     * first unwrap that consumed TLS bytes sends a RECV frame even without
+     * plaintext (a handshake unwrap), which ties the connection to its socket
+     * in the kernel; so does every wrap that produced TLS bytes without
+     * plaintext, with an empty SEND, which announces the write after it. When
+     * the call's result is CLOSED, records that direction as closed, and
+     * sends a CLOSE frame once the connection can carry no more responses.
+     *
+     * @param result the call's SSLEngineResult; null when it threw
      */
-    public static void exit(Call c, Object engine, byte op) {
+    public static void exit(Call c, Object engine, byte op, Object result) {
         if (c == null) {
             return;
         }
@@ -321,26 +362,298 @@ public final class Bridge {
             return;
         }
         c.depth = 0;
-        if (!c.recording) {
-            return;
-        }
         try {
-            long total = consumed(c);
-            if (total == 0 || !active) {
-                return;
+            if (c.recording) {
+                long total = consumed(c);
+                if (total > 0 && active) {
+                    emitData(c, engine, op, total);
+                } else if (active && (op == Frame.OP_SEND ? produced(result) : consumed(result))) {
+                    tie(c, engine, op);
+                }
             }
-            // A FileChannel write from an interrupted thread fails and closes
-            // the channel; skip this call instead.
-            if (Thread.currentThread().isInterrupted()) {
-                DROPPED.increment();
-                return;
+            if (result instanceof SSLEngineResult
+                    && ((SSLEngineResult) result).getStatus() == SSLEngineResult.Status.CLOSED && active) {
+                closed(c, engine, op);
             }
-            Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
-            emit(c, op, roleFlags(conn, engine), conn.id, (int) Math.min(total, Integer.MAX_VALUE));
         } catch (Throwable t) {
             error();
         } finally {
             c.clear();
+        }
+    }
+
+    private static void emitData(Call c, Object engine, byte op, long total) throws Throwable {
+        // A FileChannel write from an interrupted thread fails and closes
+        // the channel; skip this call instead.
+        if (Thread.currentThread().isInterrupted()) {
+            DROPPED.increment();
+            return;
+        }
+        Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        short flags = flags(conn, engine);
+        if (op == Frame.OP_SEND) {
+            // A wrap's output is written to the socket after it.
+            flags |= Frame.FLAG_BEFORE_WRITE;
+        }
+        // Only a written RECV frame tied the connection; a dropped one
+        // leaves the next to try.
+        if (emit(c, op, flags, conn.id, (int) Math.min(total, Integer.MAX_VALUE)) && op == Frame.OP_RECV) {
+            conn.recvSent = true;
+        }
+    }
+
+    /**
+     * Advice entry for the JDK's blocking {@code SSLSocket} streams: a read or
+     * a write of a byte array. The call counts as in flight on its socket
+     * until its exit has sent its frame, so a close on another thread sends
+     * CLOSE after it (see {@link #socketClosed}). Returns null when the exit
+     * has nothing to do.
+     */
+    public static Call enterStream(Object socket) {
+        if (!active) {
+            return null;
+        }
+        Call c = call();
+        if (c == null || c.depth++ > 0) {
+            return c;
+        }
+        c.clear();
+        c.recording = true;
+        try {
+            Connections.Info conn = CONNECTIONS.get(socket, c.lookup);
+            conn.streamEntered();
+            c.stream = conn;
+        } catch (Throwable t) {
+            error();
+        }
+        return c;
+    }
+
+    /**
+     * Advice exit for {@code SSLSocket} streams: emits the plaintext the call
+     * read (RECV) or wrote (SEND), b[off, off + n). The socket is the
+     * connection, and its first data frame is preceded by an ADDRESS frame
+     * with the socket's addresses. A read that reached the end of the stream
+     * (n == -1) records the inbound side as closed.
+     *
+     * @param n bytes read or written; -1 at the end of the stream; 0 when the call threw
+     */
+    public static void exitStream(Call c, Object socket, byte op, byte[] b, int off, int n) {
+        if (c == null) {
+            return;
+        }
+        if (--c.depth > 0) {
+            return;
+        }
+        c.depth = 0;
+        try {
+            if (!c.recording || !active) {
+                return;
+            }
+            if (n > 0 && b != null && off >= 0 && n <= b.length - off) {
+                if (Thread.currentThread().isInterrupted()) {
+                    DROPPED.increment();
+                    return;
+                }
+                Connections.Info conn = c.stream != null ? c.stream : CONNECTIONS.get(socket, c.lookup);
+                short flags = flags(conn, socket);
+                int epoch = addressEpoch;
+                if (conn.addressEpoch != epoch) {
+                    address(c, conn, socket, flags, epoch);
+                }
+                c.array = b;
+                c.arrayOff = off;
+                c.arrayLen = n;
+                emit(c, op, flags, conn.id, n);
+            } else if (n < 0 && op == Frame.OP_RECV) {
+                // The end of the stream: a CLOSE when the inbound side ends
+                // the connection (a client's), after any read in flight.
+                Connections.Info conn = c.stream != null ? c.stream : CONNECTIONS.get(socket, c.lookup);
+                short role = flags(conn, socket);
+                if (conn.closed(false, role) && !conn.deferClose(c.stream != null)) {
+                    sendClose(c, conn, role);
+                }
+            }
+        } catch (Throwable t) {
+            error();
+        } finally {
+            // Whether or not capture is still on, so the count cannot stick.
+            Connections.Info conn = c.stream;
+            c.clear();
+            if (conn != null && conn.streamExited()) {
+                try {
+                    if (active) {
+                        sendClose(c, conn, flags(conn, socket));
+                    } else {
+                        conn.closeAttempted(false);
+                    }
+                } catch (Throwable t) {
+                    error();
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends a socket's ADDRESS frame: its local and remote addresses, which
+     * the kernel gives every event of the connection. Recorded for epoch once
+     * written; a dropped one (interrupted thread, every buffer busy), or one
+     * before the socket is connected, is retried at the next data frame.
+     */
+    private static void address(Call c, Connections.Info conn, Object socket, short flags, int epoch)
+            throws Throwable {
+        if (!(socket instanceof SSLSocket)) {
+            return;
+        }
+        SSLSocket s = (SSLSocket) socket;
+        InetAddress remote = s.getInetAddress();
+        InetAddress local = s.getLocalAddress();
+        int remotePort = s.getPort();
+        int localPort = s.getLocalPort();
+        if (remote == null || local == null || local.isAnyLocalAddress() || remotePort <= 0 || localPort <= 0) {
+            return;
+        }
+        if (emitSmall(c, Frame.OP_ADDRESS, flags, conn.id, local, localPort, remote, remotePort)) {
+            conn.addressEpoch = epoch;
+        }
+    }
+
+    /**
+     * Advice exit for {@code SSLSocket.close}: both directions are done, so a
+     * connection that carried traffic gets its CLOSE frame, if it has not yet.
+     * A read or write on another thread can have done its I/O but not yet
+     * sent its frame; then the last of them sends the CLOSE after its frame,
+     * so the Insights agent does not complete a response before its last
+     * bytes (the same holds for a CLOSE at the end of the stream). A CLOSE
+     * dropped there is not retried, as here.
+     */
+    public static void socketClosed(Object socket) {
+        if (!active) {
+            return;
+        }
+        Call c = call();
+        if (c == null || c.depth > 0) {
+            return;
+        }
+        try {
+            Connections.Info conn = CONNECTIONS.find(socket, c.lookup);
+            if (conn == null) {
+                return;
+            }
+            short role = flags(conn, socket);
+            if ((conn.closed(true, role) || conn.closed(false, role)) && !conn.deferClose(false)) {
+                sendClose(c, conn, role);
+            }
+        } catch (Throwable t) {
+            error();
+        }
+    }
+
+    /** Sends a CLOSE that {@link Connections.Info#closed} said is due. */
+    private static void sendClose(Call c, Connections.Info conn, short role) throws Throwable {
+        boolean written = false;
+        try {
+            written = emitHeader(c, Frame.OP_CLOSE, role, conn.id);
+        } finally {
+            conn.closeAttempted(written);
+        }
+    }
+
+    /**
+     * Whether an unwrap consumed TLS bytes, which the socket read just
+     * before: the evidence a tie frame needs.
+     */
+    private static boolean consumed(Object result) {
+        return result instanceof SSLEngineResult && ((SSLEngineResult) result).bytesConsumed() > 0;
+    }
+
+    /**
+     * Whether a wrap produced TLS bytes, which the socket write after it
+     * carries: the evidence a SEND tie frame needs.
+     */
+    private static boolean produced(Object result) {
+        return result instanceof SSLEngineResult && ((SSLEngineResult) result).bytesProduced() > 0;
+    }
+
+    /**
+     * Sends an empty frame of op for an unwrap (RECV) that consumed TLS bytes,
+     * or a wrap (SEND) that produced some, without plaintext: a handshake
+     * call, by whose socket read just before or write just after the kernel
+     * ties the connection to its socket. A RECV only at the connection's
+     * first such unwrap (retried until written). A SEND at every such wrap:
+     * each announces the thread's next write as this connection's, which the
+     * kernel needs to see to tell when another connection's wrap waits for
+     * the same write.
+     */
+    private static void tie(Call c, Object engine, byte op) throws Throwable {
+        Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        if (op == Frame.OP_RECV) {
+            if (conn.recvSent) {
+                return;
+            }
+            // Set once written: a dropped tie (interrupted thread, every
+            // buffer busy) is retried at the next such unwrap.
+            if (emitHeader(c, Frame.OP_RECV, flags(conn, engine), conn.id)) {
+                conn.recvSent = true;
+            }
+            return;
+        }
+        emitHeader(c, op, (short) (flags(conn, engine) | Frame.FLAG_BEFORE_WRITE), conn.id);
+    }
+
+    /** Records a CLOSED result, and sends CLOSE when the connection is done. */
+    private static void closed(Call c, Object engine, byte op) throws Throwable {
+        Connections.Info conn = CONNECTIONS.get(engine, c.lookup);
+        short role = flags(conn, engine);
+        if (conn.closed(op == Frame.OP_SEND, role)) {
+            sendClose(c, conn, role);
+        }
+    }
+
+    /** Sends a frame with no payload; false when it was dropped. */
+    private static boolean emitHeader(Call c, byte op, short flags, long connId) throws Throwable {
+        return emitSmall(c, op, flags, connId, null, 0, null, 0);
+    }
+
+    /**
+     * Sends a frame with no payload, or an ADDRESS frame when local is set;
+     * false when it was dropped.
+     */
+    private static boolean emitSmall(Call c, byte op, short flags, long connId, InetAddress local, int localPort,
+                                     InetAddress remote, int remotePort) throws Throwable {
+        if (Thread.currentThread().isInterrupted()) {
+            DROPPED.increment();
+            return false;
+        }
+        Pool p = pool;
+        int idx = p.acquire(c);
+        if (idx < 0) {
+            DROPPED.increment();
+            return false;
+        }
+        try {
+            Slot s = p.slots[idx];
+            ByteBuffer f = s.buf;
+            int room = Math.max(captureCap, Frame.ADDRESS_SIZE);
+            if (f == null || f.capacity() < Frame.HEADER_SIZE + room) {
+                s.buf = f = Frame.allocate(room);
+            }
+            f.clear();
+            int len = 0;
+            if (local != null) {
+                Frame.putAddress(f, Frame.HEADER_SIZE, local, localPort, remote, remotePort);
+                len = Frame.ADDRESS_SIZE;
+            }
+            Frame.putHeader(f, op, flags, len, connId, null, 0, len);
+            f.limit(Frame.HEADER_SIZE + len);
+            if (write(s, f)) {
+                FRAMES.increment();
+                return true;
+            }
+            DROPPED.increment();
+            return false;
+        } finally {
+            p.release(idx);
         }
     }
 
@@ -359,12 +672,20 @@ public final class Bridge {
         return total;
     }
 
+    /** A frame's flags for conn: its role, and whether it is a blocking socket's. */
+    private static short flags(Connections.Info conn, Object owner) {
+        short flags = roleFlags(conn, owner);
+        return owner instanceof SSLSocket ? (short) (flags | Frame.FLAG_SOCKET) : flags;
+    }
+
     private static short roleFlags(Connections.Info conn, Object engine) {
         short flags = conn.roleFlags;
-        if (flags == 0 && engine instanceof SSLEngine) {
+        if (flags == 0 && (engine instanceof SSLEngine || engine instanceof SSLSocket)) {
             try {
-                flags = (short) (Frame.FLAG_ROLE_KNOWN
-                        | (((SSLEngine) engine).getUseClientMode() ? Frame.FLAG_CLIENT_MODE : 0));
+                boolean client = engine instanceof SSLEngine
+                        ? ((SSLEngine) engine).getUseClientMode()
+                        : ((SSLSocket) engine).getUseClientMode();
+                flags = (short) (Frame.FLAG_ROLE_KNOWN | (client ? Frame.FLAG_CLIENT_MODE : 0));
                 conn.roleFlags = flags;
             } catch (Throwable t) {
                 // Unknown role; the Insights agent infers it from the traffic.
@@ -373,12 +694,13 @@ public final class Bridge {
         return flags;
     }
 
-    private static void emit(Call c, byte op, short flags, long connId, int total) throws Throwable {
+    /** Writes a frame with the call's bytes; false when it was dropped. */
+    private static boolean emit(Call c, byte op, short flags, long connId, int total) throws Throwable {
         Pool p = pool;
         int idx = p.acquire(c);
         if (idx < 0) {
             DROPPED.increment();
-            return;
+            return false;
         }
         try {
             Slot s = p.slots[idx];
@@ -389,7 +711,9 @@ public final class Bridge {
             }
             f.clear();
             f.position(Frame.HEADER_SIZE);
-            if (c.single != null) {
+            if (c.array != null) {
+                f.put(c.array, c.arrayOff, Math.min(c.arrayLen, cap));
+            } else if (c.single != null) {
                 copy(f, c.single, c.singlePos, cap);
             } else {
                 for (int i = 0; i < c.len && f.position() - Frame.HEADER_SIZE < cap; i++) {
@@ -403,9 +727,10 @@ public final class Bridge {
             f.flip();
             if (write(s, f)) {
                 FRAMES.increment();
-            } else {
-                DROPPED.increment();
+                return true;
             }
+            DROPPED.increment();
+            return false;
         } finally {
             p.release(idx);
         }
@@ -477,6 +802,7 @@ public final class Bridge {
         }
         try {
             synchronized (HEARTBEAT_LOCK) {
+                addressEpoch++;
                 ByteBuffer f = heartbeatBuf;
                 if (f == null || f.capacity() < Frame.HEADER_SIZE + payload.length) {
                     heartbeatBuf = f = Frame.allocate(payload.length);

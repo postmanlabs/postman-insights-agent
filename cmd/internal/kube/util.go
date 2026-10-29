@@ -104,6 +104,21 @@ type SidecarOpts struct {
 	// Customers who don't need HTTPS capture get the existing minimal
 	// privilege set. See docs/https-capture-design.md §8.1.
 	EnableHTTPSCapture bool
+	// HTTPSLibraries, with EnableHTTPSCapture, is passed as
+	// --https-libraries; "" keeps the agent's default.
+	HTTPSLibraries string
+}
+
+// httpsArgs returns the apidump arguments for HTTPS capture.
+func (opts SidecarOpts) httpsArgs() []string {
+	if !opts.EnableHTTPSCapture {
+		return nil
+	}
+	args := []string{"--enable-https-capture"}
+	if opts.HTTPSLibraries != "" {
+		args = append(args, "--https-libraries="+opts.HTTPSLibraries)
+	}
+	return args
 }
 
 func createPostmanSidecar(opts SidecarOpts) v1.Container {
@@ -123,9 +138,7 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 	if rest.Domain != rest.DefaultDomain() {
 		args = append(args, "--domain", rest.Domain)
 	}
-	if opts.EnableHTTPSCapture {
-		args = append(args, "--enable-https-capture")
-	}
+	args = append(args, opts.httpsArgs()...)
 	args = append(args, opts.ApidumpArgs...)
 
 	pmKey, pmEnv := cfg.GetPostmanAPIKeyAndEnvironment()

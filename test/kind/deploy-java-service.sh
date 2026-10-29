@@ -2,12 +2,13 @@
 # End-to-end check of Java HTTPS capture in kind, through the production
 # DaemonSet path (kube run --enable-https-capture, agent-daemonset-prod.yaml).
 #
-# Deploys two HTTPS services that load the Postman Java agent through
-# -javaagent: Spring Boot on Tomcat (the JDK's SSLEngine) and plain Netty (its
-# OpenSSL engine). Sends each HTTPS requests, and checks the agent's
-# ebpf-stats lines: Java frames reached the kernel programs and were parsed
-# into HTTP messages. Captures also appear in Postman Insights under the
-# cluster "pia-kind-test".
+# Deploys three HTTPS services: Spring Boot on Tomcat (the JDK's SSLEngine)
+# and plain Netty (its OpenSSL engine), which load the Postman Java agent
+# through -javaagent, and the same Spring Boot service started without it,
+# into which the Insights agent attaches the Java agent. Sends each HTTPS
+# requests, and checks the agent's ebpf-stats lines: Java frames reached the
+# kernel programs and were parsed into HTTP messages. Captures also appear in
+# Postman Insights under the cluster "pia-kind-test".
 #
 # Prerequisites: Docker Desktop, kind, kubectl, a Postman Insights API key.
 #
@@ -22,7 +23,7 @@ CLUSTER=pia-https-test
 AGENT_IMAGE=pia-agent-ebpf:test
 JAVA_IMAGE=pia-java-service:test
 NETTY_IMAGE=pia-netty-service:test
-SERVICES="java-service netty-service"
+SERVICES="java-service netty-service java-service-attach"
 NS=test-apps
 SKIP_BUILD=false
 REQUESTS=3 # rounds of 3 requests each
@@ -30,7 +31,7 @@ REQUESTS=3 # rounds of 3 requests each
 for arg in "$@"; do
   case "$arg" in
     --skip-build) SKIP_BUILD=true ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
@@ -78,20 +79,15 @@ kubectl rollout restart -n postman-insights daemonset/postman-insights-agent
 kubectl rollout status -n postman-insights daemonset/postman-insights-agent --timeout=180s
 sleep 15
 
-# The Java agents stay dormant until a fresh control file enables them. Until
-# the Insights agent writes it (INS-365), this script does, the way the
-# Insights agent must: replaced atomically. It goes stale after 60 s, which is
-# enough for the requests below.
-echo "==> Enabling capture in the Java agents"
+# The Java agents stay dormant until the Insights agent discovers their JVMs
+# and writes their control files; into java-service-attach it first attaches
+# the agent.
+echo "==> Waiting for the Java agents to start capturing"
 for svc in $SERVICES; do
-  kubectl exec -n "$NS" "$svc" -- sh -ec 'mkdir -p /tmp/.postman-insights
-    printf "version=1\nenabled=1\n" > /tmp/.postman-insights/control.tmp
-    mv /tmp/.postman-insights/control.tmp /tmp/.postman-insights/control'
-done
-for svc in $SERVICES; do
-  # The agent checks the control file every 5 s.
+  # Discovery runs every 2 s, a JVM is attached once it has run for 5 s, and
+  # the agent checks its control file every 5 s.
   capturing=false
-  for _ in $(seq 1 20); do
+  for _ in $(seq 1 45); do
     if kubectl logs -n "$NS" "$svc" | grep -q 'postman-insights-agent\] capturing HTTPS traffic'; then
       capturing=true
       break
@@ -146,6 +142,28 @@ if [[ "${msgs:-0}" -ge "$want" ]]; then
   echo "  PASS  msgs=${msgs} (HTTP messages parsed for a monitored pod)"
 else
   echo "  FAIL  msgs=${msgs:-none}, want at least ${want}"
+  fail=1
+fi
+
+# The kernel ties each Java connection to its socket, so every message has
+# its IP addresses and ports: no data frame went out without them, and no
+# connection's thread read another socket before its frames.
+for field in java_conn_unbound java_conn_mismatch; do
+  v=$(max_field "$field")
+  if [[ -n "$v" && "$v" -eq 0 ]]; then
+    echo "  PASS  ${field}=0"
+  else
+    echo "  FAIL  ${field}=${v:-none}, want 0"
+    fail=1
+  fi
+done
+
+# Each service's Java agent reports itself through HEARTBEAT frames.
+agents=$({ grep -oE 'ebpf: Java agent [^ ]+ in pid [0-9]+ is active' <<<"$LOGS" | grep -oE 'pid [0-9]+' | sort -u | wc -l; } || true)
+if [[ "${agents// /}" -ge "$services" ]]; then
+  echo "  PASS  ${agents// /} Java agents heard from, capturing"
+else
+  echo "  FAIL  ${agents// /} Java agents heard from capturing, want ${services}"
   fail=1
 fi
 

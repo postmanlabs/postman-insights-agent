@@ -1,9 +1,10 @@
 # eBPF-enabled build of postman-insights-agent.
 #
 # Produces a binary compiled with -tags insights_bpf so all eBPF paths
-# (HTTPS capture via SSL uprobes) are included, plus the Java agent jar for
-# Java HTTPS capture at /opt/postman/postman-java-agent.jar, with its SHA-256
-# in postman-java-agent.jar.sha256 next to it.
+# (HTTPS capture via SSL uprobes) are included, plus, for Java HTTPS capture,
+# in /opt/postman: the Java agent jar (postman-java-agent.jar) with its SHA-256
+# (postman-java-agent.jar.sha256), and the postman-jvm-attach helper that
+# loads it into running JVMs.
 # Use this image for DaemonSet deployments that need --enable-https-capture.
 #
 # Build arg AGENT_VERSION sets the Java agent's version (default 0.0.0-dev);
@@ -59,7 +60,8 @@ RUN set -eu; \
         exit 1; \
     fi
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
-    go build -tags insights_bpf -o /out/postman-insights-agent .
+    go build -tags insights_bpf -o /out/postman-insights-agent . && \
+    CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/postman-jvm-attach ./cmd/postman-jvm-attach
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -68,6 +70,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
 COPY --from=java-agent /src/java-agent/build/agent/postman-java-agent.jar \
      /src/java-agent/build/agent/postman-java-agent.jar.sha256 /opt/postman/
+COPY --from=builder /out/postman-jvm-attach /opt/postman/postman-jvm-attach
 # Requires privileged + CAP_BPF at runtime.
 # See modules/insights_agent_mns/main.tf for the full capability set.
 USER root
