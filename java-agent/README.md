@@ -29,8 +29,10 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
   - **`SSLEngine`:** the agent sees engines, not sockets.
     The servers and clients it captures read the socket on the thread that then unwraps what it read, so a connection's RECV frame comes from the thread whose socket read just returned bytes (`tcp_recvmsg`, hooked with fexit, or kprobe and kretprobe on kernels without BPF trampolines); a read that returned none (`EAGAIN`, the end of the stream) ties nothing.
     The agent sends an empty RECV frame at each connection's first unwrap that consumed TLS bytes, in the handshake, so the connection is tied to its socket before the first request or response, whichever side sends first.
+    Clients that read on one thread and unwrap on another (the JDK's `HttpClient`) still write on the thread that wrapped: a wrap's SEND frame, whose bytes are yet to be written (`FLAG_BEFORE_WRITE`), leaves its connection waiting for the thread's next socket write (`tcp_sendmsg`) within 10 ms, and the agent sends an empty one at every wrap that produced TLS bytes without plaintext (the handshake's), so the kernel sees every connection's announcement.
     A connection unwrapped on another thread than the one that read it stays without addresses rather than getting wrong ones, unless that thread read another TCP socket (a database's, a downstream call's) within 50 ms: then it gets that socket's addresses.
-    The `ebpf-stats` line counts frames without addresses (`java_conn_unbound`) and reads of another socket on a connection's thread before its frames (`java_conn_mismatch`), which shows the wrong case.
+    So does a connection not yet tied whose wrap is followed, within 10 ms and with no other connection's wrap in between, by the thread's write of another socket: another thread writes the wrap's bytes, or this one first writes another connection's leftover bytes.
+    The `ebpf-stats` line counts frames without addresses (`java_conn_unbound`) and reads of another socket on a connection's thread before its frames (`java_conn_mismatch`), which shows the first wrong case.
 - **CLOSE frames:** once a connection can carry no more responses (the server's side closed, or the client's inbound side), the agent sends a CLOSE frame.
   The Insights Agent then completes a response delimited by the close and frees the connection's state at once, instead of after 30 s idle.
   Connections that end without a TLS close_notify are freed when idle.
@@ -78,6 +80,16 @@ Without a local JDK, run Gradle in Docker:
 
 ```sh
 docker run --rm -v "$PWD/..:/w" -w /w/java-agent eclipse-temurin:21-jdk ./gradlew --no-daemon check
+```
+
+The Insights agent's real-JVM tests (`ebpf/node_collector_jvm_linux_test.go`, root and the `insights_bpf` tag) run the packaged agent in real JVMs and check what comes out of the kernel, connection addresses included.
+They need a JDK and the jar, and for the framework tests the apps in `src/testApps` (Netty on NIO, epoll and its OpenSSL engine; Tomcat, Jetty and Undertow servers; the JDK's `HttpClient`), built by `./gradlew testAppsDist` into `build/test-apps`:
+
+```sh
+POSTMAN_TEST_JAVA_HOME=/path/to/jdk17 \
+POSTMAN_TEST_AGENT_JAR=$PWD/java-agent/build/agent/postman-java-agent.jar \
+POSTMAN_TEST_APPS_DIR=$PWD/java-agent/build/test-apps \
+  go test -tags insights_bpf -p 1 -run 'TestNodeCollectorJVM' ./ebpf/
 ```
 
 For an end-to-end check with the eBPF agent in kind, see `test/kind/deploy-java-service.sh`.

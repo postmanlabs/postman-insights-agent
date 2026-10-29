@@ -23,9 +23,9 @@ final class Connections {
         /** Frame flags describing the role, or 0 until the role is known. */
         volatile short roleFlags;
         /**
-         * Whether a RECV frame was sent for the connection. The kernel ties
-         * a connection to its socket at a RECV frame, from the socket the
-         * thread just read; the first one comes at the first unwrap, in the
+         * Whether an engine's RECV frame was sent. The kernel ties a
+         * connection to its socket at a RECV frame, from the socket the
+         * thread just read; the first comes at the first unwrap, in the
          * handshake, so the tie exists before any request or response.
          */
         volatile boolean recvSent;

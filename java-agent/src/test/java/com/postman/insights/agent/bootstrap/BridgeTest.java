@@ -93,7 +93,8 @@ class BridgeTest {
         assertEquals(1, frames.size());
         LoggedFrame f = frames.get(0);
         assertEquals(Frame.OP_SEND, f.op);
-        assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE, f.flags);
+        // A wrap's output is written to the socket after the frame.
+        assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_BEFORE_WRITE, f.flags);
         assertEquals(12, f.totalLen);
         assertArrayEquals(ascii("GET /a HTTP/"), f.payload);
     }
@@ -157,9 +158,12 @@ class BridgeTest {
         assertArrayEquals(ascii("0123456789abcdef"), f.payload);
     }
 
+    /** A wrap that consumes nothing (and produces nothing to write) emits nothing. */
     @Test
     void nothingConsumedNothingEmitted() throws Exception {
-        send(engine(true), bufs("pending"), 0);
+        SSLEngine client = engine(true);
+        send(client, bufs("pending"), 0);
+        send(client, bufs("pending"), 0);
         assertTrue(log.frames().isEmpty());
     }
 
@@ -512,6 +516,55 @@ class BridgeTest {
         assertEquals(1, closes().size());
     }
 
+    /** A handshake wrap: TLS bytes produced to write, no plaintext consumed. */
+    private static final SSLEngineResult HANDSHAKE_WRAP = new SSLEngineResult(
+            SSLEngineResult.Status.OK, SSLEngineResult.HandshakeStatus.NEED_UNWRAP, 0, 250);
+
+    /** One hooked wrap call that consumes no plaintext, as in a handshake. */
+    private static void emptySend(Object engine) {
+        Bridge.exit(Bridge.enter(bufs("")), engine, Frame.OP_SEND, HANDSHAKE_WRAP);
+    }
+
+    /**
+     * A wrap that produced nothing to write (or threw) is no evidence the
+     * thread is about to write the socket: it does not tie, and a later wrap
+     * that produced bytes still does.
+     */
+    @Test
+    void wrapWithoutOutputDoesNotTie() throws Exception {
+        SSLEngine client = engine(true);
+        Bridge.exit(Bridge.enter(bufs("")), client, Frame.OP_SEND, OK);
+        Bridge.exit(Bridge.enter(bufs("")), client, Frame.OP_SEND, null);
+        assertTrue(log.frames().isEmpty());
+        emptySend(client);
+        List<LoggedFrame> sends = ops(Frame.OP_SEND);
+        assertEquals(1, sends.size());
+        assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_BEFORE_WRITE, sends.get(0).flags);
+    }
+
+    /**
+     * A blocking SSLSocket's writes send no empty SEND and are not marked
+     * BEFORE_WRITE: their frames come after the write, and the socket's
+     * addresses come in its ADDRESS frame, not from the write.
+     */
+    @Test
+    void socketWritesAreNotBeforeWrite() throws Exception {
+        javax.net.ssl.SSLSocket socket = (javax.net.ssl.SSLSocket) SSLContext.getDefault().getSocketFactory().createSocket();
+        socket.setUseClientMode(true);
+        byte[] b = ascii("GET / HTTP/1.1");
+        for (int i = 0; i < 2; i++) {
+            Bridge.Call c = Bridge.enterStream(socket);
+            Bridge.exitStream(c, socket, Frame.OP_SEND, b, 0, b.length);
+        }
+        List<LoggedFrame> frames = log.frames();
+        assertEquals(2, frames.size(), frames.toString());
+        for (LoggedFrame f : frames) {
+            assertArrayEquals(b, f.payload);
+            assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_SOCKET, f.flags);
+        }
+        socket.close();
+    }
+
     /** A handshake unwrap: TLS bytes consumed, no plaintext produced. */
     private static final SSLEngineResult HANDSHAKE_UNWRAP = new SSLEngineResult(
             SSLEngineResult.Status.OK, SSLEngineResult.HandshakeStatus.NEED_WRAP, 120, 0);
@@ -549,24 +602,32 @@ class BridgeTest {
     }
 
     /**
-     * A connection's first unwrap sends an empty RECV frame, which ties the
-     * connection to its socket in the kernel; later empty unwraps send
-     * nothing, and neither do empty wraps.
+     * A connection's first unwrap sends an empty RECV, which ties the
+     * connection to its socket in the kernel, and later empty unwraps send
+     * nothing; every wrap that produced TLS bytes sends an empty SEND, which
+     * announces the write after it.
      */
     @Test
     void firstUnwrapTiesTheConnection() throws Exception {
         SSLEngine server = engine(false);
         emptyRecv(server);
         emptyRecv(server);
-        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
+        emptySend(server);
+        emptySend(server);
 
         List<LoggedFrame> frames = log.frames();
-        assertEquals(1, frames.size());
+        assertEquals(3, frames.size());
+        assertEquals(Frame.OP_SEND, frames.get(2).op);
         LoggedFrame f = frames.get(0);
         assertEquals(Frame.OP_RECV, f.op);
         assertEquals(Frame.FLAG_ROLE_KNOWN, f.flags);
         assertEquals(0, f.payload.length);
         assertEquals(0, f.totalLen);
+        LoggedFrame send = frames.get(1);
+        assertEquals(Frame.OP_SEND, send.op);
+        assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_BEFORE_WRITE, send.flags);
+        assertEquals(0, send.payload.length);
+        assertEquals(f.connId, send.connId);
 
         // Another connection is tied on its own.
         emptyRecv(engine(true));
@@ -574,19 +635,24 @@ class BridgeTest {
         assertTrue(ops(Frame.OP_RECV).get(1).connId != f.connId);
     }
 
-    /** A connection whose first unwrap had plaintext was tied by that frame. */
+    /** A connection whose first unwrap or wrap had plaintext was tied by that frame. */
     @Test
-    void dataRecvTiesTheConnection() throws Exception {
+    void dataTiesTheConnection() throws Exception {
         SSLEngine server = engine(false);
         ByteBuffer dst = ByteBuffer.allocate(8);
         Bridge.Call c = Bridge.enter(dst);
         dst.put(ascii("GET"));
         Bridge.exit(c, server, Frame.OP_RECV, OK);
         emptyRecv(server);
+        send(server, bufs("HTTP"), 4);
+        Bridge.exit(Bridge.enter(bufs("")), server, Frame.OP_SEND, OK);
 
         List<LoggedFrame> recvs = ops(Frame.OP_RECV);
         assertEquals(1, recvs.size());
         assertArrayEquals(ascii("GET"), recvs.get(0).payload);
+        List<LoggedFrame> sends = ops(Frame.OP_SEND);
+        assertEquals(1, sends.size());
+        assertArrayEquals(ascii("HTTP"), sends.get(0).payload);
     }
 
     /** Dormant, nothing is sent, and the first unwrap once capturing ties the connection. */
@@ -827,6 +893,29 @@ class BridgeTest {
             assertEquals(1, got.size());
             assertEquals(Frame.OP_RECV, got.get(0).op);
             assertEquals(Frame.FLAG_SOCKET, got.get(0).flags & Frame.FLAG_SOCKET);
+        }
+    }
+
+    /**
+     * Every handshake wrap announces its write, in order, so the kernel sees
+     * when two connections' wraps wait for one thread's next write: B wraps,
+     * A wraps, B wraps its next flight. Only the first would let B's second
+     * write tie A to B's socket.
+     */
+    @Test
+    void everyHandshakeWrapAnnouncesItsWrite() throws Exception {
+        SSLEngine a = engine(true);
+        SSLEngine b = engine(true);
+        emptySend(b);
+        emptySend(a);
+        emptySend(b);
+        List<LoggedFrame> sends = ops(Frame.OP_SEND);
+        assertEquals(3, sends.size());
+        assertEquals(sends.get(0).connId, sends.get(2).connId);
+        assertNotEquals(sends.get(0).connId, sends.get(1).connId);
+        for (LoggedFrame f : sends) {
+            assertEquals(0, f.payload.length);
+            assertEquals(Frame.FLAG_ROLE_KNOWN | Frame.FLAG_CLIENT_MODE | Frame.FLAG_BEFORE_WRITE, f.flags);
         }
     }
 }

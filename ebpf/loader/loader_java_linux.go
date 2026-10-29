@@ -23,17 +23,19 @@ import (
 
 type javaTLS struct {
 	objs javaTLSCore
-	// readHooks are the programs that record socket reads (see "Connection
-	// addresses" in java_tls.bpf.c), none when neither fexit nor kprobe
-	// could attach: then Java events carry no addresses.
-	readHooks []*ebpf.Program
-	// readHookKind is how they attached: "fexit" or "kprobe".
-	readHookKind string
-	// readHookErr is why there are none.
-	readHookErr error
-	// readHookFallback is why they are kprobes rather than fexit.
-	readHookFallback error
-	links            []link.Link
+	// socketHooks are the programs that record socket reads and writes (see
+	// "Connection addresses" in java_tls.bpf.c), the read hooks first; none
+	// when neither fexit nor kprobe could attach: then Java events carry no
+	// addresses.
+	socketHooks []*ebpf.Program
+	// socketHooksKind is how they attached: "fexit" or "kprobe".
+	socketHooksKind string
+	// socketHooksErr is why there are none.
+	socketHooksErr error
+	// socketHooksFallback is why they are kprobes rather than fexit and
+	// fentry.
+	socketHooksFallback error
+	links               []link.Link
 }
 
 // javaTLSCore is the java_tls object without its tcp_recvmsg hook, which is
@@ -94,7 +96,7 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 		}
 		j.links = append(j.links, lk)
 	}
-	j.attachReadHook(spec, !cfg.javaReadHookKprobe)
+	j.attachSocketHooks(spec, !cfg.javaReadHookKprobe)
 	return j, nil
 }
 
@@ -102,63 +104,96 @@ func loadJavaTLS(cfg Config, shared *libsslObjects) (*javaTLS, error) {
 // instances (KRETPROBE_MAXACTIVE_MAX).
 const kretprobeMaxActive = 4096
 
-// attachReadHook attaches the tcp_recvmsg hook: fexit if it can, else
-// kprobe with kretprobe. Failing both only leaves Java events without
-// addresses.
-func (j *javaTLS) attachReadHook(spec *ebpf.CollectionSpec, tryFexit bool) {
+// attachSocketHooks attaches the tcp_recvmsg and tcp_sendmsg hooks: fexit
+// and fentry if it can, else kprobes (with a kretprobe for reads). Failing
+// both only leaves Java events without addresses.
+func (j *javaTLS) attachSocketHooks(spec *ebpf.CollectionSpec, tryTracing bool) {
 	opts := &ebpf.CollectionOptions{
 		MapReplacements: map[string]*ebpf.Map{
 			"java_senders":      j.objs.JavaSenders,
 			"java_thread_reads": j.objs.JavaThreadReads,
+			"java_thread_sends": j.objs.JavaThreadSends,
+			"java_conns":        j.objs.JavaConns,
+			"java_counters":     j.objs.JavaCounters,
 		},
 	}
 	var errs []error
-	if !tryFexit {
+	if !tryTracing {
 		errs = append(errs, errors.New("fexit: not tried"))
 	} else {
-		prog, err := loadFexitRead(spec, opts)
+		readDone, err := loadFexitRead(spec, opts)
 		if err == nil {
-			var lk link.Link
-			if lk, err = link.AttachTracing(link.TracingOptions{Program: prog}); err == nil {
-				j.readHooks, j.readHookKind = []*ebpf.Program{prog}, "fexit"
-				j.links = append(j.links, lk)
-				return
+			var write struct {
+				Prog *ebpf.Program `ebpf:"fentry_tcp_sendmsg"`
 			}
-			_ = prog.Close()
+			if err = spec.LoadAndAssign(&write, opts); err != nil {
+				_ = readDone.Close()
+			} else {
+				tracing := func(p *ebpf.Program) (link.Link, error) {
+					return link.AttachTracing(link.TracingOptions{Program: p})
+				}
+				err = j.attachAll("fexit", []*ebpf.Program{readDone, write.Prog},
+					[]func(*ebpf.Program) (link.Link, error){tracing, tracing})
+			}
+		}
+		if err == nil {
+			return
 		}
 		errs = append(errs, fmt.Errorf("fexit: %w", err))
-		j.readHookFallback = err
+		j.socketHooksFallback = err
 	}
-	var kprobe struct {
-		Entry  *ebpf.Program `ebpf:"kprobe_tcp_recvmsg"`
-		Return *ebpf.Program `ebpf:"kretprobe_tcp_recvmsg"`
+	var progs struct {
+		Read     *ebpf.Program `ebpf:"kprobe_tcp_recvmsg"`
+		ReadDone *ebpf.Program `ebpf:"kretprobe_tcp_recvmsg"`
+		Write    *ebpf.Program `ebpf:"kprobe_tcp_sendmsg"`
 	}
-	err := spec.LoadAndAssign(&kprobe, opts)
+	err := spec.LoadAndAssign(&progs, opts)
 	if err == nil {
-		var entry, ret link.Link
-		if entry, err = link.Kprobe("tcp_recvmsg", kprobe.Entry, nil); err == nil {
-			// A blocking tcp_recvmsg holds a kretprobe instance until it
-			// returns, on every process of the node: with the default limit
-			// (about two per CPU), blocked readers elsewhere use them up and
-			// returns are missed. Use the kernel's maximum.
-			ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return,
-				&link.KprobeOptions{RetprobeMaxActive: kretprobeMaxActive})
-			if err != nil {
-				// The limit needs tracefs; without it, the default.
-				ret, err = link.Kretprobe("tcp_recvmsg", kprobe.Return, nil)
-			}
-			if err == nil {
-				j.readHooks, j.readHookKind = []*ebpf.Program{kprobe.Entry, kprobe.Return}, "kprobe"
-				j.links = append(j.links, entry, ret)
-				return
-			}
-			_ = entry.Close()
-		}
-		_ = kprobe.Entry.Close()
-		_ = kprobe.Return.Close()
+		err = j.attachAll("kprobe", []*ebpf.Program{progs.Read, progs.ReadDone, progs.Write},
+			[]func(*ebpf.Program) (link.Link, error){
+				func(p *ebpf.Program) (link.Link, error) { return link.Kprobe("tcp_recvmsg", p, nil) },
+				func(p *ebpf.Program) (link.Link, error) {
+					// A blocking tcp_recvmsg holds a kretprobe instance until
+					// it returns, on every process of the node: with the
+					// default limit (about two per CPU), blocked readers
+					// elsewhere use them up and returns are missed. Use the
+					// kernel's maximum; it needs tracefs, else the default.
+					lk, err := link.Kretprobe("tcp_recvmsg", p, &link.KprobeOptions{RetprobeMaxActive: kretprobeMaxActive})
+					if err != nil {
+						lk, err = link.Kretprobe("tcp_recvmsg", p, nil)
+					}
+					return lk, err
+				},
+				func(p *ebpf.Program) (link.Link, error) { return link.Kprobe("tcp_sendmsg", p, nil) },
+			})
+	}
+	if err == nil {
+		return
 	}
 	errs = append(errs, fmt.Errorf("kprobe: %w", err))
-	j.readHookErr = errors.Join(errs...)
+	j.socketHooksErr = errors.Join(errs...)
+}
+
+// attachAll attaches each program with its attach function, keeping all of
+// them or none.
+func (j *javaTLS) attachAll(kind string, progs []*ebpf.Program, attach []func(*ebpf.Program) (link.Link, error)) error {
+	var links []link.Link
+	for i, p := range progs {
+		lk, err := attach[i](p)
+		if err != nil {
+			for _, l := range links {
+				_ = l.Close()
+			}
+			for _, p := range progs {
+				_ = p.Close()
+			}
+			return err
+		}
+		links = append(links, lk)
+	}
+	j.links = append(j.links, links...)
+	j.socketHooks, j.socketHooksKind = progs, kind
+	return nil
 }
 
 // loadFexitRead loads the fexit program for the kernel's tcp_recvmsg: one
@@ -231,29 +266,31 @@ func (j *javaTLS) close() error {
 		_ = lk.Close()
 	}
 	j.links = nil
-	for _, p := range j.readHooks {
+	for _, p := range j.socketHooks {
 		_ = p.Close()
 	}
 	return j.objs.Close()
 }
 
 // JavaConnAddresses reports how Java events get their connection's
-// addresses: "fexit", or "kprobe" with kretprobe, on tcp_recvmsg; or "" with
-// the reason they carry none.
+// addresses: "fexit" (fexit and fentry) or "kprobe" (kprobes, and a
+// kretprobe for reads) on tcp_recvmsg and tcp_sendmsg; or "" with the reason
+// they carry none.
 func (l *Loader) JavaConnAddresses() (string, error) {
 	if l.java == nil {
 		return "", errJavaDisabled
 	}
-	return l.java.readHookKind, l.java.readHookErr
+	return l.java.socketHooksKind, l.java.socketHooksErr
 }
 
-// JavaConnAddressesFallback returns why the tcp_recvmsg hook is attached by
-// kprobe rather than fexit, or nil when it is not (or fexit was not tried).
+// JavaConnAddressesFallback returns why the socket hooks are attached by
+// kprobe rather than fexit and fentry, or nil when they are not (or fexit was
+// not tried).
 func (l *Loader) JavaConnAddressesFallback() error {
-	if l.java == nil || l.java.readHookKind != "kprobe" {
+	if l.java == nil || l.java.socketHooksKind != "kprobe" {
 		return nil
 	}
-	return l.java.readHookFallback
+	return l.java.socketHooksFallback
 }
 
 // JavaEnabled reports whether the Java TLS programs are loaded and attached.

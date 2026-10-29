@@ -231,20 +231,21 @@ func TestKernelHeaderInSync(t *testing.T) {
 		defines[m[1]] = v
 	}
 	want := map[string]uint64{
-		"JAVA_FRAME_MAGIC":            Magic,
-		"JAVA_FRAME_VERSION_1":        uint64(Version1),
-		"JAVA_FRAME_HEADER_SIZE":      HeaderSize,
-		"JAVA_FRAME_OP_SEND":          uint64(OpSend),
-		"JAVA_FRAME_OP_RECV":          uint64(OpRecv),
-		"JAVA_FRAME_OP_HEARTBEAT":     uint64(OpHeartbeat),
-		"JAVA_FRAME_OP_CLOSE":         uint64(OpClose),
-		"JAVA_FRAME_OP_ADDRESS":       uint64(OpAddress),
-		"JAVA_FRAME_ADDRESS_SIZE":     AddressSize,
-		"JAVA_FRAME_FLAG_ROLE_KNOWN":  uint64(FlagRoleKnown),
-		"JAVA_FRAME_FLAG_CLIENT_MODE": uint64(FlagClientMode),
-		"JAVA_FRAME_FLAG_PEER_KNOWN":  uint64(FlagPeerKnown),
-		"JAVA_FRAME_FLAG_SOCKET":      uint64(FlagSocket),
-		"JAVA_CONN_ID_TAG":            ConnIDTag,
+		"JAVA_FRAME_MAGIC":             Magic,
+		"JAVA_FRAME_VERSION_1":         uint64(Version1),
+		"JAVA_FRAME_HEADER_SIZE":       HeaderSize,
+		"JAVA_FRAME_OP_SEND":           uint64(OpSend),
+		"JAVA_FRAME_OP_RECV":           uint64(OpRecv),
+		"JAVA_FRAME_OP_HEARTBEAT":      uint64(OpHeartbeat),
+		"JAVA_FRAME_OP_CLOSE":          uint64(OpClose),
+		"JAVA_FRAME_OP_ADDRESS":        uint64(OpAddress),
+		"JAVA_FRAME_ADDRESS_SIZE":      AddressSize,
+		"JAVA_FRAME_FLAG_ROLE_KNOWN":   uint64(FlagRoleKnown),
+		"JAVA_FRAME_FLAG_CLIENT_MODE":  uint64(FlagClientMode),
+		"JAVA_FRAME_FLAG_PEER_KNOWN":   uint64(FlagPeerKnown),
+		"JAVA_FRAME_FLAG_SOCKET":       uint64(FlagSocket),
+		"JAVA_FRAME_FLAG_BEFORE_WRITE": uint64(FlagBeforeWrite),
+		"JAVA_CONN_ID_TAG":             ConnIDTag,
 	}
 	for name, w := range want {
 		got, ok := defines[name]
