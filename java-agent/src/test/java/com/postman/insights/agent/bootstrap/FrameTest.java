@@ -42,17 +42,18 @@ class FrameTest {
             assertEquals(Frame.VERSION_1, f.get("version").getAsInt(), name);
 
             byte[] payload = hex(f.get("payload_hex").getAsString());
-            String peer = f.get("peer_addr").getAsString();
-            byte[] peerAddr = peer.isEmpty() ? null : mapped(InetAddress.getByName(peer).getAddress());
 
+            // A pooled buffer holds an earlier frame's bytes: the header must
+            // overwrite them all, the reserved bytes included.
             ByteBuffer buf = Frame.allocate(payload.length);
+            for (int i = 0; i < buf.capacity(); i++) {
+                buf.put(i, (byte) 0xa5);
+            }
             Frame.putHeader(buf,
                     (byte) f.get("op").getAsInt(),
                     (short) f.get("flags").getAsInt(),
                     payload.length,
                     Long.parseUnsignedLong(f.get("conn_id").getAsString().substring(2), 16),
-                    peerAddr,
-                    f.get("peer_port").getAsInt(),
                     f.get("total_len").getAsInt());
             buf.position(Frame.HEADER_SIZE);
             buf.put(payload);
@@ -80,17 +81,6 @@ class FrameTest {
             buf.get(got);
             assertArrayEquals(hex(a.get("payload_hex").getAsString()), got, name);
         }
-    }
-
-    private static byte[] mapped(byte[] addr) {
-        if (addr.length == 16) {
-            return addr;
-        }
-        byte[] out = new byte[16];
-        out[10] = (byte) 0xff;
-        out[11] = (byte) 0xff;
-        System.arraycopy(addr, 0, out, 12, 4);
-        return out;
     }
 
     private static byte[] hex(String s) {

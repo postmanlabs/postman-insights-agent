@@ -17,6 +17,12 @@
 // The format is versioned: an agent loaded into a JVM cannot be unloaded, so
 // a newer DaemonSet must keep reading older agents' frames until those JVMs
 // restart. Never change the meaning of an existing field; add a version.
+//
+// Within a version, writers set the reserved bytes and undefined flag bits to
+// zero, and readers ignore them. So a later agent can add an optional field
+// in the reserved bytes, with a new flag bit saying it is set, and older
+// readers still accept its frames. Anything a reader must understand to read
+// a frame correctly needs a new version.
 
 #ifndef __POSTMAN_INSIGHTS_EBPF_JAVA_FRAME_H__
 #define __POSTMAN_INSIGHTS_EBPF_JAVA_FRAME_H__
@@ -54,7 +60,7 @@
 // flags bits.
 #define JAVA_FRAME_FLAG_ROLE_KNOWN   0x1  // the client/server role is known
 #define JAVA_FRAME_FLAG_CLIENT_MODE  0x2  // the JVM is the TLS client (valid with ROLE_KNOWN)
-#define JAVA_FRAME_FLAG_PEER_KNOWN   0x4  // peer_addr and peer_port are set
+                                          // 0x4 is free: no writer has set it
 #define JAVA_FRAME_FLAG_SOCKET       0x8  // a blocking socket's frame: its addresses come in an
                                           // ADDRESS frame, never from the thread's socket reads
 #define JAVA_FRAME_FLAG_BEFORE_WRITE 0x10 // SEND: the frame's bytes are written to the
@@ -66,8 +72,8 @@
 // never collide with real SSL* pointers from the libssl uprobes.
 #define JAVA_CONN_ID_TAG (1ULL << 63)
 
-// Multi-byte fields are little-endian, except peer_port (network byte order).
-// Every field is naturally aligned, so the struct needs no packing.
+// Multi-byte fields are little-endian. Every field is naturally aligned, so
+// the struct needs no packing.
 struct java_frame_header {
     __u8  version;       // JAVA_FRAME_VERSION_1
     __u8  op;            // JAVA_FRAME_OP_*
@@ -75,9 +81,7 @@ struct java_frame_header {
     __u32 payload_len;   // payload bytes in this frame
     __u64 conn_id;       // agent-assigned id, unique per connection within the JVM, from a
                          // random start below 2^62, so a reused PID does not reuse ids
-    __u8  peer_addr[16]; // IPv6, or IPv4-mapped IPv6; zero when unknown
-    __u16 peer_port;     // network byte order; zero when unknown
-    __u16 _reserved;     // zero
+    __u8  _reserved[20]; // zero when written, ignored when read (see above)
     __u32 total_len;     // bytes the engine call produced or consumed (>= payload_len)
 };
 

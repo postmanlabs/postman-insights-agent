@@ -15,6 +15,12 @@
 // one change, and adds a new version instead of changing an existing one: an
 // agent loaded into a JVM cannot be unloaded, so a newer Insights agent must
 // keep reading older agents' frames until those JVMs restart.
+//
+// Within a version, writers set the reserved bytes and undefined flag bits to
+// zero, and readers ignore them. So a later agent can add an optional field in
+// the reserved bytes, with a new flag bit saying it is set, and older readers
+// still accept its frames. Anything a reader must understand to read a frame
+// correctly needs a new version.
 package javatls
 
 import (
@@ -48,7 +54,7 @@ const (
 const (
 	FlagRoleKnown  uint16 = 0x1 // the client/server role is known
 	FlagClientMode uint16 = 0x2 // the JVM is the TLS client (valid with FlagRoleKnown)
-	FlagPeerKnown  uint16 = 0x4 // PeerAddr and PeerPort are set
+	// 0x4 is free: no writer has set it.
 	// FlagSocket marks a blocking socket's frames: the connection's addresses
 	// come in an ADDRESS frame, never from the thread's socket reads.
 	FlagSocket uint16 = 0x8
@@ -70,17 +76,15 @@ func SSLCtx(connID uint64) uint64 { return connID | ConnIDTag }
 // IsJavaSSLCtx reports whether an ssl_ctx came from a Java frame.
 func IsJavaSSLCtx(sslCtx uint64) bool { return sslCtx&ConnIDTag != 0 }
 
-// Header field offsets. Multi-byte fields are little-endian, except the peer
-// port, which is in network byte order.
+// Header field offsets. Multi-byte fields are little-endian. The reserved
+// bytes run from offReserved to offTotalLen.
 const (
 	offVersion    = 0
 	offOp         = 1
 	offFlags      = 2
 	offPayloadLen = 4
 	offConnID     = 8
-	offPeerAddr   = 16
-	offPeerPort   = 32
-	offReserved   = 34
+	offReserved   = 16
 	offTotalLen   = 36
 )
 
@@ -93,10 +97,6 @@ type Frame struct {
 	// random start below 2^62, so a JVM that reuses an exited one's PID
 	// does not reuse its ids.
 	ConnID uint64
-	// PeerAddr is the peer's address as 16 bytes (IPv4 addresses are
-	// IPv4-mapped). The zero value means unknown.
-	PeerAddr [16]byte
-	PeerPort uint16
 	// TotalLen is how many bytes the engine call produced or consumed. It is
 	// larger than len(Payload) when the agent truncated the payload to its
 	// capture cap.
@@ -104,16 +104,8 @@ type Frame struct {
 	Payload  []byte
 }
 
-// Peer returns the peer address and port, and whether they are known.
-func (f Frame) Peer() (netip.AddrPort, bool) {
-	if f.Flags&FlagPeerKnown == 0 {
-		return netip.AddrPort{}, false
-	}
-	return netip.AddrPortFrom(netip.AddrFrom16(f.PeerAddr).Unmap(), f.PeerPort), true
-}
-
 // Append encodes f onto b and returns the extended slice. The payload length
-// is taken from len(f.Payload).
+// is taken from len(f.Payload); the reserved bytes are zero.
 func (f Frame) Append(b []byte) []byte {
 	var h [HeaderSize]byte
 	h[offVersion] = f.Version
@@ -121,8 +113,6 @@ func (f Frame) Append(b []byte) []byte {
 	binary.LittleEndian.PutUint16(h[offFlags:], f.Flags)
 	binary.LittleEndian.PutUint32(h[offPayloadLen:], uint32(len(f.Payload)))
 	binary.LittleEndian.PutUint64(h[offConnID:], f.ConnID)
-	copy(h[offPeerAddr:offPeerPort], f.PeerAddr[:])
-	binary.BigEndian.PutUint16(h[offPeerPort:], f.PeerPort)
 	binary.LittleEndian.PutUint32(h[offTotalLen:], f.TotalLen)
 	b = append(b, h[:]...)
 	return append(b, f.Payload...)
@@ -130,18 +120,18 @@ func (f Frame) Append(b []byte) []byte {
 
 // Errors returned by Parse.
 var (
-	ErrShort        = errors.New("javatls: frame shorter than its header")
-	ErrVersion      = errors.New("javatls: unsupported frame version")
-	ErrOp           = errors.New("javatls: unknown frame op")
-	ErrLength       = errors.New("javatls: payload length does not match the write length")
-	ErrTotalLength  = errors.New("javatls: total length smaller than payload length")
-	ErrReservedBits = errors.New("javatls: reserved field is not zero")
-	ErrAddress      = errors.New("javatls: malformed ADDRESS payload")
+	ErrShort       = errors.New("javatls: frame shorter than its header")
+	ErrVersion     = errors.New("javatls: unsupported frame version")
+	ErrOp          = errors.New("javatls: unknown frame op")
+	ErrLength      = errors.New("javatls: payload length does not match the write length")
+	ErrTotalLength = errors.New("javatls: total length smaller than payload length")
+	ErrAddress     = errors.New("javatls: malformed ADDRESS payload")
 )
 
 // Parse decodes one frame from a whole positional write, applying the same
 // checks as the kernel program (java_tls.bpf.c), so the two accept exactly the
-// same frames. The returned payload aliases b.
+// same frames. It ignores the reserved bytes and undefined flag bits (the
+// returned Flags keep them). The returned payload aliases b.
 func Parse(b []byte) (Frame, error) {
 	if len(b) < HeaderSize {
 		return Frame{}, ErrShort
@@ -151,18 +141,13 @@ func Parse(b []byte) (Frame, error) {
 		Op:       b[offOp],
 		Flags:    binary.LittleEndian.Uint16(b[offFlags:]),
 		ConnID:   binary.LittleEndian.Uint64(b[offConnID:]),
-		PeerPort: binary.BigEndian.Uint16(b[offPeerPort:]),
 		TotalLen: binary.LittleEndian.Uint32(b[offTotalLen:]),
 	}
-	copy(f.PeerAddr[:], b[offPeerAddr:offPeerPort])
 	if f.Version != Version1 {
 		return Frame{}, fmt.Errorf("%w: %d", ErrVersion, f.Version)
 	}
 	if f.Op < OpSend || f.Op > OpAddress {
 		return Frame{}, fmt.Errorf("%w: %d", ErrOp, f.Op)
-	}
-	if binary.LittleEndian.Uint16(b[offReserved:]) != 0 {
-		return Frame{}, ErrReservedBits
 	}
 	payloadLen := binary.LittleEndian.Uint32(b[offPayloadLen:])
 	if uint64(payloadLen)+HeaderSize != uint64(len(b)) {

@@ -72,7 +72,6 @@ func TestJavaFrameInSync(t *testing.T) {
 		"ADDRESS_SIZE":      num(AddressSize),
 		"FLAG_ROLE_KNOWN":   num(uint64(FlagRoleKnown)),
 		"FLAG_CLIENT_MODE":  num(uint64(FlagClientMode)),
-		"FLAG_PEER_KNOWN":   num(uint64(FlagPeerKnown)),
 		"FLAG_SOCKET":       num(uint64(FlagSocket)),
 		"FLAG_BEFORE_WRITE": num(uint64(FlagBeforeWrite)),
 		"OFF_VERSION":       num(offVersion),
@@ -80,8 +79,6 @@ func TestJavaFrameInSync(t *testing.T) {
 		"OFF_FLAGS":         num(offFlags),
 		"OFF_PAYLOAD_LEN":   num(offPayloadLen),
 		"OFF_CONN_ID":       num(offConnID),
-		"OFF_PEER_ADDR":     num(offPeerAddr),
-		"OFF_PEER_PORT":     num(offPeerPort),
 		"OFF_RESERVED":      num(offReserved),
 		"OFF_TOTAL_LEN":     num(offTotalLen),
 	})
