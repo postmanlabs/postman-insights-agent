@@ -101,7 +101,7 @@ type SidecarOpts struct {
 	// for the eBPF-based HTTPS capture pipeline:
 	//   * hostPID: true
 	//   * caps: BPF, PERFMON (in addition to NET_RAW), and SYS_PTRACE when
-	//     HTTPSLibraries includes java (see capabilities)
+	//     the libraries include java (see capabilities)
 	//   * mounts: /sys/kernel/debug, /sys/fs/bpf, /proc (read-only)
 	//   * `--enable-https-capture` appended to apidump args
 	// Customers who don't need HTTPS capture get the existing minimal
@@ -134,7 +134,11 @@ func (opts SidecarOpts) capabilities() []string {
 		return caps
 	}
 	caps = append(caps, "BPF", "PERFMON")
-	if libs, _ := ebpf.ParseLibraries(strings.Split(opts.HTTPSLibraries, ",")); libs.Java {
+	names := ebpf.DefaultLibraries
+	if opts.HTTPSLibraries != "" {
+		names = strings.Split(opts.HTTPSLibraries, ",")
+	}
+	if libs, _ := ebpf.ParseLibraries(names); libs.Java {
 		caps = append(caps, "SYS_PTRACE")
 	}
 	return caps

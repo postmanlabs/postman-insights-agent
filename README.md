@@ -51,14 +51,20 @@ capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
 **opt-in** and **Linux-only**.
 
 - Enable it by passing `--enable-https-capture` to `apidump` or `kube run`.
-- It captures OpenSSL (`libssl`). Java (JSSE and Netty, through a Java agent
-  the DaemonSet loads into running JVMs) is in preview and off by default;
-  `--https-libraries=openssl,java` turns it on.
+- It captures OpenSSL (`libssl`) and, in preview, Java (JSSE and Netty,
+  through a Java agent the DaemonSet loads into running JVMs).
+  `--https-libraries=openssl` turns Java capture off.
 - Related flags: `--https-capture-mode`, and the HTTPS rate/body-size caps.
 - **Requirements:** Linux kernel **5.8+** (RHEL/CentOS/Rocky/Alma 8 with 4.18 is
   supported via Red Hat's eBPF backports). Requires `CAP_BPF` + `CAP_PERFMON`
   (or `CAP_SYS_ADMIN` on older kernels) and access to `/sys/kernel/debug`,
   `/sys/fs/bpf`, and host `/proc`.
+- **Java requirements:** `hostPID` and `CAP_SYS_PTRACE`, to read the node's
+  network namespace and to switch the Java agent of JVMs running as another
+  user on and off; without them the agent captures OpenSSL only. As a
+  DaemonSet (`kube run`), loading the Java agent into running JVMs also needs
+  `CAP_SETUID` + `CAP_SETGID`, to run the `postman-jvm-attach` helper as each
+  JVM's user.
 - **Not available on macOS** — the macOS build captures HTTP only; all eBPF
   paths compile to no-ops there.
 

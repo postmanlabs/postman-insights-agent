@@ -240,7 +240,7 @@ When eBPF is enabled, **exclude port 443 from the pcap cBPF filter** (`apidump/n
 | Flag | Default | Description |
 |---|---|---|
 | `--enable-https-capture` | `false` | Master switch for eBPF HTTPS capture |
-| `--https-libraries` | `openssl` | Comma-separated subset of `openssl,java` (`java` joins the default at the Java preview release); unknown names are ignored with a warning, and with none left HTTPS capture is off |
+| `--https-libraries` | `openssl,java` | Comma-separated subset of `openssl,java` (`java` is in preview; `openssl` alone turns it off); unknown names are ignored with a warning, and with none left HTTPS capture is off |
 | `--https-target-namespaces` | (all) | Comma-separated K8s namespace allow-list |
 | `--https-body-size-cap` | `4096` | Per-request body capture cap in bytes |
 | `--https-capture-mode` | `headers` | `headers` (no body), `truncated` (body up to cap), `full` (body up to 64KB cap) |

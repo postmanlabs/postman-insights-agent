@@ -20,10 +20,10 @@ const (
 // SupportedLibraries are the names --https-libraries takes.
 var SupportedLibraries = []string{LibraryOpenSSL, LibraryJava}
 
-// DefaultLibraries is the default of --https-libraries. Java capture is in
-// preview, so it is off until --https-libraries names it; it joins the
-// default at the preview release.
-var DefaultLibraries = []string{LibraryOpenSSL}
+// DefaultLibraries is the default of --https-libraries: every supported
+// library, so --enable-https-capture alone covers Java too (in preview).
+// --https-libraries=openssl turns Java capture off.
+var DefaultLibraries = []string{LibraryOpenSSL, LibraryJava}
 
 // Libraries is the set of TLS libraries HTTPS capture probes.
 type Libraries struct {

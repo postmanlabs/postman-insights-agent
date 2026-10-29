@@ -17,7 +17,7 @@ func TestParseLibraries(t *testing.T) {
 		want    Libraries
 		unknown []string
 	}{
-		{names: DefaultLibraries, want: Libraries{OpenSSL: true}},
+		{names: DefaultLibraries, want: all},
 		{names: SupportedLibraries, want: all},
 		{names: []string{"openssl"}, want: Libraries{OpenSSL: true}},
 		{names: []string{"java"}, want: Libraries{Java: true}},
@@ -59,7 +59,7 @@ func TestHTTPSCaptureFromFlags(t *testing.T) {
 		want    bool
 		libs    Libraries
 	}{
-		{enabled: true, names: DefaultLibraries, want: true, libs: Libraries{OpenSSL: true}},
+		{enabled: true, names: DefaultLibraries, want: true, libs: all},
 		{enabled: true, names: []string{"java"}, want: true, libs: Libraries{Java: true}},
 		{enabled: true, names: []string{"gotls"}},
 		{enabled: true, names: nil},
