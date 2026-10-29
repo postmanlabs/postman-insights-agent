@@ -80,7 +80,10 @@ kubectl create configmap test-apps-tls -n "$NS" \
 echo "==> Java service pod"
 kubectl delete pod -n "$NS" java-service --ignore-not-found
 kubectl apply -f "$REPO_ROOT/test/kind/java-service-workload.yaml"
-kubectl wait -n "$NS" --for=condition=Ready pod/java-service --timeout=180s
+# A fresh pod every run, so a rebuilt image is used even when the Deployment
+# itself did not change.
+kubectl rollout restart -n "$NS" deployment/java-service
+kubectl rollout status -n "$NS" deployment/java-service --timeout=180s
 
 echo "==> Node service pod"
 kubectl delete pod -n "$NS" node-service --ignore-not-found

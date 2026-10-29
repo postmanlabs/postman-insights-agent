@@ -30,6 +30,8 @@ NS=test-apps
 CLIENT_NS=test-clients
 SKIP_BUILD=false
 REQUESTS=3 # rounds of 3 requests each
+# The Java agent's log prefix, with the jar's old name and the current one.
+JAVA_LOG='\[postman-insights(-java)?-agent\]'
 
 for arg in "$@"; do
   case "$arg" in
@@ -58,16 +60,23 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   kind load docker-image "$AGENT_IMAGE" "$JAVA_IMAGE" "$NETTY_IMAGE" --name "$CLUSTER"
 fi
 
-echo "==> Java service pods"
+# The one pod of a service's Deployment (its strategy is Recreate).
+pod_of() { kubectl get pod -n "$NS" -l "app=$1" -o jsonpath='{.items[0].metadata.name}'; }
+
+# Deployments, not bare pods: discovery mode skips standalone pods.
+echo "==> Java service deployments"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 POD_IPS=""
 for svc in $SERVICES; do
+  # A bare pod of that name, from an earlier version of this script.
   kubectl delete pod -n "$NS" "$svc" --ignore-not-found
   kubectl apply -f "$REPO_ROOT/test/kind/${svc}-workload.yaml"
+  # A fresh JVM every run, so the Insights agent attaches to it anew.
+  kubectl rollout restart -n "$NS" "deployment/$svc"
 done
 for svc in $SERVICES; do
-  kubectl wait -n "$NS" --for=condition=Ready "pod/$svc" --timeout=180s
-  POD_IPS="$POD_IPS $(kubectl get pod -n "$NS" "$svc" -o jsonpath='{.status.podIP}')"
+  kubectl rollout status -n "$NS" "deployment/$svc" --timeout=180s
+  POD_IPS="$POD_IPS $(kubectl get pod -n "$NS" -l "app=$svc" -o jsonpath='{.items[0].status.podIP}')"
 done
 
 echo "==> Agent DaemonSet (kube run --enable-https-capture, Java HTTPS capture on)"
@@ -91,13 +100,13 @@ for svc in $SERVICES; do
   # the agent checks its control file every 5 s.
   capturing=false
   for _ in $(seq 1 45); do
-    if kubectl logs -n "$NS" "$svc" | grep -q 'postman-insights-agent\] capturing HTTPS traffic'; then
+    if kubectl logs -n "$NS" "deployment/$svc" | grep -Eq "${JAVA_LOG}"' capturing HTTPS traffic'; then
       capturing=true
       break
     fi
     sleep 1
   done
-  kubectl logs -n "$NS" "$svc" | grep 'postman-insights-agent' || true
+  kubectl logs -n "$NS" "deployment/$svc" | grep -E "${JAVA_LOG}" || true
   if [[ "$capturing" != true ]]; then
     echo "ERROR: the Java agent in ${svc} did not start capturing" >&2
     exit 1
@@ -147,7 +156,7 @@ else
   fail=1
 fi
 for svc in $SERVICES; do
-  msgs=$(max_field msgs "$svc")
+  msgs=$(max_field msgs "$(pod_of "$svc")")
   if [[ "${msgs:-0}" -ge "$per_service" ]]; then
     echo "  PASS  ${svc}: msgs=${msgs} (HTTP messages parsed for the pod)"
   else
