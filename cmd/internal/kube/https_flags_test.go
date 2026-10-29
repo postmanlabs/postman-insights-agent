@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Java capture is in preview: off unless --https-libraries names it.
+// --enable-https-capture alone covers Java too.
 func TestRunHTTPSLibrariesDefault(t *testing.T) {
 	f := runCmd.PersistentFlags().Lookup("https-libraries")
 	require.NotNil(t, f)
-	assert.Equal(t, "[openssl]", f.DefValue)
+	assert.Equal(t, "[openssl,java]", f.DefValue)
 }
 
 func TestOnboardHTTPSLibrariesArg(t *testing.T) {
@@ -85,7 +85,8 @@ func TestSidecarHTTPSArgs(t *testing.T) {
 }
 
 // Java capture adds SYS_PTRACE, which writing a non-root JVM's control file
-// needs; nothing else does.
+// needs; nothing else does. Without --https-libraries the sidecar runs the
+// agent's default, which includes java.
 func TestSidecarCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		opts SidecarOpts
@@ -93,7 +94,7 @@ func TestSidecarCapabilities(t *testing.T) {
 	}{
 		{SidecarOpts{}, []string{"NET_RAW"}},
 		{SidecarOpts{HTTPSLibraries: "java"}, []string{"NET_RAW"}},
-		{SidecarOpts{EnableHTTPSCapture: true}, []string{"NET_RAW", "BPF", "PERFMON"}},
+		{SidecarOpts{EnableHTTPSCapture: true}, []string{"NET_RAW", "BPF", "PERFMON", "SYS_PTRACE"}},
 		{SidecarOpts{EnableHTTPSCapture: true, HTTPSLibraries: "openssl"}, []string{"NET_RAW", "BPF", "PERFMON"}},
 		{SidecarOpts{EnableHTTPSCapture: true, HTTPSLibraries: "openssl,java"}, []string{"NET_RAW", "BPF", "PERFMON", "SYS_PTRACE"}},
 		{SidecarOpts{EnableHTTPSCapture: true, HTTPSLibraries: "java"}, []string{"NET_RAW", "BPF", "PERFMON", "SYS_PTRACE"}},

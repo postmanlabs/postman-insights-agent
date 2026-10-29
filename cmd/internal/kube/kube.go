@@ -51,7 +51,7 @@ func addOnboardingModeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&onboardServiceName, "service-name", "", "Override the auto-derived service name.")
 	cmd.Flags().StringVar(&onboardClusterName, "cluster-name", "", "Kubernetes cluster name (required for --discovery-mode). Used to uniquely identify the cluster and prevent data mixing across environments.")
 	cmd.Flags().BoolVar(&onboardEnableHTTPSCapture, "enable-https-capture", false, "Generate a container spec that enables HTTPS traffic capture via eBPF. Adds CAP_BPF + CAP_PERFMON, hostPID requirement, and required hostPath volume mounts.")
-	cmd.Flags().StringSliceVar(&onboardHTTPSLibraries, httpsLibrariesFlag, nil, "With --enable-https-capture, the TLS libraries the agent captures HTTPS traffic from: openssl, java (preview; the JVMs need -javaagent, since a sidecar does not load the agent into running JVMs, and java adds CAP_SYS_PTRACE, to switch on the agents of JVMs running as another user). Default: the agent's default, openssl.")
+	cmd.Flags().StringSliceVar(&onboardHTTPSLibraries, httpsLibrariesFlag, nil, "With --enable-https-capture, the TLS libraries the agent captures HTTPS traffic from: openssl, java (preview; the JVMs need -javaagent, since a sidecar does not load the agent into running JVMs, and java adds CAP_SYS_PTRACE, to switch on the agents of JVMs running as another user). Default: the agent's default, openssl and java.")
 	cmd.MarkFlagsMutuallyExclusive("workspace-id", "discovery-mode", "project")
 	cmd.MarkFlagsRequiredTogether("workspace-id", "system-env")
 	cmd.MarkFlagsRequiredTogether("discovery-mode", "cluster-name")

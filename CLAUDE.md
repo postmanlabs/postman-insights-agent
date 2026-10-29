@@ -94,7 +94,7 @@ Other:
 
 Root: `postman-insights-agent` (see `cmd/root.go`). Notable subcommands:
 
-- `apidump` — Capture requests/responses from network traffic (primary command). Supports `--enable-https-capture` (eBPF libssl; `--https-libraries=openssl,java` adds Java, in preview).
+- `apidump` — Capture requests/responses from network traffic (primary command). Supports `--enable-https-capture` (eBPF libssl and, in preview, Java; `--https-libraries=openssl` leaves Java out).
 - `ec2 setup` / `ec2 remove` — Install/uninstall as systemd service on EC2.
 - `ecs add|remove|cf-fragment|task-def` — Manage agent on AWS ECS.
 - `kube inject|run|secret|helm-fragment|tf-fragment` — Kubernetes integration. `kube run` is the DaemonSet entrypoint (Linux only).
