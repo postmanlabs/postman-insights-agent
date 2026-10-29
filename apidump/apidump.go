@@ -190,10 +190,9 @@ type HTTPSCaptureArgs struct {
 	// libpcap. Requires a build with the `insights_bpf` tag on Linux.
 	Enabled bool
 
-	// Libraries is the comma-separated list of userspace TLS libraries to
-	// attach probes to. Currently only "openssl" is wired (libssl.so.*).
-	// Phase 3 adds "gotls" and "boringssl".
-	Libraries []string
+	// Libraries are the TLS libraries to capture (--https-libraries). With
+	// none, HTTPS capture is off.
+	Libraries ebpf.Libraries
 
 	// TargetNamespaces restricts uprobe attachment to processes whose
 	// Kubernetes namespace is in the list. Empty = all namespaces in scope.
@@ -352,8 +351,9 @@ type Args struct {
 
 	// --- HTTPS-via-eBPF capture (Phase 2) ---------------------------------
 	//
-	// When HTTPS.Enabled is true, the agent additionally runs the
-	// eBPF libssl-uprobe pipeline (see ebpf/) alongside libpcap. Decrypted
+	// When HTTPS.Enabled is true, there is a backend to send to, and the BPF
+	// programs load (prepareHTTPSCapture), the agent additionally runs the
+	// eBPF pipeline (see ebpf/) alongside libpcap. Decrypted
 	// HTTPS bytes flow through a mirrored trace.Collector chain (same learn
 	// session, redactor, rate limiter, and backend sink as pcap). The libpcap
 	// filter on each interface is also adjusted to exclude
@@ -1057,27 +1057,6 @@ func (a *apidump) Run() error {
 	}
 	lastCheckpoint = "filter_setup"
 
-	// When HTTPS-via-eBPF capture is active, drop the TLS port from the cBPF
-	// filter so the libpcap path doesn't double-count handshake bytes already
-	// captured by the userspace TLS uprobes. See docs/https-capture-design.md
-	// §6.1 and apidump/ebpf_integration.go.
-	if args.HTTPS.Enabled && args.HTTPS.CBPFExcludePort > 0 {
-		printer.Stderr.Infof(
-			"HTTPS capture enabled: excluding TCP port %d from cBPF filter (pcap path).\n",
-			args.HTTPS.CBPFExcludePort)
-		userFilters = excludePortFromBPF(userFilters, args.HTTPS.CBPFExcludePort)
-		// Negation filters intentionally untouched: if the user runs in
-		// "capture everything else too" mode, the eBPF-captured plaintext
-		// flow is the source of truth for 443, so the negation channel
-		// would still want to see port 443's *non-TLS* traffic (rare in
-		// practice). Override behaviour gated behind the existing
-		// --bpf-filter knob for power users.
-	}
-	printer.Debugln("User-specified BPF filters:", userFilters)
-	if capturingNegation {
-		printer.Debugln("Negation BPF filters:", negationFilters)
-	}
-
 	traceTags := collectTraceTags(args)
 	// Args.Tags does not receive the DaemonsetArgs.TraceTags merge above, so
 	// logCaptureDiagnostics needs its own reference to find the monitored pod
@@ -1130,6 +1109,26 @@ func (a *apidump) Run() error {
 			ServiceName: a.backendSvcName,
 			ObjectName:  util.RandomLearnSessionName(),
 		}
+	}
+
+	// HTTPS capture via eBPF runs only with a backend to send to. Whether it
+	// runs, and from which libraries, is decided here, before the pcap
+	// filters are final: standalone, this loads the BPF programs.
+	var https *httpsCapture
+	if args.HTTPS.Enabled && args.Out.AkitaURI != nil {
+		https = prepareHTTPSCapture(args)
+		// Released by start once started; this covers the returns before.
+		defer https.close()
+	} else if args.HTTPS.Enabled {
+		printer.Stderr.Warningf(
+			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")
+	}
+	ebpfRequested := https != nil
+
+	userFilters = https.pcapFilters(userFilters, args.HTTPS.CBPFExcludePort)
+	printer.Debugln("User-specified BPF filters:", userFilters)
+	if capturingNegation {
+		printer.Debugln("Negation BPF filters:", negationFilters)
 	}
 
 	// If --dogfood is specified, enable assertions in the buffer-pool code.
@@ -1205,7 +1204,6 @@ func (a *apidump) Run() error {
 		negationSummary,
 		a.captureStats,
 	)
-	a.dumpSummary.HTTPSCaptureEnabled = args.HTTPS.Enabled
 
 	// Allocate the eBPF metric holders here, before the telemetry worker
 	// goroutine starts below, even though the eBPF collector chain that fills
@@ -1225,7 +1223,9 @@ func (a *apidump) Run() error {
 	// short-circuit in mergePacketCountSummaries), so allocating
 	// unconditionally would change the payload shape of every non-HTTPS
 	// capture.
-	ebpfRequested := args.HTTPS.Enabled && args.Out.AkitaURI != nil
+	// The end-of-trace summary reports whether eBPF capture actually ran,
+	// not whether it was asked for.
+	a.dumpSummary.HTTPSCaptureEnabled = ebpfRequested
 	if ebpfRequested {
 		a.dumpSummary.HTTPSSummary = trace.NewPacketCounter()
 		a.dumpSummary.HTTPSPrefilterSummary = trace.NewPacketCounter()
@@ -1545,12 +1545,10 @@ func (a *apidump) Run() error {
 			<-stop
 			httpsCancel()
 		}()
-		_ = startHTTPSeBPFCapture(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry)
-		printer.Stderr.Infof("HTTPS capture (eBPF) started with body-cap=%d, mode=%q.\n",
-			args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
-	} else if args.HTTPS.Enabled {
-		printer.Stderr.Warningf(
-			"--enable-https-capture set but no backend URI is configured; HTTPS capture disabled.\n")
+		_ = https.start(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry,
+			a.traceTags[tags.XAkitaKubernetesPod])
+		printer.Stderr.Infof("HTTPS capture (eBPF) started with libraries=%s, body-cap=%d, mode=%q.\n",
+			https.libraries, args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
 	}
 
 	// All configured capture pipelines have been started -- this is the first
@@ -1564,11 +1562,10 @@ func (a *apidump) Run() error {
 	// numCollectors counts pcap goroutines actually launched above -- it is 0
 	// whenever the interface/filter loop had nothing to iterate over, which
 	// len(interfaces) > 0 does not catch (e.g. filters failed to build for
-	// every interface). ebpfRequested is still only "eBPF capture was
-	// configured and asked to start", not a confirmed uprobe attach --
-	// startHTTPSeBPFCapture does not yet report attach success synchronously,
-	// so a fully confirmed eBPF signal remains separate P2 work (node-scope
-	// eBPF collector health).
+	// every interface). ebpfRequested means the BPF programs are loaded
+	// (prepareHTTPSCapture), not that any uprobe attached or any JVM sends
+	// frames: a fully confirmed eBPF signal remains separate P2 work
+	// (node-scope eBPF collector health).
 	if numCollectors > 0 || ebpfRequested {
 		// Keep this event bounded and free of interface names, service
 		// credentials, or payload data.

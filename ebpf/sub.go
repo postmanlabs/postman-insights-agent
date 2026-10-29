@@ -6,6 +6,8 @@ package ebpf
 // compiled and unit-tested on every platform, independent of the BPF loader.
 
 import (
+	"slices"
+
 	"github.com/akitasoftware/akita-libs/akinet"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
@@ -15,6 +17,49 @@ import (
 type podSub struct {
 	adapter *events.Adapter
 	out     chan<- akinet.ParsedNetworkTraffic
+}
+
+// routeTable maps a routing key (netns inode or PID) to the subscribers
+// registered under it, oldest first. Subscriptions can share a key: hostNetwork
+// pods share the node's netns and PIDs, and a pod's capture can restart before
+// the old subscription's cleanup has run. Events go to the newest subscriber
+// unless routeSub knows better, and a subscriber that leaves removes only its
+// own entry, so the others keep receiving events whatever order they leave in.
+type routeTable[K comparable] map[K][]*podSub
+
+// add registers s under k. Adding the same subscriber twice is a no-op.
+func (r routeTable[K]) add(k K, s *podSub) {
+	for _, x := range r[k] {
+		if x == s {
+			return
+		}
+	}
+	r[k] = append(r[k], s)
+}
+
+// remove unregisters s from k, leaving other subscribers under k in place.
+func (r routeTable[K]) remove(k K, s *podSub) {
+	subs := r[k]
+	for i, x := range subs {
+		if x == s {
+			subs = append(subs[:i:i], subs[i+1:]...)
+			break
+		}
+	}
+	if len(subs) == 0 {
+		delete(r, k)
+	} else {
+		r[k] = subs
+	}
+}
+
+// get returns the newest subscriber under k, or nil.
+func (r routeTable[K]) get(k K) *podSub {
+	subs := r[k]
+	if len(subs) == 0 {
+		return nil
+	}
+	return subs[len(subs)-1]
 }
 
 // routeSub selects the subscriber for a BPF event.
@@ -30,12 +75,21 @@ type podSub struct {
 // no registered subscriber — preserving the original behaviour on non-nested
 // nodes where /host/proc is the init namespace and PIDs already match.
 //
+// When several subscribers share the netns (hostNetwork pods share the
+// node's), the PID picks among them, if one of them registered it; otherwise
+// the newest gets the event.
+//
 // Returns nil when no subscriber matches (the event is dropped).
-func routeSub(byNetns map[uint64]*podSub, byPID map[uint32]*podSub, netnsInode uint64, pid uint32) *podSub {
+func routeSub(byNetns routeTable[uint64], byPID routeTable[uint32], netnsInode uint64, pid uint32) *podSub {
 	if netnsInode != 0 {
-		if s := byNetns[netnsInode]; s != nil {
-			return s
+		if subs := byNetns[netnsInode]; len(subs) > 0 {
+			if len(subs) > 1 {
+				if s := byPID.get(pid); s != nil && slices.Contains(subs, s) {
+					return s
+				}
+			}
+			return subs[len(subs)-1]
 		}
 	}
-	return byPID[pid]
+	return byPID.get(pid)
 }

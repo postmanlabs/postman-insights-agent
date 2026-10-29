@@ -34,6 +34,7 @@
 #include <bpf/bpf_core_read.h>
 
 #include "event.h"
+#include "common.h"
 
 // libbpf < 1.3 (Debian bookworm ships 1.1) lacks BPF_UPROBE / BPF_URETPROBE.
 // They are documented aliases for BPF_KPROBE / BPF_KRETPROBE — uprobes use the
@@ -75,16 +76,6 @@ struct {
     __type(key, __u64);
     __type(value, struct ssl_args_t);
 } active_ssl_write_args SEC(".maps");
-
-// Output ring buffer; cilium/ebpf reads on the Go side. Each event reserves a
-// fixed sizeof(struct ssl_event) (~MAX_EVENT_PAYLOAD) regardless of bytes
-// copied, so the ring holds ~ (size / sizeof(event)) events. Sized to 8 MiB so
-// that with the 16 KiB MAX_EVENT_PAYLOAD we retain ~512 events of headroom —
-// the same headroom the original 2 MiB / 4 KiB gave (keep these proportional).
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 23);         // 8 MiB
-} events SEC(".maps");
 
 // PID allowlist. Userspace populates this with target PIDs (discovered
 // containers in target namespaces). An empty map means "trace everyone",
@@ -157,7 +148,7 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
 // is safe. If a PID isn't in the map (e.g. wasn't refilled yet), default to
 // "unlimited" — favours availability over strictness.
 struct rate_bucket {
-    __u64 tokens;
+    __s64 tokens;                         // signed, see rate_take
 };
 
 struct {
@@ -167,11 +158,6 @@ struct {
     __type(value, struct rate_bucket);
 } pid_rate_buckets SEC(".maps");
 
-// Userspace-controlled global rate cap. 0 disables rate limiting (default).
-// When > 0, userspace refills each known PID's bucket to this value once a
-// second.
-__u32 rate_cap_per_sec = 0;
-
 static __always_inline int rate_take(__u32 tgid) {
     if (rate_cap_per_sec == 0) {
         return 1;  // disabled — always allow
@@ -180,11 +166,11 @@ static __always_inline int rate_take(__u32 tgid) {
     if (!b) {
         return 1;  // unknown PID — don't drop; let userspace catch up
     }
-    __u64 prev = __sync_fetch_and_sub(&b->tokens, 1);
-    // __sync_fetch_and_sub returns the OLD value. If it was 0, our
-    // decrement just made it underflow — we should treat that as "no
-    // tokens" and reject. Restore by re-adding so the count stays at 0.
-    if (prev == 0) {
+    // __sync_fetch_and_sub returns the OLD value. At zero or less the bucket
+    // is empty: reject, and give the token back. tokens is signed, so a take
+    // racing on another CPU in between sees a negative count and fails too,
+    // rather than an unsigned count wrapped around to "full".
+    if (__sync_fetch_and_sub(&b->tokens, 1) <= 0) {
         __sync_fetch_and_add(&b->tokens, 1);
         return 0;
     }
@@ -194,11 +180,6 @@ static __always_inline int rate_take(__u32 tgid) {
 // Set from userspace at load time. Lives in .rodata (read-only after load).
 // 0 = trace all PIDs (spike); 1 = only trace PIDs in target_pids.
 volatile const __u32 enforce_pid_allowlist = 0;
-
-// Set from userspace at load time AND can be updated at runtime by the CPU
-// thermostat goroutine. Lives in .data (writable post-load). Clamped to
-// MAX_EVENT_PAYLOAD at compile time. Power of two recommended.
-__u32 max_capture_bytes = MAX_EVENT_PAYLOAD;
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -266,16 +247,13 @@ static __always_inline int emit_event(
     e->fd           = lookup_fd(pid_tgid >> 32, ssl_ctx);
     if (e->fd >= 0) counter_inc(6, 1);
     e->direction    = direction;
+    e->kind         = EVENT_KIND_DATA;
     __builtin_memset(e->_pad, 0, sizeof(e->_pad));
 
-    // Network-namespace inode of the calling task. This is the routing key the
-    // userspace NodeCollector matches against the pod's netns (from
-    // /proc/<pid>/ns/net). Unlike `pid` (bpf_get_current_pid_tgid returns the
-    // init-namespace tgid), the netns inode is identical across PID-namespace
-    // nesting, so routing works even when the agent runs inside a nested node
-    // container (KIND/k3d/minikube --driver=docker). 0 if it cannot be read.
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    e->netns = BPF_CORE_READ(task, nsproxy, net_ns, ns.inum);
+    // Routing key for the NodeCollector (see current_netns in common.h).
+    e->netns = current_netns();
+    // Resolved from fd in userspace instead.
+    __builtin_memset(&e->tuple, 0, sizeof(e->tuple));
 
     if (bpf_probe_read_user(e->payload, to_copy, user_buf) != 0) {
         bpf_ringbuf_discard(e, 0);

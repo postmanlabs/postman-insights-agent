@@ -12,9 +12,21 @@ import (
 // Go struct layout because the BPF side uses the same packing.
 const rawEventSize = int(unsafe.Sizeof(SSLEvent{}))
 
-// ErrShortRecord is returned by Decode when a ringbuf record is too short to
-// be a valid SSLEvent.
-var ErrShortRecord = errors.New("ebpf/events: ringbuf record shorter than struct ssl_event")
+// rawHeaderSize is the size of the fields before the payload, which struct
+// ssl_event and struct control_event share.
+const rawHeaderSize = int(unsafe.Offsetof(SSLEvent{}.Payload))
+
+// rawControlEventSize is the size of struct control_event: the fields before
+// the payload and the payload, rounded up to the struct's alignment (that of
+// its __u64 fields), as C pads it.
+const rawControlEventSize = (rawHeaderSize + MaxControlPayload + eventAlign - 1) / eventAlign * eventAlign
+
+// eventAlign is the alignment of struct ssl_event and struct control_event.
+const eventAlign = int(unsafe.Alignof(SSLEvent{}))
+
+// ErrShortRecord is returned by Decode when a ringbuf record is too short for
+// its kind of event.
+var ErrShortRecord = errors.New("ebpf/events: ringbuf record shorter than its event struct")
 
 // Decode parses a raw byte slice from a cilium/ebpf ringbuf record into an
 // SSLEvent. The bytes are read little-endian (cilium/ebpf ringbuf records on
@@ -23,28 +35,57 @@ var ErrShortRecord = errors.New("ebpf/events: ringbuf record shorter than struct
 //
 // Decode allocates and returns a fresh *SSLEvent so callers can keep the
 // reference past the lifetime of the ringbuf record.
+//
+// Data events are struct ssl_event; control events (Kind other than KindData)
+// are the smaller struct control_event, with the same fields.
 func Decode(raw []byte) (*SSLEvent, error) {
-	if len(raw) < rawEventSize {
+	if len(raw) < rawHeaderSize {
 		return nil, ErrShortRecord
 	}
 
 	e := &SSLEvent{}
 
 	off := 0
-	e.TimestampNS = binary.LittleEndian.Uint64(raw[off:]); off += 8
-	e.PID = binary.LittleEndian.Uint32(raw[off:]);          off += 4
-	e.TID = binary.LittleEndian.Uint32(raw[off:]);          off += 4
-	e.SSLCtx = binary.LittleEndian.Uint64(raw[off:]);       off += 8
-	e.LenCaptured = binary.LittleEndian.Uint32(raw[off:]);  off += 4
-	e.LenTotal = binary.LittleEndian.Uint32(raw[off:]);     off += 4
-	e.FD = int32(binary.LittleEndian.Uint32(raw[off:]));    off += 4
-	e.Direction = raw[off];                                  off += 1
-	off += 3 // _pad
-	e.NetNS = binary.LittleEndian.Uint32(raw[off:]);        off += 4
+	e.TimestampNS = binary.LittleEndian.Uint64(raw[off:])
+	off += 8
+	e.PID = binary.LittleEndian.Uint32(raw[off:])
+	off += 4
+	e.TID = binary.LittleEndian.Uint32(raw[off:])
+	off += 4
+	e.SSLCtx = binary.LittleEndian.Uint64(raw[off:])
+	off += 8
+	e.LenCaptured = binary.LittleEndian.Uint32(raw[off:])
+	off += 4
+	e.LenTotal = binary.LittleEndian.Uint32(raw[off:])
+	off += 4
+	e.FD = int32(binary.LittleEndian.Uint32(raw[off:]))
+	off += 4
+	e.Direction = raw[off]
+	off += 1
+	e.Kind = raw[off]
+	off += 1
+	off += 2 // _pad
+	e.NetNS = binary.LittleEndian.Uint32(raw[off:])
+	off += 4
+	e.Tuple.Family = raw[off]
+	off += 4 // family, _pad
+	e.Tuple.LocalPort = binary.LittleEndian.Uint16(raw[off:])
+	off += 2
+	e.Tuple.RemotePort = binary.LittleEndian.Uint16(raw[off:])
+	off += 2
+	off += copy(e.Tuple.LocalAddr[:], raw[off:])
+	off += copy(e.Tuple.RemoteAddr[:], raw[off:])
 
+	size, limit := rawEventSize, MaxEventPayload
+	if e.Kind != KindData {
+		size, limit = rawControlEventSize, MaxControlPayload
+	}
+	if len(raw) < size {
+		return nil, ErrShortRecord
+	}
 	n := int(e.LenCaptured)
-	if n > MaxEventPayload {
-		n = MaxEventPayload
+	if n > limit {
+		n = limit
 	}
 	if off+n > len(raw) {
 		return nil, ErrShortRecord

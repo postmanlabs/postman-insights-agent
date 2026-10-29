@@ -16,6 +16,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/loader"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/uprobes"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -37,22 +38,78 @@ type HTTPSCaptureStats struct {
 	H2HPACKDesyncs  uint64 // HTTP/2 connections dropped due to HPACK desync (mid-attach)
 	CurrentCapBytes uint32 // current max_capture_bytes (thermostat-adjusted)
 	CPUPercent      float64
+
+	// Java TLS capture; only reported when its programs are running.
+	JavaEnabled       bool
+	JavaFrames        uint64 // frames written by Java agents on this node
+	JavaEvents        uint64 // frames forwarded as events
+	JavaDropped       uint64 // ring buffer full
+	JavaNetnsRejected uint64 // frames from pods that are not monitored
+	JavaMalformed     uint64 // frames that failed validation
+	JavaConnUnbound   uint64 // data frames sent without their connection's addresses
+	JavaConnMismatch  uint64 // a connection's thread read another socket before its frame
+
+	// What happened to the JVMs of monitored pods on this node; only
+	// reported where the Java agent is attached to running JVMs.
+	JVMAttach        bool
+	JVMsSeen         uint64
+	JVMsAttached     uint64
+	JVMsAgentRunning uint64 // already ran the agent (-javaagent, or attached earlier)
+	JVMsSkipped      uint64 // not attachable by design (OpenJ9, attach disabled, -Xrs)
+	JVMsAttachFailed uint64
+
+	// Java agents in this target heard from recently (HEARTBEAT), and those
+	// of them capturing rather than dormant.
+	JavaAgentsAlive     int
+	JavaAgentsCapturing int
 }
 
 // String produces a single-line, customer-readable summary suitable for
 // 'kubectl logs'-style consumption.
 func (s HTTPSCaptureStats) String() string {
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"probes=%d flows_active=%d events=%d bytes=%d msgs=%d "+
 			"dropped_ringbuf=%d dropped_flows=%d read_failures=%d "+
 			"h2_hpack_desyncs=%d cap_bytes=%d cpu=%.1f%%",
 		s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
 		s.MessagesEmitted, s.EventsDropped, s.FlowsDropped, s.ReadFailures,
 		s.H2HPACKDesyncs, s.CurrentCapBytes, s.CPUPercent)
+	if s.JavaEnabled {
+		line += fmt.Sprintf(
+			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d"+
+				" java_conn_unbound=%d java_conn_mismatch=%d java_agents_alive=%d java_agents_capturing=%d",
+			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed,
+			s.JavaConnUnbound, s.JavaConnMismatch, s.JavaAgentsAlive, s.JavaAgentsCapturing)
+	}
+	if s.JVMAttach {
+		line += fmt.Sprintf(
+			" jvms=%d jvms_attached=%d jvms_agent_running=%d jvms_skipped=%d jvms_attach_failed=%d",
+			s.JVMsSeen, s.JVMsAttached, s.JVMsAgentRunning, s.JVMsSkipped, s.JVMsAttachFailed)
+	}
+	return line
+}
+
+// statsLogLine is the ebpf-stats log line for s, naming pod when it is set.
+func statsLogLine(pod string, s HTTPSCaptureStats) string {
+	if pod == "" {
+		return "ebpf-stats: " + s.String()
+	}
+	return "ebpf-stats: pod=" + pod + " " + s.String()
+}
+
+// sumCounts adds up per-reason counters.
+func sumCounts(m map[string]uint64) uint64 {
+	var n uint64
+	for _, v := range m {
+		n += v
+	}
+	return n
 }
 
 // httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
-// stream and to the analytics pipeline. Stops when ctx is cancelled.
+// stream and to the analytics pipeline. Stops when ctx is cancelled. pod, when
+// not empty, names the monitored pod on the log line: a DaemonSet logs one
+// line per pod, and the per-pod counters (msgs, flows_active) differ.
 func httpsTelemetryWorker(
 	ctx context.Context,
 	interval time.Duration,
@@ -60,8 +117,10 @@ func httpsTelemetryWorker(
 	therm *ebpf.Thermostat,
 	mgr *uprobes.Manager,
 	adapter *events.Adapter,
+	jvmStats func() (jvm.AttachStats, bool),
 	tracker telemetry.Tracker,
 	reportCount func(string, uint64),
+	pod string,
 ) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -80,6 +139,8 @@ func httpsTelemetryWorker(
 			s.MessagesEmitted = adapterStats.MessagesEmitted
 			s.FlowsDropped = adapterStats.FlowsDropped
 			s.H2HPACKDesyncs = adapterStats.H2HPACKDesyncs
+			s.JavaAgentsAlive = adapterStats.JavaAgentsAlive
+			s.JavaAgentsCapturing = adapterStats.JavaAgentsCapturing
 		}
 		if ldr != nil {
 			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
@@ -94,10 +155,39 @@ func httpsTelemetryWorker(
 			if v, err := ldr.ReadCounter(loader.CounterBytesCaptured); err == nil {
 				s.BytesCaptured = v
 			}
+			if ldr.JavaEnabled() {
+				s.JavaEnabled = true
+				for _, c := range []struct {
+					idx uint32
+					dst *uint64
+				}{
+					{loader.JavaCounterFramesSeen, &s.JavaFrames},
+					{loader.JavaCounterEventsEmitted, &s.JavaEvents},
+					{loader.JavaCounterEventsDropped, &s.JavaDropped},
+					{loader.JavaCounterNetnsRejected, &s.JavaNetnsRejected},
+					{loader.JavaCounterMalformed, &s.JavaMalformed},
+					{loader.JavaCounterConnUnbound, &s.JavaConnUnbound},
+					{loader.JavaCounterConnMismatch, &s.JavaConnMismatch},
+				} {
+					if v, err := ldr.ReadJavaCounter(c.idx); err == nil {
+						*c.dst = v
+					}
+				}
+			}
 		}
 		if therm != nil {
 			s.CurrentCapBytes = therm.CurrentCap()
 			s.CPUPercent = therm.CPUPercent()
+		}
+		if jvmStats != nil {
+			if st, ok := jvmStats(); ok {
+				s.JVMAttach = true
+				s.JVMsSeen = st.Seen
+				s.JVMsAttached = st.Attached
+				s.JVMsAgentRunning = st.AlreadyRunning
+				s.JVMsSkipped = sumCounts(st.Skipped)
+				s.JVMsAttachFailed = sumCounts(st.Failed)
+			}
 		}
 		return s
 	}
@@ -136,7 +226,7 @@ func httpsTelemetryWorker(
 			s := read()
 			reportDeltas(s)
 			previous = s
-			printer.Stderr.Infof("ebpf-stats: %s\n", s.String())
+			printer.Stderr.Infof("%s\n", statsLogLine(pod, s))
 			if tracker != nil {
 				tracker.WorkflowStep("ebpf_capture_stats", s.String())
 			}
@@ -144,8 +234,83 @@ func httpsTelemetryWorker(
 	}
 }
 
-// startHTTPSeBPFCapture launches the eBPF HTTPS capture pipeline in its own
-// goroutine and returns a stop function. The pipeline pushes
+// httpsCapture is HTTPS capture via eBPF for one apidump run. It is set up in
+// two steps. prepareHTTPSCapture decides whether it runs, and from which
+// libraries, before the pcap filters are final: pcap leaves out the TLS port
+// only when eBPF capture really runs. start then runs it.
+type httpsCapture struct {
+	// libraries are the TLS libraries captured.
+	libraries ebpf.Libraries
+	// standalone holds the loaded BPF programs when there is no NodeCollector
+	// (standalone apidump); nil on the DaemonSet path, where the
+	// NodeCollector loaded them for the node and buildHTTPSArgs chose the
+	// pod's libraries.
+	standalone *ebpf.Capture
+}
+
+// prepareHTTPSCapture returns the run's HTTPS capture, or nil when it does
+// not run: HTTPS capture is off, or (standalone) the BPF programs cannot
+// capture any of the libraries asked for. Call close on the result if start
+// is never called.
+func prepareHTTPSCapture(args *Args) *httpsCapture {
+	if !args.HTTPS.Enabled {
+		return nil
+	}
+	if args.HTTPS.NodeCollector != nil {
+		return &httpsCapture{libraries: args.HTTPS.Libraries}
+	}
+	c, err := ebpf.Start(httpsLoadArgs(args))
+	if err != nil {
+		printer.Stderr.Warningf("HTTPS capture (eBPF) disabled: %v\n", err)
+		return nil
+	}
+	return &httpsCapture{libraries: c.Libraries(), standalone: c}
+}
+
+// httpsLoadArgs returns the settings the BPF programs are loaded with.
+func httpsLoadArgs(args *Args) ebpf.LoadArgs {
+	load := ebpf.Defaults().LoadArgs
+	load.MaxCaptureBytes = httpsBodyCap(args)
+	load.EnforcePIDAllowlist = false
+	load.EnableJava = args.HTTPS.Libraries.Java
+	load.DisableOpenSSL = !args.HTTPS.Libraries.OpenSSL
+	return load
+}
+
+func httpsBodyCap(args *Args) uint32 {
+	if args.HTTPS.BodySizeCap == 0 {
+		return 16384 // MAX_EVENT_PAYLOAD; see ebpf/programs/event.h
+	}
+	return args.HTTPS.BodySizeCap
+}
+
+// pcapFilters returns the pcap filters to use alongside h: when HTTPS
+// capture runs (h is not nil), without the TLS port, so the libpcap path
+// doesn't double-count handshake bytes already captured via eBPF. See
+// docs/https-capture-design.md §6.1. Otherwise pcap keeps the port.
+func (h *httpsCapture) pcapFilters(filters map[string]string, tlsPort uint16) map[string]string {
+	if h == nil || tlsPort == 0 {
+		return filters
+	}
+	printer.Stderr.Infof("HTTPS capture enabled: excluding TCP port %d from cBPF filter (pcap path).\n", tlsPort)
+	// Negation filters intentionally untouched: if the user runs in
+	// "capture everything else too" mode, the eBPF-captured plaintext flow is
+	// the source of truth for the port, so the negation channel would still
+	// want to see its *non-TLS* traffic (rare in practice). Override
+	// behaviour gated behind the existing --bpf-filter knob for power users.
+	return excludePortFromBPF(filters, tlsPort)
+}
+
+// close releases what prepareHTTPSCapture loaded, for a capture that is never
+// started. It is safe on nil, and does nothing after start.
+func (h *httpsCapture) close() {
+	if h != nil && h.standalone != nil {
+		h.standalone.Close()
+	}
+}
+
+// start launches the eBPF HTTPS capture pipeline in its own goroutine and
+// returns a stop function. The pipeline pushes
 // akinet.ParsedNetworkTraffic into a dedicated collector chain built in
 // apidump.go — NOT the same collector instance as the pcap path, but one that
 // shares the same backend learn session (backendLrn) so all traffic lands in
@@ -156,19 +321,16 @@ func httpsTelemetryWorker(
 // and tcp_conn_tracker: eBPF delivers already-decrypted plaintext HTTP, not
 // raw TLS records or TCP segments.
 //
-// On builds without `insights_bpf` (or non-Linux), ebpf.Collect returns
-// ebpf.ErrUnsupported immediately; this function logs a warning and returns
-// a no-op stop.
-//
 // `pool` is shared with the pcap pipeline so memview buffers are pooled
 // consistently across both capture paths.
-func startHTTPSeBPFCapture(
+func (h *httpsCapture) start(
 	ctx context.Context,
 	args *Args,
 	pool buffer_pool.BufferPool,
 	collector trace.Collector,
 	wg *sync.WaitGroup,
 	tracker telemetry.Tracker,
+	pod string,
 ) (stop context.CancelFunc) {
 	captureCtx, cancel := context.WithCancel(ctx)
 
@@ -188,15 +350,8 @@ func startHTTPSeBPFCapture(
 	}
 	selector := akinet.TCPParserFactorySelector(factories)
 
-	bodyCap := args.HTTPS.BodySizeCap
-	if bodyCap == 0 {
-		bodyCap = 16384 // MAX_EVENT_PAYLOAD; see ebpf/programs/event.h
-	}
-
-	ebpfArgs := ebpf.Defaults()
-	ebpfArgs.MaxCaptureBytes = bodyCap
+	ebpfArgs := ebpf.Defaults().RunArgs
 	ebpfArgs.DisableThermostat = args.HTTPS.DisableThermostat
-	ebpfArgs.EnforcePIDAllowlist = false
 	ebpfArgs.FactorySelector = selector
 	ebpfArgs.Out = out
 	ebpfArgs.RateCapPerSec = args.HTTPS.RateCapPerSec
@@ -229,6 +384,8 @@ func startHTTPSeBPFCapture(
 			Interval:         2 * time.Second,
 			ProcRoot:         ebpfArgs.ProcRoot,
 			NetnsInodeFilter: args.HTTPS.ContainerNetnsInode,
+			// The pod's JVMs get the Java agent's control file.
+			JVMs: true,
 		})
 
 	case len(args.HTTPS.TargetNamespaces) > 0:
@@ -267,8 +424,18 @@ func startHTTPSeBPFCapture(
 				Interval:          2 * time.Second,
 				NamespaceResolver: resolver,
 				AllowedNamespaces: allowed,
+				// JVMs get control files where Java capture is allowed: in
+				// standalone apidump, its own netns (Capture.Run filters);
+				// on the DaemonSet fallback, never (no pod netns).
+				JVMs: true,
 			})
 		}
+	}
+
+	// The node's JVM attach counters, where the NodeCollector attaches.
+	var jvmStats func() (jvm.AttachStats, bool)
+	if args.HTTPS.NodeCollector != nil {
+		jvmStats = args.HTTPS.NodeCollector.JVMStats
 	}
 
 	// HookLoader captures the subsystem handles after Collect has wired them
@@ -280,7 +447,7 @@ func startHTTPSeBPFCapture(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, tracker, args.reportTelemetryCount)
+			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, jvmStats, tracker, args.reportTelemetryCount, pod)
 		}()
 	}
 
@@ -309,8 +476,8 @@ func startHTTPSeBPFCapture(
 	//  - NodeCollector set (DaemonSet): BPF programs already loaded once for the
 	//    node. Subscribe registers this pod's discovery + out channel with the
 	//    shared loader — no additional loader.Load() call.
-	//  - NodeCollector nil (standalone apidump / tests): original ebpf.Collect()
-	//    path, behaviour completely unchanged.
+	//  - NodeCollector nil (standalone apidump / tests): the programs
+	//    prepareHTTPSCapture loaded run for this apidump alone.
 	if args.HTTPS.NodeCollector != nil {
 		unsubscribe, adapter := args.HTTPS.NodeCollector.Subscribe(
 			captureCtx,
@@ -319,6 +486,8 @@ func startHTTPSeBPFCapture(
 			out,
 			ebpfArgs.ProcRoot,
 			args.HTTPS.ContainerNetnsInode,
+			// The attach outcome of the pod's JVMs.
+			args.reportTelemetryCount,
 		)
 		// Expose node-level handles + this pod's adapter to the telemetry worker
 		// (mirrors HookLoader). The adapter carries the per-pod MessagesEmitted /
@@ -340,12 +509,15 @@ func startHTTPSeBPFCapture(
 			unsubscribe()
 		}()
 	} else {
-		// Standalone path: original behaviour, no change.
+		// Standalone path: run the programs prepareHTTPSCapture loaded.
+		// Run closes them from now on, not close.
+		c := h.standalone
+		h.standalone = nil
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer close(out)
-			if err := ebpf.Collect(captureCtx, ebpfArgs); err != nil {
+			if err := c.Run(captureCtx, ebpfArgs); err != nil {
 				printer.Stderr.Warningf("ebpf: capture stopped: %v\n", err)
 			}
 		}()

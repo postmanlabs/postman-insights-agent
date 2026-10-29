@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/rand"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/pluginloader"
+	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/location"
 	"github.com/postmanlabs/postman-insights-agent/printer"
 	"github.com/postmanlabs/postman-insights-agent/rest"
@@ -294,6 +296,9 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		}
 	}
 
+	// With no library to capture, HTTPS capture is off: decided here, once.
+	httpsEnabled, httpsLibrarySet := ebpf.HTTPSCaptureFromFlags(enableHTTPSCapture, httpsLibraries)
+
 	args := apidump.Args{
 		ClientID:                telemetry.GetClientID(),
 		Domain:                  rest.Domain,
@@ -340,8 +345,8 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 
 		// HTTPS-via-eBPF.
 		HTTPS: apidump.HTTPSCaptureArgs{
-			Enabled:           enableHTTPSCapture,
-			Libraries:         httpsLibraries,
+			Enabled:           httpsEnabled,
+			Libraries:         httpsLibrarySet,
 			TargetNamespaces:  httpsTargetNamespaces,
 			BodySizeCap:       httpsBodySizeCap,
 			CaptureMode:       httpsCaptureMode,
@@ -551,8 +556,9 @@ func init() {
 	Cmd.Flags().StringSliceVar(
 		&httpsLibraries,
 		"https-libraries",
-		[]string{"openssl"},
-		"TLS libraries to probe. Currently supported: openssl. (gotls, boringssl in later phases.)",
+		slices.Clone(ebpf.DefaultLibraries),
+		"TLS libraries to capture HTTPS traffic from: openssl, java (preview). Java needs JVMs started with "+
+			"-javaagent here; only kube run loads the agent into running JVMs.",
 	)
 	Cmd.Flags().StringSliceVar(
 		&httpsTargetNamespaces,

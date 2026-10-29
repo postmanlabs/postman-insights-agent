@@ -1,11 +1,25 @@
 # eBPF-enabled build of postman-insights-agent.
 #
 # Produces a binary compiled with -tags insights_bpf so all eBPF paths
-# (HTTPS capture via SSL uprobes) are included.
+# (HTTPS capture via SSL uprobes) are included, plus, for Java HTTPS capture,
+# in /opt/postman: the Java agent jar (postman-java-agent.jar) with its SHA-256
+# (postman-java-agent.jar.sha256), and the postman-jvm-attach helper that
+# loads it into running JVMs.
 # Use this image for DaemonSet deployments that need --enable-https-capture.
+#
+# Build arg AGENT_VERSION sets the Java agent's version (default 0.0.0-dev);
+# release builds pass the Insights agent's version.
 #
 # The standard build-scripts/Dockerfile builds WITHOUT eBPF (tags osusergo,netgo
 # only) and is used for the non-eBPF release binary.
+
+# The Java agent: Java 8 bytecode, the same jar on every architecture.
+FROM eclipse-temurin:21-jdk AS java-agent
+ARG AGENT_VERSION=0.0.0-dev
+WORKDIR /src/java-agent
+COPY java-agent/ ./
+RUN ./gradlew --no-daemon -q "-PagentVersion=${AGENT_VERSION}" agentJar \
+    && cd build/agent && sha256sum postman-java-agent.jar > postman-java-agent.jar.sha256
 
 FROM golang:1.25-bookworm AS builder
 
@@ -46,13 +60,17 @@ RUN set -eu; \
         exit 1; \
     fi
 RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
-    go build -tags insights_bpf -o /out/postman-insights-agent .
+    go build -tags insights_bpf -o /out/postman-insights-agent . && \
+    CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/postman-jvm-attach ./cmd/postman-jvm-attach
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap0.8 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
+COPY --from=java-agent /src/java-agent/build/agent/postman-java-agent.jar \
+     /src/java-agent/build/agent/postman-java-agent.jar.sha256 /opt/postman/
+COPY --from=builder /out/postman-jvm-attach /opt/postman/postman-jvm-attach
 # Requires privileged + CAP_BPF at runtime.
 # See modules/insights_agent_mns/main.tf for the full capability set.
 USER root

@@ -36,7 +36,7 @@ func TestRateCapKnob(t *testing.T) {
 		t.Fatalf("RefillRateBucket: %v", err)
 	}
 
-	var got uint64
+	var got int64 // struct rate_bucket's tokens is signed
 	pid := fakePID
 	if err := l.libssl.PidRateBuckets.Lookup(&pid, &got); err != nil {
 		t.Fatalf("Lookup bucket: %v", err)

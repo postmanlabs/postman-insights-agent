@@ -97,6 +97,8 @@ spec:
           # Namespace filtering: only monitor pods in these namespaces.
           # eBPF discovery is also scoped per-pod to its own namespace.
           - "--include-namespaces=test-apps"
+          # Java HTTPS capture is in preview and off by default.
+          - "--https-libraries=openssl,java"
         env:
         - name: POSTMAN_INSIGHTS_API_KEY
           valueFrom:

@@ -3,6 +3,7 @@
 package events
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -339,4 +340,192 @@ func TestAdapter_DistinctFlows(t *testing.T) {
 	if !paths["/one"] || !paths["/two"] {
 		t.Errorf("expected both /one and /two, got %v", paths)
 	}
+}
+
+// control sends a control event (KindJava*) through Feed.
+func control(a *Adapter, kind uint8, pid uint32, ssl uint64, payload string) {
+	ev := &SSLEvent{PID: pid, TID: pid, SSLCtx: ssl, Kind: kind, LenCaptured: uint32(len(payload)), LenTotal: uint32(len(payload))}
+	copy(ev.Payload[:], payload)
+	a.Feed(ev, time.Unix(0, 0))
+}
+
+// A response delimited by the connection's close (no Content-Length) is
+// emitted when the Java agent reports the close, and the connection is
+// forgotten.
+func TestAdapter_JavaCloseCompletesResponse(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const ssl = 1<<63 | 7
+	feed(t, a, 100, ssl, DirIngress, []byte("GET /stream HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+	feed(t, a, 100, ssl, DirEgress, []byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nall of it"))
+	if _, ok := (<-out).Content.(akinet.HTTPRequest); !ok {
+		t.Fatal("first message is not the request")
+	}
+	select {
+	case pnt := <-out:
+		t.Fatalf("response emitted before the close: %T", pnt.Content)
+	default:
+	}
+
+	control(a, KindJavaClose, 100, ssl, "")
+	select {
+	case pnt := <-out:
+		resp, ok := pnt.Content.(akinet.HTTPResponse)
+		if !ok {
+			t.Fatalf("got %T, want HTTPResponse", pnt.Content)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("status %d", resp.StatusCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the close did not complete the response")
+	}
+	if n, _ := a.Snapshot(); n != 0 {
+		t.Errorf("%d flows left after the close", n)
+	}
+	if len(a.conns) != 0 {
+		t.Errorf("%d connections left after the close", len(a.conns))
+	}
+
+	// A close for a connection the adapter does not know is harmless.
+	control(a, KindJavaClose, 100, 1<<63|8, "")
+}
+
+// HEARTBEATs count Java agents as alive, and capturing when active; an agent
+// not heard from for javaAgentAliveFor is no longer counted.
+func TestAdapter_JavaHeartbeats(t *testing.T) {
+	a, out := newTestAdapter(t)
+	control(a, KindJavaHeartbeat, 100, 1<<63, "agent_version=1.0.0\nstate=active\n")
+	control(a, KindJavaHeartbeat, 200, 1<<63, "agent_version=1.0.0\nstate=dormant\n")
+	control(a, KindJavaHeartbeat, 200, 1<<63, "agent_version=1.0.0\nstate=dormant\n")
+	select {
+	case pnt := <-out:
+		t.Fatalf("a heartbeat produced traffic: %T", pnt.Content)
+	default:
+	}
+	if n, _ := a.Snapshot(); n != 0 {
+		t.Errorf("a heartbeat created %d flows", n)
+	}
+	s := a.Stats()
+	if s.JavaAgentsAlive != 2 || s.JavaAgentsCapturing != 1 {
+		t.Errorf("alive %d, capturing %d; want 2, 1", s.JavaAgentsAlive, s.JavaAgentsCapturing)
+	}
+
+	a.javaAgents[200].lastSeen = time.Now().Add(-javaAgentAliveFor - time.Second)
+	s = a.Stats()
+	if s.JavaAgentsAlive != 1 || s.JavaAgentsCapturing != 1 {
+		t.Errorf("alive %d, capturing %d after one went quiet; want 1, 1", s.JavaAgentsAlive, s.JavaAgentsCapturing)
+	}
+	a.GC(time.Now(), time.Minute)
+	if len(a.javaAgents) != 1 {
+		t.Errorf("%d agents kept after GC, want 1", len(a.javaAgents))
+	}
+}
+
+// Events of a kind the adapter does not know are ignored.
+func TestAdapter_UnknownKind(t *testing.T) {
+	a, out := newTestAdapter(t)
+	control(a, 99, 100, 0xAAAA, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+	select {
+	case pnt := <-out:
+		t.Fatalf("emitted %T", pnt.Content)
+	default:
+	}
+}
+
+// A Java event carries its connection's addresses from the kernel: the
+// adapter uses them without a Resolver, for both directions of the
+// connection.
+func TestAdapter_KernelTuple(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const ssl = 1<<63 | 9
+	tuple := ConnTuple{Family: ConnFamilyInet, LocalPort: 8443, RemotePort: 51234}
+	copy(tuple.LocalAddr[:], []byte{10, 0, 0, 5})
+	copy(tuple.RemoteAddr[:], []byte{10, 0, 0, 9})
+	mono := time.Unix(0, 0)
+	for i, m := range []struct {
+		dir  uint8
+		data string
+	}{
+		{DirIngress, "GET /tuple HTTP/1.1\r\nHost: example.com\r\n\r\n"},
+		{DirEgress, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"},
+	} {
+		ev := &SSLEvent{PID: 100, TID: 100, SSLCtx: ssl, Direction: m.dir, Tuple: tuple,
+			LenCaptured: uint32(len(m.data)), LenTotal: uint32(len(m.data)), TimestampNS: uint64(i)}
+		copy(ev.Payload[:], m.data)
+		a.Feed(ev, mono)
+	}
+	req, resp := <-out, <-out
+	if req.SrcIP.String() != "10.0.0.9" || req.SrcPort != 51234 || req.DstIP.String() != "10.0.0.5" || req.DstPort != 8443 {
+		t.Errorf("request %s:%d -> %s:%d", req.SrcIP, req.SrcPort, req.DstIP, req.DstPort)
+	}
+	if resp.SrcIP.String() != "10.0.0.5" || resp.SrcPort != 8443 || resp.DstIP.String() != "10.0.0.9" || resp.DstPort != 51234 {
+		t.Errorf("response %s:%d -> %s:%d", resp.SrcIP, resp.SrcPort, resp.DstIP, resp.DstPort)
+	}
+}
+
+// A connection's addresses that first come with its CLOSE (its earlier
+// events had none) are those of the response the close completes.
+func TestAdapter_KernelTupleOnClose(t *testing.T) {
+	a, out := newTestAdapter(t)
+	const ssl = 1<<63 | 10
+	feed(t, a, 100, ssl, DirIngress, []byte("GET /late HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+	feed(t, a, 100, ssl, DirEgress, []byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nall of it"))
+	if req := <-out; req.SrcIP != nil && !req.SrcIP.IsUnspecified() {
+		t.Fatalf("the request has addresses %s:%d before any event carried them", req.SrcIP, req.SrcPort)
+	}
+
+	tuple := ConnTuple{Family: ConnFamilyInet, LocalPort: 8443, RemotePort: 51234}
+	copy(tuple.LocalAddr[:], []byte{10, 0, 0, 5})
+	copy(tuple.RemoteAddr[:], []byte{10, 0, 0, 9})
+	a.Feed(&SSLEvent{PID: 100, TID: 100, SSLCtx: ssl, Kind: KindJavaClose, FD: -1, Tuple: tuple}, time.Unix(0, 0))
+	select {
+	case resp := <-out:
+		if resp.SrcIP.String() != "10.0.0.5" || resp.SrcPort != 8443 || resp.DstIP.String() != "10.0.0.9" || resp.DstPort != 51234 {
+			t.Errorf("response %s:%d -> %s:%d", resp.SrcIP, resp.SrcPort, resp.DstIP, resp.DstPort)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the close did not complete the response")
+	}
+}
+
+// Close waits for a Feed in progress, blocked sending on Out, and later Feed
+// calls send nothing, so Out can be closed after Close while events still
+// arrive.
+func TestAdapter_Close(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	out := make(chan akinet.ParsedNetworkTraffic) // unbuffered: Feed blocks in the send
+	a.Out = out
+	req := []byte("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+	fed := make(chan struct{})
+	go func() {
+		defer close(fed)
+		feed(t, a, 100, 0xAAAA, DirEgress, req)
+	}()
+	closed := make(chan struct{})
+	go func() {
+		// Close only once the Feed holds the adapter, blocked in the send.
+		for a.mu.TryLock() {
+			a.mu.Unlock()
+			runtime.Gosched()
+		}
+		a.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a Feed was still sending")
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case <-out:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Feed in progress sent nothing")
+	}
+	<-fed
+	<-closed
+
+	close(out)
+	feed(t, a, 100, 0xBBBB, DirEgress, req) // would panic sending on the closed Out
 }
