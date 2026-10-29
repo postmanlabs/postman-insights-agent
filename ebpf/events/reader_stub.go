@@ -31,4 +31,4 @@ func NewReader(_ any, bufferSize int) (*Reader, error) {
 }
 
 func (r *Reader) Run(_ context.Context) error { return ErrUnsupported }
-func (r *Reader) Close() error                 { return nil }
+func (r *Reader) Close() error                { return nil }

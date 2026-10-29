@@ -61,7 +61,6 @@ fi
 
 echo "==> Agent DaemonSet (production path: kube run --enable-https-capture)"
 # Uses agent-daemonset-prod.yaml which requires POSTMAN_INSIGHTS_API_KEY.
-# For credential-free local dev, use agent-daemonset.yaml (logs to stdout only).
 kubectl apply -f "$REPO_ROOT/test/kind/agent-daemonset-prod.yaml"
 kubectl rollout restart -n postman-insights daemonset/postman-insights-agent 2>/dev/null || true
 kubectl rollout status -n postman-insights daemonset/postman-insights-agent --timeout=180s

@@ -1,6 +1,6 @@
 # Node.js combined test workload (dynamic libssl) — recommended for Kind e2e.
 #
-# Capture: postman-insights-agent DaemonSet → apidump-ebpf (NOT javatls).
+# Capture: postman-insights-agent DaemonSet → kube run --enable-https-capture (libssl uprobes).
 # Deploy via: ./test/kind/deploy-e2e-demo.sh
 ---
 apiVersion: v1

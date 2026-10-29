@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Deploy the PRODUCTION DaemonSet path (kube run --enable-https-capture) to kind.
 #
-# This tests the real `kube run` code path, unlike deploy-e2e-demo.sh which uses
-# the apidump-ebpf spike command. Both HTTP (pcap) and HTTPS (eBPF libssl) traffic
-# are captured and shipped to the Postman Insights backend.
+# This tests the real `kube run` code path. Both HTTP (pcap) and HTTPS (eBPF
+# libssl) traffic are captured and shipped to the Postman Insights backend.
 #
 # Prerequisites: Docker Desktop, kind, kubectl, a Postman Insights API key.
 #

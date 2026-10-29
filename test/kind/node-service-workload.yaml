@@ -1,6 +1,6 @@
 # Node.js combined test workload: REST HTTPS (:8443) + gRPC-TLS (:8446).
 #
-# Capture: postman-insights-agent DaemonSet → apidump-ebpf (NOT javatls).
+# Capture: postman-insights-agent DaemonSet → kube run --enable-https-capture (libssl uprobes).
 # Ensure --target-namespaces includes test-apps on the DaemonSet.
 #
 # Deploy: ./test/kind/deploy-node-service.sh

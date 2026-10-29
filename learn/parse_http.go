@@ -624,7 +624,7 @@ func parseHeader(header http.Header, responseCodeOpt optionals.Optional[int]) []
 				}
 
 				authData := &pb.Data{
-					Value: &pb.Data_Primitive{spec_util.CategorizeString(token).Obfuscate().ToProto()},
+					Value: &pb.Data_Primitive{Primitive: spec_util.CategorizeString(token).Obfuscate().ToProto()},
 					Meta: &pb.DataMeta{
 						Meta: &pb.DataMeta_Http{
 							Http: &pb.HTTPMeta{

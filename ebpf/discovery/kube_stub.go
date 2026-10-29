@@ -21,6 +21,6 @@ func NewKubeNamespaceResolver(procRoot, agentProcRoot string) (*KubeNamespaceRes
 	return nil, errors.New("KubeNamespaceResolver is not supported on this platform")
 }
 
-func (r *KubeNamespaceResolver) Namespace(_ uint32) string { return "" }
-func (r *KubeNamespaceResolver) Close()                    {}
+func (r *KubeNamespaceResolver) Namespace(_ uint32) string                     { return "" }
+func (r *KubeNamespaceResolver) Close()                                        {}
 func (r *KubeNamespaceResolver) RunRefresh(_ <-chan struct{}, _ time.Duration) {}

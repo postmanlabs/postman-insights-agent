@@ -126,9 +126,9 @@ func newTestMultipartFormData(statusCode int) *as.Data {
 
 		Meta: &as.DataMeta{
 			Meta: &as.DataMeta_Http{
-				&as.HTTPMeta{
+				Http: &as.HTTPMeta{
 					Location: &as.HTTPMeta_Multipart{
-						&as.HTTPMultipart{Type: "form-data"},
+						Multipart: &as.HTTPMultipart{Type: "form-data"},
 					},
 				},
 			},

@@ -87,7 +87,9 @@ func runSupervisor() error {
 		return err
 	}
 
-	sigs := make(chan os.Signal)
+	// signal.Notify does not block: a signal that arrives while the loop
+	// below is busy is dropped unless the channel has room for it.
+	sigs := make(chan os.Signal, 3)
 	spawnSignal := make(chan bool)
 
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGCHLD)
@@ -101,7 +103,7 @@ func runSupervisor() error {
 
 	for {
 		select {
-		case sig := <- sigs:
+		case sig := <-sigs:
 			sigNum, ok := sig.(syscall.Signal)
 			if !ok {
 				return fmt.Errorf("unable to process the signal %v\n", sig)
@@ -150,13 +152,13 @@ func runSupervisor() error {
 				printer.Debugf("retrying after %d seconds\n", delay)
 
 				go func() {
-					<- time.After(time.Duration(delay) * time.Second)
+					<-time.After(time.Duration(delay) * time.Second)
 					spawnSignal <- true
-				} ()
+				}()
 			}
 
-		case <- spawnSignal:
-			printer.Debugf("starting the child process, run %d of %d\n", numRuns + 1, maxRuns)
+		case <-spawnSignal:
+			printer.Debugf("starting the child process, run %d of %d\n", numRuns+1, maxRuns)
 
 			pid, err = runChild(pwd)
 			if err != nil {
@@ -164,9 +166,4 @@ func runSupervisor() error {
 			}
 		}
 	}
-
-	// Unreachable
-	panic("internal error")
-
-	return nil
 }

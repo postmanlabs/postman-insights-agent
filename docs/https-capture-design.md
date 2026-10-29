@@ -441,7 +441,7 @@ Each phase is independently demoable.
 - `ebpf/programs/libssl.bpf.c` — adapted from OBI `bpf/generictracer/libssl.c`.
 - `ebpf/loader/` — minimal `cilium/ebpf` loader (open .bpf.o, attach uprobes, read ringbuf).
 - `ebpf/events/adapter.go` — convert `(pid, fd, dir, bytes)` events into the existing `akinet.HTTPRequest`/`HTTPResponse` types by feeding them into the existing `akihttp` parsers.
-- `cmd/internal/apidump-ebpf/` — standalone command (behind `//go:build linux && ebpf` build tag) for spike testing.
+- `cmd/internal/apidump-ebpf/` — standalone command for spike testing (never registered; since removed, the production path is `apidump --enable-https-capture`).
 
 **Validation:**
 - ✅ curl → nginx (HTTPS): see at least one decrypted request/response in `trace.Collector`.

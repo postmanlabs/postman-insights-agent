@@ -1,7 +1,7 @@
 # Node combined HTTPS + gRPC test server for kind — dynamic libssl path.
 #
 # Uses Debian apt nodejs (links libssl.so.3). eBPF capture via the
-# postman-insights-agent DaemonSet (apidump-ebpf) works reliably in Kind
+# postman-insights-agent DaemonSet (kube run --enable-https-capture) works reliably in Kind
 # for this image. Use Dockerfile.node-service for official Node 20 / static
 # BoringSSL (Kind capture still WIP).
 #
