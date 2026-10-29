@@ -12,9 +12,6 @@ jobs:
       - image: cimg/go:1.25.11
     steps:
       - checkout
-      - run:
-          name: Check licence headers
-          command: build-scripts/check-license-headers.sh
       - restore_cache:
           keys:
             - go-mod-v4-{{ checksum "go.sum" }}

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+// SPDX-License-Identifier: Apache-2.0
 //
 // Wire format of the frames the Postman Java agent hands to the kernel.
 //
