@@ -159,6 +159,11 @@ func (i *injectorImpl) Inject(sidecar Sidecar) ([]*unstructured.Unstructured, er
 			return nil, errors.Wrapf(err, "cannot inject into Deployment %s", deployment.Name)
 		}
 		if sidecar.HostPID {
+			// Kubernetes rejects a pod with both; changing how the
+			// application's containers share processes is not ours to do.
+			if podSpec.ShareProcessNamespace != nil && *podSpec.ShareProcessNamespace {
+				return nil, errors.Errorf("cannot inject into Deployment %s: it sets shareProcessNamespace, which Kubernetes does not allow with the hostPID that HTTPS capture needs", deployment.Name)
+			}
 			podSpec.HostPID = true
 		}
 

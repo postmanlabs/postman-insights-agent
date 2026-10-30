@@ -240,6 +240,22 @@ func Test_InjectPodSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("refuses a pod that shares its process namespace", func(t *testing.T) {
+		obj := deploymentWith()
+		if err := unstructured.SetNestedField(obj.Object, true, "spec", "template", "spec", "shareProcessNamespace"); err != nil {
+			t.Fatal(err)
+		}
+		inj := injectorImpl{objects: []*unstructured.Unstructured{obj}}
+		_, err := inj.Inject(sidecar)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "Deployment web")
+			assert.Contains(t, err.Error(), "shareProcessNamespace")
+		}
+		// Without hostPID the sidecar fits such a pod.
+		_, err = inj.Inject(Sidecar{Container: sidecar.Container})
+		assert.NoError(t, err)
+	})
+
 	t.Run("changes no pod settings without volumes or hostPID", func(t *testing.T) {
 		inj := injectorImpl{objects: []*unstructured.Unstructured{deploymentWith()}}
 		out, err := inj.Inject(Sidecar{Container: sidecar.Container})
