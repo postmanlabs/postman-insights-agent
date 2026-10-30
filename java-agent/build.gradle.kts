@@ -18,14 +18,14 @@ repositories {
 // customer's -javaagent would. They see the agent only through the frames it
 // writes (to a log file instead of the kernel, so they need no eBPF), so the
 // agent's classes are deliberately not on their classpath.
-val agentTest by sourceSets.creating
+val agentTest = sourceSets.create("agentTest")
 
 // HTTPS servers and clients on the frameworks the agent must capture, for the
 // Insights agent's real-JVM tests (ebpf/node_collector_jvm_linux_test.go).
 // testApps is Java 8, for the apps that run on JDK 8 (Netty) and the entry
 // point; testApps17 holds the frameworks that need a newer JDK.
-val testApps by sourceSets.creating
-val testApps17 by sourceSets.creating {
+val testApps = sourceSets.create("testApps")
+val testApps17 = sourceSets.create("testApps17") {
     compileClasspath += testApps.output
     runtimeClasspath += testApps.output
 }
@@ -97,7 +97,7 @@ fun CopySpec.asClassData() {
     rename("(.+)\\.class$", "$1.classdata")
 }
 
-val agentJar by tasks.registering(Jar::class) {
+val agentJar = tasks.register<Jar>("agentJar") {
     description = "Builds the Java agent jar."
     group = "build"
     archiveFileName.set("postman-insights-java-agent.jar")
@@ -186,7 +186,7 @@ tasks.check {
     dependsOn(agentTestTask)
 }
 
-val testAppsJar by tasks.registering(Jar::class) {
+val testAppsJar = tasks.register<Jar>("testAppsJar") {
     archiveFileName.set("test-apps.jar")
     destinationDirectory.set(layout.buildDirectory.dir("tmp/test-apps"))
     from(testApps.output, testApps17.output)
