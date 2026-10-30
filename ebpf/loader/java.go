@@ -17,5 +17,5 @@ const (
 	JavaCounterHeartbeatLimited uint32 = 9  // HEARTBEATs over the per-PID limit
 	JavaCounterConnBound        uint32 = 10 // connections tied to their socket
 	JavaCounterConnUnbound      uint32 = 11 // data frames of connections not tied to a socket
-	JavaCounterConnMismatch     uint32 = 12 // a later read on a connection's thread was another socket's
+	JavaCounterConnHandoff      uint32 = 12 // RECV frames of a tied connection on a thread that last read another socket
 )

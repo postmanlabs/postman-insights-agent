@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
@@ -345,6 +346,42 @@ func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector, reportCount
 	}
 }
 
+// subscribeDrained is subscribe for a test that captures more messages than
+// out holds before it reads them. The adapter sends to out holding its lock,
+// which unsubscribe needs too: so out is read from the start into a larger
+// buffer, until the test has unsubscribed, on every path out of the test.
+func subscribeDrained(t *testing.T, ctx context.Context, nc *NodeCollector) <-chan akinet.ParsedNetworkTraffic {
+	t.Helper()
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
+	msgs := make(chan akinet.ParsedNetworkTraffic, 4096)
+	stop, drained := make(chan struct{}), make(chan struct{})
+	var dropped atomic.Uint64
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case pnt := <-out:
+				select {
+				case msgs <- pnt:
+				default:
+					dropped.Add(1)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		unsubscribe()
+		close(stop)
+		<-drained
+		if n := dropped.Load(); n > 0 {
+			t.Errorf("%d messages dropped: more than %d unread", n, cap(msgs))
+		}
+	})
+	return msgs
+}
+
 // expectCaptured sends an HTTPS request to the JVM and waits for the request
 // and response to come out of the subscription, with the connection's
 // addresses: the kernel ties the JVM's connection to its socket.
@@ -579,6 +616,153 @@ func TestNodeCollectorJVMFrameworks(t *testing.T) {
 			// Once each: not also through the libssl uprobes (Netty's
 			// BoringSSL is its own library), nor twice through nested hooks.
 			expectCaptured(t, j, out, "from="+app.name)
+		})
+	}
+}
+
+// TestNodeCollectorJVMFrameworksBurst: concurrent curl clients, one request
+// per connection, as the kind end-to-end test sends them. Every request and
+// response carries its own connection's addresses. Tomcat often reads the
+// handshake's last flight and the request on one worker thread and unwraps
+// the request on another, whose last read was another connection's socket:
+// the kernel counts that (java_conn_handoffs), and the connection keeps the
+// addresses its handshake tied it to. (Go's TLS client does not get Tomcat
+// to do that.)
+func TestNodeCollectorJVMFrameworksBurst(t *testing.T) {
+	f := newJVMFixture(t)
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not found")
+	}
+	// Without the libssl uprobes, which would capture curl's side too.
+	nc, ctx := testCollectorWith(t, NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true})
+	if !nc.Loader().JavaEnabled() {
+		t.Fatalf("Java TLS programs did not load: %v", nc.Loader().JavaError())
+	}
+	counter := func(idx uint32) uint64 {
+		t.Helper()
+		v, err := nc.Loader().ReadJavaCounter(idx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	for _, app := range []struct {
+		name    string
+		minJava int
+	}{
+		{"netty-jdk", 8},
+		{"netty-openssl", 8},
+		{"netty-epoll", 8},
+		{"tomcat", 17},
+		{"jetty", 17},
+		{"undertow", 17},
+	} {
+		t.Run(app.name, func(t *testing.T) {
+			if f.javaMajor() < app.minJava {
+				t.Skipf("needs Java %d", app.minJava)
+			}
+			out := subscribeDrained(t, ctx, nc)
+			j := f.startApp(t, app.name, "", "-javaagent:"+f.agentJar)
+			j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+			handoffs, unbound := counter(loader.JavaCounterConnHandoff), counter(loader.JavaCounterConnUnbound)
+
+			// Each request has its own id; curl reports the port it sent it
+			// from, the ground truth for the addresses of its connection.
+			const clients, connsPerClient = 8, 9
+			var mu sync.Mutex
+			portOf := map[string]int{} // request id to client port
+			var wg sync.WaitGroup
+			for c := range clients {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := range connsPerClient {
+						id := fmt.Sprintf("%d-%d", c, i)
+						got, err := exec.Command("curl", "-fsSk", "-o", "/dev/null", "-w", "%{local_port}",
+							"https://"+j.addr+"/hello?burst="+id).Output()
+						port, perr := strconv.Atoi(string(got))
+						if err != nil || perr != nil {
+							t.Errorf("curl: %v %q", err, got)
+							return
+						}
+						mu.Lock()
+						portOf[id] = port
+						mu.Unlock()
+					}
+				}()
+			}
+			wg.Wait()
+			if t.Failed() {
+				return
+			}
+			// The adapter gives a connection's request and response one
+			// StreamID, from the agent's connection id, not from the
+			// addresses: so it pairs each response with its request, and so
+			// with its client's port.
+			srv := mustTCPAddr(t, j.addr)
+			requests := map[string]int{}    // request id to captures
+			clientOf := map[uuid.UUID]int{} // stream to its request's client port
+			responses := map[uuid.UUID][]akinet.ParsedNetworkTraffic{}
+			complete := func() bool {
+				if len(clientOf) < len(portOf) {
+					return false
+				}
+				for stream := range clientOf {
+					if len(responses[stream]) == 0 {
+						return false
+					}
+				}
+				return true
+			}
+			deadline := time.After(15 * time.Second)
+			for !complete() {
+				select {
+				case pnt := <-out:
+					switch c := pnt.Content.(type) {
+					case akinet.HTTPRequest:
+						id := c.URL.Query().Get("burst")
+						port, ok := portOf[id]
+						if c.URL.Path != "/hello" || !ok {
+							continue // not this test's
+						}
+						if pnt.SrcPort != port || pnt.DstPort != srv.Port {
+							t.Errorf("request of the client on port %d went from port %d to port %d, want to %d",
+								port, pnt.SrcPort, pnt.DstPort, srv.Port)
+						}
+						if requests[id]++; requests[id] > 1 {
+							t.Errorf("request %s captured %d times", id, requests[id])
+						}
+						clientOf[c.StreamID] = port
+					case akinet.HTTPResponse:
+						responses[c.StreamID] = append(responses[c.StreamID], pnt)
+					}
+				case <-deadline:
+					answered := 0
+					for stream := range clientOf {
+						if len(responses[stream]) > 0 {
+							answered++
+						}
+					}
+					t.Fatalf("captured %d of %d requests, %d of them with their response", len(clientOf), len(portOf), answered)
+				}
+			}
+			for stream, port := range clientOf {
+				if rs := responses[stream]; len(rs) != 1 {
+					t.Errorf("client port %d: %d responses, want one", port, len(rs))
+				} else if rs[0].SrcPort != srv.Port || rs[0].DstPort != port {
+					t.Errorf("response to the client on port %d went from port %d to port %d, want from %d",
+						port, rs[0].SrcPort, rs[0].DstPort, srv.Port)
+				}
+			}
+			if got := counter(loader.JavaCounterConnUnbound) - unbound; got != 0 {
+				t.Errorf("conn_unbound grew by %d, want 0", got)
+			}
+			got := counter(loader.JavaCounterConnHandoff) - handoffs
+			t.Logf("conn_handoffs grew by %d over %d connections", got, len(portOf))
+			// Otherwise the burst did not exercise what it is for.
+			if app.name == "tomcat" && got == 0 {
+				t.Error("conn_handoffs did not grow: Tomcat unwrapped every request on the thread that read it")
+			}
 		})
 	}
 }

@@ -137,7 +137,7 @@ static __always_inline int java_rate_take(__u32 tgid) {
 #define JAVA_CTR_HEARTBEAT_LIMITED 9  // HEARTBEATs over the per-PID limit
 #define JAVA_CTR_CONN_BOUND        10 // connections tied to their socket (or given their addresses)
 #define JAVA_CTR_CONN_UNBOUND      11 // data frames of connections not tied to a socket
-#define JAVA_CTR_CONN_MISMATCH     12 // a later read on a connection's thread was another socket's
+#define JAVA_CTR_CONN_HANDOFF      12 // RECV frames of a tied connection on a thread that last read another socket
 #define JAVA_CTR_MAX               13
 
 struct {
@@ -181,15 +181,19 @@ volatile const __u32 pwritev2_noappend_rejected = 0;
 // earlier read already decrypted, without reading the socket.
 //
 // An SSLEngine's: the agent sees engines, not sockets. The servers and
-// clients we capture read the socket on the thread that then unwraps what it
-// read (Tomcat NIO, Netty, Jetty, Undertow): so the socket a thread read from
-// just before a RECV frame is the frame's connection. tcp_recvmsg records,
-// for the threads of processes that send frames, the addresses of the socket
-// each last read bytes from; a connection's first RECV frame ties it to them,
-// and every event of the connection then carries them. The agent sends an
-// empty RECV frame at a connection's first unwrap that consumed TLS bytes,
-// during the handshake, so the tie exists before the first request or
-// response, whichever side sends first.
+// clients we capture unwrap a connection's handshake on the thread that read
+// it (Tomcat NIO, Netty, Jetty, Undertow): so the socket a thread read from
+// just before a connection's first RECV frame is the connection's.
+// tcp_recvmsg records, for the threads of processes that send frames, the
+// addresses of the socket each last read bytes from; a connection's first
+// RECV frame ties it to them, and every event of the connection then carries
+// them. The agent sends an empty RECV frame at a connection's first unwrap
+// that consumed TLS bytes, during the handshake, so the tie exists before the
+// first request or response, whichever side sends first. Later records may
+// be unwrapped on another thread than the one that read them: Tomcat reads a
+// segment with the handshake's last flight and the first request on one
+// worker thread, finishes the handshake, and unwraps the request on another.
+// That changes nothing, as a connection is tied once.
 //
 // Some clients read on one thread and unwrap on another (the JDK's
 // HttpClient: its selector thread reads, a worker unwraps), but write the
@@ -212,8 +216,11 @@ volatile const __u32 pwritev2_noappend_rejected = 0;
 // socket the wrapping thread writes next within THREAD_SEND_MAX_AGE_NS (with
 // no other connection's wrap in between), which is another socket when
 // another thread writes the wrap's bytes, or the thread first writes another
-// connection's leftover bytes. Later frames of a connection after reads of
-// another socket are counted (JAVA_CTR_CONN_MISMATCH), which shows the first.
+// connection's leftover bytes. RECV frames of a tied connection on a thread
+// whose last read was another socket's are counted (JAVA_CTR_CONN_HANDOFF):
+// records another thread read, as Tomcat's later ones, or a wrong tie. It
+// shows how often a server unwraps on another thread than the one that read,
+// not how many ties are wrong.
 // ---------------------------------------------------------------------------
 
 // Processes that sent a valid frame: only their socket reads are recorded,
@@ -279,11 +286,15 @@ struct {
 // write cannot end it and leave a later announcement to tie to the wrong
 // write. The window is shorter than for reads: a frame whose bytes another
 // thread writes must not tie to this thread's next, unrelated write.
+// A connection tied when it announced its write is not tied by it: so one
+// that closes on another thread before the write (Tomcat's workers) is not
+// tied again, to the socket of whatever the thread writes next.
 struct thread_send {
     __u64 ts_ns;                          // the last SEND frame
     __u64 conn_id;                        // whose write is next, unless ambiguous
     __u8  ambiguous;
-    __u8  _pad[7];
+    __u8  tied;                           // conn_id was tied at its SEND frame
+    __u8  _pad[6];
 };
 
 struct {
@@ -452,8 +463,9 @@ static __always_inline void record_thread_send(struct sock *sk) {
         return;                           // ends only by expiring
     }
     __u64 conn_id = p->conn_id;
+    __u8 tied = p->tied;
     bpf_map_delete_elem(&java_thread_sends, &pid_tgid);
-    if (age > THREAD_SEND_MAX_AGE_NS) {
+    if (age > THREAD_SEND_MAX_AGE_NS || tied) {
         return;
     }
     struct conn_tuple t;
@@ -484,15 +496,18 @@ int BPF_KPROBE(kprobe_tcp_sendmsg, struct sock *sk) {
 // On a SEND frame of connection conn_id: one whose bytes are yet to be
 // written (JAVA_FRAME_FLAG_BEFORE_WRITE) announces the thread's next write
 // as the connection's, tied or not (a tied one's write must not tie another
-// that announces after it). A second connection's announcement before that
-// write makes the entry ambiguous (see struct thread_send). A SEND frame
-// whose bytes were written already announces nothing.
+// that announces after it, nor itself again once closed). A second
+// connection's announcement before that write makes the entry ambiguous (see
+// struct thread_send). A SEND frame whose bytes were written already
+// announces nothing.
 static __always_inline void pend_conn(__u64 conn_id, __u16 flags) {
     if (!(flags & JAVA_FRAME_FLAG_BEFORE_WRITE)) {
         return;
     }
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u64 now = bpf_ktime_get_ns();
+    struct java_conn_key k = current_conn_key(conn_id);
+    __u8 tied = bpf_map_lookup_elem(&java_conns, &k) != 0;
     struct thread_send *w = bpf_map_lookup_elem(&java_thread_sends, &pid_tgid);
     if (w) {
         if (now - w->ts_ns <= THREAD_SEND_MAX_AGE_NS && (w->ambiguous || w->conn_id != conn_id)) {
@@ -500,11 +515,12 @@ static __always_inline void pend_conn(__u64 conn_id, __u16 flags) {
         } else {
             w->conn_id = conn_id;
             w->ambiguous = 0;
+            w->tied = tied;
         }
         w->ts_ns = now;
         return;
     }
-    struct thread_send p = { .ts_ns = now, .conn_id = conn_id };
+    struct thread_send p = { .ts_ns = now, .conn_id = conn_id, .tied = tied };
     bpf_map_update_elem(&java_thread_sends, &pid_tgid, &p, BPF_ANY);
 }
 
@@ -521,8 +537,9 @@ static __always_inline int tuple_equal(const struct conn_tuple *a, const struct 
 }
 
 // Ties connection conn_id of the current process to the socket the current
-// thread just read, on a RECV frame. A connection is tied once; a later read
-// of another socket before one of its RECV frames is counted, not followed.
+// thread just read, on a RECV frame. A connection is tied once; a later RECV
+// frame after a read of another socket is counted, not followed (see
+// JAVA_CTR_CONN_HANDOFF).
 //
 // With kprobes, a read whose kretprobe was missed (the kernel's limit of
 // concurrent instances reached) leaves reading_sk set: the record is the read
@@ -545,7 +562,7 @@ static __always_inline void bind_conn(__u64 conn_id) {
         return;
     }
     if (!tuple_equal(bound, &r->tuple)) {
-        java_counter_inc(JAVA_CTR_CONN_MISMATCH, 1);
+        java_counter_inc(JAVA_CTR_CONN_HANDOFF, 1);
     }
 }
 

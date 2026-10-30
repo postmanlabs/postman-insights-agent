@@ -29,7 +29,7 @@ func TestJavaCountersInSync(t *testing.T) {
 		"JAVA_CTR_HEARTBEAT_LIMITED": JavaCounterHeartbeatLimited,
 		"JAVA_CTR_CONN_BOUND":        JavaCounterConnBound,
 		"JAVA_CTR_CONN_UNBOUND":      JavaCounterConnUnbound,
-		"JAVA_CTR_CONN_MISMATCH":     JavaCounterConnMismatch,
+		"JAVA_CTR_CONN_HANDOFF":      JavaCounterConnHandoff,
 		"JAVA_CTR_MAX":               uint32(13),
 	}
 	got := map[string]uint32{}
