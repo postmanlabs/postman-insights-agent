@@ -577,7 +577,7 @@ func init() {
 		&httpsCaptureMode,
 		"https-capture-mode",
 		"truncated",
-		"HTTPS capture mode. Only 'truncated' (bodies capped by --https-body-size-cap) is implemented; 'headers' and 'full' are planned.",
+		"HTTPS capture mode. Only 'truncated' (the plaintext of each SSL_read or SSL_write capped at --https-body-size-cap) is implemented; 'headers' and 'full' are planned.",
 	)
 	Cmd.Flags().Uint16Var(
 		&httpsCBPFExcludePort,

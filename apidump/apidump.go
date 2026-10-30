@@ -240,8 +240,9 @@ type HTTPSCaptureArgs struct {
 	// under load. Useful for e2e demos and debugging.
 	DisableThermostat bool
 
-	// CaptureMode is "truncated", bodies capped by BodySizeCap: the only mode
-	// implemented ("headers" and "full" are planned, and refused until then).
+	// CaptureMode is "truncated", each read's or write's plaintext capped at
+	// BodySizeCap: the only mode implemented ("headers" and "full" are
+	// planned, and refused until then).
 	CaptureMode string
 
 	// CBPFExcludePort is the TCP port whose packets are removed from the cBPF
