@@ -114,7 +114,8 @@ The Java agents read the kernel's current payload cap from the control file, so 
 
 Without `SYS_PTRACE` the agent captures OpenSSL only; without `SETUID` and `SETGID`, a DaemonSet still captures JVMs started with `-javaagent`.
 `kube inject`, `kube helm-fragment` and `kube tf-fragment` with `--enable-https-capture` generate the sidecar container with its mounts and `BPF`, `PERFMON` and, with `java`, `SYS_PTRACE` (`SidecarOpts` in `cmd/internal/kube/util.go`).
-They do not change the pod spec: add `hostPID: true` and the hostPath volumes the mounts name (`sys-kernel-debug`, `sys-fs-bpf`, `host-proc`; `HTTPSCaptureVolumes` in the same file) yourself, as the Helm and Terraform fragments' comments say.
+`kube inject` also sets `hostPID: true` and adds the hostPath volumes the mounts name (`sys-kernel-debug`, `sys-fs-bpf`, `host-proc`; `httpsCaptureHostPaths` in the same file) to the pod.
+The Helm and Terraform fragments carry only the container, so they print what to add to the pod spec.
 The programs only observe: they never change syscalls or packets, and the kernel verifier checks them before they load.
 
 ## 7. Privacy

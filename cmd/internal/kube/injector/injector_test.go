@@ -90,7 +90,7 @@ func Test_Inject(t *testing.T) {
 	}
 
 	// WHEN
-	actual, err := injector.Inject(sidecar)
+	actual, err := injector.Inject(Sidecar{Container: sidecar})
 
 	// THEN
 	if assert.NoError(t, err) {
@@ -169,5 +169,84 @@ func Test_InjectableDeploymentMeta(t *testing.T) {
 		_, err := inj.InjectableDeploymentMeta()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "no injectable Deployment found")
+	})
+}
+
+func Test_InjectPodSettings(t *testing.T) {
+	hostPath := func(name, path string) v1.Volume {
+		return v1.Volume{Name: name, VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: path}}}
+	}
+	deploymentWith := func(volumes ...v1.Volume) *unstructured.Unstructured {
+		var obj runtime.Object = &appsv1.Deployment{
+			TypeMeta:   metav1.TypeMeta{Kind: "Deployment", APIVersion: "apps/v1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "web"},
+			Spec: appsv1.DeploymentSpec{
+				Template: v1.PodTemplateSpec{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{Name: "nginx", Image: "nginx"}},
+						Volumes:    volumes,
+					},
+				},
+			},
+		}
+		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&obj)
+		if err != nil {
+			panic(err)
+		}
+		return &unstructured.Unstructured{Object: u}
+	}
+	podSpecOf := func(t *testing.T, obj *unstructured.Unstructured) v1.PodSpec {
+		t.Helper()
+		deployment, err := toDeployment(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return deployment.Spec.Template.Spec
+	}
+	sidecar := Sidecar{
+		Container: v1.Container{Name: "sidecar", Image: "fake-image"},
+		Volumes:   []v1.Volume{hostPath("host-proc", "/proc"), hostPath("sys-fs-bpf", "/sys/fs/bpf")},
+		HostPID:   true,
+	}
+
+	t.Run("adds the volumes and hostPID", func(t *testing.T) {
+		inj := injectorImpl{objects: []*unstructured.Unstructured{deploymentWith(hostPath("data", "/data"))}}
+		out, err := inj.Inject(sidecar)
+		if assert.NoError(t, err) {
+			spec := podSpecOf(t, out[0])
+			assert.True(t, spec.HostPID)
+			assert.Equal(t, []v1.Volume{hostPath("data", "/data"), hostPath("host-proc", "/proc"), hostPath("sys-fs-bpf", "/sys/fs/bpf")}, spec.Volumes)
+			assert.Equal(t, []string{"nginx", "sidecar"}, []string{spec.Containers[0].Name, spec.Containers[1].Name})
+		}
+	})
+
+	t.Run("keeps a volume the pod has with the same name and path", func(t *testing.T) {
+		inj := injectorImpl{objects: []*unstructured.Unstructured{deploymentWith(hostPath("host-proc", "/proc"))}}
+		out, err := inj.Inject(sidecar)
+		if assert.NoError(t, err) {
+			assert.Equal(t, []v1.Volume{hostPath("host-proc", "/proc"), hostPath("sys-fs-bpf", "/sys/fs/bpf")}, podSpecOf(t, out[0]).Volumes)
+		}
+	})
+
+	t.Run("refuses a volume the pod has with the same name and another source", func(t *testing.T) {
+		emptyDir := v1.Volume{Name: "host-proc", VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{}}}
+		for _, existing := range []v1.Volume{hostPath("host-proc", "/var/proc"), emptyDir} {
+			inj := injectorImpl{objects: []*unstructured.Unstructured{deploymentWith(existing)}}
+			_, err := inj.Inject(sidecar)
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), `Deployment web`)
+				assert.Contains(t, err.Error(), `"host-proc"`)
+			}
+		}
+	})
+
+	t.Run("changes no pod settings without volumes or hostPID", func(t *testing.T) {
+		inj := injectorImpl{objects: []*unstructured.Unstructured{deploymentWith()}}
+		out, err := inj.Inject(Sidecar{Container: sidecar.Container})
+		if assert.NoError(t, err) {
+			spec := podSpecOf(t, out[0])
+			assert.False(t, spec.HostPID)
+			assert.Empty(t, spec.Volumes)
+		}
 	})
 }

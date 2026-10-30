@@ -25,10 +25,22 @@ type DeploymentMeta struct {
 	Labels    map[string]string // pod template labels
 }
 
+// Sidecar is what Inject adds to each Deployment's pod template: the
+// container, and the pod settings it needs.
+type Sidecar struct {
+	Container v1.Container
+	// Volumes are added to the pod. A volume the pod already has under the
+	// same name is kept if it is a hostPath volume of the same path, and is an
+	// error otherwise, since the container's mounts would get the wrong one.
+	Volumes []v1.Volume
+	// HostPID, when true, sets the pod's hostPID.
+	HostPID bool
+}
+
 type (
 	Injector interface {
 		// Injects the given sidecar into all valid Deployment Objects and returns the result as a list of unstructured objects.
-		Inject(sidecar v1.Container) ([]*unstructured.Unstructured, error)
+		Inject(sidecar Sidecar) ([]*unstructured.Unstructured, error)
 		// Returns a list of namespaces that contain injectable objects.
 		// This can be used to generate other Kuberenetes objects that need to be created in the same namespace.
 		InjectableNamespaces() ([]string, error)
@@ -128,7 +140,7 @@ func (i *injectorImpl) InjectableDeploymentMeta() (*DeploymentMeta, error) {
 	return nil, errors.New("no injectable Deployment found in the provided YAML")
 }
 
-func (i *injectorImpl) Inject(sidecar v1.Container) ([]*unstructured.Unstructured, error) {
+func (i *injectorImpl) Inject(sidecar Sidecar) ([]*unstructured.Unstructured, error) {
 	onMap := func(obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 		gvk := obj.GetObjectKind().GroupVersionKind()
 
@@ -141,8 +153,14 @@ func (i *injectorImpl) Inject(sidecar v1.Container) ([]*unstructured.Unstructure
 			return nil, errors.Wrap(err, "failed to convert object to deployment during injection")
 		}
 
-		containers := deployment.Spec.Template.Spec.Containers
-		deployment.Spec.Template.Spec.Containers = append(containers, sidecar)
+		podSpec := &deployment.Spec.Template.Spec
+		podSpec.Containers = append(podSpec.Containers, sidecar.Container)
+		if err := addVolumes(podSpec, sidecar.Volumes); err != nil {
+			return nil, errors.Wrapf(err, "cannot inject into Deployment %s", deployment.Name)
+		}
+		if sidecar.HostPID {
+			podSpec.HostPID = true
+		}
 
 		obj.Object, err = runtime.DefaultUnstructuredConverter.ToUnstructured(deployment)
 		if err != nil {
@@ -153,6 +171,36 @@ func (i *injectorImpl) Inject(sidecar v1.Container) ([]*unstructured.Unstructure
 	}
 
 	return slices.MapWithErr(i.objects, onMap)
+}
+
+// addVolumes adds volumes to the pod spec, keeping one the pod already has
+// under the same name when it is a hostPath volume of the same path.
+func addVolumes(podSpec *v1.PodSpec, volumes []v1.Volume) error {
+	for _, volume := range volumes {
+		existing := -1
+		for i := range podSpec.Volumes {
+			if podSpec.Volumes[i].Name == volume.Name {
+				existing = i
+				break
+			}
+		}
+		if existing < 0 {
+			podSpec.Volumes = append(podSpec.Volumes, volume)
+			continue
+		}
+		have, want := podSpec.Volumes[existing].HostPath, volume.HostPath
+		if have == nil || want == nil || have.Path != want.Path {
+			return errors.Errorf("the pod already has a volume named %q that is not the hostPath %s the sidecar mounts; rename it", volume.Name, hostPathOf(volume))
+		}
+	}
+	return nil
+}
+
+func hostPathOf(volume v1.Volume) string {
+	if volume.HostPath == nil {
+		return "(none)"
+	}
+	return volume.HostPath.Path
 }
 
 func isInjectable(kind schema.GroupVersionKind) bool {
