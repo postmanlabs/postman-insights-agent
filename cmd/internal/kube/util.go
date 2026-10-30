@@ -9,6 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
+	"github.com/postmanlabs/postman-insights-agent/cmd/internal/kube/injector"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/rest"
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
@@ -99,7 +100,7 @@ type SidecarOpts struct {
 
 	// EnableHTTPSCapture, when true, adds the privileges and mounts required
 	// for the eBPF-based HTTPS capture pipeline:
-	//   * hostPID: true
+	//   * on the pod: hostPID: true and the volumes of httpsCaptureHostPaths
 	//   * caps: BPF, PERFMON (in addition to NET_RAW), and SYS_PTRACE when
 	//     the libraries include java (see capabilities)
 	//   * mounts: /sys/kernel/debug, /sys/fs/bpf, /proc (read-only)
@@ -275,10 +276,8 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 	}
 	var volumeMounts []v1.VolumeMount
 	if opts.EnableHTTPSCapture {
-		volumeMounts = []v1.VolumeMount{
-			{Name: "sys-kernel-debug", MountPath: "/sys/kernel/debug"},
-			{Name: "sys-fs-bpf", MountPath: "/sys/fs/bpf"},
-			{Name: "host-proc", MountPath: "/host/proc", ReadOnly: true},
+		for _, p := range httpsCaptureHostPaths {
+			volumeMounts = append(volumeMounts, v1.VolumeMount{Name: p.volume, MountPath: p.mountPath, ReadOnly: p.readOnly})
 		}
 	}
 
@@ -304,17 +303,47 @@ func createPostmanSidecar(opts SidecarOpts) v1.Container {
 	}
 }
 
-// HTTPSCaptureVolumes returns the pod-level volumes that must accompany the
-// sidecar container when EnableHTTPSCapture is true. Pod-spec authors
-// (kube inject, helm-fragment, tf-fragment) append these to .spec.template.spec.volumes
-// and set .spec.template.spec.hostPID = true.
-func HTTPSCaptureVolumes() []v1.Volume {
-	hostPathDir := v1.HostPathDirectory
-	return []v1.Volume{
-		{Name: "sys-kernel-debug", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/sys/kernel/debug", Type: &hostPathDir}}},
-		{Name: "sys-fs-bpf", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/sys/fs/bpf", Type: &hostPathDir}}},
-		{Name: "host-proc", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/proc", Type: &hostPathDir}}},
+// httpsCaptureHostPath is a node directory the sidecar needs for HTTPS
+// capture: a hostPath volume on the pod, mounted into the sidecar.
+type httpsCaptureHostPath struct {
+	volume    string
+	hostPath  string
+	mountPath string
+	readOnly  bool
+}
+
+// httpsCaptureHostPaths are the node directories HTTPS capture needs. The
+// sidecar's mounts, the volumes kube inject adds to the pod, and the volumes
+// the Helm and Terraform fragments tell the user to add all come from here.
+var httpsCaptureHostPaths = []httpsCaptureHostPath{
+	{volume: "sys-kernel-debug", hostPath: "/sys/kernel/debug", mountPath: "/sys/kernel/debug"},
+	{volume: "sys-fs-bpf", hostPath: "/sys/fs/bpf", mountPath: "/sys/fs/bpf"},
+	{volume: "host-proc", hostPath: "/proc", mountPath: "/host/proc", readOnly: true},
+}
+
+// injectedSidecar returns the sidecar for opts as injected into a pod:
+// with HTTPS capture, the pod also needs hostPID and the sidecar's volumes.
+func injectedSidecar(opts SidecarOpts) injector.Sidecar {
+	sidecar := injector.Sidecar{Container: createPostmanSidecar(opts)}
+	if opts.EnableHTTPSCapture {
+		sidecar.HostPID = true
+		sidecar.Volumes = httpsCaptureVolumes()
 	}
+	return sidecar
+}
+
+// httpsCaptureVolumes returns the pod volumes the sidecar's HTTPS capture
+// mounts name.
+func httpsCaptureVolumes() []v1.Volume {
+	hostPathDir := v1.HostPathDirectory
+	var volumes []v1.Volume
+	for _, p := range httpsCaptureHostPaths {
+		volumes = append(volumes, v1.Volume{
+			Name:         p.volume,
+			VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: p.hostPath, Type: &hostPathDir}},
+		})
+	}
+	return volumes
 }
 
 // This function overrides the default preRun function in the root command.

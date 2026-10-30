@@ -103,7 +103,16 @@ func printHelmChartFragment(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("\n%s\n", containerYaml)
 
 	if opts.EnableHTTPSCapture {
-		fmt.Print(`
+		fmt.Print(helmPodSpecNote())
+	}
+	return nil
+}
+
+// helmPodSpecNote tells the user what HTTPS capture needs on the pod spec,
+// which a container fragment cannot carry.
+func helmPodSpecNote() string {
+	var b strings.Builder
+	b.WriteString(`
 # IMPORTANT: --enable-https-capture also requires hostPID + pod-level
 # volumes on the Pod spec. Add the following to your Helm values (or
 # directly under spec.template.spec in the rendered Deployment):
@@ -113,15 +122,11 @@ func printHelmChartFragment(cmd *cobra.Command, _ []string) error {
 #       spec:
 #         hostPID: true
 #         volumes:
-#           - name: sys-kernel-debug
-#             hostPath: { path: /sys/kernel/debug, type: Directory }
-#           - name: sys-fs-bpf
-#             hostPath: { path: /sys/fs/bpf,       type: Directory }
-#           - name: host-proc
-#             hostPath: { path: /proc,             type: Directory }
 `)
+	for _, p := range httpsCaptureHostPaths {
+		fmt.Fprintf(&b, "#           - name: %s\n#             hostPath: { path: %s, type: Directory }\n", p.volume, p.hostPath)
 	}
-	return nil
+	return b.String()
 }
 
 func printTerraformFragment(cmd *cobra.Command, _ []string) error {
@@ -199,29 +204,23 @@ func createTerraformContainer(opts SidecarOpts) *hclwrite.File {
 
 	// Volume mounts required when HTTPS capture is enabled.
 	if opts.EnableHTTPSCapture {
-		for _, vm := range []struct {
-			name, path string
-			ro         bool
-		}{
-			{"sys-kernel-debug", "/sys/kernel/debug", false},
-			{"sys-fs-bpf", "/sys/fs/bpf", false},
-			{"host-proc", "/host/proc", true},
-		} {
+		for _, p := range httpsCaptureHostPaths {
 			b := containerBody.AppendNewBlock("volume_mount", []string{}).Body()
-			b.SetAttributeValue("name", cty.StringVal(vm.name))
-			b.SetAttributeValue("mount_path", cty.StringVal(vm.path))
-			if vm.ro {
+			b.SetAttributeValue("name", cty.StringVal(p.volume))
+			b.SetAttributeValue("mount_path", cty.StringVal(p.mountPath))
+			if p.readOnly {
 				b.SetAttributeValue("read_only", cty.True)
 			}
 		}
 		// Reminder comment for the human reading the generated TF.
+		note := "\n# When --enable-https-capture is used, also set spec.template.spec.host_pid = true\n" +
+			"# and add these volumes to spec.template.spec:\n"
+		for _, p := range httpsCaptureHostPaths {
+			note += fmt.Sprintf("#   volume { name = %q host_path { path = %q } }\n", p.volume, p.hostPath)
+		}
 		rootBody.AppendUnstructuredTokens(hclwrite.Tokens{{
-			Type: hclsyntax.TokenComment,
-			Bytes: []byte("\n# When --enable-https-capture is used, also set spec.template.spec.host_pid = true\n" +
-				"# and add these volumes to spec.template.spec:\n" +
-				"#   volume { name = \"sys-kernel-debug\" host_path { path = \"/sys/kernel/debug\" } }\n" +
-				"#   volume { name = \"sys-fs-bpf\"       host_path { path = \"/sys/fs/bpf\" } }\n" +
-				"#   volume { name = \"host-proc\"        host_path { path = \"/proc\" } }\n"),
+			Type:  hclsyntax.TokenComment,
+			Bytes: []byte(note),
 		}})
 	}
 
