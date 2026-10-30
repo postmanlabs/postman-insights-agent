@@ -81,7 +81,7 @@ type Daemonset struct {
 	// asked for, without Java when its programs did not load.
 	HTTPSLibraries ebpf.Libraries
 	// httpsHostNetns is the node's network namespace inode, for
-	// ebpf.Libraries.ForPod.
+	// ebpf.PodNetnsSkipReason.
 	httpsHostNetns uint64
 
 	// EBPFNodeCollector is a node-scoped shared eBPF collector initialised once

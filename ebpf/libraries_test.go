@@ -72,19 +72,38 @@ func TestHTTPSCaptureFromFlags(t *testing.T) {
 }
 
 // Java runs for a pod only in a network namespace that is the pod's alone.
-func TestLibrariesForPod(t *testing.T) {
+func TestPodNetnsSkipReason(t *testing.T) {
 	const host = 100
 	for _, tc := range []struct {
-		podNetns uint64
-		want     Libraries
-		reason   string
+		podNetns, hostNetns uint64
+		reason              string
 	}{
-		{podNetns: 42, want: all},
-		{podNetns: 0, want: Libraries{OpenSSL: true}, reason: "the network namespace is unknown"},
-		{podNetns: host, want: Libraries{OpenSSL: true}, reason: "the network namespace is the node's (host network)"},
+		{podNetns: 42, hostNetns: host},
+		{podNetns: 0, hostNetns: host, reason: "its network namespace is unknown"},
+		{podNetns: host, hostNetns: host, reason: "it is on the node's network (hostNetwork)"},
+		{podNetns: 42, hostNetns: 0, reason: "the node's network namespace is unknown"},
 	} {
-		assert.Equal(t, tc.want, all.ForPod(tc.podNetns, host), "netns %d", tc.podNetns)
-		assert.Equal(t, tc.reason, JavaPodSkipReason(tc.podNetns, host), "netns %d", tc.podNetns)
+		assert.Equal(t, tc.reason, PodNetnsSkipReason(tc.podNetns, tc.hostNetns), "pod netns %d, node netns %d", tc.podNetns, tc.hostNetns)
 	}
-	assert.True(t, Libraries{Java: true}.ForPod(0, host).None(), "Java only, netns unknown")
+}
+
+func TestStandaloneScope(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		inKubernetes bool
+		ownNetns     uint64
+		hostNetwork  bool
+		want         uint64
+		reason       string
+	}{
+		{name: "host", ownNetns: 42, want: 0},
+		{name: "host, own netns unknown", ownNetns: 0, want: 0},
+		{name: "pod", inKubernetes: true, ownNetns: 42, want: 42},
+		{name: "pod, own netns unknown", inKubernetes: true, ownNetns: 0, reason: "its network namespace is unknown"},
+		{name: "pod on the host network", inKubernetes: true, ownNetns: 42, hostNetwork: true, reason: "it is on the node's network (hostNetwork)"},
+	} {
+		netns, reason := StandaloneScope(tc.inKubernetes, tc.ownNetns, tc.hostNetwork)
+		assert.Equal(t, tc.want, netns, tc.name)
+		assert.Equal(t, tc.reason, reason, tc.name)
+	}
 }

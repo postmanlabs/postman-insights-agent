@@ -51,21 +51,35 @@ type Capture struct {
 	javaNetns uint64
 	// javaOn: the Java programs loaded and accept frames from javaNetns.
 	javaOn bool
+	// openSSLNetns is the network namespace OpenSSL discovery is confined to
+	// when Run is given no discovery scope (StandaloneScope), or 0.
+	openSSLNetns uint64
 
 	closeOnce sync.Once
 }
 
 // Start loads the BPF programs. It fails when none of the libraries asked for
 // can be captured: the kernel lacks eBPF support, or only Java was asked for
-// and it is not available.
+// and it is not available; and in a pod whose processes it cannot tell from
+// other pods' (StandaloneScope).
 //
 // Returns ErrUnsupported on platforms / builds without eBPF.
 func Start(load LoadArgs) (*Capture, error) {
 	c := &Capture{load: load, javaNetns: netnsInodeAt("/proc/self/ns/net")}
-	// The same rule as for a DaemonSet's pods, with the agent's own netns as
-	// the pod's.
-	if reason := JavaPodSkipReason(c.javaNetns, sidecarNodeNetns()); load.EnableJava && reason != "" {
-		printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: %s\n", reason)
+	// In a pod, capture only in the pod's own network namespace, or not at
+	// all when that namespace is not the pod's alone (StandaloneScope). Java
+	// is confined to the agent's netns anyway, so it needs it known.
+	inKubernetes := os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+	netns, reason := StandaloneScope(inKubernetes, c.javaNetns, inKubernetes && onHostNetwork(c.javaNetns))
+	if reason != "" {
+		return nil, fmt.Errorf("ebpf: no HTTPS capture in this pod: %s, so its processes cannot be told from other pods' and the node's", reason)
+	}
+	if netns != 0 {
+		c.openSSLNetns = netns
+		printer.Stderr.Infof("ebpf: HTTPS capture confined to this pod's network namespace (inode=%d)\n", netns)
+	}
+	if load.EnableJava && c.javaNetns == 0 {
+		printer.Stderr.Warningf("ebpf: Java HTTPS capture disabled: the agent's network namespace is unknown\n")
 		load.EnableJava = false
 	}
 
@@ -100,11 +114,26 @@ func Start(load LoadArgs) (*Capture, error) {
 	return c, nil
 }
 
+// onHostNetwork reports whether the agent's pod, whose network namespace is
+// ownNetns, is on the node's network. The generated sidecars get their pod's
+// and node's IPs from the downward API (POSTMAN_K8S_POD_IP and
+// POSTMAN_K8S_HOST_IP), which are the same for a hostNetwork pod. Without
+// them, it compares ownNetns with the node's, which only a pod with hostPID
+// on a node that is not itself a container sees (sidecarNodeNetns).
+func onHostNetwork(ownNetns uint64) bool {
+	podIP, hostIP := os.Getenv("POSTMAN_K8S_POD_IP"), os.Getenv("POSTMAN_K8S_HOST_IP")
+	if podIP != "" && hostIP != "" {
+		return podIP == hostIP
+	}
+	node := sidecarNodeNetns()
+	return node != 0 && node == ownNetns
+}
+
 // sidecarNodeNetns returns the node's network namespace inode when the agent
 // runs in a Kubernetes pod and sees the node's processes (hostPID, which the
 // generated sidecars set for HTTPS capture), or 0. A pod on the host network
 // shares the node's netns with host processes and other hostNetwork pods, so
-// it does not identify the agent's pod (JavaPodSkipReason). An agent run on
+// it does not identify the agent's pod (PodNetnsSkipReason). An agent run on
 // a host, outside Kubernetes, captures the host's JVMs. Without hostPID the
 // node's netns cannot be seen, so a hostNetwork pod is not detected.
 func sidecarNodeNetns() uint64 {
@@ -228,9 +257,14 @@ func (c *Capture) Run(ctx context.Context, args RunArgs) error {
 		// PIDs that the kernel can't match against the agent's ns view. The
 		// resolver (events.NewResolverWithProcRoot above) handles BPF-emitted
 		// root-ns PIDs separately and reads /host/proc directly.
+		//
+		// In a pod that sees the node's processes, only the pod's own are
+		// probed (openSSLNetns, see StandaloneScope); a caller's own discovery
+		// scope (args.Discovery) is used as given.
 		disco = discovery.WatchWith(ctx, discovery.WatchOpts{
-			Interval: args.DiscoveryInterval,
-			JVMs:     jvms != nil,
+			Interval:         args.DiscoveryInterval,
+			NetnsInodeFilter: c.openSSLNetns,
+			JVMs:             jvms != nil,
 		})
 	}
 

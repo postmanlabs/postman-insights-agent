@@ -37,9 +37,11 @@ Java frames (java_tls.bpf.c) ──┘                  (routes by pod)   (akine
   Pods are chosen as for HTTP capture (namespaces, labels, the `postman.com/insights-disabled` annotation); see "Namespace opt-in: three independent layers" in [`discovery-mode.md`](discovery-mode.md).
   Every 30 s the agent logs an `ebpf-stats: pod=<name>` line per monitored pod with the pod's own counters (`probes`, the processes with libssl probes for it; `events` and `bytes`, the OpenSSL data events routed to it; `java_events`; `msgs`, `flows_active` and the drops of its flows; its Java agents), and one `ebpf-stats: node` line with what the pods share (the kernel's counters, ring buffer drops, the payload cap and CPU, the Java frame counters and the JVM attaches).
   A standalone `apidump` logs one line with both.
-- **Sidecar or single host (`apidump`):** OpenSSL capture attaches to every process the agent can see in `/proc`, unless `--https-target-namespaces` limits it to some Kubernetes namespaces (`ebpf/collect_linux.go`, `apidump/ebpf_integration.go`).
-  With `hostPID`, which HTTPS capture needs, that is every process on the node, so a sidecar captures other pods' OpenSSL traffic too unless it is limited.
-  Java capture is limited to the agent's own network namespace (section 4), and needs JVMs started with `-javaagent` there.
+- **Sidecar (`apidump` in a pod):** with `hostPID`, which HTTPS capture needs, the agent sees every process on the node, but captures only its own pod's: OpenSSL discovery and Java frames are confined to the agent's network namespace, which the pod's containers share (`ebpf.StandaloneScope`, `ebpf/collect_linux.go`).
+  A pod on the node's network (its `POSTMAN_K8S_POD_IP` is its `POSTMAN_K8S_HOST_IP`, both set by the generated sidecars), or whose network namespace is unknown, gets no HTTPS capture.
+  `--https-target-namespaces` widens OpenSSL capture to every pod of the named Kubernetes namespaces on the node, as an explicit opt-in.
+  Java needs JVMs started with `-javaagent` there (section 4).
+- **Single host (`apidump` outside Kubernetes):** OpenSSL capture attaches to every process on the host, or to those of `--https-target-namespaces`; Java to the JVMs in the agent's network namespace.
 
 ## 4. Java capture
 
@@ -51,7 +53,7 @@ The kernel program `ebpf/programs/java_tls.bpf.c`, on the `pwrite64`, `pwritev2`
 ### Who may send frames
 
 Any process can write at the magic offset, so the kernel accepts frames only from the network namespaces of monitored pods (the `java_netns` map), or the agent's own one for a sidecar, and validates every header.
-A pod on the host network, or whose network namespace is unknown, is captured without Java, since its namespace does not identify one pod.
+A pod on the host network, or whose network namespace is unknown, gets no HTTPS capture at all, neither OpenSSL nor Java, since its namespace does not identify one pod (`ebpf.PodNetnsSkipReason`): its processes cannot be told from the node's and other hostNetwork pods'.
 
 ### Control file
 

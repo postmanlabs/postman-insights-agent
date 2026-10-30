@@ -195,23 +195,12 @@ type HTTPSCaptureArgs struct {
 	Libraries ebpf.Libraries
 
 	// TargetNamespaces restricts uprobe attachment to processes whose
-	// Kubernetes namespace is in the list. Empty = all namespaces in scope.
+	// Kubernetes namespace is in the list (--https-target-namespaces).
 	//
-	// Used by the standalone `apidump` command for customer-controlled
-	// namespace opt-in. In the DaemonSet path, prefer ContainerNetnsInode
-	// (pod-level precision) — TargetNamespaces is namespace-level and causes
-	// duplicate captures when a namespace has multiple pod replicas.
-	//
-	// Namespace scoping context — three independent layers exist:
-	//   1. DaemonSet PodFilter / --include-namespaces  — which pods START pcap
-	//      (kube_events_worker.go; pcap is auto-confined by netns).
-	//   2. TargetNamespaces (this field) / --https-target-namespaces — which
-	//      PIDs the eBPF uprobe manager attaches to. eBPF is NOT netns-confined
-	//      so it needs its own namespace boundary. In the DaemonSet path this
-	//      field is set automatically from the pod's namespace; prefer
-	//      ContainerNetnsInode for scaled deployments.
-	//   3. Webhook namespaceSelector — which pods receive the Java ByteBuddy
-	//      agent injection (kube inject / kube helm-fragment).
+	// Only the standalone `apidump` command sets it, as an explicit opt-in:
+	// it widens a sidecar's capture beyond its own pod (ebpf.StandaloneScope)
+	// to every pod of those namespaces on the node. The DaemonSet confines
+	// each pod to its own network namespace (ContainerNetnsInode).
 	TargetNamespaces []string
 
 	// ContainerNetnsInode, when non-zero, restricts eBPF discovery to PIDs
@@ -221,7 +210,8 @@ type HTTPSCaptureArgs struct {
 	// duplicate captures when a namespace has multiple pod replicas.
 	//
 	// Set by the DaemonSet path from the container's init PID via
-	// CRIClient.GetContainerPID. When zero, falls back to TargetNamespaces.
+	// CRIClient.GetContainerPID. A pod whose inode is unknown, or is the
+	// node's, gets no HTTPS capture (ebpf.PodNetnsSkipReason).
 	ContainerNetnsInode uint64
 
 	// BodySizeCap is the per-SSL-call plaintext byte cap forwarded to BPF as

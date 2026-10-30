@@ -122,26 +122,17 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
 		networkNamespace = "/host" + networkNamespace
 
-		// Resolve the container's network-namespace inode for pod-level eBPF
-		// scoping. Failures are non-fatal: we fall back to namespace-level
-		// filtering (TargetNamespaces) inside buildHTTPSArgs, which is less
-		// precise but still correct. HTTP/pcap capture is unaffected.
+		// Resolve the container's network-namespace inode, which HTTPS capture
+		// is confined to. Without it buildHTTPSArgs turns HTTPS capture off for
+		// the pod; HTTP/pcap capture is unaffected.
 		var netnsInode uint64
 		if d.EnableHTTPSCapture {
-			containerPID, err := d.CRIClient.GetContainerPID(podArgs.ContainerUUID)
+			inode, err := containerNetnsInode(d.CRIClient.GetContainerPID, readNetnsInode, podArgs.ContainerUUID,
+				netnsLookupAttempts, netnsLookupInterval)
 			if err != nil {
-				printer.Warningf(
-					"ebpf: could not get container PID for pod %s (falling back to namespace-level eBPF scoping): %v\n",
-					podArgs.PodName, err)
+				printer.Warningf("ebpf: could not read the network namespace of pod %s: %v\n", podArgs.PodName, err)
 			} else {
-				inode, err := readNetnsInode(containerPID)
-				if err != nil {
-					printer.Warningf(
-						"ebpf: could not read netns inode for pod %s PID %d (falling back to namespace-level eBPF scoping): %v\n",
-						podArgs.PodName, containerPID, err)
-				} else {
-					netnsInode = inode
-				}
+				netnsInode = inode
 			}
 		}
 
@@ -214,19 +205,11 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 // apidump.Run() call from the DaemonSet-level HTTPS config, the pod metadata,
 // and the container's network-namespace inode.
 //
-// Scoping priority (most precise wins):
-//  1. ContainerNetnsInode — pod-level, derived from the container init PID.
-//     Restricts eBPF discovery to exactly the processes inside this pod's
-//     netns. Eliminates duplicate captures when a namespace has N replicas.
-//  2. TargetNamespaces — namespace-level fallback used when the inode lookup
-//     fails (CRI unavailable, container not yet started, etc.) and the pod
-//     namespace is known (discovery mode). Causes N× capture for N replicas;
-//     acceptable only as a degraded fallback.
-//  3. No filter — when HTTPS is disabled or neither of the above is available.
-//
-// The pod is captured from the node's libraries, without Java when it cannot
-// run for the pod (ebpf.JavaPodSkipReason); with none left, HTTPS capture is
-// off for the pod, so pcap keeps the TLS port.
+// The pod is captured only in its own network namespace (ContainerNetnsInode),
+// from the node's libraries. When that namespace is not the pod's alone
+// (ebpf.PodNetnsSkipReason: unknown, or the node's for a hostNetwork pod),
+// HTTPS capture is off for the pod, so pcap keeps the TLS port: capturing
+// anyway would upload other pods' and the node's traffic as this pod's.
 func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.HTTPSCaptureArgs {
 	if !d.EnableHTTPSCapture {
 		return apidump.HTTPSCaptureArgs{Enabled: false}
@@ -239,36 +222,51 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		return apidump.HTTPSCaptureArgs{Enabled: false}
 	}
 
-	libraries := d.HTTPSLibraries.ForPod(netnsInode, d.httpsHostNetns)
-	if d.HTTPSLibraries.Java && !libraries.Java {
-		reason := ebpf.JavaPodSkipReason(netnsInode, d.httpsHostNetns)
-		if libraries.None() {
-			printer.Warningf("HTTPS capture is off for pod %s: Java HTTPS capture cannot run for it (%s), and it is the only library selected\n",
-				podArgs.PodName, reason)
-			return apidump.HTTPSCaptureArgs{Enabled: false}
-		}
-		printer.Infof("Java HTTPS capture is off for pod %s: %s\n", podArgs.PodName, reason)
+	if reason := ebpf.PodNetnsSkipReason(netnsInode, d.httpsHostNetns); reason != "" {
+		printer.Warningf("HTTPS capture is off for pod %s: %s, so its processes cannot be told from other pods' and the node's\n",
+			podArgs.PodName, reason)
+		return apidump.HTTPSCaptureArgs{Enabled: false}
 	}
 
-	args := apidump.HTTPSCaptureArgs{
+	return apidump.HTTPSCaptureArgs{
 		Enabled:             true,
 		ContainerNetnsInode: netnsInode,
 		RateCapPerSec:       d.HTTPSRateCapPerSec,
 		BodySizeCap:         d.HTTPSBodySizeCap,
 		CBPFExcludePort:     d.HTTPSCBPFExcludePort,
 		DisableThermostat:   d.HTTPSNoThermostat,
-		Libraries:           libraries,
+		Libraries:           d.HTTPSLibraries,
 		NodeCollector:       d.EBPFNodeCollector,
 	}
+}
 
-	// Only fall back to namespace-level filtering when the inode is
-	// unavailable. Prefer the inode path: it is pod-level and avoids N×
-	// duplicate captures for scaled deployments.
-	if netnsInode == 0 && podArgs.Namespace != "" {
-		args.TargetNamespaces = []string{podArgs.Namespace}
+// The container of a pod the DaemonSet has just seen may not have started
+// yet, and the runtime then reports no PID for it: containerNetnsInode tries
+// for up to netnsLookupAttempts × netnsLookupInterval.
+const (
+	netnsLookupAttempts = 30
+	netnsLookupInterval = time.Second
+)
+
+// containerNetnsInode returns the network-namespace inode of the container,
+// trying again while its PID or namespace cannot be read yet.
+func containerNetnsInode(containerPID func(containerID string) (int, error), netnsInode func(pid int) (uint64, error),
+	containerID string, attempts int, interval time.Duration) (uint64, error) {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(interval)
+		}
+		var pid int
+		if pid, err = containerPID(containerID); err != nil {
+			continue
+		}
+		var inode uint64
+		if inode, err = netnsInode(pid); err == nil {
+			return inode, nil
+		}
 	}
-
-	return args
+	return 0, err
 }
 
 // readNetnsInode returns the network-namespace inode for the given PID by
