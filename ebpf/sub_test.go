@@ -2,7 +2,11 @@
 
 package ebpf
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
+)
 
 // These tests exercise the pure routing decision (routeSub) with no BPF loader
 // or kernel dependency, so they run on every platform via plain `go test`.
@@ -118,5 +122,25 @@ func TestRouteTable_AddIsIdempotentAndRemoveUnknownIsSafe(t *testing.T) {
 	r.remove(2, s)     // unknown key
 	if r.get(1) != s || len(r) != 1 {
 		t.Fatal("removing an unknown subscriber changed the table")
+	}
+}
+
+// A pod's probes are the PIDs registered for it: a PID two pods share counts
+// for both, and another pod's PIDs for neither.
+func TestRouteTable_KeysOf(t *testing.T) {
+	a, b, c := &podSub{adapter: &events.Adapter{}}, &podSub{adapter: &events.Adapter{}}, &podSub{adapter: &events.Adapter{}}
+	byPID := routeTable[uint32]{}
+	byPID.add(1, a)
+	byPID.add(2, a)
+	byPID.add(3, b)
+	byPID.add(4, a)
+	byPID.add(4, b)
+	for _, tc := range []struct {
+		sub  *podSub
+		want int
+	}{{a, 3}, {b, 2}, {c, 0}} {
+		if got := byPID.keysOf(tc.sub.adapter); got != tc.want {
+			t.Errorf("keysOf = %d, want %d", got, tc.want)
+		}
 	}
 }

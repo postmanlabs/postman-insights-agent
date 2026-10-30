@@ -35,6 +35,8 @@ Java frames (java_tls.bpf.c) ──┘                  (routes by pod)   (akine
 - **DaemonSet (`kube run`):** one `NodeCollector` per node loads the programs once, owns the ring buffer, and fans events out to one subscription per monitored pod (`ebpf/node_collector_linux.go`).
   Events are routed by the pod's network-namespace inode, which the agent gets from the container runtime (CRI), because the PIDs the kernel reports do not match the agent's view on nested nodes (kind, k3d).
   Pods are chosen as for HTTP capture (namespaces, labels, the `postman.com/insights-disabled` annotation); see "Namespace opt-in: three independent layers" in [`discovery-mode.md`](discovery-mode.md).
+  Every 30 s the agent logs an `ebpf-stats: pod=<name>` line per monitored pod with the pod's own counters (`probes`, the processes with libssl probes for it; `events` and `bytes`, the OpenSSL data events routed to it; `java_events`; `msgs`, `flows_active` and the drops of its flows; its Java agents), and one `ebpf-stats: node` line with what the pods share (the kernel's counters, ring buffer drops, the payload cap and CPU, the Java frame counters and the JVM attaches).
+  A standalone `apidump` logs one line with both.
 - **Sidecar or single host (`apidump`):** OpenSSL capture attaches to every process the agent can see in `/proc`, unless `--https-target-namespaces` limits it to some Kubernetes namespaces (`ebpf/collect_linux.go`, `apidump/ebpf_integration.go`).
   With `hostPID`, which HTTPS capture needs, that is every process on the node, so a sidecar captures other pods' OpenSSL traffic too unless it is limited.
   Java capture is limited to the agent's own network namespace (section 4), and needs JVMs started with `-javaagent` there.
@@ -67,7 +69,7 @@ It runs the separate `postman-insights-jvm-attach` helper (`cmd/postman-insights
 2. Only if not, the Insights agent copies the jar into the JVM's container, as `/tmp/.postman-insights/agent-<checksum>/postman-insights-java-agent.jar`, and the helper loads it.
 3. Once a JVM in a container runs the agent, the copies other Insights agent versions left there are removed, except those that a process sharing that directory still has mapped or open (a JVM keeps the jar it loaded mapped for as long as it runs).
 
-A loaded agent cannot be replaced, so a JVM runs the version it loaded until it restarts; when that is not the Insights agent's own version, the log names both and the `ebpf-stats` line counts the JVM in `jvms_agent_other_version`.
+A loaded agent cannot be replaced, so a JVM runs the version it loaded until it restarts; when that is not the Insights agent's own version, the log names both and the node's `ebpf-stats` line counts the JVM in `jvms_agent_other_version`.
 JVMs that disable attach (`-XX:+DisableAttachMechanism`, `-XX:-EnableDynamicAgentLoading`) and OpenJ9 JVMs are skipped with the reason logged; they can still start with `-javaagent`.
 On JDK 21 and newer, the JVM prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr when the agent attaches; they are harmless.
 As a sidecar (`apidump`), the Insights agent loads nothing; the JVMs need `-javaagent`.
@@ -86,7 +88,7 @@ The kernel gives every event of a Java connection its addresses and ports, keyed
   Clients that read on one thread and unwrap on another (the JDK's `HttpClient`) write on the thread that wrapped, so a wrap whose bytes are yet to be written leaves the connection waiting for that thread's next `tcp_sendmsg`, within 10 ms.
 
 Known limits: a connection unwrapped on another thread than the one that read it stays without addresses, unless that thread read another TCP socket within 50 ms, which it is then tied to; likewise an untied connection whose wrap is followed, within 10 ms and with no other connection's wrap in between, by the thread's write of another socket.
-The `ebpf-stats` line counts data frames without addresses (`java_conn_unbound`) and RECV frames of a tied connection on a thread whose last read was another socket's (`java_conn_handoffs`): mostly Tomcat's hand-offs between threads, so it shows how often a server unwraps on another thread, not how many ties are wrong.
+The node's `ebpf-stats` line counts data frames without addresses (`java_conn_unbound`) and RECV frames of a tied connection on a thread whose last read was another socket's (`java_conn_handoffs`): mostly Tomcat's hand-offs between threads, so it shows how often a server unwraps on another thread, not how many ties are wrong.
 
 ## 5. Limits and sampling
 

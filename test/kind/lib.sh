@@ -104,12 +104,16 @@ collect_logs() {
 }
 
 # Highest value of a key=value field across the ebpf-stats lines in LOGS, of
-# one pod when a second argument names it; empty when there is none, so a
-# check reports it instead of set -e aborting. Each monitored pod logs its own
-# line, starting with pod=<name>. msgs, the HTTP messages captured, is the
-# pod's own; probes, events, bytes and the java_* fields are the node's.
+# the pod a second argument names, or of the node's lines without one; empty
+# when there is none, so a check reports it instead of set -e aborting. Each
+# monitored pod logs its own line, starting with pod=<name>, with its own
+# probes, events, bytes, java_events and msgs; the node logs one line,
+# starting with node, with what its pods share (the kernel counters,
+# java_conn_* among them).
 max_field() {
-  { grep -o "ebpf-stats: pod=${2:-[^ ]*} .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true
+  local scope=node
+  [[ -n "${2:-}" ]] && scope="pod=$2"
+  { grep -o "ebpf-stats: ${scope} .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true
 }
 
 # Checks that a field of a service's pod's ebpf-stats lines reached at least

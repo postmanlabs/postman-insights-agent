@@ -13,6 +13,7 @@ import (
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/pkg/errors"
+	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/cmd/internal/cmderr"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/integrations/cri_apis"
@@ -432,6 +433,11 @@ func (d *Daemonset) Run() error {
 				printer.Warningf("ebpf: node-collector stopped: %v\n", err)
 			}
 		}()
+		// Each pod's ebpf-stats line has the pod's own counters; this one has
+		// what they share, sent as this agent's own Postman identity, as the
+		// pods' are as theirs.
+		nodeTracker := telemetry.NewScoped(telemetry.TrackingUser{UserID: d.InsightsUserID, TeamID: d.InsightsTeamID})
+		go apidump.HTTPSNodeStatsWorker(nodeCtx, d.EBPFNodeCollector, 30*time.Second, nodeTracker)
 		printer.Infof("ebpf: node-collector event loop started\n")
 	}
 
