@@ -117,7 +117,10 @@ else
   fail=1
 fi
 for svc in $SERVICES; do
-  check_at_least "$svc" msgs "$(pod_of "$svc")" "$per_service"
+  pod=$(pod_of "$svc")
+  check_at_least "$svc" msgs "$pod" "$per_service"
+  # The pod's own Java events: the data frames routed to it.
+  check_at_least "$svc" java_events "$pod" "$per_service"
 done
 
 # The kernel ties each Java connection to its socket, so every message has

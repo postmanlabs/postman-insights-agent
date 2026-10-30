@@ -62,6 +62,21 @@ func (r routeTable[K]) get(k K) *podSub {
 	return subs[len(subs)-1]
 }
 
+// keysOf counts the keys under which the subscriber with adapter is
+// registered: for pidToSub, the processes whose probes the pod uses.
+func (r routeTable[K]) keysOf(adapter *events.Adapter) int {
+	n := 0
+	for _, subs := range r {
+		for _, s := range subs {
+			if s.adapter == adapter {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
 // routeSub selects the subscriber for a BPF event.
 //
 // It routes primarily by the event's network-namespace inode (netnsInode),

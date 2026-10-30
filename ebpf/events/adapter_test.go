@@ -529,3 +529,19 @@ func TestAdapter_Close(t *testing.T) {
 	close(out)
 	feed(t, a, 100, 0xBBBB, DirEgress, req) // would panic sending on the closed Out
 }
+
+// The adapter counts the data events it is fed, OpenSSL's with their bytes and
+// Java's apart, whether or not they parse; control events are not counted.
+func TestAdapter_FedCounters(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	req := []byte("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	feed(t, a, 100, 0xAAAA, DirEgress, req)
+	feed(t, a, 100, 0xBBBB, DirEgress, []byte("not http"))
+	feed(t, a, 200, 1<<63|7, DirEgress, req)
+	control(a, KindJavaHeartbeat, 200, 0, "")
+
+	s := a.Stats()
+	if s.EventsFed != 2 || s.BytesFed != uint64(len(req)+len("not http")) || s.JavaEventsFed != 1 {
+		t.Errorf("fed events=%d bytes=%d java=%d, want 2, %d, 1", s.EventsFed, s.BytesFed, s.JavaEventsFed, len(req)+len("not http"))
+	}
+}

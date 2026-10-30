@@ -3,7 +3,7 @@
 Practical reference for testing HTTPS capture of **Java**, **node-service** and **dotnet-service** in the Kind cluster `pia-https-test`.
 
 The DaemonSet runs `kube run --enable-https-capture` (libssl uprobes, and Java through the Java agent) and ships what it captures to Postman Insights, under the cluster `pia-kind-test`.
-It does not log the requests themselves; its log shows what it attached to and, every 30 s, one `ebpf-stats` line per monitored pod, whose `msgs` counts the HTTP messages captured for the pod:
+It does not log the requests themselves; its log shows what it attached to and, every 30 s, one `ebpf-stats: pod=<pod>` line per monitored pod, with the pod's own counters (`msgs` counts the HTTP messages captured for it), and one `ebpf-stats: node` line with what the node's pods share (the kernel's counters, `java_conn_*` among them):
 
 ```bash
 kubectl logs -n postman-insights daemonset/postman-insights-agent

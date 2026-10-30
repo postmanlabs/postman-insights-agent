@@ -65,22 +65,68 @@ type HTTPSCaptureStats struct {
 	JavaAgentsCapturing int
 }
 
+// statsScope is what an ebpf-stats line describes, and so which fields it
+// carries.
+type statsScope int
+
+const (
+	// scopeCapture is a standalone apidump: one capture, whose programs,
+	// probes and flows are all its own.
+	scopeCapture statsScope = iota
+	// scopePod is one monitored pod of a DaemonSet: its probes, the events
+	// routed to it and what they parsed into.
+	scopePod
+	// scopeNode is a DaemonSet's node: the programs, probes, kernel counters
+	// and JVM attaches that all its pods share.
+	scopeNode
+)
+
 // String produces a single-line, customer-readable summary suitable for
-// 'kubectl logs'-style consumption.
-func (s HTTPSCaptureStats) String() string {
-	line := fmt.Sprintf(
-		"probes=%d flows_active=%d events=%d bytes=%d msgs=%d "+
-			"dropped_ringbuf=%d dropped_flows=%d read_failures=%d "+
-			"h2_hpack_desyncs=%d cap_bytes=%d cpu=%.1f%%",
-		s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
-		s.MessagesEmitted, s.EventsDropped, s.FlowsDropped, s.ReadFailures,
-		s.H2HPACKDesyncs, s.CurrentCapBytes, s.CPUPercent)
-	if s.JavaEnabled {
-		line += fmt.Sprintf(
-			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d"+
-				" java_conn_unbound=%d java_conn_handoffs=%d java_agents_alive=%d java_agents_capturing=%d",
-			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed,
-			s.JavaConnUnbound, s.JavaConnHandoffs, s.JavaAgentsAlive, s.JavaAgentsCapturing)
+// 'kubectl logs'-style consumption, with the fields of a standalone capture.
+func (s HTTPSCaptureStats) String() string { return s.format(scopeCapture) }
+
+// format is String for the fields of scope. A pod's line leaves out what the
+// node's line counts for all pods, and the other way round.
+func (s HTTPSCaptureStats) format(scope statsScope) string {
+	var line string
+	switch scope {
+	case scopePod:
+		line = fmt.Sprintf(
+			"probes=%d flows_active=%d events=%d bytes=%d msgs=%d dropped_flows=%d h2_hpack_desyncs=%d",
+			s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
+			s.MessagesEmitted, s.FlowsDropped, s.H2HPACKDesyncs)
+		if s.JavaEnabled {
+			line += fmt.Sprintf(" java_events=%d java_agents_alive=%d java_agents_capturing=%d",
+				s.JavaEvents, s.JavaAgentsAlive, s.JavaAgentsCapturing)
+		}
+		return line
+	case scopeNode:
+		line = fmt.Sprintf(
+			"probes=%d events=%d bytes=%d dropped_ringbuf=%d read_failures=%d cap_bytes=%d cpu=%.1f%%",
+			s.ProbesAttached, s.EventsEmitted, s.BytesCaptured, s.EventsDropped, s.ReadFailures,
+			s.CurrentCapBytes, s.CPUPercent)
+		if s.JavaEnabled {
+			line += fmt.Sprintf(
+				" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d"+
+					" java_conn_unbound=%d java_conn_handoffs=%d",
+				s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed,
+				s.JavaConnUnbound, s.JavaConnHandoffs)
+		}
+	default:
+		line = fmt.Sprintf(
+			"probes=%d flows_active=%d events=%d bytes=%d msgs=%d "+
+				"dropped_ringbuf=%d dropped_flows=%d read_failures=%d "+
+				"h2_hpack_desyncs=%d cap_bytes=%d cpu=%.1f%%",
+			s.ProbesAttached, s.FlowsActive, s.EventsEmitted, s.BytesCaptured,
+			s.MessagesEmitted, s.EventsDropped, s.FlowsDropped, s.ReadFailures,
+			s.H2HPACKDesyncs, s.CurrentCapBytes, s.CPUPercent)
+		if s.JavaEnabled {
+			line += fmt.Sprintf(
+				" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d"+
+					" java_conn_unbound=%d java_conn_handoffs=%d java_agents_alive=%d java_agents_capturing=%d",
+				s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed,
+				s.JavaConnUnbound, s.JavaConnHandoffs, s.JavaAgentsAlive, s.JavaAgentsCapturing)
+		}
 	}
 	if s.JVMAttach {
 		line += fmt.Sprintf(
@@ -90,12 +136,16 @@ func (s HTTPSCaptureStats) String() string {
 	return line
 }
 
-// statsLogLine is the ebpf-stats log line for s, naming pod when it is set.
-func statsLogLine(pod string, s HTTPSCaptureStats) string {
-	if pod == "" {
-		return "ebpf-stats: " + s.String()
+// statsLogLine is the ebpf-stats log line for s of scope: a pod's names the
+// pod when it is set, and the node's says it is the node's.
+func statsLogLine(scope statsScope, pod string, s HTTPSCaptureStats) string {
+	switch {
+	case scope == scopeNode:
+		return "ebpf-stats: node " + s.format(scope)
+	case pod != "":
+		return "ebpf-stats: pod=" + pod + " " + s.format(scope)
 	}
-	return "ebpf-stats: pod=" + pod + " " + s.String()
+	return "ebpf-stats: " + s.format(scope)
 }
 
 // sumCounts adds up per-reason counters.
@@ -107,18 +157,122 @@ func sumCounts(m map[string]uint64) uint64 {
 	return n
 }
 
-// httpsTelemetryWorker emits HTTPSCaptureStats every `interval` to the log
-// stream and to the analytics pipeline. Stops when ctx is cancelled. pod, when
-// not empty, names the monitored pod on the log line: a DaemonSet logs one
-// line per pod, and the per-pod counters (msgs, flows_active) differ.
+// httpsStatsSources are what an ebpf-stats line is read from. Any may be nil.
+type httpsStatsSources struct {
+	ldr   *loader.Loader
+	therm *ebpf.Thermostat
+	// probes returns the number of processes with libssl probes in scope.
+	probes  func() int
+	adapter *events.Adapter
+	// jvmStats returns the JVM attach counters (node scope).
+	jvmStats func() (jvm.AttachStats, bool)
+}
+
+// readHTTPSStats reads the fields of scope from src. A pod's events, bytes
+// and Java events are those its adapter was fed, not the kernel's counters,
+// which count every pod's.
+func readHTTPSStats(scope statsScope, src httpsStatsSources) HTTPSCaptureStats {
+	s := HTTPSCaptureStats{}
+	if src.probes != nil {
+		s.ProbesAttached = src.probes()
+	}
+	if src.adapter != nil && scope != scopeNode {
+		s.FlowsActive, _ = src.adapter.Snapshot()
+		adapterStats := src.adapter.Stats()
+		s.MessagesEmitted = adapterStats.MessagesEmitted
+		s.FlowsDropped = adapterStats.FlowsDropped
+		s.H2HPACKDesyncs = adapterStats.H2HPACKDesyncs
+		s.JavaAgentsAlive = adapterStats.JavaAgentsAlive
+		s.JavaAgentsCapturing = adapterStats.JavaAgentsCapturing
+		if scope == scopePod {
+			s.EventsEmitted = adapterStats.EventsFed
+			s.BytesCaptured = adapterStats.BytesFed
+			s.JavaEvents = adapterStats.JavaEventsFed
+		}
+	}
+	if src.ldr != nil {
+		s.JavaEnabled = src.ldr.JavaEnabled()
+	}
+	if src.ldr != nil && scope != scopePod {
+		if v, err := src.ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
+			s.EventsEmitted = v
+		}
+		if v, err := src.ldr.ReadCounter(loader.CounterEventsDropped); err == nil {
+			s.EventsDropped = v
+		}
+		if v, err := src.ldr.ReadCounter(loader.CounterReadFailed); err == nil {
+			s.ReadFailures = v
+		}
+		if v, err := src.ldr.ReadCounter(loader.CounterBytesCaptured); err == nil {
+			s.BytesCaptured = v
+		}
+		if s.JavaEnabled {
+			for _, c := range []struct {
+				idx uint32
+				dst *uint64
+			}{
+				{loader.JavaCounterFramesSeen, &s.JavaFrames},
+				{loader.JavaCounterEventsEmitted, &s.JavaEvents},
+				{loader.JavaCounterEventsDropped, &s.JavaDropped},
+				{loader.JavaCounterNetnsRejected, &s.JavaNetnsRejected},
+				{loader.JavaCounterMalformed, &s.JavaMalformed},
+				{loader.JavaCounterConnUnbound, &s.JavaConnUnbound},
+				{loader.JavaCounterConnHandoff, &s.JavaConnHandoffs},
+			} {
+				if v, err := src.ldr.ReadJavaCounter(c.idx); err == nil {
+					*c.dst = v
+				}
+			}
+		}
+	}
+	if src.therm != nil && scope != scopePod {
+		s.CurrentCapBytes = src.therm.CurrentCap()
+		s.CPUPercent = src.therm.CPUPercent()
+	}
+	if src.jvmStats != nil && scope != scopePod {
+		if st, ok := src.jvmStats(); ok {
+			s.JVMAttach = true
+			s.JVMsSeen = st.Seen
+			s.JVMsAttached = st.Attached
+			s.JVMsAgentRunning = st.AlreadyRunning
+			s.JVMsAgentOther = st.OtherVersion
+			s.JVMsSkipped = sumCounts(st.Skipped)
+			s.JVMsAttachFailed = sumCounts(st.Failed)
+		}
+	}
+	return s
+}
+
+// probesOf returns the number of processes mgr has libssl probes attached to.
+func probesOf(mgr *uprobes.Manager) func() int {
+	if mgr == nil {
+		return nil
+	}
+	return func() int { return len(mgr.AttachedPIDs()) }
+}
+
+// HTTPSNodeStatsWorker logs the node's ebpf-stats line every interval, and
+// sends it to tracker, until ctx ends: the counters nc's pods share, which
+// their own lines leave out. Run it once per DaemonSet, next to nc.Run.
+func HTTPSNodeStatsWorker(ctx context.Context, nc *ebpf.NodeCollector, interval time.Duration, tracker telemetry.Tracker) {
+	httpsTelemetryWorker(ctx, interval, scopeNode, httpsStatsSources{
+		ldr:      nc.Loader(),
+		therm:    nc.Thermostat(),
+		probes:   probesOf(nc.Manager()),
+		jvmStats: nc.JVMStats,
+	}, tracker, nil, "")
+}
+
+// httpsTelemetryWorker emits the ebpf-stats of scope every `interval` to the
+// log stream and to the analytics pipeline. Stops when ctx is cancelled. pod,
+// when not empty, names the monitored pod on the log line: a DaemonSet logs
+// one line per pod with the pod's own counters, and one for the node
+// (HTTPSNodeStatsWorker).
 func httpsTelemetryWorker(
 	ctx context.Context,
 	interval time.Duration,
-	ldr *loader.Loader,
-	therm *ebpf.Thermostat,
-	mgr *uprobes.Manager,
-	adapter *events.Adapter,
-	jvmStats func() (jvm.AttachStats, bool),
+	scope statsScope,
+	src httpsStatsSources,
 	tracker telemetry.Tracker,
 	reportCount func(string, uint64),
 	pod string,
@@ -129,69 +283,9 @@ func httpsTelemetryWorker(
 	t := time.NewTicker(interval)
 	defer t.Stop()
 
-	read := func() HTTPSCaptureStats {
-		s := HTTPSCaptureStats{}
-		if mgr != nil {
-			s.ProbesAttached = len(mgr.AttachedPIDs())
-		}
-		if adapter != nil {
-			s.FlowsActive, _ = adapter.Snapshot()
-			adapterStats := adapter.Stats()
-			s.MessagesEmitted = adapterStats.MessagesEmitted
-			s.FlowsDropped = adapterStats.FlowsDropped
-			s.H2HPACKDesyncs = adapterStats.H2HPACKDesyncs
-			s.JavaAgentsAlive = adapterStats.JavaAgentsAlive
-			s.JavaAgentsCapturing = adapterStats.JavaAgentsCapturing
-		}
-		if ldr != nil {
-			if v, err := ldr.ReadCounter(loader.CounterEventsEmitted); err == nil {
-				s.EventsEmitted = v
-			}
-			if v, err := ldr.ReadCounter(loader.CounterEventsDropped); err == nil {
-				s.EventsDropped = v
-			}
-			if v, err := ldr.ReadCounter(loader.CounterReadFailed); err == nil {
-				s.ReadFailures = v
-			}
-			if v, err := ldr.ReadCounter(loader.CounterBytesCaptured); err == nil {
-				s.BytesCaptured = v
-			}
-			if ldr.JavaEnabled() {
-				s.JavaEnabled = true
-				for _, c := range []struct {
-					idx uint32
-					dst *uint64
-				}{
-					{loader.JavaCounterFramesSeen, &s.JavaFrames},
-					{loader.JavaCounterEventsEmitted, &s.JavaEvents},
-					{loader.JavaCounterEventsDropped, &s.JavaDropped},
-					{loader.JavaCounterNetnsRejected, &s.JavaNetnsRejected},
-					{loader.JavaCounterMalformed, &s.JavaMalformed},
-					{loader.JavaCounterConnUnbound, &s.JavaConnUnbound},
-					{loader.JavaCounterConnHandoff, &s.JavaConnHandoffs},
-				} {
-					if v, err := ldr.ReadJavaCounter(c.idx); err == nil {
-						*c.dst = v
-					}
-				}
-			}
-		}
-		if therm != nil {
-			s.CurrentCapBytes = therm.CurrentCap()
-			s.CPUPercent = therm.CPUPercent()
-		}
-		if jvmStats != nil {
-			if st, ok := jvmStats(); ok {
-				s.JVMAttach = true
-				s.JVMsSeen = st.Seen
-				s.JVMsAttached = st.Attached
-				s.JVMsAgentRunning = st.AlreadyRunning
-				s.JVMsAgentOther = st.OtherVersion
-				s.JVMsSkipped = sumCounts(st.Skipped)
-				s.JVMsAttachFailed = sumCounts(st.Failed)
-			}
-		}
-		return s
+	step := "ebpf_capture_stats"
+	if scope == scopeNode {
+		step = "ebpf_node_capture_stats"
 	}
 
 	var previous HTTPSCaptureStats
@@ -222,15 +316,15 @@ func httpsTelemetryWorker(
 			// ebpf-stats line is logged here for that reason -- its
 			// loader-derived fields would read zero post-teardown and look
 			// like a collapse in capture rather than an artifact of shutdown.
-			reportDeltas(read())
+			reportDeltas(readHTTPSStats(scope, src))
 			return
 		case <-t.C:
-			s := read()
+			s := readHTTPSStats(scope, src)
 			reportDeltas(s)
 			previous = s
-			printer.Stderr.Infof("%s\n", statsLogLine(pod, s))
+			printer.Stderr.Infof("%s\n", statsLogLine(scope, pod, s))
 			if tracker != nil {
-				tracker.WorkflowStep("ebpf_capture_stats", s.String())
+				tracker.WorkflowStep(step, s.format(scope))
 			}
 		}
 	}
@@ -434,22 +528,24 @@ func (h *httpsCapture) start(
 		}
 	}
 
-	// The node's JVM attach counters, where the NodeCollector attaches.
-	var jvmStats func() (jvm.AttachStats, bool)
-	if args.HTTPS.NodeCollector != nil {
-		jvmStats = args.HTTPS.NodeCollector.JVMStats
-	}
-
 	// HookLoader captures the subsystem handles after Collect has wired them
 	// up, so the telemetry goroutine can read counters / probe counts / etc.
 	ebpfArgs.HookLoader = func(
 		ldr *loader.Loader, therm *ebpf.Thermostat,
 		mgr *uprobes.Manager, adapter *events.Adapter,
 	) {
+		// Standalone, the capture's own; with a NodeCollector, the pod's,
+		// and HTTPSNodeStatsWorker logs what the pods share.
+		scope := scopeCapture
+		src := httpsStatsSources{ldr: ldr, therm: therm, probes: probesOf(mgr), adapter: adapter}
+		if nc := args.HTTPS.NodeCollector; nc != nil {
+			scope = scopePod
+			src.probes = func() int { return nc.ProbesFor(adapter) }
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			httpsTelemetryWorker(captureCtx, 30*time.Second, ldr, therm, mgr, adapter, jvmStats, tracker, args.reportTelemetryCount, pod)
+			httpsTelemetryWorker(captureCtx, 30*time.Second, scope, src, tracker, args.reportTelemetryCount, pod)
 		}()
 	}
 

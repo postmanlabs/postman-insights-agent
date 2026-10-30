@@ -350,6 +350,14 @@ func (nc *NodeCollector) Libraries() Libraries {
 	return Libraries{OpenSSL: nc.openSSL, Java: nc.ldr.JavaEnabled()}
 }
 
+// ProbesFor returns how many processes have libssl probes attached for the
+// subscription whose adapter Subscribe returned, out of the node's.
+func (nc *NodeCollector) ProbesFor(adapter *events.Adapter) int {
+	nc.mu.RLock()
+	defer nc.mu.RUnlock()
+	return nc.pidToSub.keysOf(adapter)
+}
+
 // JVMStats returns what happened to the JVMs of subscribed pods so far, and
 // false when no JVMs are attached (Java capture off, or attach unavailable).
 func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) {

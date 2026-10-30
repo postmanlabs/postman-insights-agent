@@ -48,6 +48,8 @@ func (nc *NodeCollector) HostNetns() uint64    { return 0 }
 
 func (nc *NodeCollector) JVMStats() (jvm.AttachStats, bool) { return jvm.AttachStats{}, false }
 
+func (nc *NodeCollector) ProbesFor(_ *events.Adapter) int { return 0 }
+
 func (nc *NodeCollector) Subscribe(
 	_ context.Context,
 	_ <-chan discovery.Target,

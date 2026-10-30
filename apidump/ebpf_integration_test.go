@@ -2,10 +2,14 @@ package apidump
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/akitasoftware/akita-libs/akinet"
+	akihttp "github.com/akitasoftware/akita-libs/akinet/http"
+	"github.com/akitasoftware/akita-libs/buffer_pool"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/events"
 	"github.com/postmanlabs/postman-insights-agent/ebpf/jvm"
@@ -38,7 +42,7 @@ func TestHTTPSTelemetryWorkerReportsFinalDeltaOnCancel(t *testing.T) {
 
 	// An interval far longer than the test can run, so only the cancellation
 	// branch can possibly report.
-	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, adapter, nil, nil, reportCount, "")
+	httpsTelemetryWorker(ctx, time.Hour, scopeCapture, httpsStatsSources{adapter: adapter}, nil, reportCount, "")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -54,7 +58,7 @@ func TestHTTPSTelemetryWorkerNilReporterOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	httpsTelemetryWorker(ctx, time.Hour, nil, nil, nil, &events.Adapter{}, nil, nil, nil, "")
+	httpsTelemetryWorker(ctx, time.Hour, scopeCapture, httpsStatsSources{adapter: &events.Adapter{}}, nil, nil, "")
 }
 
 // The Java fields appear on the ebpf-stats line only while Java capture runs,
@@ -82,12 +86,13 @@ func TestHTTPSCaptureStatsStringJVMs(t *testing.T) {
 		" jvms=3 jvms_attached=1 jvms_agent_running=1 jvms_agent_other_version=1 jvms_skipped=1 jvms_attach_failed=0")
 }
 
-// The worker reads the JVM attach counters it is given, summing the reasons.
+// The node's worker reads the JVM attach counters it is given, summing the
+// reasons.
 func TestHTTPSTelemetryWorkerJVMStats(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var line string
 	tracker := &recordingTracker{onStep: func(step, detail string) {
-		if step == "ebpf_capture_stats" {
+		if step == "ebpf_node_capture_stats" {
 			line = detail
 			cancel()
 		}
@@ -99,15 +104,78 @@ func TestHTTPSTelemetryWorkerJVMStats(t *testing.T) {
 			Failed:  map[string]uint64{jvm.FailHelper: 1},
 		}, true
 	}
-	httpsTelemetryWorker(ctx, time.Millisecond, nil, nil, nil, nil, stats, tracker, nil, "")
+	httpsTelemetryWorker(ctx, time.Millisecond, scopeNode, httpsStatsSources{jvmStats: stats}, tracker, nil, "")
 	assert.Contains(t, line, " jvms=4 jvms_attached=1 jvms_agent_running=1 jvms_agent_other_version=1 jvms_skipped=2 jvms_attach_failed=1")
 }
 
-// A DaemonSet logs one ebpf-stats line per pod, which names it.
+// A DaemonSet logs one ebpf-stats line per pod, which names it, and one for
+// the node.
 func TestStatsLogLine(t *testing.T) {
 	s := HTTPSCaptureStats{MessagesEmitted: 18}
-	assert.Equal(t, "ebpf-stats: "+s.String(), statsLogLine("", s))
-	assert.Equal(t, "ebpf-stats: pod=java-service "+s.String(), statsLogLine("java-service", s))
+	assert.Equal(t, "ebpf-stats: "+s.String(), statsLogLine(scopeCapture, "", s))
+	assert.Equal(t, "ebpf-stats: pod=java-service "+s.format(scopePod), statsLogLine(scopePod, "java-service", s))
+	assert.Equal(t, "ebpf-stats: node "+s.format(scopeNode), statsLogLine(scopeNode, "", s))
+}
+
+// A pod's line has only what is the pod's own, and the node's only what all
+// pods share; a standalone capture's has both.
+func TestHTTPSCaptureStatsScopes(t *testing.T) {
+	s := HTTPSCaptureStats{JavaEnabled: true, JVMAttach: true}
+	keys := func(line string) []string {
+		var out []string
+		for _, f := range strings.Fields(line) {
+			k, _, _ := strings.Cut(f, "=")
+			out = append(out, k)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"probes", "flows_active", "events", "bytes", "msgs", "dropped_flows", "h2_hpack_desyncs",
+		"java_events", "java_agents_alive", "java_agents_capturing"}, keys(s.format(scopePod)))
+	assert.Equal(t, []string{"probes", "events", "bytes", "dropped_ringbuf", "read_failures", "cap_bytes", "cpu",
+		"java_frames", "java_events", "java_dropped_ringbuf", "java_netns_rejected", "java_malformed",
+		"java_conn_unbound", "java_conn_handoffs",
+		"jvms", "jvms_attached", "jvms_agent_running", "jvms_agent_other_version", "jvms_skipped", "jvms_attach_failed"},
+		keys(s.format(scopeNode)))
+	all := keys(s.String())
+	for _, k := range append(keys(s.format(scopePod)), keys(s.format(scopeNode))...) {
+		assert.Contains(t, all, k)
+	}
+}
+
+// Two pods on one node report their own probes, events, bytes and messages,
+// not the node's: each line is read from the pod's adapter and probes.
+func TestReadHTTPSStatsPerPod(t *testing.T) {
+	pool, err := buffer_pool.MakeBufferPool(1024*1024, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newAdapter := func() *events.Adapter {
+		return events.NewAdapter(akinet.TCPParserFactorySelector{
+			akihttp.NewHTTPRequestParserFactory(pool),
+			akihttp.NewHTTPResponseParserFactory(pool),
+		}, make(chan akinet.ParsedNetworkTraffic, 16))
+	}
+	feed := func(a *events.Adapter, sslCtx uint64, data string) {
+		ev := &events.SSLEvent{PID: 1, TID: 1, SSLCtx: sslCtx, Direction: events.DirEgress,
+			LenCaptured: uint32(len(data)), LenTotal: uint32(len(data))}
+		copy(ev.Payload[:], data)
+		a.Feed(ev, time.Unix(0, 0))
+	}
+	req := "GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n"
+
+	busy, idle := newAdapter(), newAdapter()
+	feed(busy, 0xAAAA, req)
+	feed(busy, 0xBBBB, req)
+	feed(busy, 1<<63|5, req) // a Java connection's
+
+	busyStats := readHTTPSStats(scopePod, httpsStatsSources{adapter: busy, probes: func() int { return 2 }})
+	idleStats := readHTTPSStats(scopePod, httpsStatsSources{adapter: idle, probes: func() int { return 0 }})
+	assert.Equal(t, 2, busyStats.ProbesAttached)
+	assert.Equal(t, uint64(2), busyStats.EventsEmitted)
+	assert.Equal(t, uint64(2*len(req)), busyStats.BytesCaptured)
+	assert.Equal(t, uint64(1), busyStats.JavaEvents)
+	assert.Equal(t, uint64(3), busyStats.MessagesEmitted)
+	assert.Equal(t, HTTPSCaptureStats{}, idleStats)
 }
 
 // recordingTracker passes WorkflowStep to onStep; nothing else may be called.
