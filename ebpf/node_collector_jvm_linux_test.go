@@ -5,7 +5,9 @@
 package ebpf
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -21,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -911,31 +914,188 @@ func TestNodeCollectorJVMAttachDAC(t *testing.T) {
 			if got := len(perfFiles) > 0; got != tc.perfData {
 				t.Fatalf("the JVM publishes perf data: %v, want %v", got, tc.perfData)
 			}
-			cmd := exec.Command("setpriv", "--bounding-set=-all,+"+strings.Join(daemonSetCapabilities, ",+"),
-				"--inh-caps=-all", "--", os.Args[0], "-test.run=^TestAttachChild$", "-test.count=1")
-			cmd.Env = append(os.Environ(),
-				attachChildPID+"="+strconv.Itoa(j.cmd.Process.Pid),
-				attachChildHelper+"="+helper,
-				attachChildJar+"="+f.agentJar)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("attach child: %v\n%s", err, out)
-			}
-			_, line, ok := strings.Cut(string(out), attachChildStats)
-			if !ok {
-				t.Fatalf("attach child printed no stats:\n%s", out)
-			}
-			line, _, _ = strings.Cut(line, "\n")
-			var st jvm.AttachStats
-			if err := json.Unmarshal([]byte(line), &st); err != nil {
-				t.Fatal(err)
-			}
-			if st.Attached != 1 {
+			if st, out := attachWithDaemonSetCapabilities(t, j, helper, f.agentJar); st.Attached != 1 {
 				t.Fatalf("attacher stats %+v\n%s", st, out)
 			}
 			j.waitLog(t, "loaded (attach)", 10*time.Second)
 		})
 	}
+}
+
+// attachWithDaemonSetCapabilities runs TestAttachChild for j in a copy of this
+// test binary with only daemonSetCapabilities, attaching with the given helper
+// and jar, and returns the attacher's stats and the child's output.
+func attachWithDaemonSetCapabilities(t *testing.T, j *testJVM, helper, jar string) (jvm.AttachStats, string) {
+	t.Helper()
+	cmd := exec.Command("setpriv", "--bounding-set=-all,+"+strings.Join(daemonSetCapabilities, ",+"),
+		"--inh-caps=-all", "--", os.Args[0], "-test.run=^TestAttachChild$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		attachChildPID+"="+strconv.Itoa(j.cmd.Process.Pid),
+		attachChildHelper+"="+helper,
+		attachChildJar+"="+jar)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("attach child: %v\n%s", err, out)
+	}
+	_, line, ok := strings.Cut(string(out), attachChildStats)
+	if !ok {
+		t.Fatalf("attach child printed no stats:\n%s", out)
+	}
+	line, _, _ = strings.Cut(line, "\n")
+	var st jvm.AttachStats
+	if err := json.Unmarshal([]byte(line), &st); err != nil {
+		t.Fatal(err)
+	}
+	return st, string(out)
+}
+
+// TestNodeCollectorJVMStagedCopies: the jar is copied into a JVM's container
+// only when the JVM does not run the agent, and the copies other Insights
+// agent versions left there are removed, except the one a JVM loaded, which
+// it keeps mapped for as long as it runs. With the DaemonSet's capabilities,
+// the JVM's open files (/proc/<pid>/fd) are not readable, so its mapping must
+// be enough to keep the copy.
+func TestNodeCollectorJVMStagedCopies(t *testing.T) {
+	f := newJVMFixture(t)
+	helper := f.helper(t)
+	j := f.start(t, 1000, nil)
+	p := j.inspect(t)
+	agentDir := filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", "tmp", ".postman-insights")
+
+	// A copy that an earlier version left and nothing uses.
+	stale := filepath.Join(agentDir, "agent-0000000000000000")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "postman-insights-java-agent.jar"), []byte("PK\x03\x04"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := f.attacher(t)
+	go a.Run(ctx)
+	a.Add(p, nil)
+	waitStats(t, a, func(st jvm.AttachStats) bool { return st.Attached == 1 })
+	j.waitLog(t, "loaded (attach)", 10*time.Second)
+	loaded := stagingDir(t, f.agentJar)
+	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
+		t.Fatalf("the container's agent directory has %v, want only %s", got, loaded)
+	}
+
+	// An Insights agent with another version of the jar finds the agent
+	// running: it copies nothing, keeps the loaded copy and counts the JVM
+	// as running another version.
+	other := f.otherJar(t, "0.0.0-other")
+	st, out := attachWithDaemonSetCapabilities(t, j, helper, other)
+	if st.AlreadyRunning != 1 || st.OtherVersion != 1 {
+		t.Fatalf("attacher stats %+v\n%s", st, out)
+	}
+	if !strings.Contains(out, "this Insights agent's Java agent 0.0.0-other replaces it only when the JVM restarts") {
+		t.Errorf("the other version is not logged:\n%s", out)
+	}
+	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
+		t.Fatalf("with the DaemonSet's capabilities the container's agent directory has %v, want only %s\n%s", got, loaded, out)
+	}
+	// With every capability, which reads the JVM's open files too.
+	again := newTestAttacher(t, helper, other)
+	go again.Run(ctx)
+	again.Add(p, nil)
+	waitStats(t, again, func(st jvm.AttachStats) bool { return st.AlreadyRunning == 1 && st.OtherVersion == 1 })
+	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
+		t.Fatalf("the container's agent directory has %v, want only %s", got, loaded)
+	}
+	if n := strings.Count(j.stderr.String(), "loaded (attach)"); n != 1 {
+		t.Errorf("agent loaded %d times", n)
+	}
+}
+
+// stagingDir is the directory name the attacher stages jar in.
+func stagingDir(t *testing.T, jar string) string {
+	t.Helper()
+	b, err := os.ReadFile(jar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return "agent-" + hex.EncodeToString(sum[:])[:16]
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// otherJar writes a copy of the agent jar with another Implementation-Version,
+// as another Insights agent release bundles, with its checksum, and returns
+// its path.
+func (f *jvmFixture) otherJar(t *testing.T, version string) string {
+	t.Helper()
+	src, err := zip.OpenReader(f.agentJar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	dir := filepath.Join(f.dir, "other")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "postman-insights-java-agent.jar")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range src.File {
+		if e.Name != "META-INF/MANIFEST.MF" {
+			w, err := zw.CreateRaw(&e.FileHeader)
+			if err == nil && !e.FileInfo().IsDir() {
+				var r io.Reader
+				if r, err = e.OpenRaw(); err == nil {
+					_, err = io.Copy(w, r)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		r, err := e.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest = regexp.MustCompile(`(?m)^Implementation-Version: .*$`).ReplaceAll(manifest, []byte("Implementation-Version: "+version+"\r"))
+		w, err := zw.Create(e.Name)
+		if err == nil {
+			_, err = w.Write(manifest)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".sha256", []byte(hex.EncodeToString(sum[:])+"  postman-insights-java-agent.jar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // TestAttachChild attaches to one JVM and prints the attacher's stats. Only

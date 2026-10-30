@@ -3,6 +3,8 @@
 package jvm
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,28 +28,46 @@ type fakeOps struct {
 	infoErr  error
 	stageErr error
 	dead     bool
-	result   attach.Result
-	helper   error
-	requests []attach.Request
+	// probe is the helper's answer to OpProbe, result to OpAttach.
+	probe, result attach.Result
+	helper        error
+	requests      []attach.Request
+	staged        int
+	// cleanups records each removeStaleCopies call's keep argument.
+	cleanups   []string
+	cleanup    cleanupResult
+	cleanupErr error
 }
 
 func (f *fakeOps) alive(*Process) bool                                 { return !f.dead }
 func (f *fakeOps) inspect(context.Context, *Process) (gateInfo, error) { return f.info, f.infoErr }
 func (f *fakeOps) stage(*Process, []byte, string) (string, error) {
+	f.staged++
 	return "/tmp/.postman-insights/agent-x/postman-insights-java-agent.jar", f.stageErr
 }
 
 func (f *fakeOps) attach(_ context.Context, _ *Process, req attach.Request) (attach.Result, error) {
 	f.requests = append(f.requests, req)
+	if req.Op == attach.OpProbe {
+		return f.probe, f.helper
+	}
 	return f.result, f.helper
+}
+
+func (f *fakeOps) removeStaleCopies(_ *Process, keep string) (cleanupResult, error) {
+	f.cleanups = append(f.cleanups, keep)
+	return f.cleanup, f.cleanupErr
 }
 
 func newTestAttacher() (*Attacher, *fakeOps) {
 	ops := &fakeOps{
 		info:   gateInfo{age: time.Minute, args: []string{"-Xmx1g"}, argsSource: "hsperfdata", sigQuitCaught: true},
-		result: attach.Result{Outcome: attach.Attached, AgentVersion: "1.0.0", Signalled: true},
+		probe:  attach.Result{Outcome: attach.NotLoaded, Signalled: true},
+		result: attach.Result{Outcome: attach.Attached, AgentVersion: "1.0.0"},
 	}
-	return newAttacher(ops, []byte("jar"), "0123456789abcdef0123", func() string { return "cap=4096" }), ops
+	a := newAttacher(ops, []byte("jar"), "0123456789abcdef0123", func() string { return "cap=4096" })
+	a.version = "1.0.0"
+	return a, ops
 }
 
 // attempt adds p and makes one attach attempt for it.
@@ -64,17 +84,25 @@ func hotspot() *Process {
 	return &Process{ProcRoot: "/host/proc", PID: 42, StartTime: 4200, NSPID: 1, UID: 1000, GID: 1000, Kind: HotSpot, MountNS: 9}
 }
 
+// The helper probes the JVM, the jar is staged, the helper attaches, and the
+// copies of other versions are removed.
 func TestAttacherAttaches(t *testing.T) {
 	a, ops := newTestAttacher()
 	s := attempt(t, a, hotspot())
 	assert.True(t, s.done)
-	require.Len(t, ops.requests, 1)
-	req := ops.requests[0]
+	require.Len(t, ops.requests, 2)
+	assert.Equal(t, attach.Request{
+		Version: attach.RequestVersion1, Op: attach.OpProbe, ProcRoot: "/host/proc", PID: 42, StartTime: 4200, NSPID: 1,
+		AllowSignal: true,
+	}, ops.requests[0])
+	// The probe started the listener with SIGQUIT: no second signal.
 	assert.Equal(t, attach.Request{
 		Version: attach.RequestVersion1, Op: attach.OpAttach, ProcRoot: "/host/proc", PID: 42, StartTime: 4200, NSPID: 1,
-		JarPath: "/tmp/.postman-insights/agent-x/postman-insights-java-agent.jar", AgentArgs: "cap=4096", AllowSignal: true,
-	}, req)
+		JarPath: "/tmp/.postman-insights/agent-x/postman-insights-java-agent.jar", AgentArgs: "cap=4096",
+	}, ops.requests[1])
+	assert.Equal(t, 1, ops.staged)
 	assert.Equal(t, "agent-0123456789abcdef", a.jarDir)
+	assert.Equal(t, []string{"agent-0123456789abcdef"}, ops.cleanups)
 	st := a.Stats()
 	assert.Equal(t, uint64(1), st.Seen)
 	assert.Equal(t, uint64(1), st.Attached)
@@ -88,11 +116,27 @@ func TestAttacherAttaches(t *testing.T) {
 func TestAttacherSignalsOnlyJVMsThatCatchSIGQUIT(t *testing.T) {
 	a, ops := newTestAttacher()
 	ops.info.sigQuitCaught = false // -Xrs
-	ops.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonNoListener}
+	ops.probe = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonNoListener}
 	s := attempt(t, a, hotspot())
 	assert.False(t, ops.requests[0].AllowSignal)
 	assert.True(t, s.done)
 	assert.Equal(t, uint64(1), a.Stats().Skipped[attach.ReasonNoListener])
+
+	// The listener was running: the attach may not signal either.
+	a, ops = newTestAttacher()
+	ops.info.sigQuitCaught = false
+	ops.probe.Signalled = false
+	attempt(t, a, hotspot())
+	require.Len(t, ops.requests, 2)
+	assert.False(t, ops.requests[1].AllowSignal)
+
+	// It was running, and the JVM catches SIGQUIT: the attach may signal
+	// if it is gone by then, a first signal.
+	a, ops = newTestAttacher()
+	ops.probe.Signalled = false
+	attempt(t, a, hotspot())
+	require.Len(t, ops.requests, 2)
+	assert.True(t, ops.requests[1].AllowSignal)
 }
 
 func TestAttacherGates(t *testing.T) {
@@ -132,7 +176,7 @@ func TestAttacherGateFromJVM(t *testing.T) {
 	ops.info.args = strings.Fields("-Dmsg=x -XX:+DisableAttachMechanism") // one argument, split
 	ops.info.attachKnown, ops.info.attachOn = true, true
 	attempt(t, a, hotspot())
-	assert.Len(t, ops.requests, 1, "attach is on, whatever an argument contains")
+	assert.NotEmpty(t, ops.requests, "attach is on, whatever an argument contains")
 }
 
 func TestAttacherStaticAgent(t *testing.T) {
@@ -140,15 +184,101 @@ func TestAttacherStaticAgent(t *testing.T) {
 	ops.info.args = []string{"-javaagent:/opt/postman/postman-insights-java-agent.jar", "-jar", "app.jar"}
 	attempt(t, a, hotspot())
 	assert.Empty(t, ops.requests)
+	assert.Zero(t, ops.staged)
 	assert.Equal(t, uint64(1), a.Stats().AlreadyRunning)
+	assert.Len(t, ops.cleanups, 1)
 }
 
+// A JVM that runs the agent already gets no copy of the jar, and the copies of
+// other versions are removed. One that runs another version than this
+// Insights agent's is counted.
 func TestAttacherAlreadyLoaded(t *testing.T) {
+	for _, tc := range []struct {
+		version, bundled string
+		other            bool
+	}{
+		{version: "1.0.0", bundled: "1.0.0"},
+		{version: "0.9.0", bundled: "1.0.0", other: true},
+		// A jar without a version (a development build) compares with
+		// nothing.
+		{version: "unknown", bundled: ""},
+	} {
+		a, ops := newTestAttacher()
+		a.version = tc.bundled
+		ops.probe = attach.Result{Outcome: attach.AlreadyLoaded, AgentVersion: tc.version}
+		assert.True(t, attempt(t, a, hotspot()).done)
+		assert.Len(t, ops.requests, 1, "only probed")
+		assert.Zero(t, ops.staged, "staged")
+		assert.Equal(t, []string{"agent-0123456789abcdef"}, ops.cleanups)
+		st := a.Stats()
+		assert.Equal(t, uint64(1), st.AlreadyRunning)
+		assert.Zero(t, st.Attached)
+		assert.Equal(t, tc.other, st.OtherVersion == 1, "%s, bundled %s", tc.version, tc.bundled)
+	}
+}
+
+// What is in the container is not known after a failure: nothing is staged
+// or removed.
+func TestAttacherProbeFails(t *testing.T) {
+	for _, res := range []attach.Result{
+		{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed},
+		{Outcome: attach.Failed, Reason: attach.ReasonEarlierFailure, Detail: "1.0.0: boom"},
+		{Outcome: attach.Failed, Reason: attach.ReasonListenerTimeout, Signalled: true},
+	} {
+		a, ops := newTestAttacher()
+		ops.probe = res
+		attempt(t, a, hotspot())
+		assert.Len(t, ops.requests, 1, res.Reason)
+		assert.Zero(t, ops.staged, res.Reason)
+		assert.Empty(t, ops.cleanups, res.Reason)
+	}
+
 	a, ops := newTestAttacher()
-	ops.result = attach.Result{Outcome: attach.AlreadyLoaded, AgentVersion: "0.9.0"}
+	ops.helper = errors.New("helper crashed")
 	attempt(t, a, hotspot())
-	assert.Equal(t, uint64(1), a.Stats().AlreadyRunning)
-	assert.Zero(t, a.Stats().Attached)
+	assert.Zero(t, ops.staged)
+	assert.Empty(t, ops.cleanups)
+	assert.Equal(t, uint64(1), a.Stats().Failed[FailHelper])
+
+	// The attach after the probe fails: nothing removed either.
+	a, ops = newTestAttacher()
+	ops.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonLoadFailed}
+	attempt(t, a, hotspot())
+	assert.Empty(t, ops.cleanups)
+	assert.Equal(t, uint64(1), a.Stats().Failed[attach.ReasonLoadFailed])
+}
+
+// A failed removal is only logged.
+func TestAttacherCleanupFails(t *testing.T) {
+	a, ops := newTestAttacher()
+	ops.cleanup = cleanupResult{removed: []string{"agent-1"}, held: map[string]uint32{"agent-2": 7}}
+	ops.cleanupErr = errors.New("agent-3: busy")
+	assert.True(t, attempt(t, a, hotspot()).done)
+	assert.Equal(t, uint64(1), a.Stats().Attached)
+}
+
+// A probe that signalled counts as a signal for the whole attempt.
+func TestAttacherProbeSignalNotRetried(t *testing.T) {
+	a, ops := newTestAttacher()
+	ops.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
+	assert.True(t, attempt(t, a, hotspot()).done, "retried after the probe's signal")
+
+	a, ops = newTestAttacher()
+	ops.stageErr = errors.New("read-only file system")
+	assert.True(t, attempt(t, a, hotspot()).done, "retried after the probe's signal")
+	assert.Equal(t, uint64(1), a.Stats().Failed[FailStage])
+}
+
+func TestJarVersion(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("META-INF/MANIFEST.MF")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("Manifest-Version: 1.0\r\nImplementation-Version: 0.42.0-rc3\r\nAgent-Class: x\r\n\r\n"))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	assert.Equal(t, "0.42.0-rc3", jarVersion(buf.Bytes()))
+	assert.Equal(t, "", jarVersion([]byte("jar")))
 }
 
 func TestAttacherWaitsForStartUp(t *testing.T) {
@@ -163,7 +293,7 @@ func TestAttacherWaitsForStartUp(t *testing.T) {
 
 func TestAttacherRetriesOnlyWithoutSignal(t *testing.T) {
 	a, ops := newTestAttacher()
-	ops.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
+	ops.probe = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
 	s := attempt(t, a, hotspot())
 	for i := 1; i <= len(retryDelays); i++ {
 		assert.False(t, s.done, "attempt %d", i)
@@ -178,7 +308,7 @@ func TestAttacherRetriesOnlyWithoutSignal(t *testing.T) {
 
 	// After a signal: never again.
 	a, ops = newTestAttacher()
-	ops.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed, Signalled: true}
+	ops.probe = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed, Signalled: true}
 	s = attempt(t, a, hotspot())
 	assert.True(t, s.done)
 
@@ -192,10 +322,11 @@ func TestAttacherRetriesOnlyWithoutSignal(t *testing.T) {
 
 func TestAttacherRetriesStagingAndInspection(t *testing.T) {
 	a, ops := newTestAttacher()
+	ops.probe.Signalled = false
 	ops.stageErr = errors.New("read-only file system")
 	s := attempt(t, a, hotspot())
 	assert.False(t, s.done)
-	assert.Empty(t, ops.requests)
+	assert.Len(t, ops.requests, 1, "attached without a jar")
 
 	a, ops = newTestAttacher()
 	ops.infoErr = errors.New("no such file")
@@ -269,13 +400,16 @@ func TestAttacherReportsEvents(t *testing.T) {
 	assert.Equal(t, []string{EventAlreadyRunning}, run(func(o *fakeOps) {
 		o.info.args = []string{"-javaagent:/opt/postman/postman-insights-java-agent.jar"}
 	}, hotspot()))
+	assert.Equal(t, []string{EventAlreadyRunning}, run(func(o *fakeOps) {
+		o.probe = attach.Result{Outcome: attach.AlreadyLoaded, AgentVersion: "0.9.0"}
+	}, hotspot()))
 	assert.Equal(t, []string{EventSkippedPrefix + attach.ReasonNoListener}, run(func(o *fakeOps) {
 		o.info.sigQuitCaught = false
-		o.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonNoListener}
+		o.probe = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonNoListener}
 	}, hotspot()))
 	// Retries report nothing; only the final failure does.
 	assert.Equal(t, []string{EventFailedPrefix + attach.ReasonConnectFailed}, run(func(o *fakeOps) {
-		o.result = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
+		o.probe = attach.Result{Outcome: attach.Failed, Reason: attach.ReasonConnectFailed}
 	}, hotspot()))
 }
 

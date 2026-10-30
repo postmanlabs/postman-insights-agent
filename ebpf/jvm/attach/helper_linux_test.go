@@ -147,9 +147,16 @@ func TestRunBadRequests(t *testing.T) {
 		"no op":            base,
 		"unknown op":       func() Request { r := base; r.Op = "detach"; return r }(),
 		"attach, no jar":   func() Request { r := base; r.Op = OpAttach; return r }(),
+		"probe, no nspid":  func() Request { r := base; r.Op = OpProbe; r.NSPID = 0; return r }(),
 		"inspect, no pid":  func() Request { r := base; r.Op = OpInspect; r.PID = 0; return r }(),
 		"inspect, version": func() Request { r := base; r.Op = OpInspect; r.Version = 2; return r }(),
 	} {
 		assert.Equal(t, ReasonBadRequest, Run(req).Reason, name)
 	}
+}
+
+// A probe is a request of its own, which needs no jar.
+func TestRunProbeNeedsNoJar(t *testing.T) {
+	req := Request{Version: RequestVersion1, Op: OpProbe, ProcRoot: t.TempDir(), PID: 1, NSPID: 1}
+	assert.Equal(t, ReasonProcessGone, Run(req).Reason)
 }

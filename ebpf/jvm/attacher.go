@@ -3,11 +3,14 @@
 package jvm
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -29,11 +32,17 @@ import (
 // an attach request, and never signals one JVM twice, because a stray
 // SIGQUIT makes a JVM print a thread dump into the application's log.
 //
+// It copies the jar into a JVM's container only when the JVM does not run
+// the agent yet. Once a JVM in a container runs the agent, it removes the
+// copies other Insights agent versions left there that no process still
+// has open or mapped (see removeStaleCopies).
+//
 // Safe for concurrent use. Attaches run one at a time, on Run's goroutine.
 type Attacher struct {
 	ops       attachOps
 	jar       []byte
 	jarDir    string // staging directory name, from the jar's checksum
+	version   string // the jar's Implementation-Version, or "" when unknown
 	agentArgs func() string
 
 	mu    sync.Mutex
@@ -63,6 +72,11 @@ type AttachStats struct {
 	// AlreadyRunning counts JVMs that already ran the agent: loaded at
 	// start (-javaagent) or by an earlier attach.
 	AlreadyRunning uint64
+	// OtherVersion counts the AlreadyRunning JVMs attached earlier with
+	// another version of the agent than this Insights agent's. A loaded
+	// agent cannot be replaced, so they run that version until they
+	// restart.
+	OtherVersion uint64
 	// Skipped and Failed count JVMs not attached, by reason.
 	Skipped map[string]uint64
 	Failed  map[string]uint64
@@ -97,7 +111,19 @@ type attachOps interface {
 	alive(p *Process) bool
 	inspect(ctx context.Context, p *Process) (gateInfo, error)
 	stage(p *Process, jar []byte, dirName string) (string, error)
+	// attach runs the helper for an OpProbe or OpAttach request.
 	attach(ctx context.Context, p *Process, req attach.Request) (attach.Result, error)
+	// removeStaleCopies removes the jar copies other than keep from p's
+	// container, except those still in use.
+	removeStaleCopies(p *Process, keep string) (cleanupResult, error)
+}
+
+// cleanupResult is what removeStaleCopies did, by staging directory name.
+type cleanupResult struct {
+	removed []string
+	// held maps each copy kept because a process has one of its files open
+	// or mapped to one such process.
+	held map[string]uint32
 }
 
 // gateInfo is what the Attacher checks before attaching.
@@ -164,7 +190,32 @@ func NewAttacher(cfg AttacherConfig) (*Attacher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAttacher(ops, jar, got, cfg.AgentArgs), nil
+	a := newAttacher(ops, jar, got, cfg.AgentArgs)
+	a.version = jarVersion(jar)
+	return a, nil
+}
+
+// jarVersion returns the Implementation-Version in jar's manifest, or "".
+func jarVersion(jar []byte) string {
+	zr, err := zip.NewReader(bytes.NewReader(jar), int64(len(jar)))
+	if err != nil {
+		return ""
+	}
+	f, err := zr.Open("META-INF/MANIFEST.MF")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	manifest, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return ""
+	}
+	for line := range strings.SplitSeq(string(manifest), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "Implementation-Version:"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func newAttacher(ops attachOps, jar []byte, sum string, agentArgs func() string) *Attacher {
@@ -306,26 +357,36 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 	case flags.staticAgent:
 		a.finish(s, EventAlreadyRunning, func(st *AttachStats) { st.AlreadyRunning++ },
 			"ebpf: Java agent already loaded at start (-javaagent) in JVM %s\n", p)
+		a.removeStaleCopies(p)
 		return
 	}
 
-	jarPath, err := a.ops.stage(p, a.jar, a.jarDir)
-	if err != nil {
-		a.fail(s, FailStage, false, err.Error())
-		return
-	}
 	start := time.Now()
-	res, err := a.ops.attach(ctx, p, attach.Request{
+	req := attach.Request{
 		Version:     attach.RequestVersion1,
-		Op:          attach.OpAttach,
+		Op:          attach.OpProbe,
 		ProcRoot:    p.ProcRoot,
 		PID:         p.PID,
 		StartTime:   p.StartTime,
 		NSPID:       p.NSPID,
-		JarPath:     jarPath,
-		AgentArgs:   a.agentArgs(),
 		AllowSignal: info.sigQuitCaught,
-	})
+	}
+	res, err := a.ops.attach(ctx, p, req)
+	if err == nil && res.Outcome == attach.NotLoaded {
+		// The jar is copied into the container only now, so a JVM that
+		// runs the agent already gets no copy it would never load.
+		jarPath, err := a.ops.stage(p, a.jar, a.jarDir)
+		if err != nil {
+			a.fail(s, FailStage, res.Signalled, err.Error())
+			return
+		}
+		signalled := res.Signalled
+		req.Op, req.JarPath, req.AgentArgs = attach.OpAttach, jarPath, a.agentArgs()
+		// The probe started the listener; a JVM is never signalled twice.
+		req.AllowSignal = req.AllowSignal && !signalled
+		res, err = a.ops.attach(ctx, p, req)
+		res.Signalled = res.Signalled || signalled
+	}
 	if err != nil {
 		// The helper did not report, so whether it signalled is unknown:
 		// assume it did, and never retry.
@@ -341,15 +402,45 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 		a.finish(s, EventAttached, func(st *AttachStats) { st.Attached++ },
 			"ebpf: Java agent %s attached to JVM %s in %d ms (%s)\n",
 			res.AgentVersion, p, time.Since(start).Milliseconds(), how)
+		a.removeStaleCopies(p)
 	case attach.AlreadyLoaded:
-		a.finish(s, EventAlreadyRunning, func(st *AttachStats) { st.AlreadyRunning++ },
-			"ebpf: Java agent %s already running in JVM %s\n", res.AgentVersion, p)
+		if a.version != "" && res.AgentVersion != a.version {
+			a.finish(s, EventAlreadyRunning, func(st *AttachStats) { st.AlreadyRunning++; st.OtherVersion++ },
+				"ebpf: Java agent %s already running in JVM %s; this Insights agent's Java agent %s replaces it only when the JVM restarts\n",
+				res.AgentVersion, p, a.version)
+		} else {
+			a.finish(s, EventAlreadyRunning, func(st *AttachStats) { st.AlreadyRunning++ },
+				"ebpf: Java agent %s already running in JVM %s\n", res.AgentVersion, p)
+		}
+		a.removeStaleCopies(p)
+	case attach.NotLoaded:
+		// Only a probe reports it, and a probe that does is followed by
+		// an attach.
+		a.fail(s, attach.ReasonProtocol, res.Signalled, "the helper reported not_loaded to an attach")
 	default:
 		if res.Reason == attach.ReasonNoListener {
 			a.skip(s, res.Reason, "its attach listener is not running and it ignores SIGQUIT (-Xrs)")
 			return
 		}
 		a.fail(s, res.Reason, res.Signalled, res.Detail)
+	}
+}
+
+// removeStaleCopies removes the jar copies other Insights agent versions left
+// in p's container, now that a JVM there runs the agent: an attach went
+// through, or the JVM already ran it. It is not done after a failure, when
+// what runs in the container is not known.
+func (a *Attacher) removeStaleCopies(p *Process) {
+	res, err := a.ops.removeStaleCopies(p, a.jarDir)
+	if len(res.removed) > 0 {
+		printer.Stderr.Infof("ebpf: removed unused Java agent copies %s from the container of JVM %s\n",
+			strings.Join(res.removed, ", "), p)
+	}
+	for dir, pid := range res.held {
+		printer.Stderr.Debugf("ebpf: kept Java agent copy %s in the container of JVM %s: in use by pid %d\n", dir, p, pid)
+	}
+	if err != nil {
+		printer.Stderr.Warningf("ebpf: could not remove unused Java agent copies from the container of JVM %s: %v\n", p, err)
 	}
 }
 
