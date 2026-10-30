@@ -18,16 +18,12 @@
 #   ./test/kind/deploy-java-service.sh --skip-build # reuse the images in kind
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CLUSTER=pia-https-test
-AGENT_IMAGE=pia-agent-ebpf:test
+# shellcheck source=lib.sh
+source "$(dirname "$0")/lib.sh"
+
 JAVA_IMAGE=pia-java-service:test
 NETTY_IMAGE=pia-netty-service:test
 SERVICES="java-service netty-service java-service-attach"
-NS=test-apps
-# The client runs outside the monitored namespace, so the counters checked
-# below count only the services' traffic, not the client's own (libssl).
-CLIENT_NS=test-clients
 SKIP_BUILD=false
 REQUESTS=3 # rounds of 3 requests each
 # The Java agent's log prefix, with the jar's old name and the current one.
@@ -41,54 +37,31 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -z "${POSTMAN_INSIGHTS_API_KEY:-}" ]]; then
-  echo "ERROR: POSTMAN_INSIGHTS_API_KEY must be set." >&2
-  exit 1
-fi
-
-kubectl config use-context "kind-${CLUSTER}" >/dev/null 2>&1 || {
-  echo "==> Creating kind cluster ${CLUSTER}"
-  kind create cluster --config "$REPO_ROOT/test/kind/cluster.yaml"
-}
+require_api_key
+use_cluster
 
 if [[ "$SKIP_BUILD" == "false" ]]; then
-  echo "==> Building agent image ${AGENT_IMAGE}"
-  docker build -f "$REPO_ROOT/build-scripts/Dockerfile.ebpf" -t "$AGENT_IMAGE" "$REPO_ROOT"
+  build_agent
   echo "==> Building Java service images ${JAVA_IMAGE} and ${NETTY_IMAGE}"
   docker build -f "$REPO_ROOT/test/kind/Dockerfile.java-service" -t "$JAVA_IMAGE" "$REPO_ROOT"
   docker build -f "$REPO_ROOT/test/kind/Dockerfile.netty-service" -t "$NETTY_IMAGE" "$REPO_ROOT"
-  kind load docker-image "$AGENT_IMAGE" "$JAVA_IMAGE" "$NETTY_IMAGE" --name "$CLUSTER"
+  kind load docker-image "$JAVA_IMAGE" "$NETTY_IMAGE" --name "$CLUSTER"
 fi
 
-# The one pod of a service's Deployment (its strategy is Recreate).
-pod_of() { kubectl get pod -n "$NS" -l "app=$1" -o jsonpath='{.items[0].metadata.name}'; }
-
-# Deployments, not bare pods: discovery mode skips standalone pods.
+# A fresh JVM every run, so the Insights agent attaches to it anew.
 echo "==> Java service deployments"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+for svc in $SERVICES; do
+  deploy_service "$svc"
+done
+# shellcheck disable=SC2086 # SERVICES is a list
+wait_services $SERVICES
 POD_IPS=""
 for svc in $SERVICES; do
-  # A bare pod of that name, from an earlier version of this script.
-  kubectl delete pod -n "$NS" "$svc" --ignore-not-found
-  kubectl apply -f "$REPO_ROOT/test/kind/${svc}-workload.yaml"
-  # A fresh JVM every run, so the Insights agent attaches to it anew.
-  kubectl rollout restart -n "$NS" "deployment/$svc"
-done
-for svc in $SERVICES; do
-  kubectl rollout status -n "$NS" "deployment/$svc" --timeout=180s
-  POD_IPS="$POD_IPS $(kubectl get pod -n "$NS" -l "app=$svc" -o jsonpath='{.items[0].status.podIP}')"
+  POD_IPS="$POD_IPS $(ip_of "$svc")"
 done
 
-echo "==> Agent DaemonSet (kube run --enable-https-capture, Java HTTPS capture on)"
-kubectl create namespace postman-insights --dry-run=client -o yaml | kubectl apply -f -
-kubectl create secret generic postman-insights-creds \
-  --namespace postman-insights \
-  --from-literal=api-key="${POSTMAN_INSIGHTS_API_KEY}" \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f "$REPO_ROOT/test/kind/agent-daemonset-prod.yaml"
-# Restart so the agent starts after the Java pod exists.
-kubectl rollout restart -n postman-insights daemonset/postman-insights-agent
-kubectl rollout status -n postman-insights daemonset/postman-insights-agent --timeout=180s
+deploy_agent
 sleep 15
 
 # The Java agents stay dormant until the Insights agent discovers their JVMs
@@ -114,10 +87,8 @@ for svc in $SERVICES; do
 done
 
 echo "==> Sending HTTPS requests to${POD_IPS} (port 8443) from namespace ${CLIENT_NS}"
-kubectl create namespace "$CLIENT_NS" --dry-run=client -o yaml | kubectl apply -f -
-kubectl delete pod -n "$CLIENT_NS" java-client --ignore-not-found >/dev/null
-# -f: an HTTP error fails curl, and -e makes that fail the pod and this script.
-kubectl run java-client --restart=Never -n "$CLIENT_NS" --image=curlimages/curl:latest --rm -i --quiet -- sh -ec "
+# -f: an HTTP error fails curl, and fails the client and this script.
+run_client java-client "
   for ip in ${POD_IPS}; do
     for i in \$(seq 1 ${REQUESTS}); do
       curl -fsSk https://\$ip:8443/hello?name=kind-\$i; echo
@@ -126,10 +97,7 @@ kubectl run java-client --restart=Never -n "$CLIENT_NS" --image=curlimages/curl:
     done
   done"
 
-echo "==> Waiting for the next ebpf-stats lines (logged every 30s)"
-sleep 40
-LOGS=$(kubectl logs -n postman-insights daemonset/postman-insights-agent --since=5m)
-
+collect_logs
 fail=0
 if grep -q 'ebpf: Java HTTPS capture enabled' <<<"$LOGS"; then
   echo "  PASS  Java programs loaded"
@@ -138,13 +106,6 @@ else
   grep -E 'Java HTTPS capture' <<<"$LOGS" || true
   fail=1
 fi
-# Highest value of a key=value field across the ebpf-stats lines, of one pod
-# when a second argument names it; empty when there is none, so the checks
-# below report it instead of set -e aborting here. Each monitored pod logs its
-# own line, starting with pod=<name>; the java_* fields are the node's.
-max_field() {
-  { grep -o "ebpf-stats: pod=${2:-[^ ]*} .*" <<<"$LOGS" | grep -oE " $1=[0-9]+" | cut -d= -f2 | sort -n | tail -1; } || true
-}
 services=$(wc -w <<<"$SERVICES")
 per_service=$((REQUESTS * 3 * 2)) # a request and a response per call
 java_events=$(max_field java_events)
@@ -156,13 +117,7 @@ else
   fail=1
 fi
 for svc in $SERVICES; do
-  msgs=$(max_field msgs "$(pod_of "$svc")")
-  if [[ "${msgs:-0}" -ge "$per_service" ]]; then
-    echo "  PASS  ${svc}: msgs=${msgs} (HTTP messages parsed for the pod)"
-  else
-    echo "  FAIL  ${svc}: msgs=${msgs:-none}, want at least ${per_service}"
-    fail=1
-  fi
+  check_at_least "$svc" msgs "$(pod_of "$svc")" "$per_service"
 done
 
 # The kernel ties each Java connection to its socket, so every message has
@@ -188,9 +143,5 @@ else
   fail=1
 fi
 
-if [[ "$fail" -ne 0 ]]; then
-  echo
-  grep -E 'ebpf' <<<"$LOGS" | tail -20 || true
-  exit 1
-fi
+finish_checks
 echo "==> Java HTTPS capture works end to end; check Postman Insights cluster 'pia-kind-test' for the endpoints"

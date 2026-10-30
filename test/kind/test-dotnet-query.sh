@@ -9,9 +9,10 @@
 #   kubectl port-forward -n test-apps deployment/dotnet-service 8443:8443 &
 #   ./test/kind/test-dotnet-query.sh
 #
-# Verify capture (separate terminal):
-#   kubectl logs -n postman-insights daemonset/postman-insights-agent --timestamps --since=2m \
-#     | grep -E 'REQ .*phase5b2'
+# The agent does not log the requests it captures: check the endpoints and
+# their query parameters in Postman Insights (cluster "pia-kind-test"), and
+# the pod's msgs counter in the agent's ebpf-stats lines:
+#   kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m | grep 'ebpf-stats: pod=dotnet-service'
 
 set -euo pipefail
 
@@ -61,10 +62,6 @@ run "numeric and boolean-like" \
 run "unicode (UTF-8 percent-encoded)" \
   "${BASE}${PATH_EP}?q=caf%C3%A9"
 
-echo "=== Expected in agent logs: url includes ?... on same path ==="
-echo "  REQ ... method=GET url=/phase5b2?q=hello"
-echo "  REQ ... method=GET url=/phase5b2?foo=bar&baz=1"
-echo
-echo "Grep:"
-echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent --timestamps --since=3m \\"
-echo "    | grep -E 'REQ .*phase5b2.*\\?'"
+echo "=== Expected in Postman Insights (cluster pia-kind-test): /phase5b2 with these query parameters ==="
+echo "The pod's msgs counter in the agent's ebpf-stats lines grows by two per request:"
+echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent --since=3m | grep 'ebpf-stats: pod=dotnet-service'"
