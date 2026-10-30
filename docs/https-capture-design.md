@@ -11,7 +11,7 @@ HTTPS capture is opt-in (`--enable-https-capture`) and Linux-only; the macOS bui
 | Runtime | How | Status |
 |---|---|---|
 | Processes using a shared `libssl` (C and C++, Python, Ruby, PHP, .NET, nginx, Node.js with the system OpenSSL) | uprobes on `SSL_read`, `SSL_write`, `SSL_read_ex`, `SSL_write_ex` | Supported |
-| Node.js with BoringSSL linked into `node` (official images) | the same uprobes, on the executable's own `SSL_*` symbols | Supported; verified on a bare Node 20, not yet in kind |
+| Node.js with BoringSSL linked into `node` (official images) | the same uprobes, on the executable's own `SSL_*` symbols | Supported; verified on a bare Node 20 and in kind (`deploy-node-service.sh --static`) |
 | Java on HotSpot, JDK 8 to 25: the JDK's `SSLEngine` and `SSLSocket`, Netty's OpenSSL engine (Tomcat, Jetty, Undertow, Netty, the JDK `HttpClient`, `HttpsURLConnection`) | a Java agent hands plaintext to the kernel (section 4) | Preview, on by default with `--enable-https-capture` |
 | Go (`crypto/tls`), Rust (rustls), other JSSE providers' sockets (BouncyCastle, Conscrypt), OpenJ9 without `-javaagent` | - | Not supported |
 

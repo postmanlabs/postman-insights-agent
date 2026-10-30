@@ -1,73 +1,80 @@
 #!/usr/bin/env bash
-# Part 2 — Build + deploy node-service (HTTPS + gRPC) to kind.
-# Part 1 (local Mac): ./test/kind/run-node-service-local.sh server|test
+# End-to-end check of OpenSSL HTTPS capture of a Node.js service in kind,
+# through the production DaemonSet path (kube run --enable-https-capture,
+# agent-daemonset-prod.yaml).
+#
+# Deploys node-service (HTTPS on 8443, gRPC-TLS on 8446) and the agent, sends
+# HTTPS requests to it, and checks the agent's ebpf-stats line for its pod:
+# the libssl uprobes captured its requests and responses, parsed into HTTP
+# messages. Captures also appear in Postman Insights under
+# the cluster "pia-kind-test". For gRPC and requests from your machine, see
+# test/kind/SERVICE-TEST-GUIDE.md.
+#
+# Prerequisites: Docker Desktop, kind, kubectl, a Postman Insights API key.
+#
+# Usage:
+#   export POSTMAN_INSIGHTS_API_KEY=your_key_here
+#   ./test/kind/deploy-node-service.sh              # build images, deploy, check
+#   ./test/kind/deploy-node-service.sh --skip-build # reuse the images in kind
+#   ./test/kind/deploy-node-service.sh --static     # node's own static BoringSSL
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CERT_DIR="$REPO_ROOT/test/kind/certs"
-IMAGE=pia-node-service:test
-CLUSTER=pia-https-test
-NS=test-apps
-CM=test-apps-tls
-USE_STATIC=false
+# shellcheck source=lib.sh
+source "$(dirname "$0")/lib.sh"
+
+NODE_IMAGE=pia-node-service:test
+SKIP_BUILD=false
+STATIC=false
+REQUESTS=5
 
 for arg in "$@"; do
   case "$arg" in
-    --static) USE_STATIC=true ;;
+    --skip-build) SKIP_BUILD=true ;;
+    --static) STATIC=true ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
 
-"$CERT_DIR/gen-java-service-certs.sh"
+require_api_key
+use_cluster
 
-kubectl config use-context "kind-${CLUSTER}" 2>/dev/null || true
-
-echo "==> Building ${IMAGE}"
-if [[ "$USE_STATIC" == "true" ]]; then
-  docker build -f "$REPO_ROOT/test/kind/Dockerfile.node-service" -t "$IMAGE" "$REPO_ROOT"
+if [[ "$STATIC" == "true" ]]; then
+  DOCKERFILE="$REPO_ROOT/test/kind/Dockerfile.node-service"
   WORKLOAD="$REPO_ROOT/test/kind/node-service-workload.yaml"
 else
-  docker build -f "$REPO_ROOT/test/kind/Dockerfile.node-service-dynamic" -t "$IMAGE" "$REPO_ROOT"
+  DOCKERFILE="$REPO_ROOT/test/kind/Dockerfile.node-service-dynamic"
   WORKLOAD="$REPO_ROOT/test/kind/node-service-workload-dynamic.yaml"
 fi
 
-echo "==> Loading image into kind"
-kind load docker-image "$IMAGE" --name "$CLUSTER"
+if [[ "$SKIP_BUILD" == "false" ]]; then
+  build_agent
+  echo "==> Building ${NODE_IMAGE} ($(basename "$DOCKERFILE"))"
+  docker build -f "$DOCKERFILE" -t "$NODE_IMAGE" "$REPO_ROOT"
+  kind load docker-image "$NODE_IMAGE" --name "$CLUSTER"
+fi
 
-kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl create configmap "$CM" -n "$NS" \
-  --from-file="$CERT_DIR/grpc-cert.pem" \
-  --from-file="$CERT_DIR/grpc-key.pem" \
-  --from-file="$CERT_DIR/hello-https-keystore.p12" \
-  --from-file="$CERT_DIR/hello-https-trust.pem" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl delete pod -n "$NS" node-service --ignore-not-found
-kubectl apply -f "$WORKLOAD"
+echo "==> node-service"
+apply_tls_configmap
+deploy_service node-service "$WORKLOAD"
+# For in-cluster callers, such as dotnet-service's /phase5b2/call-external.
 kubectl apply -f "$REPO_ROOT/test/kind/node-service-service.yaml"
+wait_services node-service
 
-kubectl wait -n "$NS" --for=condition=Ready pod/node-service --timeout=180s
+deploy_agent
+# The agent attaches its uprobes once discovery finds the node process.
+sleep 15
 
-echo "==> Patching DaemonSet to capture test-apps (libssl path)"
-kubectl patch daemonset postman-insights-agent -n postman-insights --type=json \
-  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/args/3","value":"--target-namespaces=team-py,team-srv,test-apps"}]' \
-  2>/dev/null || echo "  (patch skipped — adjust --target-namespaces manually if needed)"
+ip=$(ip_of node-service)
+echo "==> Sending ${REQUESTS} HTTPS requests to ${ip}:8443 from namespace ${CLIENT_NS}"
+run_client node-client "
+  for i in \$(seq 1 ${REQUESTS}); do
+    curl -fsSk 'https://${ip}:8443/phase5b2?from=kind&i='\$i
+  done"
 
-echo
-echo "Pod ready. Trust PEM on Mac:"
-echo "  $CERT_DIR/hello-https-trust.pem"
-echo
-echo "Terminal 1 — port-forward:"
-echo "  kubectl port-forward -n $NS pod/node-service 8443:8443 8446:8446"
-echo
-echo "Terminal 2 — from Mac:"
-echo "  CACERT=$CERT_DIR/hello-https-trust.pem"
-echo "  curl --cacert \"\$CACERT\" https://127.0.0.1:8443/phase5b2"
-echo "  grpcurl -cacert \"\$CACERT\" -import-path test/kind/node-service/proto -proto greeter.proto \\"
-echo "    -d '{\"name\":\"from-mac\"}' localhost:8446 phase5c2.Greeter/SayHello"
-echo
-echo "Or inside pod:"
-echo "  kubectl exec -n $NS node-service -- node client.js 3"
-echo
-echo "Capture (libssl eBPF — NOT javatls):"
-echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent -f"
+collect_logs
+fail=0
+pod=$(pod_of node-service)
+check_at_least node-service msgs "$pod" $((REQUESTS * 2)) # a request and a response each
+finish_checks
+echo "==> Node.js HTTPS capture works end to end; check Postman Insights cluster 'pia-kind-test' for the endpoints"

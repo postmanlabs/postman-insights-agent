@@ -1,35 +1,46 @@
-# Node.js combined test workload: REST HTTPS (:8443) + gRPC-TLS (:8446).
-#
-# Capture: postman-insights-agent DaemonSet → kube run --enable-https-capture (libssl uprobes).
-# Ensure --target-namespaces includes test-apps on the DaemonSet.
-#
-# Deploy: ./test/kind/deploy-node-service.sh
----
-apiVersion: v1
-kind: Pod
+# Node.js HTTPS (:8443) and gRPC-TLS (:8446) service on the node binary's
+# statically linked BoringSSL (test/kind/Dockerfile.node-service), captured by
+# the static-OpenSSL uprobes. Deployed by deploy-node-service.sh --static.
+# A Deployment, not a bare Pod: in discovery mode the Insights agent captures
+# only pods of long-running controllers and skips standalone pods.
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: node-service
   namespace: test-apps
   labels:
     app: node-service
 spec:
-  containers:
-  - name: app
-    image: pia-node-service:test
-    imagePullPolicy: Never
-    # Run node as a child of sh (not PID 1). eBPF uprobes on static BoringSSL
-    # fail to fire when node is the container init process (PID 1); wrapping
-    # avoids that while keeping the same image.
-    command: ["sh", "-c"]
-    args: ["node server.js"]
-    ports:
-    - containerPort: 8443
-    - containerPort: 8446
-    volumeMounts:
-    - name: tls
-      mountPath: /tls
-      readOnly: true
-  volumes:
-  - name: tls
-    configMap:
-      name: test-apps-tls
+  replicas: 1
+  # The old pod is gone before the new one starts, so the deploy script sees
+  # one pod.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: node-service
+  template:
+    metadata:
+      labels:
+        app: node-service
+    spec:
+      containers:
+      - name: app
+        image: pia-node-service:test
+        imagePullPolicy: Never
+        # Run node as a child of sh (not PID 1). eBPF uprobes on static
+        # BoringSSL fail to fire when node is the container init process
+        # (PID 1); wrapping avoids that while keeping the same image.
+        command: ["sh", "-c"]
+        args: ["node server.js"]
+        ports:
+        - containerPort: 8443
+        - containerPort: 8446
+        volumeMounts:
+        - name: tls
+          mountPath: /tls
+          readOnly: true
+      volumes:
+      - name: tls
+        configMap:
+          name: test-apps-tls

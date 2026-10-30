@@ -36,13 +36,15 @@ kubectl exec -n test-apps deploy/dotnet-service -- dotnet /app/client/DotnetClie
 
 ## eBPF capture check
 
+`deploy-dotnet-service.sh` sends requests and checks the agent's `ebpf-stats` line for the pod (`msgs`, the HTTP messages captured).
+By hand, after sending requests:
+
 ```bash
-kubectl rollout restart -n postman-insights daemonset/postman-insights-agent
-kubectl wait -n test-apps --for=condition=Ready pod/dotnet-service --timeout=60s
-sleep 15
-kubectl logs -n postman-insights daemonset/postman-insights-agent --timestamps --since=2m \
-  | grep -E 'phase5b2|Greeter|attached.*libssl|REQ |RESP '
+kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m \
+  | grep -E 'attached libssl uprobes|ebpf-stats: pod=dotnet-service'
 ```
+
+The agent does not log the requests themselves; the endpoints appear in Postman Insights under the cluster `pia-kind-test`.
 
 Pod logs (app + kubectl timestamps):
 
