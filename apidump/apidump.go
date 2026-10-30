@@ -240,11 +240,6 @@ type HTTPSCaptureArgs struct {
 	// under load. Useful for e2e demos and debugging.
 	DisableThermostat bool
 
-	// CaptureMode is "truncated", each read's or write's plaintext capped at
-	// BodySizeCap: the only mode implemented ("headers" and "full" are
-	// planned, and refused until then).
-	CaptureMode string
-
 	// CBPFExcludePort is the TCP port whose packets are removed from the cBPF
 	// filter when Enabled is true (defaults to 443).
 	CBPFExcludePort uint16
@@ -362,10 +357,6 @@ type Args struct {
 	//
 	// Requires a build with the `insights_bpf` tag on Linux. Stubbed elsewhere.
 	HTTPS HTTPSCaptureArgs
-
-	// PrivacyMode is "standard", the only mode implemented ("strict" and
-	// "dry-run" are planned, and refused until then). Not read yet.
-	PrivacyMode string
 
 	// Discovery mode fields: when DiscoveryMode is true, the agent registers the
 	// service with the backend via RegisterDiscoveredService before starting capture.
@@ -1548,8 +1539,8 @@ func (a *apidump) Run() error {
 		}()
 		_ = https.start(httpsCtx, args, pool, httpsCollector, &doneWG, apidumpAmplitudeTelemetry,
 			a.traceTags[tags.XAkitaKubernetesPod])
-		printer.Stderr.Infof("HTTPS capture (eBPF) started with libraries=%s, body-cap=%d, mode=%q.\n",
-			https.libraries, args.HTTPS.BodySizeCap, args.HTTPS.CaptureMode)
+		printer.Stderr.Infof("HTTPS capture (eBPF) started with libraries=%s, body-cap=%d.\n",
+			https.libraries, args.HTTPS.BodySizeCap)
 	}
 
 	// All configured capture pipelines have been started -- this is the first

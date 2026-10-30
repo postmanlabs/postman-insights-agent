@@ -60,11 +60,9 @@ var (
 	httpsLibraries        []string
 	httpsTargetNamespaces []string
 	httpsBodySizeCap      uint32
-	httpsCaptureMode      string
 	httpsCBPFExcludePort  uint16
 	httpsRateCapPerSec    uint32
 	httpsNoThermostat     bool
-	privacyMode           string
 
 	commonApidumpFlags *CommonApidumpFlags
 )
@@ -134,10 +132,6 @@ func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
 }
 
 func apidumpRunInternal(_ *cobra.Command, _ []string) error {
-	if err := checkImplementedModes(httpsCaptureMode, privacyMode); err != nil {
-		return err
-	}
-
 	applyRandomizedStart()
 
 	traceTags, err := util.ParseTagsAndWarn(tagsFlag)
@@ -350,12 +344,10 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 			Libraries:         httpsLibrarySet,
 			TargetNamespaces:  httpsTargetNamespaces,
 			BodySizeCap:       httpsBodySizeCap,
-			CaptureMode:       httpsCaptureMode,
 			CBPFExcludePort:   httpsCBPFExcludePort,
 			RateCapPerSec:     httpsRateCapPerSec,
 			DisableThermostat: httpsNoThermostat,
 		},
-		PrivacyMode: privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
 		if rest.IsIngestDisabledError(err) {
@@ -573,12 +565,6 @@ func init() {
 		16384,
 		"Maximum plaintext bytes captured per SSL_read/SSL_write event. Larger bodies are truncated.",
 	)
-	Cmd.Flags().StringVar(
-		&httpsCaptureMode,
-		"https-capture-mode",
-		"truncated",
-		"HTTPS capture mode. Only 'truncated' (the plaintext of each SSL_read or SSL_write capped at --https-body-size-cap) is implemented; 'headers' and 'full' are planned.",
-	)
 	Cmd.Flags().Uint16Var(
 		&httpsCBPFExcludePort,
 		"https-cbpf-exclude-port",
@@ -598,12 +584,6 @@ func init() {
 		"no-thermostat",
 		false,
 		"Disable the CPU thermostat that lowers max-capture-bytes under load.",
-	)
-	Cmd.Flags().StringVar(
-		&privacyMode,
-		"privacy-mode",
-		"standard",
-		"Privacy mode. Only 'standard' is implemented; 'strict' and 'dry-run' are planned.",
 	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)
