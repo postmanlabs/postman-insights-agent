@@ -21,7 +21,7 @@
 #   /host/proc               — root-namespace /proc for PID resolution
 #   /run/containerd/containerd.sock — CRI socket for namespace resolution
 #
-# See docs/https-capture-design.md §8.1 for rationale.
+# See "Permissions" in docs/https-capture-design.md for rationale.
 ---
 apiVersion: v1
 kind: Namespace

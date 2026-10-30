@@ -30,47 +30,29 @@ and data formats. This functionality is available only in the
 ## Running this repo
 
 ### How to build
-Running the following commands will generate the `postman-insights-agent`
-binary:
-1. Install [Go 1.18 or above](https://golang.org/doc/install).
+1. Install [Go](https://golang.org/doc/install), at the version in `go.mod` (1.25).
 2. Install `libpcap`
     - For Homebrew on mac: `brew install libpcap`
     - For Ubuntu/Debian: `apt-get install libpcap-dev`
-3. `make`
+3. `make`, which writes `bin/postman-insights-agent`
 
+On Linux with `clang` and `bpftool` installed, `make` builds with HTTPS capture (eBPF); otherwise it builds without it.
+See [`ebpf/README.md`](ebpf/README.md) for the eBPF build, including on macOS.
 
 ### How to test
 
-1. Install [gomock](https://github.com/golang/mock): `go get github.com/golang/mock/mockgen`
+1. Install [mockgen](https://github.com/golang/mock): `go install github.com/golang/mock/mockgen@v1.5.0`
 2. `make test`
 
 ## HTTPS capture (eBPF)
 
-In addition to plaintext HTTP capture (classic BPF via libpcap), the agent can
-capture decrypted HTTPS traffic using eBPF uprobes on TLS libraries. This is
-**opt-in** and **Linux-only**.
+Besides plaintext HTTP (libpcap), the agent can capture decrypted HTTPS traffic with eBPF.
+It is opt-in and Linux-only.
 
-- Enable it by passing `--enable-https-capture` to `apidump` or `kube run`.
-- It captures OpenSSL (`libssl`) and, in preview, Java (JSSE and Netty,
-  through a Java agent the DaemonSet loads into running JVMs).
+- `--enable-https-capture` on `kube run` (DaemonSet) or `apidump` turns it on.
+- It captures OpenSSL (`libssl`, shared or linked into Node.js) and, in preview, Java: as a DaemonSet the agent loads a Java agent into running JVMs; elsewhere the JVMs need `-javaagent`.
   `--https-libraries=openssl` turns Java capture off.
-- Related flags: `--https-capture-mode`, and the HTTPS rate/body-size caps.
-- **Requirements:** Linux kernel **5.8+** (RHEL/CentOS/Rocky/Alma 8 with 4.18 is
-  supported via Red Hat's eBPF backports). Requires `CAP_BPF` + `CAP_PERFMON`
-  (or `CAP_SYS_ADMIN` on older kernels) and access to `/sys/kernel/debug`,
-  `/sys/fs/bpf`, and host `/proc`.
-- **Java requirements:** `hostPID` and `CAP_SYS_PTRACE`, to read the node's
-  network namespace and to switch the Java agent of JVMs running as another
-  user on and off; without them the agent captures OpenSSL only. As a
-  DaemonSet (`kube run`), loading the Java agent into running JVMs also needs
-  `CAP_SETUID` + `CAP_SETGID`, to run the `postman-insights-jvm-attach` helper
-  as each JVM's user.
-- **Not available on macOS** — the macOS build captures HTTP only; all eBPF
-  paths compile to no-ops there.
+- Requirements: Linux 5.8 or newer (RHEL 8 and its rebuilds on 4.18 work through Red Hat's eBPF backports), `CAP_BPF` and `CAP_PERFMON` (or `CAP_SYS_ADMIN` on older kernels), `hostPID`, and access to `/sys/kernel/debug`, `/sys/fs/bpf` and the host's `/proc`.
+- Java also needs `CAP_SYS_PTRACE`, and as a DaemonSet `CAP_SETUID` and `CAP_SETGID`, to run the `postman-insights-jvm-attach` helper as each JVM's user; without them the agent captures OpenSSL only.
 
-Building with eBPF requires the `insights_bpf` build tag plus clang and
-`bpf2go`, and a `vmlinux.h` generated from the build host's kernel BTF (produced
-automatically at build time; requires a native per-arch Linux build). On Linux
-with clang + bpftool installed, `make` auto-detects the toolchain and builds
-with eBPF; otherwise it builds the plain binary. See `ebpf/programs/README.md`
-for details.
+How it works, its limits and why each permission is needed: [`docs/https-capture-design.md`](docs/https-capture-design.md).

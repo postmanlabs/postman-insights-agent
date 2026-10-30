@@ -105,7 +105,7 @@ type SidecarOpts struct {
 	//   * mounts: /sys/kernel/debug, /sys/fs/bpf, /proc (read-only)
 	//   * `--enable-https-capture` appended to apidump args
 	// Customers who don't need HTTPS capture get the existing minimal
-	// privilege set. See docs/https-capture-design.md §8.1.
+	// privilege set. See "Permissions" in docs/https-capture-design.md.
 	EnableHTTPSCapture bool
 	// HTTPSLibraries, with EnableHTTPSCapture, is passed as
 	// --https-libraries; "" keeps the agent's default.

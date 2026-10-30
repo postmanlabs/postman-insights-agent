@@ -1,14 +1,14 @@
 # Kind Service Test Guide — HTTPS + gRPC
 
-Practical reference for testing **java-service**, **node-service**, and **dotnet-service** in the Kind cluster `pia-https-test`.
+Practical reference for testing HTTPS capture of **Java**, **node-service** and **dotnet-service** in the Kind cluster `pia-https-test`.
 
-All captured traffic (Java, Node, ASP.NET) appears in **one log stream**:
+All captured traffic appears in **one log stream**:
 
 ```bash
 kubectl logs -n postman-insights daemonset/postman-insights-agent
 ```
 
-The DaemonSet runs `kube run --enable-https-capture` (libssl uprobes, and Java through the Java agent). There is no separate `javatls-capture` pod.
+The DaemonSet runs `kube run --enable-https-capture` (libssl uprobes, and Java through the Java agent).
 
 ---
 
@@ -23,7 +23,7 @@ cd /path/to/postman-insights-agent
 export CACERT=test/kind/certs/hello-https-trust.pem
 ```
 
-Certs mirror the customer OpenSSL flow (`docs/nocheckin/glic.txt`) with one Kind addition: **SAN** (`DNS:localhost,IP:127.0.0.1`) so **grpcurl** (Go TLS) accepts the cert. HTTPS curl works with or without SAN; gRPC from Mac requires it.
+The Node.js and ASP.NET certs (`test/kind/certs/gen-java-service-certs.sh`) carry a **SAN** (`DNS:localhost,IP:127.0.0.1`) so **grpcurl** (Go TLS) accepts them. HTTPS curl works with or without SAN; gRPC from Mac requires it.
 
 ---
 
@@ -32,7 +32,10 @@ Certs mirror the customer OpenSSL flow (`docs/nocheckin/glic.txt`) with one Kind
 These scripts prepare the cluster. You still send HTTPS/gRPC traffic manually (below).
 
 ```bash
-# Agent + Java + Node
+# Agent + Java services, with checks (needs POSTMAN_INSIGHTS_API_KEY)
+./test/kind/deploy-java-service.sh
+
+# Agent + Node
 ./test/kind/deploy-e2e-demo.sh
 
 # ASP.NET (builds dotnet image every run)
@@ -42,7 +45,8 @@ These scripts prepare the cluster. You still send HTTPS/gRPC traffic manually (b
 ./test/kind/deploy-e2e-demo.sh --skip-build
 ```
 
-`deploy-e2e-demo.sh` runs one in-cluster curl smoke test against **node** only. It does not test Java, gRPC, or dotnet.
+`deploy-java-service.sh` sends requests to each Java service and checks the agent's `ebpf-stats` lines; see its header.
+`deploy-e2e-demo.sh` runs one in-cluster curl smoke test against **node** only. It does not test gRPC or dotnet.
 
 ---
 
@@ -68,45 +72,39 @@ kubectl logs -n postman-insights daemonset/postman-insights-agent -f \
 
 ---
 
-## 1. Java (`java-service`)
+## 1. Java
+
+`deploy-java-service.sh` deploys three Spring Boot and Netty services on port 8443 (HTTPS only, self-signed certificates generated in their images):
+
+| Deployment | How the Java agent gets in |
+|---|---|
+| `java-service` | `-javaagent` at start (Tomcat, the JDK's `SSLEngine`) |
+| `netty-service` | `-javaagent` at start (Netty's OpenSSL engine) |
+| `java-service-attach` | none at start: the DaemonSet attaches it to the running JVM |
 
 ### Port-forward (Terminal 1)
 
 ```bash
-kubectl port-forward -n test-apps deployment/java-service 8443:8443 8446:8446
+kubectl port-forward -n test-apps deployment/java-service-attach 8443:8443
 ```
 
 ### HTTPS (Terminal 2)
 
 ```bash
-curl --cacert "$CACERT" https://localhost:8443/phase5b2
+curl -k 'https://localhost:8443/hello?name=mac'
+curl -k https://localhost:8443/orders/42
 ```
 
 | | |
 |---|---|
-| **Expected response** | `hello-from-combined-server phase=5b2` |
-| **Check logs** | `kubectl logs -n postman-insights daemonset/postman-insights-agent --since=1m \| grep -E 'phase5b2\|REQ \|RESP '` |
-| **Expected in logs** | `REQ ... url=/phase5b2` and `RESP ... status=200` |
-
-### gRPC (Terminal 2 — same port-forward)
-
-```bash
-grpcurl -cacert "$CACERT" \
-  -import-path java-agent/testdata/grpc-java/src/main/proto \
-  -proto greeter.proto \
-  -d '{"name":"mac-java"}' \
-  localhost:8446 phase5c2.Greeter/SayHello
-```
-
-| | |
-|---|---|
-| **Expected response** | `{"message":"Hello mac-java"}` |
-| **Check logs** | `kubectl logs -n postman-insights daemonset/postman-insights-agent --since=1m \| grep -E 'Greeter\|SayHello\|REQ \|RESP '` |
+| **Expected response** | `{"message":"hello mac"}` |
+| **Check logs** | `kubectl logs -n postman-insights daemonset/postman-insights-agent --since=1m \| grep -E 'Java agent\|ebpf-stats'` |
+| **Expected in logs** | `Java agent ... attached to JVM ...`, and `ebpf-stats` lines with `java_events` and the pod's `msgs` growing |
 
 ### Capture path
 
-- **In app pod:** `postman-insights-java-agent.jar` (ByteBuddy on `SSLEngine`) → `ioctl()` with plaintext
-- **On node:** DaemonSet `java_tls` kprobe reads ioctl events → parses HTTP/gRPC → logs REQ/RESP
+- **In the app pod:** the Postman Insights Java agent hooks `SSLEngine` and `SSLSocket` and writes each plaintext chunk as a frame to `/dev/null` at a magic offset.
+- **On the node:** the DaemonSet's `java_tls` tracepoints read the frames into the same pipeline as libssl; see "Java capture" in [`docs/https-capture-design.md`](../../docs/https-capture-design.md).
 
 ---
 
@@ -212,9 +210,9 @@ grpcurl -cacert "$CACERT" \
 
 ## Recommended test order
 
-1. **Java** — HTTPS, then gRPC  
-2. **Node** — HTTPS, then gRPC  
-3. **ASP.NET** — HTTPS ingress, egress (`call-external`), then gRPC  
+1. **Java** - HTTPS (`deploy-java-service.sh` checks all three services)  
+2. **Node** - HTTPS, then gRPC  
+3. **ASP.NET** - HTTPS ingress, egress (`call-external`), then gRPC  
 
 ---
 
@@ -227,14 +225,14 @@ grpcurl -cacert "$CACERT" \
 | `curl: (60) SSL certificate problem` | Run from repo root; confirm `$CACERT` exists; use `https://localhost` |
 | Empty grep on logs | Re-run curl/grpcurl; wait ~2s; use `--since=1m` or `-f` |
 | No capture for Node/dotnet | `kubectl rollout restart -n postman-insights daemonset/postman-insights-agent`; wait 15s; ensure test-apps pods are Running |
-| No capture for Java | Confirm java pod has `-javaagent`; DaemonSet args include `--enable-javatls` |
+| No capture for Java | Look for the JVM's `Java agent ...` line in the DaemonSet log (attached, skipped or failed, with the reason); `--https-libraries` must include `java` (the default) |
 | dotnet egress fails | Ensure `node-service` is Running in `test-apps` |
 
 ### Verify cluster health
 
 ```bash
 kubectl get pods -n postman-insights
-kubectl get pods -n test-apps -l 'app in (java-service,node-service,dotnet-service)'
+kubectl get pods -n test-apps
 kubectl get daemonset postman-insights-agent -n postman-insights \
   -o jsonpath='{.spec.template.spec.containers[0].args}{"\n"}'
 ```
@@ -256,8 +254,7 @@ Expected DaemonSet args include: `kube`, `run`, `--enable-https-capture`, `--dis
 
 | Doc | Purpose |
 |-----|---------|
-| [`docs/kind-e2e-demo-presentation.md`](../docs/kind-e2e-demo-presentation.md) | Architecture, stakeholder demo, production vs Kind |
-| [`docs/loom-ebpf-demo-scripts.md`](../docs/loom-ebpf-demo-scripts.md) | Loom / video demo scripts |
-| [`test/kind/certs/README.md`](certs/README.md) | TLS cert generation (`glic.txt` style) |
-| [`test/kind/deploy-e2e-demo.sh`](deploy-e2e-demo.sh) | One-shot deploy (agent + java + node) |
+| [`docs/https-capture-design.md`](../../docs/https-capture-design.md) | How HTTPS capture works, its limits and permissions |
+| [`test/kind/deploy-java-service.sh`](deploy-java-service.sh) | Java services, with checks |
+| [`test/kind/deploy-e2e-demo.sh`](deploy-e2e-demo.sh) | One-shot deploy (agent + Node) |
 | [`test/kind/deploy-dotnet-service.sh`](deploy-dotnet-service.sh) | Dotnet deploy |

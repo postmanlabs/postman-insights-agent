@@ -9,7 +9,7 @@
 #   ./test/kind/deploy-e2e-demo.sh --skip-build # reuse existing images
 #   ./test/kind/deploy-e2e-demo.sh --static-node  # node:20 BoringSSL (capture WIP in Kind)
 #
-# After deploy, see docs/kind-e2e-demo-presentation.md for demo script.
+# After deploy, see test/kind/SERVICE-TEST-GUIDE.md for the per-service tests.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -133,5 +133,4 @@ echo
 echo "Check capture (all runtimes — one DaemonSet):"
 echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m | grep -E 'phase5|Greeter|REQ |RESP '"
 echo
-echo "Full demo script: docs/kind-e2e-demo-presentation.md"
 echo "Per-service HTTPS + gRPC tests: test/kind/SERVICE-TEST-GUIDE.md"

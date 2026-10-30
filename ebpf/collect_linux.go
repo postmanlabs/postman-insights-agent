@@ -176,7 +176,8 @@ func (c *Capture) Run(ctx context.Context, args RunArgs) error {
 	mgr := uprobes.NewManager(l)
 	defer func() { _ = mgr.Close() }()
 
-	// 4b. CPU thermostat — sampling layer 5 (design doc §6.2). Runs for the
+	// 4b. CPU thermostat, sampling layer 5 ("Limits and sampling" in
+	// docs/https-capture-design.md). Runs for the
 	// lifetime of Collect and lowers max_capture_bytes if the agent itself
 	// exceeds the CPU budget.
 	therm := NewThermostat(l, c.load.MaxCaptureBytes)

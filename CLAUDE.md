@@ -4,14 +4,14 @@ Guidance for Claude Code (and other AI coding agents) when working in this repos
 
 ## Project overview
 
-This is the **Postman Insights Agent** — an open-source Go CLI that captures HTTP traffic from network interfaces (via libpcap), parses/witnesses requests and responses, and ships them to the Postman Insights backend so users can see endpoints, errors, latency, and volume in Postman.
+This is the **Postman Insights Agent** - an open-source Go CLI that captures HTTP traffic from network interfaces (via libpcap) and, on Linux, decrypted HTTPS traffic (via eBPF, see `docs/https-capture-design.md`), parses/witnesses requests and responses, and ships them to the Postman Insights backend so users can see endpoints, errors, latency, and volume in Postman.
 
-- **Language:** Go (see `go.mod` — `go 1.25.0`, toolchain `go1.25.11`).
+- **Language:** Go (see `go.mod` - `go 1.25.0`, toolchain `go1.25.11`).
 - **Module:** `github.com/postmanlabs/postman-insights-agent`
 - **Entry point:** `main.go` → `cmd.Execute()` (Cobra-based CLI).
 - **Binary name:** `postman-insights-agent`
 - **License:** See `LICENSE`.
-- **Origin:** Forked from / successor to the Akita Software agent — many internal packages still reference `akita*` and `akitasoftware/*` libs.
+- **Origin:** Forked from / successor to the Akita Software agent - many internal packages still reference `akita*` and `akitasoftware/*` libs.
 
 Note: This open-source repo does **not** include type/format inference. That functionality only exists in the official distributed binary.
 
@@ -23,95 +23,100 @@ System prerequisites:
   - macOS: `brew install libpcap`
   - Debian/Ubuntu: `apt-get install libpcap-dev`
 - `mockgen` for tests: `go install github.com/golang/mock/mockgen@v1.5.0`
-- For eBPF features: `clang`, `llvm`, `linux-headers` (CI installs these automatically; see `.circleci/config.yml`).
+- For eBPF features: Linux with `clang`, `llvm`, `bpftool`, `libbpf-dev` (CI installs these; see `.circleci/config.yml`). On macOS, use the dev container (`ebpf/README.md`).
+- For the Java agent (`java-agent/`): a JDK 17 or newer to run Gradle 9 (the jar is Java 8 bytecode).
 
 Common commands (from `Makefile`):
 
 | Command         | What it does |
 | --------------- | ------------ |
-| `make`          | `make build` — produces `bin/postman-insights-agent` |
+| `make`          | `make build` - produces `bin/postman-insights-agent` |
 | `make build`    | `go build -o bin/postman-insights-agent .` (runs `clean` first) |
 | `make clean`    | `go clean` |
 | `make mock`     | `go generate ./rest` (regenerates gomock mocks) |
 | `make generate-ebpf` | Generate bpf2go bindings (`libssl_*_bpfel.go`) inside the Linux dev container; use on macOS before eBPF IDE work or to fix gopls `undefined: libsslObjects` errors (requires `make dev-build` + Docker) |
 | `make test`     | `make mock` then `go test ./...` (does **not** compile `insights_bpf`-tagged code) |
-| `make test-ebpf` | `go test -tags insights_bpf ./ebpf/...` — the only way tagged eBPF tests run; needs Linux + toolchain, and some tests need CAP_BPF |
+| `make test-ebpf` | `go test -tags insights_bpf -p 1 ./ebpf/...` - the only way tagged eBPF tests run; needs Linux + toolchain, and root (tests load real programs) |
 | `make docker-build` | Build via `build-scripts/Dockerfile`, output binary to `bin/` |
+| `make docker-build-ebpf` | Static eBPF binary via `build-scripts/Dockerfile.ebpf-bin`, output to `bin/` |
+| `make dev-build` / `dev-shell` / `dev-down` | The Linux dev container for eBPF work (`build-scripts/dev-container.sh`) |
+| `cd java-agent && ./gradlew check agentJar` | Java agent unit and `-javaagent` tests, and the jar (`java-agent/README.md`) |
 
-CI (`.circleci/config.yml`) runs `make` and `gotestsum --junitfile ...` against all packages.
+CI (`.circleci/config.yml`) runs `make` (with eBPF), `make mock` and `gotestsum` against all packages, and the Java agent's Gradle `check` on JDK 8, 21 and 25.
 
 ## Repository layout
 
 Top-level CLI plumbing:
-- `main.go` — trivial entry point.
-- `cmd/` — Cobra command tree (`root.go`, `supervisor.go`).
-- `cmd/internal/` — subcommand implementations:
-  - `apidump/` — `apidump` command: the core traffic-capture command.
-  - `ec2/` — `ec2 setup|remove`: install agent as a systemd service on EC2.
-  - `ecs/` — `ecs add|remove|cf-fragment|task-def`: AWS ECS integration.
-  - `kube/` — `kube inject|run|secret|helm-fragment|tf-fragment|webhook`: Kubernetes integration (DaemonSet, sidecar injection, manifests, mutating webhook).
-  - `kube-webhook/` — `kube webhook` subcommand: HTTPS admission webhook server that auto-injects the Java agent into pods.
-  - `legacy/` — legacy `specs` and other deprecated commands.
-  - `ascii/`, `akiflag/`, `cmderr/`, `pluginloader/` — CLI utilities.
+- `main.go` - trivial entry point.
+- `cmd/` - Cobra command tree (`root.go`, `supervisor.go`).
+- `cmd/postman-insights-jvm-attach/` - the separate helper binary that loads the Java agent into a running JVM, as the JVM's user.
+- `cmd/internal/` - subcommand implementations:
+  - `apidump/` - `apidump` command: the core traffic-capture command.
+  - `ec2/` - `ec2 setup|remove`: install agent as a systemd service on EC2.
+  - `ecs/` - `ecs add|remove|cf-fragment|task-def`: AWS ECS integration.
+  - `kube/` - `kube inject|run|secret|helm-fragment|tf-fragment`: Kubernetes integration (DaemonSet, sidecar injection, manifests).
+  - `legacy/` - legacy `specs` and other deprecated commands.
+  - `ascii/`, `akiflag/`, `cmderr/`, `pluginloader/` - CLI utilities.
 
 Core domain packages:
-- `apidump/` — orchestrates a capture session: pcap → parse → trace → backend.
-- `pcap/` — libpcap wrappers, packet/stream reassembly, replay.
-- `learn/` — HTTP parsing (request/response → IR "witnesses"), JSON preprocessing, event-stream parsing, Luhn checks.
-- `trace/` — collectors (`backend_collector`, `dummy_collector`), rate limiting, stats, filters, reporting buffer.
-- `rest/` — HTTP clients for the Postman/Akita backend (`front_client`, `learn_client`, base client, auth, errors). Mocks are generated here via `go generate`.
-- `daemon/` — long-running daemon HTTP server.
-- `plugin/` — pluggable architecture (`interface.go`, `akita/` plugin).
-- `ebpf/` — eBPF-based HTTPS capture (libssl uprobes). Key sub-packages:
-  - `ebpf/loader/` — loads BPF programs via `bpf2go`; generated `*_bpfel.go` files are gitignored (regenerated by CI).
-  - `ebpf/events/` — Go-side event types, ring-buffer reader, HTTP/2 adapter.
-  - `ebpf/programs/` — BPF C source (`libssl.bpf.c`, `event.h`).
-  - `ebpf/discovery/` — /proc-based PID watcher for auto-discovery of libssl processes and JVMs.
-  - `ebpf/javatls/` — the contract with the Java agent in `java-agent/` (frame format, control file, heartbeat), kept in sync with its Java copy by tests.
-  - `ebpf/jvm/` — JVM detection, the Java agent's control file kept fresh in each monitored JVM's container, and attaching the agent to running JVMs.
-  - `ebpf/jvm/attach/` — the HotSpot attach protocol, run by the separate `cmd/postman-insights-jvm-attach` helper binary as each JVM's own user.
+- `apidump/` - orchestrates a capture session: pcap → parse → trace → backend.
+- `pcap/` - libpcap wrappers, packet/stream reassembly, replay.
+- `learn/` - HTTP parsing (request/response → IR "witnesses"), JSON preprocessing, event-stream parsing, Luhn checks.
+- `trace/` - collectors (`backend_collector`, `dummy_collector`), rate limiting, stats, filters, reporting buffer.
+- `rest/` - HTTP clients for the Postman/Akita backend (`front_client`, `learn_client`, base client, auth, errors). Mocks are generated here via `go generate`.
+- `daemon/` - long-running daemon HTTP server.
+- `plugin/` - pluggable architecture (`interface.go`, `akita/` plugin).
+- `ebpf/` - eBPF-based HTTPS capture (libssl uprobes, Java agent frames). Developer guide: `ebpf/README.md`. Key sub-packages:
+  - `ebpf/loader/` - loads BPF programs via `bpf2go`; generated `*_bpfel.go` files are gitignored (regenerated by CI).
+  - `ebpf/events/` - Go-side event types, ring-buffer reader, the adapter to akinet (HTTP/1.1 and HTTP/2), the socket resolver.
+  - `ebpf/programs/` - BPF C source (`libssl.bpf.c`, `java_tls.bpf.c` and their headers).
+  - `ebpf/discovery/` - /proc-based PID watcher for auto-discovery of libssl processes and JVMs.
+  - `ebpf/javatls/` - the contract with the Java agent in `java-agent/` (frame format, control file, heartbeat), kept in sync with its Java copy by tests.
+  - `ebpf/jvm/` - JVM detection, the Java agent's control file kept fresh in each monitored JVM's container, and attaching the agent to running JVMs.
+  - `ebpf/jvm/attach/` - the HotSpot attach protocol, run by the separate `cmd/postman-insights-jvm-attach` helper binary as each JVM's own user.
 
 Integrations and platform helpers:
-- `integrations/cri_apis/` — Container Runtime Interface client (containerd/CRI-O).
-- `integrations/kube_apis/` — Kubernetes API access.
-- `integrations/nginx/` — nginx-related helpers.
-- `integrations/tests/` — integration tests.
-- `aws_utils/` — AWS SDK helpers.
-- `tcp_conn_tracker/`, `tls_conn_tracker/` — connection tracking.
-- `useragent/`, `location/`, `version/`, `setversion/`, `telemetry/`, `usage/`, `printer/`, `consts/`, `cfg/`, `env/`, `util/` — utilities.
+- `integrations/cri_apis/` - Container Runtime Interface client (containerd/CRI-O).
+- `integrations/kube_apis/` - Kubernetes API access.
+- `integrations/nginx/` - nginx-related helpers.
+- `integrations/tests/` - integration tests.
+- `aws_utils/` - AWS SDK helpers.
+- `tcp_conn_tracker/`, `tls_conn_tracker/` - connection tracking.
+- `useragent/`, `location/`, `version/`, `setversion/`, `telemetry/`, `usage/`, `printer/`, `consts/`, `cfg/`, `env/`, `util/` - utilities.
 
 Other:
-- `data_masks/` — PII/sensitive data redaction.
-- `apispec/` — API spec generation/handling.
-- `architecture/architecture.go` — architecture metadata.
-- `docs/discovery-mode.md` — important user-facing doc explaining **Discovery Mode** vs **Workspace Mode** onboarding (Kubernetes). Read this before changing onboarding/k8s flows.
-- `charts/postman-insights-webhook/` — Helm chart for the mutating admission webhook (Java agent auto-injection). This is the canonical chart location; do not put charts under `deployment/`.
-- `deployment/` — Go package (`package deployment`) for deployment-environment detection (EC2, ECS, k8s, etc.). **Not** for chart artifacts.
-- `build-scripts/`, `ci/` — release & deployment scripts. `build-scripts/Dockerfile` uses `golang:1.25-alpine` for static binary builds (Alpine's libpcap has no D-Bus dependency).
+- `data_masks/` - PII/sensitive data redaction.
+- `apispec/` - API spec generation/handling.
+- `architecture/architecture.go` - architecture metadata.
+- `docs/discovery-mode.md` - important user-facing doc explaining **Discovery Mode** vs **Workspace Mode** onboarding (Kubernetes). Read this before changing onboarding/k8s flows.
+- `docs/https-capture-design.md` - HTTPS capture design as built (pipeline, Java capture, limits, permissions).
+- `java-agent/` - the Postman Insights Java agent (Gradle; see its README), whose frames `ebpf/` reads.
+- `test/kind/` - kind end-to-end tests for HTTPS capture (`deploy-java-service.sh`, `SERVICE-TEST-GUIDE.md`).
+- `deployment/` - Go package (`package deployment`) for deployment-environment detection (EC2, ECS, k8s, etc.).
+- `build-scripts/` - Dockerfiles and build helpers: `Dockerfile` (static binary, `golang:1.25-alpine`; Alpine's libpcap has no D-Bus dependency), `Dockerfile.ebpf` (eBPF image with the Java capture files), `Dockerfile.ebpf-bin` (static eBPF binary), `Dockerfile.dev` + `dev-container.sh` (eBPF dev container), `java-capture-files.sh` (builds the Java agent jar and attach helper under the names the agent loads; release images use it too).
+- `ci/` - CI-environment detection (Go package).
 
 ## CLI surface (high level)
 
 Root: `postman-insights-agent` (see `cmd/root.go`). Notable subcommands:
 
-- `apidump` — Capture requests/responses from network traffic (primary command). Supports `--enable-https-capture` (eBPF libssl and, in preview, Java; `--https-libraries=openssl` leaves Java out).
-- `ec2 setup` / `ec2 remove` — Install/uninstall as systemd service on EC2.
-- `ecs add|remove|cf-fragment|task-def` — Manage agent on AWS ECS.
-- `kube inject|run|secret|helm-fragment|tf-fragment` — Kubernetes integration. `kube run` is the DaemonSet entrypoint (Linux only).
-- `kube webhook` — Run the mutating admission webhook that auto-injects the Postman Insights Java agent into pods in opted-in namespaces. Runs as a separate Deployment in the cluster (not the DaemonSet); deployed via `charts/postman-insights-webhook/`.
-- `specs` (legacy) — Manage API specs.
-- `aki` — ASCII art easter egg.
+- `apidump` - Capture requests/responses from network traffic (primary command). Supports `--enable-https-capture` (eBPF libssl and, in preview, Java; `--https-libraries=openssl` leaves Java out).
+- `ec2 setup` / `ec2 remove` - Install/uninstall as systemd service on EC2.
+- `ecs add|remove|cf-fragment|task-def` - Manage agent on AWS ECS.
+- `kube inject|run|secret|helm-fragment|tf-fragment` - Kubernetes integration. `kube run` is the DaemonSet entrypoint (Linux only); with `--enable-https-capture` it also loads the Java agent into running JVMs.
+- `specs` (legacy) - Manage API specs.
+- `aki` - ASCII art easter egg.
 
-Test-only / hidden flags live on the root command (`testOnlyUseHTTPSFlag`, `dogfoodFlag`, `debugFlag`, profiling flags, etc.) — see `cmd/root.go`.
+Test-only / hidden flags live on the root command (`testOnlyUseHTTPSFlag`, `dogfoodFlag`, `debugFlag`, profiling flags, etc.) - see `cmd/root.go`.
 
 ## Conventions and gotchas
 
 - **Cobra + Viper + pflag** are used throughout. New subcommands should follow the pattern in `cmd/internal/<name>/<name>.go` and be wired into `cmd/root.go`.
 - **Mocks**: `rest/` uses gomock. Run `make mock` (or `go generate ./rest`) after changing interfaces in `rest/interface.go`. `make test` does this automatically.
-- **libpcap is required at build time** on every platform — `pcap/get_pcap_handle_linux.go` is Linux-only; the generic file covers other OSes.
+- **libpcap is required at build time** on every platform - `pcap/get_pcap_handle_linux.go` is Linux-only; the generic file covers other OSes.
 - **Linux-only features**: `kube run` (DaemonSet mode), eBPF capture, and some pcap paths assume Linux. Be mindful when adding code under build-tagged files.
-- **eBPF generated files**: `ebpf/loader/*_bpfel.go` and `*.o` are produced by `go generate ./ebpf/loader` (via `bpf2go`) and are gitignored — CI regenerates them from source. Do not commit them. On macOS, run `make dev-build` then `make generate-ebpf` to create them locally for VS Code/gopls (see `ebpf/README.md`).
-- **Helm charts** live in `charts/`, not `deployment/`. The `deployment/` directory is a Go package for environment detection.
-- **Akita lineage**: Many package names, struct names, and dependencies still say `akita`. Do **not** rename these casually — they cross module boundaries (`github.com/akitasoftware/akita-ir`, `akita-libs`, `go-utils`). When in doubt, leave the name alone.
+- **eBPF generated files**: `ebpf/loader/*_bpfel.go` and `*.o` are produced by `go generate ./ebpf/loader` (via `bpf2go`) and are gitignored - CI regenerates them from source. Do not commit them. On macOS, run `make dev-build` then `make generate-ebpf` to create them locally for VS Code/gopls (see `ebpf/README.md`).
+- **Akita lineage**: Many package names, struct names, and dependencies still say `akita`. Do **not** rename these casually - they cross module boundaries (`github.com/akitasoftware/akita-ir`, `akita-libs`, `go-utils`). When in doubt, leave the name alone.
 - **Backend talk** goes through `rest/` clients. Avoid hitting external HTTP from other packages directly.
 - **Telemetry** is in `telemetry/`; usage events in `usage/`. Keep new event names consistent with existing ones.
 - **Discovery vs Workspace mode**: see `docs/discovery-mode.md`. New k8s onboarding work should support both and avoid resurrecting the legacy `--project` / `--collection` flags.
@@ -130,7 +135,7 @@ Capturing traffic typically requires root / `CAP_NET_RAW` (libpcap). Use `sudo` 
 
 ## When making changes
 
-1. Prefer small, well-scoped edits. The codebase mixes legacy Akita code with newer Postman code — don't refactor broadly without reason.
+1. Prefer small, well-scoped edits. The codebase mixes legacy Akita code with newer Postman code - don't refactor broadly without reason.
 2. If you touch anything in `rest/`, regenerate mocks (`make mock`) and run `make test`.
 3. If you add a subcommand, add it under `cmd/internal/<name>/` and register it in `cmd/root.go`.
 4. If you change onboarding/k8s behavior, update `docs/discovery-mode.md`.

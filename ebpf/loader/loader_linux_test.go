@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestLoadLibssl is the Phase 1 §4 smoke test. It boots the loader, asserts
+// TestLoadLibssl is the loader smoke test. It boots the loader, asserts
 // that the verifier accepts the program, and exercises Close().
 //
 // Requires:
