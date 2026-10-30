@@ -1,6 +1,7 @@
 package injector
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -240,20 +241,35 @@ func Test_InjectPodSettings(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses a pod that shares its process namespace", func(t *testing.T) {
+	// Settings Kubernetes does not allow with hostPID.
+	for field, value := range map[string]bool{"shareProcessNamespace": true, "hostUsers": false} {
+		t.Run(fmt.Sprintf("refuses a pod that sets %s: %v", field, value), func(t *testing.T) {
+			obj := deploymentWith()
+			if err := unstructured.SetNestedField(obj.Object, value, "spec", "template", "spec", field); err != nil {
+				t.Fatal(err)
+			}
+			inj := injectorImpl{objects: []*unstructured.Unstructured{obj}}
+			_, err := inj.Inject(sidecar)
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), "Deployment web")
+				assert.Contains(t, err.Error(), field)
+			}
+			// Without hostPID the sidecar fits such a pod.
+			_, err = inj.Inject(Sidecar{Container: sidecar.Container})
+			assert.NoError(t, err)
+		})
+	}
+
+	t.Run("accepts a pod that sets hostUsers: true", func(t *testing.T) {
 		obj := deploymentWith()
-		if err := unstructured.SetNestedField(obj.Object, true, "spec", "template", "spec", "shareProcessNamespace"); err != nil {
+		if err := unstructured.SetNestedField(obj.Object, true, "spec", "template", "spec", "hostUsers"); err != nil {
 			t.Fatal(err)
 		}
 		inj := injectorImpl{objects: []*unstructured.Unstructured{obj}}
-		_, err := inj.Inject(sidecar)
-		if assert.Error(t, err) {
-			assert.Contains(t, err.Error(), "Deployment web")
-			assert.Contains(t, err.Error(), "shareProcessNamespace")
+		out, err := inj.Inject(sidecar)
+		if assert.NoError(t, err) {
+			assert.True(t, podSpecOf(t, out[0]).HostPID)
 		}
-		// Without hostPID the sidecar fits such a pod.
-		_, err = inj.Inject(Sidecar{Container: sidecar.Container})
-		assert.NoError(t, err)
 	})
 
 	t.Run("changes no pod settings without volumes or hostPID", func(t *testing.T) {
