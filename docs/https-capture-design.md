@@ -98,7 +98,6 @@ The `ebpf-stats` line counts data frames without addresses (`java_conn_unbound`)
 
 Layer 4 is the witness rate limit of the HTTP path (`trace/rate_limit.go`), which HTTPS capture goes through unchanged; layer 3, a reservoir per route, was planned and is not built.
 The Java agents read the kernel's current payload cap from the control file, so they copy no more than the kernel keeps.
-`--https-capture-mode` implements only `truncated`, and `--privacy-mode` only `standard`; their other values are planned.
 
 ## 6. Permissions
 
@@ -122,7 +121,7 @@ The programs only observe: they never change syscalls or packets, and the kernel
 HTTPS capture lets the agent see east-west traffic between services, which tends to carry service tokens and internal payloads that never crossed the edge as HTTP.
 Captured messages go through the same witness and redaction path as HTTP capture: `Authorization` values are obfuscated, and `data_masks` redacts its sensitive keys and value patterns (`data_masks/redaction_config.yaml`) before anything leaves the host.
 Payloads are capped per read and write (section 5), and plaintext stays on the node until redacted: the BPF ring buffer is readable only by the agent that loaded the programs.
-A headers-only mode and a dry run (`--privacy-mode=strict`, `dry-run`) are not implemented yet.
+There is no headers-only mode and no dry run yet: with HTTPS capture on, payloads up to the cap are captured.
 
 ## 8. Prior art
 
