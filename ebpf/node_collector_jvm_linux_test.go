@@ -580,6 +580,134 @@ func TestNodeCollectorJVMFrameworks(t *testing.T) {
 	}
 }
 
+// TestNodeCollectorJVMFrameworksBurst: concurrent curl clients, one request
+// per connection, as the kind end-to-end test sends them. Every request and
+// response carries its own connection's addresses. Tomcat often reads the
+// handshake's last flight and the request on one worker thread and unwraps
+// the request on another, whose last read was another connection's socket:
+// the kernel counts that (java_conn_handoffs), and the connection keeps the
+// addresses its handshake tied it to. (Go's TLS client does not get Tomcat
+// to do that.)
+func TestNodeCollectorJVMFrameworksBurst(t *testing.T) {
+	f := newJVMFixture(t)
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not found")
+	}
+	// Without the libssl uprobes, which would capture curl's side too.
+	nc, ctx := testCollectorWith(t, NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true})
+	if !nc.Loader().JavaEnabled() {
+		t.Fatalf("Java TLS programs did not load: %v", nc.Loader().JavaError())
+	}
+	counter := func(idx uint32) uint64 {
+		t.Helper()
+		v, err := nc.Loader().ReadJavaCounter(idx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	for _, app := range []struct {
+		name    string
+		minJava int
+	}{
+		{"netty-jdk", 8},
+		{"netty-openssl", 8},
+		{"netty-epoll", 8},
+		{"tomcat", 17},
+		{"jetty", 17},
+		{"undertow", 17},
+	} {
+		t.Run(app.name, func(t *testing.T) {
+			if f.javaMajor() < app.minJava {
+				t.Skipf("needs Java %d", app.minJava)
+			}
+			out, unsubscribe := subscribe(t, ctx, nc, nil)
+			defer unsubscribe()
+			j := f.startApp(t, app.name, "", "-javaagent:"+f.agentJar)
+			j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+			handoffs, unbound := counter(loader.JavaCounterConnHandoff), counter(loader.JavaCounterConnUnbound)
+
+			// Each request has its own id; curl reports the port it sent it
+			// from, the ground truth for the addresses of its connection.
+			const clients, connsPerClient = 8, 9
+			var mu sync.Mutex
+			portOf := map[string]int{} // request id to client port
+			var wg sync.WaitGroup
+			for c := range clients {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := range connsPerClient {
+						id := fmt.Sprintf("%d-%d", c, i)
+						got, err := exec.Command("curl", "-fsSk", "-o", "/dev/null", "-w", "%{local_port}",
+							"https://"+j.addr+"/hello?burst="+id).Output()
+						port, perr := strconv.Atoi(string(got))
+						if err != nil || perr != nil {
+							t.Errorf("curl: %v %q", err, got)
+							return
+						}
+						mu.Lock()
+						portOf[id] = port
+						mu.Unlock()
+					}
+				}()
+			}
+			wg.Wait()
+			if t.Failed() {
+				return
+			}
+			ports := map[int]bool{}
+			for _, port := range portOf {
+				ports[port] = true
+			}
+
+			srv := mustTCPAddr(t, j.addr)
+			requests, responses := map[int]int{}, map[int]int{}
+			deadline := time.After(15 * time.Second)
+			for len(requests) < len(ports) || len(responses) < len(ports) {
+				select {
+				case pnt := <-out:
+					switch c := pnt.Content.(type) {
+					case akinet.HTTPRequest:
+						port, ok := portOf[c.URL.Query().Get("burst")]
+						if c.URL.Path != "/hello" || !ok {
+							continue // not this test's
+						}
+						if pnt.SrcPort != port || pnt.DstPort != srv.Port {
+							t.Errorf("request of the client on port %d went from port %d to port %d, want to %d",
+								port, pnt.SrcPort, pnt.DstPort, srv.Port)
+						}
+						requests[port]++
+					case akinet.HTTPResponse:
+						if pnt.SrcPort != srv.Port || !ports[pnt.DstPort] {
+							continue
+						}
+						responses[pnt.DstPort]++
+					}
+				case <-deadline:
+					t.Fatalf("captured requests of %d and responses to %d of %d connections",
+						len(requests), len(responses), len(ports))
+				}
+			}
+			for port := range ports {
+				if requests[port] != 1 || responses[port] != 1 {
+					t.Errorf("client port %d: %d requests and %d responses, want one each",
+						port, requests[port], responses[port])
+				}
+			}
+			if got := counter(loader.JavaCounterConnUnbound) - unbound; got != 0 {
+				t.Errorf("conn_unbound grew by %d, want 0", got)
+			}
+			got := counter(loader.JavaCounterConnHandoff) - handoffs
+			t.Logf("conn_handoffs grew by %d over %d connections", got, len(ports))
+			// Otherwise the burst did not exercise what it is for.
+			if app.name == "tomcat" && got == 0 {
+				t.Error("conn_handoffs did not grow: Tomcat unwrapped every request on the thread that read it")
+			}
+		})
+	}
+}
+
 // TestNodeCollectorJVMHttpClient: the JDK's HttpClient (java.net.http).
 func TestNodeCollectorJVMHttpClient(t *testing.T) {
 	f := newJVMFixture(t)

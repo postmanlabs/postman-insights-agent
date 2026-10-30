@@ -47,7 +47,7 @@ type HTTPSCaptureStats struct {
 	JavaNetnsRejected uint64 // frames from pods that are not monitored
 	JavaMalformed     uint64 // frames that failed validation
 	JavaConnUnbound   uint64 // data frames sent without their connection's addresses
-	JavaConnMismatch  uint64 // a connection's thread read another socket before its frame
+	JavaConnHandoffs  uint64 // RECV frames of a tied connection on a thread that last read another socket
 
 	// What happened to the JVMs of monitored pods on this node; only
 	// reported where the Java agent is attached to running JVMs.
@@ -77,9 +77,9 @@ func (s HTTPSCaptureStats) String() string {
 	if s.JavaEnabled {
 		line += fmt.Sprintf(
 			" java_frames=%d java_events=%d java_dropped_ringbuf=%d java_netns_rejected=%d java_malformed=%d"+
-				" java_conn_unbound=%d java_conn_mismatch=%d java_agents_alive=%d java_agents_capturing=%d",
+				" java_conn_unbound=%d java_conn_handoffs=%d java_agents_alive=%d java_agents_capturing=%d",
 			s.JavaFrames, s.JavaEvents, s.JavaDropped, s.JavaNetnsRejected, s.JavaMalformed,
-			s.JavaConnUnbound, s.JavaConnMismatch, s.JavaAgentsAlive, s.JavaAgentsCapturing)
+			s.JavaConnUnbound, s.JavaConnHandoffs, s.JavaAgentsAlive, s.JavaAgentsCapturing)
 	}
 	if s.JVMAttach {
 		line += fmt.Sprintf(
@@ -167,7 +167,7 @@ func httpsTelemetryWorker(
 					{loader.JavaCounterNetnsRejected, &s.JavaNetnsRejected},
 					{loader.JavaCounterMalformed, &s.JavaMalformed},
 					{loader.JavaCounterConnUnbound, &s.JavaConnUnbound},
-					{loader.JavaCounterConnMismatch, &s.JavaConnMismatch},
+					{loader.JavaCounterConnHandoff, &s.JavaConnHandoffs},
 				} {
 					if v, err := ldr.ReadJavaCounter(c.idx); err == nil {
 						*c.dst = v

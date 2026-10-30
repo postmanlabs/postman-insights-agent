@@ -233,15 +233,16 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	wantTuple(t, readEvent(t), server1)
 
 	// A thread that read another socket before a RECV frame of conn1 does
-	// not move conn1: it is counted.
-	mismatch := counter(t, JavaCounterConnMismatch)
+	// not move conn1: it is counted (Tomcat unwraps records that another
+	// worker thread read).
+	handoffs := counter(t, JavaCounterConnHandoff)
 	onThread(func() {
 		readFrom(server2, client2)
 		pwrite(t, javatls.OpRecv, conn1, "GET /2 HTTP/1.1\r\n\r\n")
 	})
 	wantTuple(t, readEvent(t), server1)
-	if got := counter(t, JavaCounterConnMismatch) - mismatch; got != 1 {
-		t.Errorf("conn_mismatch grew by %d, want 1", got)
+	if got := counter(t, JavaCounterConnHandoff) - handoffs; got != 1 {
+		t.Errorf("conn_handoffs grew by %d, want 1", got)
 	}
 
 	// A connection whose thread read nothing stays unknown, rather than
@@ -497,6 +498,38 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	if inConns(conn17) {
 		t.Error("the write after a CLOSE tied the closed connection")
 	}
+	// A tied connection's wrap whose CLOSE comes from another thread, before
+	// the wrapping thread's next write (Tomcat's workers): that write, of
+	// another connection's socket, does not tie the closed connection again.
+	const conn27 = 127
+	settle()
+	onThread(func() {
+		readFrom(server1, client1)
+		pwrite(t, javatls.OpRecv, conn27, "")
+	})
+	if !inConns(conn27) {
+		t.Fatal("the handshake's RECV frame did not tie the connection")
+	}
+	wrapped, closed := make(chan struct{}), make(chan struct{})
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		<-wrapped
+		pwrite(t, javatls.OpClose, conn27, "")
+		close(closed)
+	}()
+	onThread(func() {
+		wrap(t, conn27, "")
+		close(wrapped)
+		<-closed
+		writeTo(server2, client2)
+	})
+	if ev := readEvent(t); ev.Kind != events.KindJavaClose {
+		t.Fatalf("kind %d, want CLOSE", ev.Kind)
+	}
+	if inConns(conn27) {
+		t.Error("a write after another thread's CLOSE tied the closed connection again")
+	}
 
 	// A blocking read that waits long for its data still ties: the read
 	// counts when it returns. A blocking socket (a dup through File, outside
@@ -572,7 +605,7 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	// A blocking socket's connection has the addresses of its ADDRESS frame,
 	// with no read at all. Its frames (marked SOCKET) are never tied by the
 	// thread's reads: a read of another socket before one neither moves the
-	// connection nor counts as a mismatch, and one without its ADDRESS frame
+	// connection nor counts as a hand-off, and one without its ADDRESS frame
 	// (dropped) stays unknown.
 	addressOf := func(c net.Conn) []byte {
 		return javatls.Address{
@@ -587,7 +620,7 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	if got := counter(t, JavaCounterConnBound) - bound; got != 1 {
 		t.Fatalf("conn_bound grew by %d at an ADDRESS frame, want 1", got)
 	}
-	mismatch = counter(t, JavaCounterConnMismatch)
+	handoffs = counter(t, JavaCounterConnHandoff)
 	onThread(func() {
 		readFrom(server2, client2)
 		pwriteFlags(t, javatls.OpRecv, socketFlags, conn11, []byte("HTTP/1.1 200 OK\r\n\r\n"))
@@ -598,8 +631,8 @@ func testJavaConnAddresses(t *testing.T, kprobe bool) {
 	if ev := readEvent(t); ev.Tuple.Family != events.ConnFamilyUnknown {
 		t.Errorf("a socket's frame was tied by its thread's read: %+v", ev.Tuple)
 	}
-	if got := counter(t, JavaCounterConnMismatch) - mismatch; got != 0 {
-		t.Errorf("conn_mismatch grew by %d on a socket's frame, want 0", got)
+	if got := counter(t, JavaCounterConnHandoff) - handoffs; got != 0 {
+		t.Errorf("conn_handoffs grew by %d on a socket's frame, want 0", got)
 	}
 
 	// An ADDRESS frame replaces a tie the kernel made.
