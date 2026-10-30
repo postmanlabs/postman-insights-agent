@@ -92,18 +92,47 @@ func TestStandaloneScope(t *testing.T) {
 		name         string
 		inKubernetes bool
 		ownNetns     uint64
-		hostNetwork  bool
+		hostNetwork  HostNetwork
 		want         uint64
 		reason       string
 	}{
 		{name: "host", ownNetns: 42, want: 0},
 		{name: "host, own netns unknown", ownNetns: 0, want: 0},
-		{name: "pod", inKubernetes: true, ownNetns: 42, want: 42},
-		{name: "pod, own netns unknown", inKubernetes: true, ownNetns: 0, reason: "its network namespace is unknown"},
-		{name: "pod on the host network", inKubernetes: true, ownNetns: 42, hostNetwork: true, reason: "it is on the node's network (hostNetwork)"},
+		{name: "pod", inKubernetes: true, ownNetns: 42, hostNetwork: NotHostNetwork, want: 42},
+		{name: "pod, own netns unknown", inKubernetes: true, ownNetns: 0, hostNetwork: NotHostNetwork, reason: "its network namespace is unknown"},
+		{name: "pod on the host network", inKubernetes: true, ownNetns: 42, hostNetwork: OnHostNetwork, reason: "it is on the node's network (hostNetwork)"},
+		{name: "pod that may be on the host network", inKubernetes: true, ownNetns: 42, hostNetwork: HostNetworkUnknown,
+			reason: "it is not known whether it is on the node's network (hostNetwork)"},
 	} {
 		netns, reason := StandaloneScope(tc.inKubernetes, tc.ownNetns, tc.hostNetwork)
 		assert.Equal(t, tc.want, netns, tc.name)
 		assert.Equal(t, tc.reason, reason, tc.name)
+	}
+}
+
+func TestPodHostNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		podIP, hostIP    string
+		ownNetns         uint64
+		initNetns        uint64
+		rootPIDNamespace bool
+		want             HostNetwork
+	}{
+		// The IPs decide when both are set, whatever /proc shows.
+		{name: "IPs differ", podIP: "10.0.0.5", hostIP: "172.18.0.2", ownNetns: 42, initNetns: 42, want: NotHostNetwork},
+		{name: "IPs the same", podIP: "172.18.0.2", hostIP: "172.18.0.2", ownNetns: 42, initNetns: 7, want: OnHostNetwork},
+		{name: "only the pod IP", podIP: "10.0.0.5", ownNetns: 42, initNetns: 42, want: HostNetworkUnknown},
+		// hostPID: PID 1 is the node's init.
+		{name: "hostPID, own network", ownNetns: 42, initNetns: 7, rootPIDNamespace: true, want: NotHostNetwork},
+		{name: "hostPID on a nested node, own network", ownNetns: 42, initNetns: 7, want: NotHostNetwork},
+		{name: "hostPID, node's network", ownNetns: 7, initNetns: 7, rootPIDNamespace: true, want: OnHostNetwork},
+		// PID 1 on the pod's network, without kernel threads: the pod's own
+		// first process, or a nested node's init with the pod on its network.
+		{name: "no hostPID, or hostPID on a nested node's network", ownNetns: 7, initNetns: 7, want: HostNetworkUnknown},
+		{name: "own netns unknown", initNetns: 7, rootPIDNamespace: true, want: HostNetworkUnknown},
+		{name: "PID 1's netns unknown", ownNetns: 42, rootPIDNamespace: true, want: HostNetworkUnknown},
+	} {
+		assert.Equal(t, tc.want, PodHostNetwork(tc.podIP, tc.hostIP, tc.ownNetns, tc.initNetns, tc.rootPIDNamespace), tc.name)
 	}
 }

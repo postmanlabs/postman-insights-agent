@@ -59,13 +59,15 @@ func NewCRIClient() (*CriClient, error) {
 }
 
 // inspectContainer inspects the container with the given ID
-func (cc *CriClient) inspectContainer(containerID string) (ContainerInfo, error) {
+// inspectContainer asks the runtime for a container's status, within ctx and
+// the client's timeout.
+func (cc *CriClient) inspectContainer(ctx context.Context, containerID string) (ContainerInfo, error) {
 	containerStatusRequest := &runtime.ContainerStatusRequest{
 		ContainerId: containerID,
 		Verbose:     true, // Needed to get info object
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cc.runtimeService.timeout)
+	ctx, cancel := context.WithTimeout(ctx, cc.runtimeService.timeout)
 	defer cancel()
 
 	// Inspect the container
@@ -85,7 +87,7 @@ func (cc *CriClient) inspectContainer(containerID string) (ContainerInfo, error)
 
 // GetNetworkNamespace returns the network namespace of a given container
 func (cc *CriClient) GetNetworkNamespace(containerID string) (string, error) {
-	containerInfo, err := cc.inspectContainer(containerID)
+	containerInfo, err := cc.inspectContainer(context.Background(), containerID)
 	if err != nil {
 		return "", err
 	}
@@ -101,9 +103,10 @@ func (cc *CriClient) GetNetworkNamespace(containerID string) (string, error) {
 
 // GetContainerPID returns the init-process PID of the given container as
 // reported by the CRI runtime (containerd / CRI-O). The PID is in the
-// node's PID namespace (which is the agent's view when hostPID:true).
-func (cc *CriClient) GetContainerPID(containerID string) (int, error) {
-	info, err := cc.inspectContainer(containerID)
+// node's PID namespace (which is the agent's view when hostPID:true). The
+// call ends when ctx does.
+func (cc *CriClient) GetContainerPID(ctx context.Context, containerID string) (int, error) {
+	info, err := cc.inspectContainer(ctx, containerID)
 	if err != nil {
 		return 0, err
 	}
@@ -115,7 +118,7 @@ func (cc *CriClient) GetContainerPID(containerID string) (int, error) {
 
 // GetEnvVars returns the environment variables of a given container
 func (cc *CriClient) GetEnvVars(containerID string) (map[string]string, error) {
-	containerInfo, err := cc.inspectContainer(containerID)
+	containerInfo, err := cc.inspectContainer(context.Background(), containerID)
 	if err != nil {
 		return nil, err
 	}

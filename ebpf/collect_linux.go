@@ -70,7 +70,15 @@ func Start(load LoadArgs) (*Capture, error) {
 	// all when that namespace is not the pod's alone (StandaloneScope). Java
 	// is confined to the agent's netns anyway, so it needs it known.
 	inKubernetes := os.Getenv("KUBERNETES_SERVICE_HOST") != ""
-	netns, reason := StandaloneScope(inKubernetes, c.javaNetns, inKubernetes && onHostNetwork(c.javaNetns))
+	hostNetwork := HostNetworkUnknown
+	if inKubernetes {
+		hostNetwork = podHostNetwork(c.javaNetns)
+	}
+	netns, reason := StandaloneScope(inKubernetes, c.javaNetns, hostNetwork)
+	if reason == skipHostNetworkUnknown {
+		return nil, fmt.Errorf("ebpf: no HTTPS capture in this pod: %s, where its processes cannot be told from other pods' and the node's; "+
+			"set POSTMAN_K8S_POD_IP and POSTMAN_K8S_HOST_IP from the downward API (status.podIP and status.hostIP), as kube inject does", reason)
+	}
 	if reason != "" {
 		return nil, fmt.Errorf("ebpf: no HTTPS capture in this pod: %s, so its processes cannot be told from other pods' and the node's", reason)
 	}
@@ -114,39 +122,15 @@ func Start(load LoadArgs) (*Capture, error) {
 	return c, nil
 }
 
-// onHostNetwork reports whether the agent's pod, whose network namespace is
-// ownNetns, is on the node's network. The generated sidecars get their pod's
-// and node's IPs from the downward API (POSTMAN_K8S_POD_IP and
-// POSTMAN_K8S_HOST_IP), which are the same for a hostNetwork pod. Without
-// them, it compares ownNetns with the node's, which only a pod with hostPID
-// on a node that is not itself a container sees (sidecarNodeNetns).
-func onHostNetwork(ownNetns uint64) bool {
-	podIP, hostIP := os.Getenv("POSTMAN_K8S_POD_IP"), os.Getenv("POSTMAN_K8S_HOST_IP")
-	if podIP != "" && hostIP != "" {
-		return podIP == hostIP
-	}
-	node := sidecarNodeNetns()
-	return node != 0 && node == ownNetns
-}
-
-// sidecarNodeNetns returns the node's network namespace inode when the agent
-// runs in a Kubernetes pod and sees the node's processes (hostPID, which the
-// generated sidecars set for HTTPS capture), or 0. A pod on the host network
-// shares the node's netns with host processes and other hostNetwork pods, so
-// it does not identify the agent's pod (PodNetnsSkipReason). An agent run on
-// a host, outside Kubernetes, captures the host's JVMs. Without hostPID the
-// node's netns cannot be seen, so a hostNetwork pod is not detected.
-func sidecarNodeNetns() uint64 {
-	if os.Getenv("KUBERNETES_SERVICE_HOST") == "" {
-		return 0
-	}
+// podHostNetwork tells whether the agent's pod, whose network namespace is
+// ownNetns, is on the node's network (PodHostNetwork).
+func podHostNetwork(ownNetns uint64) HostNetwork {
 	// Kernel threads are visible only in the root PID namespace; PID 2 is
-	// kthreadd, so /proc/1 is then the node's init.
+	// kthreadd there.
 	comm, err := os.ReadFile("/proc/2/comm")
-	if err != nil || strings.TrimSpace(string(comm)) != "kthreadd" {
-		return 0
-	}
-	return netnsInodeAt("/proc/1/ns/net")
+	rootPIDNamespace := err == nil && strings.TrimSpace(string(comm)) == "kthreadd"
+	return PodHostNetwork(os.Getenv("POSTMAN_K8S_POD_IP"), os.Getenv("POSTMAN_K8S_HOST_IP"),
+		ownNetns, netnsInodeAt("/proc/1/ns/net"), rootPIDNamespace)
 }
 
 // Libraries returns the TLS libraries c captures from.

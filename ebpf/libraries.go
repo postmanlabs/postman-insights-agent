@@ -80,10 +80,52 @@ func HTTPSCaptureFromFlags(enabled bool, names []string) (bool, Libraries) {
 
 // Why a pod's HTTPS capture cannot be confined to the pod.
 const (
-	skipPodNetnsUnknown  = "its network namespace is unknown"
-	skipNodeNetnsUnknown = "the node's network namespace is unknown"
-	skipHostNetwork      = "it is on the node's network (hostNetwork)"
+	skipPodNetnsUnknown    = "its network namespace is unknown"
+	skipNodeNetnsUnknown   = "the node's network namespace is unknown"
+	skipHostNetwork        = "it is on the node's network (hostNetwork)"
+	skipHostNetworkUnknown = "it is not known whether it is on the node's network (hostNetwork)"
 )
+
+// HostNetwork is whether a pod is on the node's network. The zero value,
+// HostNetworkUnknown, is treated as a pod that may be.
+type HostNetwork int
+
+const (
+	HostNetworkUnknown HostNetwork = iota
+	NotHostNetwork
+	OnHostNetwork
+)
+
+// PodHostNetwork tells whether the agent's pod is on the node's network, from
+// what the agent sees in it. The generated sidecars set the pod's and node's
+// IPs, podIP and hostIP (POSTMAN_K8S_POD_IP and POSTMAN_K8S_HOST_IP, from the
+// downward API), which are the same for a hostNetwork pod. Without them, it
+// compares the pod's network namespace, ownNetns, with that of PID 1 in the
+// agent's /proc, initNetns:
+//   - Different: PID 1 is outside the pod, so the agent sees the node's
+//     processes (hostPID) and PID 1 is the node's init, on another network.
+//   - The same, and the agent sees kernel threads (rootPIDNamespace), which
+//     only the node's own PID namespace shows: PID 1 is the node's init, on
+//     the pod's network.
+//   - The same otherwise: PID 1 is either the pod's own first process
+//     (without hostPID), or the init of a node that is itself a container
+//     (kind, k3d) with the pod on its network. That is unknown.
+func PodHostNetwork(podIP, hostIP string, ownNetns, initNetns uint64, rootPIDNamespace bool) HostNetwork {
+	switch {
+	case podIP != "" && hostIP != "":
+		if podIP == hostIP {
+			return OnHostNetwork
+		}
+		return NotHostNetwork
+	case ownNetns == 0 || initNetns == 0:
+		return HostNetworkUnknown
+	case ownNetns != initNetns:
+		return NotHostNetwork
+	case rootPIDNamespace:
+		return OnHostNetwork
+	}
+	return HostNetworkUnknown
+}
 
 // PodNetnsSkipReason returns why HTTPS capture cannot be confined to a pod in
 // network namespace podNetns on a node whose own namespace is hostNetns, or
@@ -114,16 +156,20 @@ func PodNetnsSkipReason(podNetns, hostNetns uint64) string {
 // and would otherwise capture other pods' traffic as its own. A pod on the
 // node's network (hostNetwork) shares its namespace with host processes and
 // other hostNetwork pods, and an unknown one identifies nothing, so then it
-// captures nothing, as a DaemonSet does for such pods (PodNetnsSkipReason).
-// An agent on a host, outside Kubernetes, captures the host's processes.
-func StandaloneScope(inKubernetes bool, ownNetns uint64, hostNetwork bool) (netns uint64, skipReason string) {
+// captures nothing, as a DaemonSet does for such pods (PodNetnsSkipReason);
+// nor does it when it cannot tell whether the pod is on the node's network
+// (PodHostNetwork). This holds with --https-target-namespaces too. An agent
+// on a host, outside Kubernetes, captures the host's processes.
+func StandaloneScope(inKubernetes bool, ownNetns uint64, hostNetwork HostNetwork) (netns uint64, skipReason string) {
 	switch {
 	case !inKubernetes:
 		return 0, ""
 	case ownNetns == 0:
 		return 0, skipPodNetnsUnknown
-	case hostNetwork:
+	case hostNetwork == OnHostNetwork:
 		return 0, skipHostNetwork
+	case hostNetwork != NotHostNetwork:
+		return 0, skipHostNetworkUnknown
 	}
 	return ownNetns, ""
 }

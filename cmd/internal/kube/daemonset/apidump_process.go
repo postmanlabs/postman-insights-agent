@@ -1,6 +1,7 @@
 package daemonset
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -124,14 +125,23 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 
 		// Resolve the container's network-namespace inode, which HTTPS capture
 		// is confined to. Without it buildHTTPSArgs turns HTTPS capture off for
-		// the pod; HTTP/pcap capture is unaffected.
+		// the pod; HTTP/pcap capture is unaffected. A stop of the pod's capture
+		// during the lookup (the pod deleted, the DaemonSet shutting down) ends
+		// it before capture starts.
 		var netnsInode uint64
 		if d.EnableHTTPSCapture {
-			inode, err := containerNetnsInode(d.CRIClient.GetContainerPID, readNetnsInode, podArgs.ContainerUUID,
-				netnsLookupAttempts, netnsLookupInterval)
-			if err != nil {
-				printer.Warningf("ebpf: could not read the network namespace of pod %s: %v\n", podArgs.PodName, err)
-			} else {
+			lookupCtx, cancelLookup := context.WithTimeout(context.Background(), netnsLookupTimeout)
+			inode, err := containerNetnsInode(lookupCtx, podArgs.StopChan, d.CRIClient.GetContainerPID, readNetnsInode,
+				podArgs.ContainerUUID, netnsLookupInterval)
+			cancelLookup()
+			var stopped netnsLookupStopped
+			switch {
+			case errors.As(err, &stopped):
+				printer.Infof("Received external stop signal for pod %s before capture started, error: %v\n", podArgs.PodName, stopped.stopErr)
+				return nil
+			case err != nil:
+				printer.Warningf("ebpf: could not read the network namespace of pod %s within %s: %v\n", podArgs.PodName, netnsLookupTimeout, err)
+			default:
 				netnsInode = inode
 			}
 		}
@@ -241,32 +251,45 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 }
 
 // The container of a pod the DaemonSet has just seen may not have started
-// yet, and the runtime then reports no PID for it: containerNetnsInode tries
-// for up to netnsLookupAttempts × netnsLookupInterval.
+// yet, and the runtime then reports no PID for it: the lookup tries every
+// netnsLookupInterval for up to netnsLookupTimeout in all, runtime calls
+// included.
 const (
-	netnsLookupAttempts = 30
+	netnsLookupTimeout  = 30 * time.Second
 	netnsLookupInterval = time.Second
 )
 
+// netnsLookupStopped is the error of a containerNetnsInode that the pod's stop
+// channel ended, with the error the stop carried.
+type netnsLookupStopped struct{ stopErr error }
+
+func (e netnsLookupStopped) Error() string {
+	return fmt.Sprintf("stopped while looking up the network namespace: %v", e.stopErr)
+}
+
 // containerNetnsInode returns the network-namespace inode of the container,
-// trying again while its PID or namespace cannot be read yet.
-func containerNetnsInode(containerPID func(containerID string) (int, error), netnsInode func(pid int) (uint64, error),
-	containerID string, attempts int, interval time.Duration) (uint64, error) {
-	var err error
-	for i := 0; i < attempts; i++ {
-		if i > 0 {
-			time.Sleep(interval)
+// trying again while its PID or namespace cannot be read yet, until ctx is
+// done, which also ends a runtime call in progress. A stop received from stop
+// between tries ends it with netnsLookupStopped.
+func containerNetnsInode(ctx context.Context, stop <-chan error,
+	containerPID func(ctx context.Context, containerID string) (int, error), netnsInode func(pid int) (uint64, error),
+	containerID string, interval time.Duration) (uint64, error) {
+	for {
+		pid, err := containerPID(ctx, containerID)
+		if err == nil {
+			var inode uint64
+			if inode, err = netnsInode(pid); err == nil {
+				return inode, nil
+			}
 		}
-		var pid int
-		if pid, err = containerPID(containerID); err != nil {
-			continue
-		}
-		var inode uint64
-		if inode, err = netnsInode(pid); err == nil {
-			return inode, nil
+		select {
+		case stopErr := <-stop:
+			return 0, netnsLookupStopped{stopErr: stopErr}
+		case <-ctx.Done():
+			return 0, err
+		case <-time.After(interval):
 		}
 	}
-	return 0, err
 }
 
 // readNetnsInode returns the network-namespace inode for the given PID by

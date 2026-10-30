@@ -1,10 +1,12 @@
 package daemonset
 
 import (
+	"context"
 	"errors"
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
@@ -371,10 +373,10 @@ func TestDaemonset_EBPFNodeCollectorDefaultsNil(t *testing.T) {
 }
 
 // The network namespace of a container that has not started yet is read
-// once it has, within the attempts allowed.
+// once it has.
 func TestContainerNetnsInode(t *testing.T) {
 	calls := 0
-	pid := func(string) (int, error) {
+	pid := func(context.Context, string) (int, error) {
 		calls++
 		if calls < 3 {
 			return 0, errors.New("CRI returned zero pid for container")
@@ -387,13 +389,51 @@ func TestContainerNetnsInode(t *testing.T) {
 		}
 		return 77, nil
 	}
-	got, err := containerNetnsInode(pid, inode, "c1", 5, 0)
+	got, err := containerNetnsInode(context.Background(), nil, pid, inode, "c1", 0)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(77), got)
 	assert.Equal(t, 3, calls)
+}
 
-	calls = 0
-	_, err = containerNetnsInode(func(string) (int, error) { calls++; return 0, errors.New("CRI returned zero pid for container") }, inode, "c1", 4, 0)
-	assert.ErrorContains(t, err, "zero pid")
-	assert.Equal(t, 4, calls, "gives up after the attempts allowed")
+// The lookup gives up at its deadline, also in a runtime call that does not
+// return by itself, rather than after its tries' timeouts add up.
+func TestContainerNetnsInode_Deadline(t *testing.T) {
+	inode := func(int) (uint64, error) { return 77, nil }
+	for name, pid := range map[string]func(context.Context, string) (int, error){
+		"failing calls": func(context.Context, string) (int, error) {
+			return 0, errors.New("CRI returned zero pid for container")
+		},
+		"a call that blocks": func(ctx context.Context, _ string) (int, error) {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := containerNetnsInode(ctx, nil, pid, inode, "c1", 10*time.Millisecond)
+			assert.Error(t, err)
+			assert.Less(t, time.Since(start), 2*time.Second)
+		})
+	}
+}
+
+// A stop of the pod's capture ends the lookup, with the stop's error.
+func TestContainerNetnsInode_Stopped(t *testing.T) {
+	stop := make(chan error, 1)
+	stop <- errors.New("got pod delete event")
+	pid := func(context.Context, string) (int, error) {
+		return 0, errors.New("CRI returned zero pid for container")
+	}
+	inode := func(int) (uint64, error) { return 77, nil }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	start := time.Now()
+	_, err := containerNetnsInode(ctx, stop, pid, inode, "c1", time.Minute)
+	var stopped netnsLookupStopped
+	if assert.ErrorAs(t, err, &stopped) {
+		assert.EqualError(t, stopped.stopErr, "got pod delete event")
+	}
+	assert.Less(t, time.Since(start), 2*time.Second)
 }
