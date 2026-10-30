@@ -106,6 +106,9 @@ Java HTTPS capture is in preview, and on by default with `--enable-https-capture
 Without `java`, the Insights Agent switches off the agents already running in the JVMs of the pods it monitors, at the next control-file refresh.
 The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
 As a DaemonSet (`kube run`), it also loads the agent into running JVMs that do not have it, through the `postman-insights-jvm-attach` helper (`cmd/postman-insights-jvm-attach`), which it runs as each JVM's own user.
+It copies the jar into the JVM's container, as `/tmp/.postman-insights/agent-<checksum>/postman-insights-java-agent.jar`, only when the JVM does not run the agent yet.
+Once a JVM in a container runs the agent, it removes the copies that other Insights Agent versions left there, except those a process still has open or mapped: a JVM keeps the jar it loaded for as long as it runs.
+A loaded agent cannot be replaced, so a JVM runs the agent version it loaded until it restarts; when that is not the Insights Agent's own version, the log says so, and the `ebpf-stats` line counts the JVM in `jvms_agent_other_version`.
 Run as a sidecar (`apidump`), it loads nothing: the JVMs need `-javaagent`.
 To write the control file of a JVM running as another user, it needs the `SYS_PTRACE` capability, which the sidecars that `kube inject`, `helm-fragment` and `tf-fragment` generate get with `--https-libraries` including `java`.
 It then captures Java only in its own pod's network namespace, even with `hostPID`, and not at all in a pod on the host network.

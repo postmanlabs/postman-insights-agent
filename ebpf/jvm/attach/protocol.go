@@ -11,8 +11,9 @@
 // allowed) and stages the jar. The helper does what only the JVM's user can
 // do: it reads the JVM's files that only that user may read (its perf data
 // and environment, OpInspect), so the Insights agent needs no capability
-// that bypasses file permissions, and it performs the attach (OpAttach). The
-// two talk through Request on stdin and Result on stdout.
+// that bypasses file permissions, it asks the JVM whether the agent already
+// runs (OpProbe), and it performs the attach (OpAttach). The two talk through
+// Request on stdin and Result on stdout.
 package attach
 
 import (
@@ -36,6 +37,11 @@ const (
 	// OpInspect reads what the Insights agent checks before attaching (see
 	// Inspection).
 	OpInspect = "inspect"
+	// OpProbe reports whether the agent runs in the JVM (AlreadyLoaded or
+	// NotLoaded), starting the JVM's attach listener as OpAttach does. The
+	// Insights agent stages the jar in the JVM's container only when it is
+	// not loaded.
+	OpProbe = "probe"
 	// OpAttach loads the agent.
 	OpAttach = "attach"
 )
@@ -57,7 +63,7 @@ type Request struct {
 	JarPath   string `json:"jar_path,omitempty"`
 	AgentArgs string `json:"agent_args,omitempty"`
 	// AllowSignal permits starting the JVM's attach listener with SIGQUIT
-	// when it is not running yet (OpAttach). The Insights agent sets it only
+	// when it is not running yet (OpProbe, OpAttach). The Insights agent sets it only
 	// when the JVM catches SIGQUIT and has attach enabled; otherwise the
 	// signal would kill the JVM or dump its threads into the application's
 	// log.
@@ -73,6 +79,9 @@ const (
 	// AlreadyLoaded: the agent was already running in the JVM (loaded at
 	// start with -javaagent, or by an earlier attach); nothing was loaded.
 	AlreadyLoaded Outcome = "already_loaded"
+	// NotLoaded: OpProbe found no agent running, nor an earlier failed
+	// start.
+	NotLoaded Outcome = "not_loaded"
 	// Inspected: Result.Inspection holds what OpInspect read.
 	Inspected Outcome = "inspected"
 	// Failed: see Result.Reason.

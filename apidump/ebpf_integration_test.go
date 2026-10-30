@@ -77,9 +77,9 @@ func TestHTTPSCaptureStatsStringJVMs(t *testing.T) {
 	assert.NotContains(t, s.String(), "jvms")
 
 	s.JVMAttach = true
-	s.JVMsAttached, s.JVMsAgentRunning, s.JVMsSkipped = 1, 1, 1
+	s.JVMsAttached, s.JVMsAgentRunning, s.JVMsAgentOther, s.JVMsSkipped = 1, 1, 1, 1
 	assert.Contains(t, s.String(),
-		" jvms=3 jvms_attached=1 jvms_agent_running=1 jvms_skipped=1 jvms_attach_failed=0")
+		" jvms=3 jvms_attached=1 jvms_agent_running=1 jvms_agent_other_version=1 jvms_skipped=1 jvms_attach_failed=0")
 }
 
 // The worker reads the JVM attach counters it is given, summing the reasons.
@@ -94,13 +94,13 @@ func TestHTTPSTelemetryWorkerJVMStats(t *testing.T) {
 	}}
 	stats := func() (jvm.AttachStats, bool) {
 		return jvm.AttachStats{
-			Seen: 4, Attached: 1,
+			Seen: 4, Attached: 1, AlreadyRunning: 1, OtherVersion: 1,
 			Skipped: map[string]uint64{jvm.SkipOpenJ9: 1, jvm.SkipAttachDisabled: 1},
 			Failed:  map[string]uint64{jvm.FailHelper: 1},
 		}, true
 	}
 	httpsTelemetryWorker(ctx, time.Millisecond, nil, nil, nil, nil, stats, tracker, nil, "")
-	assert.Contains(t, line, " jvms=4 jvms_attached=1 jvms_agent_running=0 jvms_skipped=2 jvms_attach_failed=1")
+	assert.Contains(t, line, " jvms=4 jvms_attached=1 jvms_agent_running=1 jvms_agent_other_version=1 jvms_skipped=2 jvms_attach_failed=1")
 }
 
 // A DaemonSet logs one ebpf-stats line per pod, which names it.

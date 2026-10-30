@@ -55,6 +55,7 @@ type HTTPSCaptureStats struct {
 	JVMsSeen         uint64
 	JVMsAttached     uint64
 	JVMsAgentRunning uint64 // already ran the agent (-javaagent, or attached earlier)
+	JVMsAgentOther   uint64 // of those, attached earlier with another agent version
 	JVMsSkipped      uint64 // not attachable by design (OpenJ9, attach disabled, -Xrs)
 	JVMsAttachFailed uint64
 
@@ -83,8 +84,8 @@ func (s HTTPSCaptureStats) String() string {
 	}
 	if s.JVMAttach {
 		line += fmt.Sprintf(
-			" jvms=%d jvms_attached=%d jvms_agent_running=%d jvms_skipped=%d jvms_attach_failed=%d",
-			s.JVMsSeen, s.JVMsAttached, s.JVMsAgentRunning, s.JVMsSkipped, s.JVMsAttachFailed)
+			" jvms=%d jvms_attached=%d jvms_agent_running=%d jvms_agent_other_version=%d jvms_skipped=%d jvms_attach_failed=%d",
+			s.JVMsSeen, s.JVMsAttached, s.JVMsAgentRunning, s.JVMsAgentOther, s.JVMsSkipped, s.JVMsAttachFailed)
 	}
 	return line
 }
@@ -185,6 +186,7 @@ func httpsTelemetryWorker(
 				s.JVMsSeen = st.Seen
 				s.JVMsAttached = st.Attached
 				s.JVMsAgentRunning = st.AlreadyRunning
+				s.JVMsAgentOther = st.OtherVersion
 				s.JVMsSkipped = sumCounts(st.Skipped)
 				s.JVMsAttachFailed = sumCounts(st.Failed)
 			}
