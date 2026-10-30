@@ -103,6 +103,10 @@ func doInit() {
 		trackingUser:    &TrackingUser{},
 		rateLimitMap:    &globalRateLimitMap,
 	}
+	// The client is chosen below, and the root tracker was made with the
+	// placeholder: give it the one chosen, on every return path, or Default()
+	// and the package-level functions send nothing.
+	defer func() { rootTracker.analyticsClient = sharedAnalyticsClient }()
 
 	// Initialize the base API error handler
 	rest.BaseAPIErrorHandler = rootTracker.APIError
