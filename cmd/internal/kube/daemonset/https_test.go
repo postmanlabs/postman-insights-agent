@@ -419,21 +419,29 @@ func TestContainerNetnsInode_Deadline(t *testing.T) {
 	}
 }
 
-// A stop of the pod's capture ends the lookup, with the stop's error.
+// A stop of the pod's capture ends the lookup, with the stop's error, also
+// when the try it came during succeeds.
 func TestContainerNetnsInode_Stopped(t *testing.T) {
-	stop := make(chan error, 1)
-	stop <- errors.New("got pod delete event")
-	pid := func(context.Context, string) (int, error) {
-		return 0, errors.New("CRI returned zero pid for container")
+	for name, pid := range map[string]func(context.Context, string) (int, error){
+		"failing lookup": func(context.Context, string) (int, error) {
+			return 0, errors.New("CRI returned zero pid for container")
+		},
+		"successful lookup": func(context.Context, string) (int, error) { return 1234, nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stop := make(chan error, 1)
+			stop <- errors.New("got pod delete event")
+			inode := func(int) (uint64, error) { return 77, nil }
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			start := time.Now()
+			got, err := containerNetnsInode(ctx, stop, pid, inode, "c1", time.Minute)
+			var stopped netnsLookupStopped
+			if assert.ErrorAs(t, err, &stopped) {
+				assert.EqualError(t, stopped.stopErr, "got pod delete event")
+			}
+			assert.Zero(t, got)
+			assert.Less(t, time.Since(start), 2*time.Second)
+		})
 	}
-	inode := func(int) (uint64, error) { return 77, nil }
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	start := time.Now()
-	_, err := containerNetnsInode(ctx, stop, pid, inode, "c1", time.Minute)
-	var stopped netnsLookupStopped
-	if assert.ErrorAs(t, err, &stopped) {
-		assert.EqualError(t, stopped.stopErr, "got pod delete event")
-	}
-	assert.Less(t, time.Since(start), 2*time.Second)
 }

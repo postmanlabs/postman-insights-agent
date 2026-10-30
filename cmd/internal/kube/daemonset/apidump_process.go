@@ -270,17 +270,24 @@ func (e netnsLookupStopped) Error() string {
 // containerNetnsInode returns the network-namespace inode of the container,
 // trying again while its PID or namespace cannot be read yet, until ctx is
 // done, which also ends a runtime call in progress. A stop received from stop
-// between tries ends it with netnsLookupStopped.
+// ends it with netnsLookupStopped, also one that came during a try that
+// succeeded, so that a pod stopped during the lookup starts no capture.
 func containerNetnsInode(ctx context.Context, stop <-chan error,
 	containerPID func(ctx context.Context, containerID string) (int, error), netnsInode func(pid int) (uint64, error),
 	containerID string, interval time.Duration) (uint64, error) {
 	for {
 		pid, err := containerPID(ctx, containerID)
+		var inode uint64
 		if err == nil {
-			var inode uint64
-			if inode, err = netnsInode(pid); err == nil {
-				return inode, nil
-			}
+			inode, err = netnsInode(pid)
+		}
+		select {
+		case stopErr := <-stop:
+			return 0, netnsLookupStopped{stopErr: stopErr}
+		default:
+		}
+		if err == nil {
+			return inode, nil
 		}
 		select {
 		case stopErr := <-stop:
