@@ -7,12 +7,11 @@ to create collections based on the endpoints you're interested in the most, so
 you can visually inspect your API productivity and fix any errors that may
 occur.
 
-Postman is working toward the open launch of Postman Insights. Today, the alpha
-release enables you to leverage the Postman Insights Agent on Amazon Elastic
-Container Service (ECS) deployments. Within 15 minutes of installing the
-Postman Insights Agent in staging or production, you'll start to see endpoints.
-The Postman Insights Agent will keep these endpoints up to date based on new
-observed traffic and its errors, latency, and volume.
+The Postman Insights Agent runs on Kubernetes (as a DaemonSet or a sidecar),
+Amazon Elastic Container Service (ECS) and Amazon EC2 or other Linux hosts.
+Within 15 minutes of installing it in staging or production, you'll start to
+see endpoints. The agent keeps these endpoints up to date based on new observed
+traffic and its errors, latency, and volume.
 
 We're excited for you to try out the new features and give us your feedback so
 we can continue tailoring the product to your needs.
@@ -53,6 +52,7 @@ It is opt-in and Linux-only.
 - It captures OpenSSL (`libssl`, shared or linked into Node.js) and, in preview, Java: as a DaemonSet the agent loads a Java agent into running JVMs; elsewhere the JVMs need `-javaagent`.
   `--https-libraries=openssl` turns Java capture off.
 - Requirements: Linux 5.8 or newer (RHEL 8 and its rebuilds on 4.18 work through Red Hat's eBPF backports), `CAP_BPF` and `CAP_PERFMON` (or `CAP_SYS_ADMIN` on older kernels), `hostPID`, and access to `/sys/kernel/debug`, `/sys/fs/bpf` and the host's `/proc`.
-- Java also needs `CAP_SYS_PTRACE`, and as a DaemonSet `CAP_SETUID` and `CAP_SETGID`, to run the `postman-insights-jvm-attach` helper as each JVM's user; without them the agent captures OpenSSL only.
+- Java also needs `CAP_SYS_PTRACE`; without it the agent captures OpenSSL only.
+  Loading the Java agent into running JVMs (DaemonSet) also needs `CAP_SETUID` and `CAP_SETGID`, to run the `postman-insights-jvm-attach` helper as each JVM's user; without them, JVMs started with `-javaagent` are still captured.
 
 How it works, its limits and why each permission is needed: [`docs/https-capture-design.md`](docs/https-capture-design.md).

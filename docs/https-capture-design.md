@@ -35,8 +35,9 @@ Java frames (java_tls.bpf.c) ──┘                  (routes by pod)   (akine
 - **DaemonSet (`kube run`):** one `NodeCollector` per node loads the programs once, owns the ring buffer, and fans events out to one subscription per monitored pod (`ebpf/node_collector_linux.go`).
   Events are routed by the pod's network-namespace inode, which the agent gets from the container runtime (CRI), because the PIDs the kernel reports do not match the agent's view on nested nodes (kind, k3d).
   Pods are chosen as for HTTP capture (namespaces, labels, the `postman.com/insights-disabled` annotation); see "Namespace opt-in: three independent layers" in [`discovery-mode.md`](discovery-mode.md).
-- **Sidecar or single host (`apidump`):** the agent captures its own pod's or host's processes, optionally limited to `--https-target-namespaces`.
-  Java needs JVMs started with `-javaagent` there (section 4).
+- **Sidecar or single host (`apidump`):** OpenSSL capture attaches to every process the agent can see in `/proc`, unless `--https-target-namespaces` limits it to some Kubernetes namespaces (`ebpf/collect_linux.go`, `apidump/ebpf_integration.go`).
+  With `hostPID`, which HTTPS capture needs, that is every process on the node, so a sidecar captures other pods' OpenSSL traffic too unless it is limited.
+  Java capture is limited to the agent's own network namespace (section 4), and needs JVMs started with `-javaagent` there.
 
 ## 4. Java capture
 
@@ -93,11 +94,11 @@ The `ebpf-stats` line counts data frames without addresses (`java_conn_unbound`)
 |---|---|---|
 | 1. Payload truncation | kernel | `--https-body-size-cap` (16384 bytes per read or write) |
 | 2. Per-PID rate cap | kernel token bucket, refilled every second | `--https-rate-cap-per-sec` (0, off) |
-| 5. CPU thermostat: halves the payload cap while the agent's own CPU is high, and raises it back when it falls | userspace (`ebpf/thermostat_linux.go`) | `--no-thermostat` (on) |
+| 5. CPU thermostat: halves the payload cap while the agent's own CPU is high, and raises it back when it falls | userspace (`ebpf/thermostat_linux.go`) | `--no-thermostat` (false: the thermostat runs) |
 
 Layer 4 is the witness rate limit of the HTTP path (`trace/rate_limit.go`), which HTTPS capture goes through unchanged; layer 3, a reservoir per route, was planned and is not built.
 The Java agents read the kernel's current payload cap from the control file, so they copy no more than the kernel keeps.
-`--https-capture-mode` (only `truncated` is implemented) and `--privacy-mode` (accepted, no effect yet) are reserved for later work.
+`--https-capture-mode` implements only `truncated`, and `--privacy-mode` only `standard`; their other values are planned.
 
 ## 6. Permissions
 
@@ -112,7 +113,8 @@ The Java agents read the kernel's current payload cap from the control file, so 
 | `SETUID` and `SETGID` (Java, DaemonSet) | run the attach helper as each JVM's user and group |
 
 Without `SYS_PTRACE` the agent captures OpenSSL only; without `SETUID` and `SETGID`, a DaemonSet still captures JVMs started with `-javaagent`.
-`kube inject`, `kube helm-fragment` and `kube tf-fragment` with `--enable-https-capture` generate a sidecar with `hostPID`, the mounts, and `BPF`, `PERFMON` and, with `java`, `SYS_PTRACE` (`SidecarOpts` in `cmd/internal/kube/util.go`).
+`kube inject`, `kube helm-fragment` and `kube tf-fragment` with `--enable-https-capture` generate the sidecar container with its mounts and `BPF`, `PERFMON` and, with `java`, `SYS_PTRACE` (`SidecarOpts` in `cmd/internal/kube/util.go`).
+They do not change the pod spec: add `hostPID: true` and the hostPath volumes the mounts name (`sys-kernel-debug`, `sys-fs-bpf`, `host-proc`; `HTTPSCaptureVolumes` in the same file) yourself, as the Helm and Terraform fragments' comments say.
 The programs only observe: they never change syscalls or packets, and the kernel verifier checks them before they load.
 
 ## 7. Privacy

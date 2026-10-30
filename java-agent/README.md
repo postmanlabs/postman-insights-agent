@@ -25,7 +25,7 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
   The Insights Agent logs each agent once when it first hears from it and whenever its state changes, and its `ebpf-stats` line shows the agents alive and capturing in each pod (`java_agents_alive`, `java_agents_capturing`).
 - **Connection addresses:** the kernel gives each connection's events their addresses, and the agent helps it tie connections to sockets.
   For a blocking `SSLSocket`, it sends the socket's addresses in an ADDRESS frame before the first data frame, and marks the socket's frames `SOCKET`.
-  For an `SSLEngine`, it sends an empty RECV frame at the connection's first unwrap that consumed TLS bytes, and an empty SEND frame (`FLAG_BEFORE_WRITE`) at every wrap that produced TLS bytes without plaintext, so the kernel can tie the connection by the thread's next socket read or write.
+  For an `SSLEngine`, it sends an empty RECV frame at the connection's first unwrap that consumed TLS bytes, and an empty SEND frame (`FLAG_BEFORE_WRITE`) at every wrap that produced TLS bytes without plaintext, so the kernel can tie the connection to a socket: a RECV frame by the socket the thread last read (within 50 ms before), a `FLAG_BEFORE_WRITE` SEND frame by the socket the thread writes next (within 10 ms after).
   How the kernel ties them, and the limits: "Connection addresses" in [`docs/https-capture-design.md`](../docs/https-capture-design.md).
 - **CLOSE frames:** once a connection can carry no more responses (the server's side closed, or the client's inbound side), the agent sends a CLOSE frame.
   The Insights Agent then completes a response delimited by the close and frees the connection's state at once, instead of after 30 s idle.
