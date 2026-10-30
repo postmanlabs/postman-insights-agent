@@ -1,6 +1,7 @@
 package daemonset
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -122,26 +123,26 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 		// Prepend '/host' to network namespace, since '/proc' folder is mounted to '/host/proc'
 		networkNamespace = "/host" + networkNamespace
 
-		// Resolve the container's network-namespace inode for pod-level eBPF
-		// scoping. Failures are non-fatal: we fall back to namespace-level
-		// filtering (TargetNamespaces) inside buildHTTPSArgs, which is less
-		// precise but still correct. HTTP/pcap capture is unaffected.
+		// Resolve the container's network-namespace inode, which HTTPS capture
+		// is confined to. Without it buildHTTPSArgs turns HTTPS capture off for
+		// the pod; HTTP/pcap capture is unaffected. A stop of the pod's capture
+		// during the lookup (the pod deleted, the DaemonSet shutting down) ends
+		// it before capture starts.
 		var netnsInode uint64
 		if d.EnableHTTPSCapture {
-			containerPID, err := d.CRIClient.GetContainerPID(podArgs.ContainerUUID)
-			if err != nil {
-				printer.Warningf(
-					"ebpf: could not get container PID for pod %s (falling back to namespace-level eBPF scoping): %v\n",
-					podArgs.PodName, err)
-			} else {
-				inode, err := readNetnsInode(containerPID)
-				if err != nil {
-					printer.Warningf(
-						"ebpf: could not read netns inode for pod %s PID %d (falling back to namespace-level eBPF scoping): %v\n",
-						podArgs.PodName, containerPID, err)
-				} else {
-					netnsInode = inode
-				}
+			lookupCtx, cancelLookup := context.WithTimeout(context.Background(), netnsLookupTimeout)
+			inode, err := containerNetnsInode(lookupCtx, podArgs.StopChan, d.CRIClient.GetContainerPID, readNetnsInode,
+				podArgs.ContainerUUID, netnsLookupInterval)
+			cancelLookup()
+			var stopped netnsLookupStopped
+			switch {
+			case errors.As(err, &stopped):
+				printer.Infof("Received external stop signal for pod %s before capture started, error: %v\n", podArgs.PodName, stopped.stopErr)
+				return nil
+			case err != nil:
+				printer.Warningf("ebpf: could not read the network namespace of pod %s within %s: %v\n", podArgs.PodName, netnsLookupTimeout, err)
+			default:
+				netnsInode = inode
 			}
 		}
 
@@ -214,19 +215,11 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 // apidump.Run() call from the DaemonSet-level HTTPS config, the pod metadata,
 // and the container's network-namespace inode.
 //
-// Scoping priority (most precise wins):
-//  1. ContainerNetnsInode — pod-level, derived from the container init PID.
-//     Restricts eBPF discovery to exactly the processes inside this pod's
-//     netns. Eliminates duplicate captures when a namespace has N replicas.
-//  2. TargetNamespaces — namespace-level fallback used when the inode lookup
-//     fails (CRI unavailable, container not yet started, etc.) and the pod
-//     namespace is known (discovery mode). Causes N× capture for N replicas;
-//     acceptable only as a degraded fallback.
-//  3. No filter — when HTTPS is disabled or neither of the above is available.
-//
-// The pod is captured from the node's libraries, without Java when it cannot
-// run for the pod (ebpf.JavaPodSkipReason); with none left, HTTPS capture is
-// off for the pod, so pcap keeps the TLS port.
+// The pod is captured only in its own network namespace (ContainerNetnsInode),
+// from the node's libraries. When that namespace is not the pod's alone
+// (ebpf.PodNetnsSkipReason: unknown, or the node's for a hostNetwork pod),
+// HTTPS capture is off for the pod, so pcap keeps the TLS port: capturing
+// anyway would upload other pods' and the node's traffic as this pod's.
 func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.HTTPSCaptureArgs {
 	if !d.EnableHTTPSCapture {
 		return apidump.HTTPSCaptureArgs{Enabled: false}
@@ -239,36 +232,71 @@ func buildHTTPSArgs(d *Daemonset, podArgs *PodArgs, netnsInode uint64) apidump.H
 		return apidump.HTTPSCaptureArgs{Enabled: false}
 	}
 
-	libraries := d.HTTPSLibraries.ForPod(netnsInode, d.httpsHostNetns)
-	if d.HTTPSLibraries.Java && !libraries.Java {
-		reason := ebpf.JavaPodSkipReason(netnsInode, d.httpsHostNetns)
-		if libraries.None() {
-			printer.Warningf("HTTPS capture is off for pod %s: Java HTTPS capture cannot run for it (%s), and it is the only library selected\n",
-				podArgs.PodName, reason)
-			return apidump.HTTPSCaptureArgs{Enabled: false}
-		}
-		printer.Infof("Java HTTPS capture is off for pod %s: %s\n", podArgs.PodName, reason)
+	if reason := ebpf.PodNetnsSkipReason(netnsInode, d.httpsHostNetns); reason != "" {
+		printer.Warningf("HTTPS capture is off for pod %s: %s, so its processes cannot be told from other pods' and the node's\n",
+			podArgs.PodName, reason)
+		return apidump.HTTPSCaptureArgs{Enabled: false}
 	}
 
-	args := apidump.HTTPSCaptureArgs{
+	return apidump.HTTPSCaptureArgs{
 		Enabled:             true,
 		ContainerNetnsInode: netnsInode,
 		RateCapPerSec:       d.HTTPSRateCapPerSec,
 		BodySizeCap:         d.HTTPSBodySizeCap,
 		CBPFExcludePort:     d.HTTPSCBPFExcludePort,
 		DisableThermostat:   d.HTTPSNoThermostat,
-		Libraries:           libraries,
+		Libraries:           d.HTTPSLibraries,
 		NodeCollector:       d.EBPFNodeCollector,
 	}
+}
 
-	// Only fall back to namespace-level filtering when the inode is
-	// unavailable. Prefer the inode path: it is pod-level and avoids N×
-	// duplicate captures for scaled deployments.
-	if netnsInode == 0 && podArgs.Namespace != "" {
-		args.TargetNamespaces = []string{podArgs.Namespace}
+// The container of a pod the DaemonSet has just seen may not have started
+// yet, and the runtime then reports no PID for it: the lookup tries every
+// netnsLookupInterval for up to netnsLookupTimeout in all, runtime calls
+// included.
+const (
+	netnsLookupTimeout  = 30 * time.Second
+	netnsLookupInterval = time.Second
+)
+
+// netnsLookupStopped is the error of a containerNetnsInode that the pod's stop
+// channel ended, with the error the stop carried.
+type netnsLookupStopped struct{ stopErr error }
+
+func (e netnsLookupStopped) Error() string {
+	return fmt.Sprintf("stopped while looking up the network namespace: %v", e.stopErr)
+}
+
+// containerNetnsInode returns the network-namespace inode of the container,
+// trying again while its PID or namespace cannot be read yet, until ctx is
+// done, which also ends a runtime call in progress. A stop received from stop
+// ends it with netnsLookupStopped, also one that came during a try that
+// succeeded, so that a pod stopped during the lookup starts no capture.
+func containerNetnsInode(ctx context.Context, stop <-chan error,
+	containerPID func(ctx context.Context, containerID string) (int, error), netnsInode func(pid int) (uint64, error),
+	containerID string, interval time.Duration) (uint64, error) {
+	for {
+		pid, err := containerPID(ctx, containerID)
+		var inode uint64
+		if err == nil {
+			inode, err = netnsInode(pid)
+		}
+		select {
+		case stopErr := <-stop:
+			return 0, netnsLookupStopped{stopErr: stopErr}
+		default:
+		}
+		if err == nil {
+			return inode, nil
+		}
+		select {
+		case stopErr := <-stop:
+			return 0, netnsLookupStopped{stopErr: stopErr}
+		case <-ctx.Done():
+			return 0, err
+		case <-time.After(interval):
+		}
 	}
-
-	return args
 }
 
 // readNetnsInode returns the network-namespace inode for the given PID by

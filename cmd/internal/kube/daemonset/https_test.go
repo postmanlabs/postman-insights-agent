@@ -1,9 +1,12 @@
 package daemonset
 
 import (
+	"context"
+	"errors"
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/postmanlabs/postman-insights-agent/apidump"
 	"github.com/postmanlabs/postman-insights-agent/ebpf"
@@ -13,6 +16,9 @@ import (
 // testNodeCollector is a non-nil sentinel so HTTPS-enabled buildHTTPSArgs tests
 // pass the DaemonSet gate requiring a shared NodeCollector, without a real BPF host.
 var testNodeCollector = &ebpf.NodeCollector{}
+
+// testHostNetns is the node's network namespace in these tests.
+const testHostNetns uint64 = 100
 
 // ---------------------------------------------------------------------------
 // buildHTTPSArgs
@@ -49,6 +55,7 @@ func TestBuildHTTPSArgs_InodeTakesPriority(t *testing.T) {
 		HTTPSRateCapPerSec:   500,
 		HTTPSBodySizeCap:     2048,
 		HTTPSCBPFExcludePort: 443,
+		httpsHostNetns:       testHostNetns,
 	}
 	pod := &PodArgs{Namespace: "team-a"}
 	const inode uint64 = 99991
@@ -65,33 +72,26 @@ func TestBuildHTTPSArgs_InodeTakesPriority(t *testing.T) {
 	assert.Equal(t, uint16(443), got.CBPFExcludePort)
 }
 
-func TestBuildHTTPSArgs_InodeZeroWithNamespace_FallsBackToNamespace(t *testing.T) {
-	// Inode lookup failed (CRI unavailable, rapid startup, etc.) but the pod
-	// namespace is known (discovery mode). Fall back to namespace-level
-	// filtering so HTTPS capture is not silently lost.
-	d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSRateCapPerSec: 100}
-	pod := &PodArgs{Namespace: "team-a"}
-
-	got := buildHTTPSArgs(d, pod, 0 /* inode unavailable */)
-
-	assert.True(t, got.Enabled)
-	assert.Zero(t, got.ContainerNetnsInode)
-	assert.Equal(t, []string{"team-a"}, got.TargetNamespaces,
-		"should fall back to namespace-level filtering when inode is unavailable")
-}
-
-func TestBuildHTTPSArgs_InodeZeroWithoutNamespace_NodeWide(t *testing.T) {
-	// Inode unavailable AND namespace unknown (non-discovery mode).
-	// eBPF runs node-wide — acceptable for single-pod non-discovery setups.
-	d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector}
-	pod := &PodArgs{Namespace: ""}
-
-	got := buildHTTPSArgs(d, pod, 0)
-
-	assert.True(t, got.Enabled)
-	assert.Zero(t, got.ContainerNetnsInode)
-	assert.Nil(t, got.TargetNamespaces,
-		"no filter when neither inode nor namespace is available")
+// A pod whose network namespace is unknown is not captured, not even by its
+// Kubernetes namespace: that would take in the namespace's other pods, and
+// on a node whose own network namespace is unknown the pod's could be it.
+func TestBuildHTTPSArgs_NetnsNotThePodsAlone_Off(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		inode, hostNetns uint64
+	}{
+		{"pod netns unknown", 0, testHostNetns},
+		{"pod netns unknown, node netns unknown", 0, 0},
+		{"node netns unknown", 42, 0},
+		{"host network", testHostNetns, testHostNetns},
+	} {
+		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector,
+			HTTPSLibraries: ebpf.Libraries{OpenSSL: true, Java: true}, httpsHostNetns: tc.hostNetns}
+		got := buildHTTPSArgs(d, &PodArgs{PodName: "web-1", Namespace: "team-a"}, tc.inode)
+		assert.False(t, got.Enabled, tc.name)
+		assert.Nil(t, got.TargetNamespaces, tc.name)
+		assert.True(t, got.Libraries.None(), tc.name)
+	}
 }
 
 func TestBuildHTTPSArgs_DisabledIgnoresInode(t *testing.T) {
@@ -126,6 +126,7 @@ func TestBuildHTTPSArgs_RateAndBodyPropagation(t *testing.T) {
 				EBPFNodeCollector:  testNodeCollector,
 				HTTPSRateCapPerSec: tt.rateCapPerSec,
 				HTTPSBodySizeCap:   tt.bodySizeCap,
+				httpsHostNetns:     testHostNetns,
 			}
 			got := buildHTTPSArgs(d, &PodArgs{}, 42 /* any non-zero inode */)
 			assert.Equal(t, tt.wantRateCapPerSec, got.RateCapPerSec)
@@ -150,6 +151,7 @@ func TestBuildHTTPSArgs_CBPFExcludePortPropagation(t *testing.T) {
 				EnableHTTPSCapture:   true,
 				EBPFNodeCollector:    testNodeCollector,
 				HTTPSCBPFExcludePort: tt.excludePort,
+				httpsHostNetns:       testHostNetns,
 			}
 			got := buildHTTPSArgs(d, &PodArgs{}, 42)
 			assert.Equal(t, tt.wantExclude, got.CBPFExcludePort)
@@ -159,19 +161,16 @@ func TestBuildHTTPSArgs_CBPFExcludePortPropagation(t *testing.T) {
 
 func TestBuildHTTPSArgs_LibrariesPropagation(t *testing.T) {
 	for _, libs := range []ebpf.Libraries{{OpenSSL: true, Java: true}, {OpenSSL: true}, {Java: true}} {
-		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: libs}
+		d := &Daemonset{EnableHTTPSCapture: true, EBPFNodeCollector: testNodeCollector, HTTPSLibraries: libs, httpsHostNetns: testHostNetns}
 		got := buildHTTPSArgs(d, &PodArgs{}, 42)
 		assert.Equal(t, libs, got.Libraries)
 	}
 }
 
-// A pod is captured from the node's libraries, without Java when Java cannot
-// run for it; with none left, HTTPS capture is off for it, so pcap keeps the
-// TLS port.
+// A pod is captured from all the node's libraries when its network namespace
+// is its own, and not at all otherwise, so pcap keeps the TLS port.
 func TestBuildHTTPSArgs_PodLibraries(t *testing.T) {
-	const host uint64 = 100
 	both := ebpf.Libraries{OpenSSL: true, Java: true}
-	javaOnly := ebpf.Libraries{Java: true}
 	pod := &PodArgs{PodName: "web-1", Namespace: "team-a"}
 	for _, tc := range []struct {
 		name        string
@@ -181,18 +180,17 @@ func TestBuildHTTPSArgs_PodLibraries(t *testing.T) {
 		wantLibs    ebpf.Libraries
 	}{
 		{"own netns", both, 42, true, both},
-		{"netns unknown", both, 0, true, ebpf.Libraries{OpenSSL: true}},
-		{"host network", both, host, true, ebpf.Libraries{OpenSSL: true}},
-		{"Java only, own netns", javaOnly, 42, true, javaOnly},
-		{"Java only, netns unknown", javaOnly, 0, false, ebpf.Libraries{}},
-		{"Java only, host network", javaOnly, host, false, ebpf.Libraries{}},
-		{"OpenSSL only, netns unknown", ebpf.Libraries{OpenSSL: true}, 0, true, ebpf.Libraries{OpenSSL: true}},
+		{"OpenSSL only, own netns", ebpf.Libraries{OpenSSL: true}, 42, true, ebpf.Libraries{OpenSSL: true}},
+		{"Java only, own netns", ebpf.Libraries{Java: true}, 42, true, ebpf.Libraries{Java: true}},
+		{"netns unknown", both, 0, false, ebpf.Libraries{}},
+		{"host network", both, testHostNetns, false, ebpf.Libraries{}},
+		{"OpenSSL only, host network", ebpf.Libraries{OpenSSL: true}, testHostNetns, false, ebpf.Libraries{}},
 	} {
 		d := &Daemonset{
 			EnableHTTPSCapture: true,
 			EBPFNodeCollector:  testNodeCollector,
 			HTTPSLibraries:     tc.node,
-			httpsHostNetns:     host,
+			httpsHostNetns:     testHostNetns,
 		}
 		got := buildHTTPSArgs(d, pod, tc.inode)
 		assert.Equal(t, tc.wantEnabled, got.Enabled, tc.name)
@@ -309,6 +307,7 @@ func TestBuildHTTPSArgs_NodeCollectorPropagated(t *testing.T) {
 	d := &Daemonset{
 		EnableHTTPSCapture: true,
 		EBPFNodeCollector:  sentinel,
+		httpsHostNetns:     testHostNetns,
 	}
 	pod := &PodArgs{Namespace: "team-a"}
 
@@ -371,4 +370,78 @@ func TestDaemonset_EBPFNodeCollectorDefaultsNil(t *testing.T) {
 	// initialises the shared node-scoped collector.
 	d := &Daemonset{}
 	assert.Nil(t, d.EBPFNodeCollector)
+}
+
+// The network namespace of a container that has not started yet is read
+// once it has.
+func TestContainerNetnsInode(t *testing.T) {
+	calls := 0
+	pid := func(context.Context, string) (int, error) {
+		calls++
+		if calls < 3 {
+			return 0, errors.New("CRI returned zero pid for container")
+		}
+		return 1234, nil
+	}
+	inode := func(p int) (uint64, error) {
+		if p != 1234 {
+			return 0, errors.New("wrong pid")
+		}
+		return 77, nil
+	}
+	got, err := containerNetnsInode(context.Background(), nil, pid, inode, "c1", 0)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(77), got)
+	assert.Equal(t, 3, calls)
+}
+
+// The lookup gives up at its deadline, also in a runtime call that does not
+// return by itself, rather than after its tries' timeouts add up.
+func TestContainerNetnsInode_Deadline(t *testing.T) {
+	inode := func(int) (uint64, error) { return 77, nil }
+	for name, pid := range map[string]func(context.Context, string) (int, error){
+		"failing calls": func(context.Context, string) (int, error) {
+			return 0, errors.New("CRI returned zero pid for container")
+		},
+		"a call that blocks": func(ctx context.Context, _ string) (int, error) {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := containerNetnsInode(ctx, nil, pid, inode, "c1", 10*time.Millisecond)
+			assert.Error(t, err)
+			assert.Less(t, time.Since(start), 2*time.Second)
+		})
+	}
+}
+
+// A stop of the pod's capture ends the lookup, with the stop's error, also
+// when the try it came during succeeds.
+func TestContainerNetnsInode_Stopped(t *testing.T) {
+	for name, pid := range map[string]func(context.Context, string) (int, error){
+		"failing lookup": func(context.Context, string) (int, error) {
+			return 0, errors.New("CRI returned zero pid for container")
+		},
+		"successful lookup": func(context.Context, string) (int, error) { return 1234, nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stop := make(chan error, 1)
+			stop <- errors.New("got pod delete event")
+			inode := func(int) (uint64, error) { return 77, nil }
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			start := time.Now()
+			got, err := containerNetnsInode(ctx, stop, pid, inode, "c1", time.Minute)
+			var stopped netnsLookupStopped
+			if assert.ErrorAs(t, err, &stopped) {
+				assert.EqualError(t, stopped.stopErr, "got pod delete event")
+			}
+			assert.Zero(t, got)
+			assert.Less(t, time.Since(start), 2*time.Second)
+		})
+	}
 }

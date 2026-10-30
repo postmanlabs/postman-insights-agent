@@ -78,29 +78,100 @@ func HTTPSCaptureFromFlags(enabled bool, names []string) (bool, Libraries) {
 	return true, libs
 }
 
-// JavaPodSkipReason returns why Java capture cannot run for a pod in network
-// namespace podNetns on a node whose own namespace is hostNetns, or "" when it
-// can. Java frames are accepted, and JVMs controlled, per network namespace,
-// so the namespace must be the pod's alone: known, and not the host's, which
-// hostNetwork pods and host processes share. Accepting more would capture
-// and control other pods' JVMs as this pod's.
-func JavaPodSkipReason(podNetns, hostNetns uint64) string {
+// Why a pod's HTTPS capture cannot be confined to the pod.
+const (
+	skipPodNetnsUnknown    = "its network namespace is unknown"
+	skipNodeNetnsUnknown   = "the node's network namespace is unknown"
+	skipHostNetwork        = "it is on the node's network (hostNetwork)"
+	skipHostNetworkUnknown = "it is not known whether it is on the node's network (hostNetwork)"
+)
+
+// HostNetwork is whether a pod is on the node's network. The zero value,
+// HostNetworkUnknown, is treated as a pod that may be.
+type HostNetwork int
+
+const (
+	HostNetworkUnknown HostNetwork = iota
+	NotHostNetwork
+	OnHostNetwork
+)
+
+// PodHostNetwork tells whether the agent's pod is on the node's network, from
+// what the agent sees in it. The generated sidecars set the pod's and node's
+// IPs, podIP and hostIP (POSTMAN_K8S_POD_IP and POSTMAN_K8S_HOST_IP, from the
+// downward API), which are the same for a hostNetwork pod. Without them, it
+// compares the pod's network namespace, ownNetns, with that of PID 1 in the
+// agent's /proc, initNetns:
+//   - Different: PID 1 is outside the pod, so the agent sees the node's
+//     processes (hostPID) and PID 1 is the node's init, on another network.
+//   - The same, and the agent sees kernel threads (rootPIDNamespace), which
+//     only the node's own PID namespace shows: PID 1 is the node's init, on
+//     the pod's network.
+//   - The same otherwise: PID 1 is either the pod's own first process
+//     (without hostPID), or the init of a node that is itself a container
+//     (kind, k3d) with the pod on its network. That is unknown.
+func PodHostNetwork(podIP, hostIP string, ownNetns, initNetns uint64, rootPIDNamespace bool) HostNetwork {
+	switch {
+	case podIP != "" && hostIP != "":
+		if podIP == hostIP {
+			return OnHostNetwork
+		}
+		return NotHostNetwork
+	case ownNetns == 0 || initNetns == 0:
+		return HostNetworkUnknown
+	case ownNetns != initNetns:
+		return NotHostNetwork
+	case rootPIDNamespace:
+		return OnHostNetwork
+	}
+	return HostNetworkUnknown
+}
+
+// PodNetnsSkipReason returns why HTTPS capture cannot be confined to a pod in
+// network namespace podNetns on a node whose own namespace is hostNetns, or
+// "" when it can. OpenSSL processes are probed, Java frames accepted and JVMs
+// controlled per network namespace, so the namespace must be the pod's alone:
+// known, and not the node's, which hostNetwork pods and host processes
+// share; and the node's must be known, or the pod's could be it. Capturing
+// anyway would take in other pods' and the node's traffic as this pod's.
+func PodNetnsSkipReason(podNetns, hostNetns uint64) string {
 	switch {
 	case podNetns == 0:
-		return "the network namespace is unknown"
+		return skipPodNetnsUnknown
+	case hostNetns == 0:
+		return skipNodeNetnsUnknown
 	case podNetns == hostNetns:
-		return "the network namespace is the node's (host network)"
+		return skipHostNetwork
 	}
 	return ""
 }
 
-// ForPod returns the libraries a pod is captured from when the node captures
-// from l: without Java when JavaPodSkipReason gives a reason.
-func (l Libraries) ForPod(podNetns, hostNetns uint64) Libraries {
-	if JavaPodSkipReason(podNetns, hostNetns) != "" {
-		l.Java = false
+// StandaloneScope returns the network namespace a standalone agent (apidump
+// outside the DaemonSet) confines HTTPS capture to when it is given no other
+// scope, or why it captures nothing; 0 and "" mean it is not confined.
+//
+// In a Kubernetes pod (a sidecar) the agent captures only in its own network
+// namespace, ownNetns, which all the pod's containers share: with hostPID,
+// which a sidecar needs for HTTPS capture, it sees every process on the node,
+// and would otherwise capture other pods' traffic as its own. A pod on the
+// node's network (hostNetwork) shares its namespace with host processes and
+// other hostNetwork pods, and an unknown one identifies nothing, so then it
+// captures nothing, as a DaemonSet does for such pods (PodNetnsSkipReason);
+// nor does it when it cannot tell whether the pod is on the node's network
+// (PodHostNetwork). This holds with --https-target-namespaces too. An agent
+// on a host, outside Kubernetes, captures the host's processes.
+func StandaloneScope(inKubernetes bool, ownNetns uint64, hostNetwork HostNetwork) (netns uint64, skipReason string) {
+	switch {
+	case !inKubernetes:
+		return 0, ""
+	case ownNetns == 0:
+		return 0, skipPodNetnsUnknown
+	case hostNetwork == OnHostNetwork:
+		return 0, skipHostNetwork
+	case hostNetwork != NotHostNetwork:
+		return 0, skipHostNetworkUnknown
 	}
-	return l
+	return ownNetns, ""
 }
 
 // None reports whether the set is empty.

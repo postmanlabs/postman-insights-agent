@@ -72,19 +72,67 @@ func TestHTTPSCaptureFromFlags(t *testing.T) {
 }
 
 // Java runs for a pod only in a network namespace that is the pod's alone.
-func TestLibrariesForPod(t *testing.T) {
+func TestPodNetnsSkipReason(t *testing.T) {
 	const host = 100
 	for _, tc := range []struct {
-		podNetns uint64
-		want     Libraries
-		reason   string
+		podNetns, hostNetns uint64
+		reason              string
 	}{
-		{podNetns: 42, want: all},
-		{podNetns: 0, want: Libraries{OpenSSL: true}, reason: "the network namespace is unknown"},
-		{podNetns: host, want: Libraries{OpenSSL: true}, reason: "the network namespace is the node's (host network)"},
+		{podNetns: 42, hostNetns: host},
+		{podNetns: 0, hostNetns: host, reason: "its network namespace is unknown"},
+		{podNetns: host, hostNetns: host, reason: "it is on the node's network (hostNetwork)"},
+		{podNetns: 42, hostNetns: 0, reason: "the node's network namespace is unknown"},
 	} {
-		assert.Equal(t, tc.want, all.ForPod(tc.podNetns, host), "netns %d", tc.podNetns)
-		assert.Equal(t, tc.reason, JavaPodSkipReason(tc.podNetns, host), "netns %d", tc.podNetns)
+		assert.Equal(t, tc.reason, PodNetnsSkipReason(tc.podNetns, tc.hostNetns), "pod netns %d, node netns %d", tc.podNetns, tc.hostNetns)
 	}
-	assert.True(t, Libraries{Java: true}.ForPod(0, host).None(), "Java only, netns unknown")
+}
+
+func TestStandaloneScope(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		inKubernetes bool
+		ownNetns     uint64
+		hostNetwork  HostNetwork
+		want         uint64
+		reason       string
+	}{
+		{name: "host", ownNetns: 42, want: 0},
+		{name: "host, own netns unknown", ownNetns: 0, want: 0},
+		{name: "pod", inKubernetes: true, ownNetns: 42, hostNetwork: NotHostNetwork, want: 42},
+		{name: "pod, own netns unknown", inKubernetes: true, ownNetns: 0, hostNetwork: NotHostNetwork, reason: "its network namespace is unknown"},
+		{name: "pod on the host network", inKubernetes: true, ownNetns: 42, hostNetwork: OnHostNetwork, reason: "it is on the node's network (hostNetwork)"},
+		{name: "pod that may be on the host network", inKubernetes: true, ownNetns: 42, hostNetwork: HostNetworkUnknown,
+			reason: "it is not known whether it is on the node's network (hostNetwork)"},
+	} {
+		netns, reason := StandaloneScope(tc.inKubernetes, tc.ownNetns, tc.hostNetwork)
+		assert.Equal(t, tc.want, netns, tc.name)
+		assert.Equal(t, tc.reason, reason, tc.name)
+	}
+}
+
+func TestPodHostNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		podIP, hostIP    string
+		ownNetns         uint64
+		initNetns        uint64
+		rootPIDNamespace bool
+		want             HostNetwork
+	}{
+		// The IPs decide when both are set, whatever /proc shows.
+		{name: "IPs differ", podIP: "10.0.0.5", hostIP: "172.18.0.2", ownNetns: 42, initNetns: 42, want: NotHostNetwork},
+		{name: "IPs the same", podIP: "172.18.0.2", hostIP: "172.18.0.2", ownNetns: 42, initNetns: 7, want: OnHostNetwork},
+		{name: "only the pod IP", podIP: "10.0.0.5", ownNetns: 42, initNetns: 42, want: HostNetworkUnknown},
+		// hostPID: PID 1 is the node's init.
+		{name: "hostPID, own network", ownNetns: 42, initNetns: 7, rootPIDNamespace: true, want: NotHostNetwork},
+		{name: "hostPID on a nested node, own network", ownNetns: 42, initNetns: 7, want: NotHostNetwork},
+		{name: "hostPID, node's network", ownNetns: 7, initNetns: 7, rootPIDNamespace: true, want: OnHostNetwork},
+		// PID 1 on the pod's network, without kernel threads: the pod's own
+		// first process, or a nested node's init with the pod on its network.
+		{name: "no hostPID, or hostPID on a nested node's network", ownNetns: 7, initNetns: 7, want: HostNetworkUnknown},
+		{name: "own netns unknown", initNetns: 7, rootPIDNamespace: true, want: HostNetworkUnknown},
+		{name: "PID 1's netns unknown", ownNetns: 42, rootPIDNamespace: true, want: HostNetworkUnknown},
+	} {
+		assert.Equal(t, tc.want, PodHostNetwork(tc.podIP, tc.hostIP, tc.ownNetns, tc.initNetns, tc.rootPIDNamespace), tc.name)
+	}
 }
