@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Minimal client: HTTPS GET /phase5b2 + gRPC SayHello (TLS).
 // Usage:
 //   TLS_DIR=test/kind/certs dotnet run --project test/kind/dotnet-service/Client
