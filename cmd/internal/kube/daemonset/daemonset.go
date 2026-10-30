@@ -434,8 +434,10 @@ func (d *Daemonset) Run() error {
 			}
 		}()
 		// Each pod's ebpf-stats line has the pod's own counters; this one has
-		// what they share.
-		go apidump.HTTPSNodeStatsWorker(nodeCtx, d.EBPFNodeCollector, 30*time.Second, telemetry.Default())
+		// what they share, sent as this agent's own Postman identity, as the
+		// pods' are as theirs.
+		nodeTracker := telemetry.NewScoped(telemetry.TrackingUser{UserID: d.InsightsUserID, TeamID: d.InsightsTeamID})
+		go apidump.HTTPSNodeStatsWorker(nodeCtx, d.EBPFNodeCollector, 30*time.Second, nodeTracker)
 		printer.Infof("ebpf: node-collector event loop started\n")
 	}
 
