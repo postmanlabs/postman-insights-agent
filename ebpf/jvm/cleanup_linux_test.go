@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,11 @@ func TestRemoveStaleCopies(t *testing.T) {
 
 	opener := inContainer(t, p, "exec 3</tmp/.postman-insights/agent-open/postman-insights-java-agent.jar && echo ready && exec sleep 600")
 	mapper := inContainer(t, p, "echo ready && exec /tmp/.postman-insights/agent-mapped/sleep 600")
+	// The shell prints "ready" before it runs the copy's executable.
+	require.Eventually(t, func() bool {
+		maps, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(mapper.Process.Pid), "maps"))
+		return err == nil && strings.Contains(string(maps), "/agent-mapped/sleep")
+	}, 10*time.Second, 10*time.Millisecond, "the copy's executable is not mapped")
 
 	res, err = removeStaleCopiesIn("/proc", root, "agent-keep")
 	require.NoError(t, err)

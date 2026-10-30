@@ -974,12 +974,11 @@ func TestNodeCollectorJVMStagedCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	a := f.attacher(t)
-	go a.Run(ctx)
+	stop := runAttacher(t, a)
 	a.Add(p, nil)
 	waitStats(t, a, func(st jvm.AttachStats) bool { return st.Attached == 1 })
+	stop()
 	j.waitLog(t, "loaded (attach)", 10*time.Second)
 	loaded := stagingDir(t, f.agentJar)
 	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
@@ -1002,9 +1001,10 @@ func TestNodeCollectorJVMStagedCopies(t *testing.T) {
 	}
 	// With every capability, which reads the JVM's open files too.
 	again := newTestAttacher(t, helper, other)
-	go again.Run(ctx)
+	stop = runAttacher(t, again)
 	again.Add(p, nil)
 	waitStats(t, again, func(st jvm.AttachStats) bool { return st.AlreadyRunning == 1 && st.OtherVersion == 1 })
+	stop()
 	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
 		t.Fatalf("the container's agent directory has %v, want only %s", got, loaded)
 	}
@@ -1119,9 +1119,7 @@ func TestAttachChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go a.Run(ctx)
+	stop := runAttacher(t, a)
 	a.Add(p, nil)
 	// The attacher waits until the JVM has run for 5 s; an inspect failure
 	// is retried after 30 s.
@@ -1132,6 +1130,8 @@ func TestAttachChild(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// The attempt removes stale copies after it is counted.
+	stop()
 	b, err := json.Marshal(a.Stats())
 	if err != nil {
 		t.Fatal(err)
@@ -1155,6 +1155,22 @@ func effectiveCapability(t *testing.T, status []byte, capability uint) bool {
 }
 
 // waitStats waits until the attacher's counters satisfy ok.
+// runAttacher runs a until the returned stop is called, or the test ends.
+// stop returns once Run has, so the attempt in progress has finished,
+// including its removal of stale copies, which comes after its counters.
+func runAttacher(t *testing.T, a *jvm.Attacher) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Run(ctx)
+	}()
+	var once sync.Once
+	stop = func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(stop)
+	return stop
+}
+
 func waitStats(t *testing.T, a *jvm.Attacher, ok func(jvm.AttachStats) bool) {
 	t.Helper()
 	waitStatsFor(t, a, 30*time.Second, ok)
