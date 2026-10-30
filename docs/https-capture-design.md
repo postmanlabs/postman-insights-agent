@@ -1,560 +1,131 @@
-# HTTPS Capture for the Postman Insights Agent — Design & Research
+# HTTPS capture
 
-**Status:** Draft for review
-**Authors:** Postman Insights Agent team
-**Last updated:** 2026-05
-**Branch:** `feat/https-capture-ebpf`
+How the Postman Insights Agent captures decrypted HTTPS traffic with eBPF, as built.
+Users start from the "HTTPS capture" section of the [README](../README.md); developers build and test with [`ebpf/README.md`](../ebpf/README.md); the Java agent itself is described in [`java-agent/README.md`](../java-agent/README.md).
 
----
+## 1. Overview
 
-## 1. Executive summary
+Classic BPF (libpcap) sees HTTPS only as TLS records, so the agent reads the plaintext where TLS libraries hold it: just before encryption and just after decryption.
+HTTPS capture is opt-in (`--enable-https-capture`) and Linux-only; the macOS build captures HTTP only, and every eBPF path compiles to a no-op there.
 
-The Postman Insights Agent today captures **HTTP traffic only**, using classic BPF + libpcap. The vast majority of production inter-service traffic is **HTTPS**, which is invisible to the agent. This document describes how we add HTTPS capture using **eBPF**, with full coverage of the major language runtimes (C/C++, Go, Node.js, Python, Ruby, Rust, Java).
-
-**Approach (one sentence):** Attach eBPF uprobes to userspace TLS libraries at the point where data is plaintext (just before encryption / just after decryption), copy bounded buffers to userspace, and feed them into the agent's existing HTTP parsing pipeline. For Java — which has no native TLS — use a small Java agent that bytecode-instruments `SSLEngine` and ships plaintext via an `ioctl()` syscall that an eBPF kprobe intercepts.
-
-**Reference implementation:** [OpenTelemetry eBPF Instrumentation (OBI)](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation), formerly known as Grafana Beyla. Apache-2.0 licensed. We vendor or fork its BPF C code rather than write our own.
-
-**Customer-facing positioning:** Same eBPF posture as Datadog system-probe, OBI/Beyla, Cilium, and Falco. Linux 5.8+ (RHEL 8 4.18+ exception). `CAP_BPF` + `CAP_PERFMON`. DaemonSet only. No sidecars. No app code changes.
-
-**Scope of this doc:** Linux only. macOS dev is deprioritized.
-
----
-
-## 2. Why classic BPF cannot see HTTPS
-
-The current pipeline (`pcap/` → `learn/parse_http.go` → `trace/`) attaches a classic BPF filter via `pcap.SetBPFFilter` and receives wire packets. For HTTPS, those packets are TLS records — encrypted application data. No filter rewrite changes that.
-
-The existing `tls_conn_tracker/` package observes only the **TLS handshake** (SNI, ALPN, cipher suite). It is **explicitly not decryption**. `apidump/summary.go:298` already prints:
-
-> "This may mean you are trying to capture HTTPS traffic, which is currently unsupported."
-
-To see plaintext we must intercept the data **before encryption** (writer side) or **after decryption** (reader side). That is fundamentally a **userspace** interception problem — kernel networking sees only ciphertext.
-
----
-
-## 3. Survey of prior art
-
-We reviewed four open-source implementations in depth (clones live at `/Users/swamy.hiremath@postman.com/playground/insights-ebpf-research/`):
-
-| Project | License | Approach | Notes |
-|---|---|---|---|
-| **OBI** (OpenTelemetry eBPF Instrumentation) | Apache-2.0 | libssl uprobes + Go-runtime uprobes + Java agent + ioctl bridge | Currently active development. Linux 5.8+. CO-RE/libbpf. **Recommended reference.** |
-| **Grafana Beyla** | Apache-2.0 | Thin wrapper around OBI; donated to OpenTelemetry | All real work happens upstream in OBI now. |
-| **Pixie** (CNCF, New Relic) | Apache-2.0 | BCC-based (Python runtime compile) libssl uprobes + kprobes on sendmsg/recvmsg | Older approach, fragile, requires kernel headers at runtime. Don't copy directly. Has richer protocol parsers. |
-| **Datadog system-probe (USM)** | Apache-2.0 | libssl uprobes + Go uprobes via DWARF inspector | Mature Go-offset inspector (~2000 LOC). No Java unification — Java goes through `dd-trace-java` separately. |
-| **ecapture** | Apache-2.0 | Pure TLS plaintext capture via uprobes | No HTTP correlation. Useful reference for symbol resolution in stripped/static binaries. |
-
-### Why OBI is our reference
-
-1. **Active development** — Beyla maintainers work upstream on OBI full-time.
-2. **CO-RE/libbpf** — modern eBPF style. Works across kernels without recompilation.
-3. **Unified pipeline** — native TLS, Go TLS, and Java TLS all flow through a single event format.
-4. **Java solved elegantly** — the `ioctl()` bridge is genuinely novel and we should copy it.
-5. **License compatible** — Apache-2.0 allows vendoring into our codebase.
-
----
-
-## 4. Approach by language runtime
-
-### 4.1 C / C++ / Python / Ruby / PHP / Node.js (with system OpenSSL)
-
-**Strategy:** Uprobes on libssl/libcrypto exported symbols.
-
-Probe set (from OBI `bpf/generictracer/libssl.c`):
-
-| Function | Entry probe | Return probe | Purpose |
-|---|---|---|---|
-| `SSL_read` | ✅ captures `(ssl, buf, len)` | ✅ captures bytes-read | Server-side decrypt, sync API |
-| `SSL_read_ex` | ✅ | ✅ | Newer variant, used by Node.js |
-| `SSL_write` | ✅ | ✅ | Client/server encrypt entry |
-| `SSL_write_ex` | ✅ | ✅ | Newer variant |
-| `SSL_shutdown` | ✅ | — | Connection close, used for flushing |
-
-**Discovery:** scan target containers' `/proc/<pid>/root/lib*/libssl.so.*`. For dynamically linked binaries, attach by symbol name. For statically-linked OpenSSL (Node, Envoy-static), scan the target binary's symbol table for `SSL_write`/`SSL_read` and attach by file offset.
-
-**Coverage:** any process that links libssl, which is the dominant case for Python (`ssl`/`requests`), Ruby (`OpenSSL`), PHP (`openssl_*`), Node (when system OpenSSL is used).
-
-### 4.2 Node.js (statically-linked BoringSSL)
-
-Node.js commonly statically links BoringSSL inside the `node` binary. Function names exist in the symbol table even when stripped. OBI handles this via `bpf/generictracer/nodejs.c` + offset-based attach. We adopt the same approach.
-
-### 4.3 Go (pure-Go TLS via `crypto/tls`)
-
-This is the hardest case because Go does not use libssl. OBI probes Go at **three layers** simultaneously and dedupes in userspace:
-
-| Layer | OBI file | What it probes |
+| Runtime | How | Status |
 |---|---|---|
-| HTTP layer | `bpf/gotracer/go_nethttp.c` | `(*http.Transport).RoundTrip`, `(*conn).serve`, `readRequest`, `header.writeSubset`, HTTP/2 framer, gRPC stream handlers |
-| TLS layer | `bpf/gotracer/go_net_tls.c` | `crypto/tls.(*Conn).Read`, `crypto/tls.(*Conn).Write` |
-| Socket layer | `bpf/gotracer/go_net.c` | `net.(*netFD).Read`, `net.(*netFD).Write` |
+| Processes using a shared `libssl` (C and C++, Python, Ruby, PHP, .NET, nginx, Node.js with the system OpenSSL) | uprobes on `SSL_read`, `SSL_write`, `SSL_read_ex`, `SSL_write_ex` | Supported |
+| Node.js with BoringSSL linked into `node` (official images) | the same uprobes, on the executable's own `SSL_*` symbols | Supported; verified on a bare Node 20, not yet in kind |
+| Java on HotSpot, JDK 8 to 25: the JDK's `SSLEngine` and `SSLSocket`, Netty's OpenSSL engine (Tomcat, Jetty, Undertow, Netty, the JDK `HttpClient`, `HttpsURLConnection`) | a Java agent hands plaintext to the kernel (section 4) | Preview, on by default with `--enable-https-capture` |
+| Go (`crypto/tls`), Rust (rustls), other JSSE providers' sockets (BouncyCastle, Conscrypt), OpenJ9 without `-javaagent` | - | Not supported |
 
-To read Go function arguments and struct fields, the agent must know the **Go ABI register layout** and **struct field offsets**, both of which change across Go versions.
-
-**Solution:** a DWARF-based runtime inspector that opens the target Go binary, parses its `.debug_info` section, and extracts field offsets for the structs it needs. OBI's implementation is `pkg/internal/goexec/structmembers.go` (736 LOC) + `configs/offsets/tracker_input.json`. Datadog's equivalent is `pkg/network/go/bininspect/` (~2000 LOC, more mature).
-
-Required Go versions: **Go 1.17+** (per OBI's support matrix).
-
-### 4.4 Rust (rustls)
-
-Out of scope for v1. Rustls uprobe support is less mature in OBI/Datadog. Document as a known gap; revisit in v1.1.
-
-### 4.5 Java / JVM — the `ioctl` bridge
-
-JVM TLS (JSSE, Bouncy Castle, Netty's SslHandler, OpenJDK's `SSLEngine`) is implemented in pure Java. There are no stable native symbols to uprobe. Native crypto uprobes (ecapture's approach) are fragile and don't produce HTTP-layer plaintext.
-
-**OBI's solution (which we adopt):**
-
-1. Ship a tiny Java agent JAR (`postman-insights-java-agent.jar`).
-2. The JVM is launched with `-javaagent:/opt/postman/postman-insights-java-agent.jar` (via `JAVA_TOOL_OPTIONS` env var, auto-injected by a Kubernetes mutating webhook).
-3. The Java agent uses **ByteBuddy bytecode instrumentation** to intercept:
-   - `javax.net.ssl.SSLEngine.wrap()` / `unwrap()` — covers Tomcat, Jetty, JDK HttpClient, gRPC-Java
-   - `javax.net.ssl.SSLSocket` read/write streams — older blocking I/O
-   - `io.netty.handler.ssl.SslHandler` — Spring Boot/WebFlux, Vert.x, gRPC-Java's Netty transport
-4. On each intercepted call, the agent extracts plaintext bytes and calls **`ioctl(fd=0, cmd=0x0b10b1, buffer)`** — a syscall with a magic command ID that nothing else uses.
-5. On the kernel side, our eBPF kprobe on `sys_ioctl` (OBI `bpf/generictracer/java_tls.c`) recognizes the magic cmd, extracts the buffer, and pushes the plaintext into the **same ring buffer used by libssl uprobes**.
-
-**Why this is elegant:**
-- All TLS plaintext (native + Java) flows through one event format.
-- The Java agent is ~2000 LOC of Java doing only bytecode instrumentation — no HTTP parsing, no networking, no correlation logic. All of that stays in the eBPF/Go pipeline.
-- Works on any JDK 8+, any JSSE provider, any JVM vendor.
-- Same DaemonSet capability set — no extra privileges.
-
-**Cost:**
-- Mutating webhook for auto-injection (model: `obi/pkg/webhook/`).
-- Customers must accept that the webhook will mutate Pod specs for namespaces with HTTPS capture enabled.
-- JVM startup is marginally slower (ByteBuddy class transformation).
-
-### 4.6 Coverage summary
-
-| Language / Runtime | v1 | v1.1 | v2 |
-|---|:---:|:---:|:---:|
-| C / C++ (OpenSSL) | ✅ | | |
-| Python | ✅ | | |
-| Ruby | ✅ | | |
-| Node.js (system OpenSSL) | ✅ | | |
-| Node.js (static BoringSSL) | ✅ | | |
-| PHP | ✅ | | |
-| Go (1.17+) | | ✅ | |
-| Rust (rustls) | | | ✅ |
-| Java (JDK 8+) | | | ✅ |
-
----
-
-## 5. Architecture
-
-### 5.1 Current pipeline (HTTP only)
+## 2. Pipeline
 
 ```
-NIC ──libpcap──► gopacket ──TCP reassembly──► akinet parsers ──► trace.Collector ──► backend
-                  (BPF filter)                (HTTPRequest,
-                                               HTTPResponse,
-                                               TLSClientHello,
-                                               TLSServerHello)
+libssl uprobes (libssl.bpf.c) ─┐
+                               ├─► ring buffer ─► NodeCollector ─► events.Adapter ─► trace.Collector chain ─► backend
+Java frames (java_tls.bpf.c) ──┘                  (routes by pod)   (akinet parsers)  (data_masks, rate limit)
 ```
 
-Defined in `pcap/run.go::Collect`, `pcap/net_parse.go::NetworkTrafficParser`. The `trace.Collector` interface accepts `akinet.ParsedNetworkTraffic`.
+- The eBPF events become the same `akinet.HTTPRequest` and `akinet.HTTPResponse` values that libpcap capture produces, and go through the same collector chain, redaction included.
+- `events.Adapter` feeds each connection's bytes to the akinet HTTP/1.1 parsers, and HTTP/2 (for example gRPC over libssl) to its own stateful decoder (`ebpf/events/http2.go`), since HPACK state spans the connection.
+- When HTTPS capture runs, libpcap leaves out TCP port 443 (`--https-cbpf-exclude-port`, 0 keeps it), so handshakes are not counted twice.
+- Connection addresses: for OpenSSL, the agent maps each `SSL*` to its socket fd in the kernel and resolves the fd to its addresses from `/proc/<pid>/net/tcp{,6}`, ahead of time too, so connections that close quickly still resolve (`ebpf/events/resolver.go`, `ebpf/preresolve_linux.go`).
+  Java connections get their addresses from the kernel (section 4).
+  An event without either keeps zero addresses and names its PID in the interface field.
 
-### 5.2 Target pipeline (HTTP + HTTPS)
+## 3. Deployment and scoping
 
-```
-                       ┌──libpcap (existing)───────► gopacket ───┐
-NIC ──┤                │                                          │
-      │                ├──eBPF uprobe on libssl ──┐               │
-      │                │                          │               │
-      │                ├──eBPF uprobe on Go funcs─┤               ├─► akinet
-      │                │                          ├─► ring buffer │   parsers ──► trace.Collector ──► backend
-      │                ├──eBPF kprobe on ioctl ───┘               │   (reused)
-      │                │      ▲                                   │
-      │                │      │                                   │
-      └─Java JVM───────┘      │                                   │
-        +javaagent ──ioctl()──┘                                   │
-        +ByteBuddy                                                 │
-```
+- **DaemonSet (`kube run`):** one `NodeCollector` per node loads the programs once, owns the ring buffer, and fans events out to one subscription per monitored pod (`ebpf/node_collector_linux.go`).
+  Events are routed by the pod's network-namespace inode, which the agent gets from the container runtime (CRI), because the PIDs the kernel reports do not match the agent's view on nested nodes (kind, k3d).
+  Pods are chosen as for HTTP capture (namespaces, labels, the `postman.com/insights-disabled` annotation); see "Namespace opt-in: three independent layers" in [`discovery-mode.md`](discovery-mode.md).
+- **Sidecar or single host (`apidump`):** OpenSSL capture attaches to every process the agent can see in `/proc`, unless `--https-target-namespaces` limits it to some Kubernetes namespaces (`ebpf/collect_linux.go`, `apidump/ebpf_integration.go`).
+  With `hostPID`, which HTTPS capture needs, that is every process on the node, so a sidecar captures other pods' OpenSSL traffic too unless it is limited.
+  Java capture is limited to the agent's own network namespace (section 4), and needs JVMs started with `-javaagent` there.
 
-The **akinet parsers and the entire `trace.Collector` chain are reused** exactly as today. The eBPF subsystem produces the same `akinet.HTTPRequest` / `akinet.HTTPResponse` events that pcap produces. Downstream `data_masks/`, `trace/rate_limit.go`, `trace/backend_collector.go` work unchanged.
+## 4. Java capture
 
-### 5.3 Package layout
+The JVM implements TLS in Java, so there is no native symbol to probe.
+A Java agent ([`java-agent/`](../java-agent/README.md)) hooks the TLS engines and sockets and writes each plaintext chunk as a frame with a positional write to `/dev/null`, at the magic offset `0x504D494E53494748` ("PMINSIGH").
+The kernel program `ebpf/programs/java_tls.bpf.c`, on the `pwrite64`, `pwritev2` and `pwritev` syscall tracepoints, copies out writes at that offset, validates them and puts them into the same ring buffer as the libssl events.
+`/dev/null` then discards the bytes, so the bridge needs no JNI or native code; the frame format is shared by the kernel, Go and Java copies described in the Java agent's README.
 
-New packages to be created (scaffolded in this branch):
+### Who may send frames
 
-```
-ebpf/                              Top-level eBPF subsystem (new)
-  loader/                          cilium/ebpf-based BPF program loader
-    loader.go                      Open/load .bpf.o, attach probes, manage lifecycle
-    btf.go                         BTF detection and kernel feature gating
-    kernel.go                      Kernel-version detection (5.8+ check, RHEL exception)
-  programs/                        BPF C source + compiled .o (vendored from OBI)
-    libssl.bpf.c                   libssl uprobes (Phase 1)
-    java_tls.bpf.c                 ioctl kprobe for Java (Phase 5)
-    go_nethttp.bpf.c               Go HTTP/gRPC uprobes (Phase 3)
-    go_tls.bpf.c                   Go crypto/tls uprobes (Phase 3)
-    Makefile                       clang -target bpf -O2 ... compilation
-  uprobes/                         Per-library uprobe attachment logic
-    openssl.go                     Symbol resolution, dynamic + static libssl
-    nodejs.go                      Statically-linked BoringSSL handling
-    gotls.go                       Go binary inspection + offset injection (Phase 3)
-  goexec/                          DWARF-based Go binary inspector (Phase 3)
-    inspect.go                     Vendored/adapted from OBI pkg/internal/goexec
-    structmembers.go
-  events/                          Ring buffer reader, event → akinet adapter
-    ringbuf.go                     cilium/ebpf RingbufReader
-    stream.go                      (pid, fd, dir) → byte stream reassembly
-    adapter.go                     Convert events to akinet.ParsedNetworkTraffic
-  discovery/                       Process discovery — which PIDs to attach to
-    proc.go                        /proc walking + inotify
-    cri.go                         Reuses integrations/cri_apis
-    kube.go                        Reuses integrations/kube_apis
-  collect.go                       Top-level `ebpf.Collect(...)` entry point,
-                                   parallels pcap.Collect() signature
-java-agent/                        Java agent (Phase 5, separate Gradle build)
-  src/main/java/...                ByteBuddy bytecode instrumentation
-  build.gradle.kts
-```
+Any process can write at the magic offset, so the kernel accepts frames only from the network namespaces of monitored pods (the `java_netns` map), or the agent's own one for a sidecar, and validates every header.
+A pod on the host network, or whose network namespace is unknown, is captured without Java, since its namespace does not identify one pod.
 
-### 5.4 Integration with existing `apidump` command
+### Control file
 
-In `apidump/apidump.go`, after the existing pcap collector setup, conditionally start an eBPF collector behind a flag:
+The Java agent captures only while `/tmp/.postman-insights/control` in its container is fresh, says `enabled=1` and has a version it knows; otherwise it is dormant.
+The Insights agent writes that file into the container of every JVM in the pods it monitors and refreshes it every 10 s, so capture stops by itself when a pod stops being monitored or the Insights agent goes away.
+Without `java` in `--https-libraries` (`--https-libraries=openssl`), the files say disabled, and agents already loaded go dormant at the next refresh.
+Writing the file for a JVM of another user needs `SYS_PTRACE` (the agent writes through `/proc/<pid>/root`).
 
-```go
-if args.EnableHTTPSCapture {
-    go func() {
-        if err := ebpf.Collect(
-            a.backendSvc, traceTags, stop,
-            args.HTTPSLibraries,           // []string: openssl, nodejs, gotls, java
-            args.HTTPSBodySizeCap,         // int: default 4KB
-            args.HTTPSTargetNamespaces,    // []string
-            collector,                      // SAME collector chain as pcap
-            apidumpTelemetry,
-        ); err != nil {
-            errChan <- interfaceError{interfaceName: "ebpf", err: err}
-        }
-    }()
-}
-```
+### Loading the agent into running JVMs (DaemonSet)
 
-When eBPF is enabled, **exclude port 443 from the pcap cBPF filter** (`apidump/net.go::createBPFFilters`) to avoid double-counting handshakes. Keep `tls_conn_tracker` running for handshake metadata if customers want it.
+As a DaemonSet, the Insights agent loads the Java agent into running HotSpot JVMs of monitored pods through the HotSpot attach mechanism, so no workload changes.
+It runs the separate `postman-insights-jvm-attach` helper (`cmd/postman-insights-jvm-attach`, protocol in `ebpf/jvm/attach`) as each JVM's own user and group, which needs `SETUID` and `SETGID`.
 
-### 5.5 New CLI flags (on `apidump` and `kube run`)
+1. The helper probes the JVM: is an agent loaded already (attached earlier, or started with `-javaagent`)?
+2. Only if not, the Insights agent copies the jar into the JVM's container, as `/tmp/.postman-insights/agent-<checksum>/postman-insights-java-agent.jar`, and the helper loads it.
+3. Once a JVM in a container runs the agent, the copies other Insights agent versions left there are removed, except those that a process sharing that directory still has mapped or open (a JVM keeps the jar it loaded mapped for as long as it runs).
 
-| Flag | Default | Description |
+A loaded agent cannot be replaced, so a JVM runs the version it loaded until it restarts; when that is not the Insights agent's own version, the log names both and the `ebpf-stats` line counts the JVM in `jvms_agent_other_version`.
+JVMs that disable attach (`-XX:+DisableAttachMechanism`, `-XX:-EnableDynamicAgentLoading`) and OpenJ9 JVMs are skipped with the reason logged; they can still start with `-javaagent`.
+On JDK 21 and newer, the JVM prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr when the agent attaches; they are harmless.
+As a sidecar (`apidump`), the Insights agent loads nothing; the JVMs need `-javaagent`.
+What happens to each JVM (attached, already running, skipped or failed, with the reason) is logged once and counted in the pod's telemetry as `java_jvm_*` events.
+
+### Connection addresses
+
+The kernel gives every event of a Java connection its addresses and ports, keyed by the agent's connection id (the `java_conns` map), in one of two ways.
+
+- **Blocking `SSLSocket`:** the Java agent has the socket, so it sends the socket's addresses in an ADDRESS frame before the connection's first data frame.
+  These frames are marked `SOCKET`, and the kernel never ties them by the thread's reads, since a read can return plaintext an earlier read already decrypted.
+- **`SSLEngine`:** the Java agent sees engines, not sockets.
+  The captured servers and clients unwrap a connection's handshake on the thread that read it, so the connection's first RECV frame is tied to the socket that thread last read bytes from (`tcp_recvmsg`, by fexit, or by kprobe and kretprobe on kernels without BPF trampolines) within 50 ms.
+  The Java agent sends an empty RECV frame at the first unwrap that consumed TLS bytes, so the tie exists before the first request or response.
+  A connection is tied once: Tomcat unwraps later records on another worker thread than the one that read them, and the connection keeps its addresses.
+  Clients that read on one thread and unwrap on another (the JDK's `HttpClient`) write on the thread that wrapped, so a wrap whose bytes are yet to be written leaves the connection waiting for that thread's next `tcp_sendmsg`, within 10 ms.
+
+Known limits: a connection unwrapped on another thread than the one that read it stays without addresses, unless that thread read another TCP socket within 50 ms, which it is then tied to; likewise an untied connection whose wrap is followed, within 10 ms and with no other connection's wrap in between, by the thread's write of another socket.
+The `ebpf-stats` line counts data frames without addresses (`java_conn_unbound`) and RECV frames of a tied connection on a thread whose last read was another socket's (`java_conn_handoffs`): mostly Tomcat's hand-offs between threads, so it shows how often a server unwraps on another thread, not how many ties are wrong.
+
+## 5. Limits and sampling
+
+| Layer | Where | Flag (default) |
 |---|---|---|
-| `--enable-https-capture` | `false` | Master switch for eBPF HTTPS capture |
-| `--https-libraries` | `openssl,java` | Comma-separated subset of `openssl,java` (`java` is in preview; `openssl` alone turns it off); unknown names are ignored with a warning, and with none left HTTPS capture is off |
-| `--https-target-namespaces` | (all) | Comma-separated K8s namespace allow-list |
-| `--https-body-size-cap` | `4096` | Per-request body capture cap in bytes |
-| `--https-capture-mode` | `headers` | `headers` (no body), `truncated` (body up to cap), `full` (body up to 64KB cap) |
-| `--privacy-mode` | `standard` | `standard`, `strict` (drop bodies entirely), `dry-run` (capture+redact but don't upload) |
+| 1. Payload truncation | kernel | `--https-body-size-cap` (16384 bytes per read or write) |
+| 2. Per-PID rate cap | kernel token bucket, refilled every second | `--https-rate-cap-per-sec` (0, off) |
+| 5. CPU thermostat: halves the payload cap while the agent's own CPU is high, and raises it back when it falls | userspace (`ebpf/thermostat_linux.go`) | `--no-thermostat` (false: the thermostat runs) |
 
----
+Layer 4 is the witness rate limit of the HTTP path (`trace/rate_limit.go`), which HTTPS capture goes through unchanged; layer 3, a reservoir per route, was planned and is not built.
+The Java agents read the kernel's current payload cap from the control file, so they copy no more than the kernel keeps.
+`--https-capture-mode` implements only `truncated`, and `--privacy-mode` only `standard`; their other values are planned.
 
-## 6. Sampling & buffering
+## 6. Permissions
 
-The current agent has two distinct sampling mechanisms (`trace/rate_limit.go` epoch-based, `trace/collector.go::SamplingCollector` stream-hash based). Neither is appropriate for **kernel-side load shedding**, which is the new concern eBPF introduces.
-
-### 6.1 What we measured in OBI
-
-From `bpf/common/http_info.h` and `bpf/common/large_buffers.h`:
-
-| Setting | Value | Meaning |
-|---|---|---|
-| `FULL_BUF_SIZE` | **256 bytes** | Default capture per event — enough for method+path+headers, truncates bodies |
-| `k_large_buf_payload_max_size` | 16 KB | Max per ring-buffer chunk when "large buffers" enabled |
-| `MaxCapturedPayloadBytes` | 64 KB | Hard ceiling per request per direction |
-| `OTEL_EBPF_BPF_BUFFER_SIZE_HTTP` | **0 (disabled)** | Default body capture is OFF |
-| Per-protocol caps | configurable | HTTP, MySQL, Postgres, Kafka independently |
-
-**OBI's design philosophy: don't sample, truncate.** Bodies are off by default; when enabled they are aggressively capped. Throughput is regulated by *how many bytes per event* rather than *how many events*.
-
-### 6.2 Our sampling stack
-
-Layered, each layer reduces a different cost:
-
-| Layer | Where | Reduces | Default |
-|---|---|---|---|
-| **1. Body truncation** | Kernel (eBPF) | Ring-buffer bandwidth, copy-to-user cost | 4 KB per request |
-| **2. Per-PID rate cap** | Kernel (eBPF map: `pid → token_bucket`) | Per-process uprobe firing rate | 1000 req/s/PID |
-| **3. Reservoir per (svc, route, status-class)** | Userspace (Go) | Backend bandwidth; preserves diverse samples | K=20 per epoch |
-| **4. Existing `SharedRateLimit`** | Userspace (Go) | Final witness budget to backend | unchanged |
-| **5. CPU thermostat** | Userspace (Go) | Host CPU impact | Throttle if agent >5% CPU |
-
-Industry comparison:
-
-| Agent | Approach |
+| Requirement | Why |
 |---|---|
-| OBI/Beyla | Truncate only. No event-level sampling. |
-| Datadog USM | Per-endpoint token bucket. |
-| Pixie | Per-connection ringbuf with body caps; CPU thermostat. |
-| AWS X-Ray | Reservoir sampling (1/sec per service + probabilistic). |
-
-**Recommendation for v1:** ship layers 1, 2, and 5 (matches OBI default + Pixie thermostat). Layer 3 (reservoir) and Layer 4 reuse stay in place for the existing pipeline. Defer Layer 4's interaction with eBPF until we have load data.
-
-### 6.3 Backpressure / overflow
-
-- BPF ring buffer sized **2 MB per CPU** (OBI default).
-- On overflow, kernel drops events silently. Userspace reads `bpf_ringbuf_query()` periodically and exports a `dropped_events_total` metric.
-- If drops exceed 1% over a 60s window, automatically reduce layer-1 truncation by 50% and emit a warning telemetry event.
-
----
-
-## 7. Privacy & redaction
-
-This section is **mandatory pre-launch work**, not a "nice to have." Going from "we never see HTTPS" to "we see all HTTPS plaintext" makes the agent the gatekeeper for far more sensitive data than today.
-
-### 7.1 The threat model change
-
-**Today (HTTP only):** the agent sees primarily north-south HTTP traffic — typically less sensitive because production HTTP is usually edge-only and behind TLS.
-
-**With HTTPS capture:** the agent sees **east-west service-to-service traffic**. This typically contains:
-
-- Service-account JWTs (often with broad scopes).
-- Internal mTLS identities passed in `X-Forwarded-Client-Cert` style headers.
-- Internal admin endpoints not protected by the same auth as public ones.
-- PII in microservice payloads that previously "stayed in the cluster."
-- Secrets in `Authorization: Bearer …` headers between services.
-
-### 7.2 Existing redaction (in `data_masks/`)
-
-We already have:
-- ✅ **30+ sensitive-key names**: `accessToken`, `api-key`, `password`, `set-cookie`, `proxy-authorization`, `x-amz-security-token`, `x-api-key`, etc. (see `data_masks/redaction_config.yaml`).
-- ✅ **30+ value regexes** for known token shapes: PMAK, JWT, Stripe `sk_live_…`, Anthropic `sk-ant-…`, PEM blocks, AWS keys, etc.
-- ✅ Customer-supplied regex overrides via `user_redaction_config.go`.
-
-### 7.3 Gaps we MUST close before HTTPS launch
-
-| # | Gap | Action |
-|---|---|---|
-| 1 | `Authorization` header is **not** in the default sensitive-keys list (only `proxy-authorization` is). | Add `authorization`, `cookie`, `www-authenticate`, `proxy-authenticate`, `grpc-authorization`, `x-forwarded-client-cert`. |
-| 2 | No body-size cap as a redaction concept. | Add `--https-body-size-cap` flag (default 4 KB). Truncation at kernel + recording-truncated metadata. |
-| 3 | No HIPAA/PCI preset. | Add `--privacy-mode=strict` (headers only, no bodies). |
-| 4 | No per-namespace / per-service opt-out. | Extend discovery filters in `docs/discovery-mode.md`: `decrypt: false` per workload. |
-| 5 | No tokenization (hash-replace) option. | Add config to replace matched values with `sha256(value)[:16]` instead of `***REDACTED***`. |
-| 6 | No redaction-coverage telemetry. | Count redactions by rule; surface to customer dashboards for audit. |
-| 7 | No dry-run mode. | Add `--privacy-mode=dry-run`: capture + redact, log stats, don't upload. Used for security review. |
-| 8 | No documented data flow / threat model doc. | Write `docs/https-data-flow.md` for customer security reviews. |
-
-### 7.4 Industry baseline (verified from source)
-
-| Practice | OBI | Datadog USM | New Relic Pixie |
-|---|:---:|:---:|:---:|
-| Bodies off by default | ✅ | ✅ | ⚠️ (config) |
-| Body size cap | ✅ 256B/64KB | ✅ 4 KB | ✅ 4 KB |
-| Header allowlist (default deny Authorization/Cookie) | partial | ✅ | ✅ |
-| Customer-supplied regex | ✅ | ✅ | ✅ |
-| Per-route opt-out | ✅ | ✅ | ✅ |
-| HIPAA preset | manual | ✅ | ✅ |
-| Tokenization | — | ✅ | — |
-| On-host redaction (before network egress) | ✅ | ✅ | ✅ |
-
-Our v1 must match the "Datadog USM" column.
-
----
-
-## 8. Security & permissions — customer story
-
-### 8.1 What we ask for
-
-DaemonSet pod spec additions:
-
-```yaml
-spec:
-  hostPID: true
-  containers:
-  - name: postman-insights-agent
-    securityContext:
-      capabilities:
-        add: [BPF, PERFMON, NET_ADMIN]      # CAP_BPF + CAP_PERFMON for Linux 5.8+
-      # On older kernels (RHEL 8 4.18), fall back to:
-      # add: [SYS_ADMIN, NET_ADMIN]
-    volumeMounts:
-    - { name: sys-kernel-debug, mountPath: /sys/kernel/debug }
-    - { name: sys-fs-bpf, mountPath: /sys/fs/bpf }
-    - { name: proc, mountPath: /host/proc, readOnly: true }
-  volumes:
-  - { name: sys-kernel-debug, hostPath: { path: /sys/kernel/debug } }
-  - { name: sys-fs-bpf,       hostPath: { path: /sys/fs/bpf } }
-  - { name: proc,             hostPath: { path: /proc } }
-```
-
-For Java auto-injection: an additional `MutatingWebhookConfiguration` that adds `JAVA_TOOL_OPTIONS=-javaagent:/opt/postman/postman-insights-java-agent.jar` to Pods in opted-in namespaces.
-
-### 8.2 Customer-facing positioning (use these exact talking points)
-
-**Talking point 1 — Precedent.** Any organization running any of these in production has already authorized this exact privilege set:
-- Cilium / Calico eBPF data plane
-- Falco (CNCF runtime security)
-- Datadog Agent (system-probe component)
-- Sysdig, Aqua, Wiz runtime agents
-- Pixie / New Relic Kubernetes integration
-- Grafana Beyla
-- OpenTelemetry eBPF Instrumentation (OBI)
-
-The Postman Insights Agent asks for the **same posture** — not more.
-
-**Talking point 2 — Compared alternatives are more invasive.** The alternatives to capture HTTPS traffic are:
-1. Code instrumentation (SDK in every service) — requires every team to merge code, version skew, language fragmentation.
-2. Service mesh sidecars (Istio, Linkerd) — adds latency, doubles container count, requires Pod-spec mutations per workload.
-3. TLS termination at a proxy — changes traffic topology, breaks mTLS.
-4. **eBPF DaemonSet — zero app changes, one DaemonSet, opt-in per namespace.**
-
-**Talking point 3 — Hard security properties.** Specific, verifiable claims for security review:
-- **Read-only by default.** We attach observability probes. We never modify syscalls, packets, or block traffic.
-- **Kernel-verified.** All BPF programs are verified by the Linux kernel's BPF verifier before load (no unbounded loops, no arbitrary memory access, bounded stack, type-safe map access).
-- **Auditable.** All `.bpf.c` source code is in this repository under `ebpf/programs/`. Customers can review and rebuild.
-- **Per-namespace opt-in.** The DaemonSet's existing discovery filters (`docs/discovery-mode.md`) gate which namespaces are even considered for capture.
-- **Dry-run mode.** `--privacy-mode=dry-run` loads probes and runs the full pipeline but writes nothing to the network. Lets security teams review captured-and-redacted data before enabling live capture.
-- **Bodies off by default.** Without explicit configuration, no HTTPS request/response bodies leave the host.
-
-### 8.3 The kernel-floor story
-
-> "The Postman Insights Agent's HTTPS capture requires Linux 5.8 or newer for full functionality. RHEL 8, CentOS 8, Rocky Linux 8, and AlmaLinux 8 with their default kernels are supported via Red Hat's eBPF backports. This is the same baseline used by OpenTelemetry eBPF Instrumentation and Datadog's system-probe."
-
-### 8.4 Pre-sales security review artifacts (deliverables)
-
-1. **`docs/https-data-flow.md`** — sequence diagrams: kernel → agent → backend, listing every transformation.
-2. **`docs/security-permissions.md`** — exhaustive list of capabilities, syscalls hooked, file paths read.
-3. **`docs/redaction-defaults.md`** — full list of redacted headers and regex patterns with example matches.
-4. **Reproducible dry-run demo** — one-command DaemonSet install in dry-run mode.
-
----
-
-## 9. Phased delivery plan
-
-Each phase is independently demoable.
-
-### Phase 0 — Decisions locked (this document)
-
-- ✅ Linux 5.8+ floor with RHEL 8 4.18 exception
-- ✅ DaemonSet only (no sidecars)
-- ✅ Tier-1 coverage: OpenSSL, statically-linked OpenSSL/BoringSSL, Node.js
-- ✅ Tier-2 coverage (v1.1): Go
-- ✅ Tier-3 coverage (v2): Java + Rust
-- ✅ OBI as reference; Apache-2.0 vendoring permitted
-- ✅ Bodies off by default; truncate-don't-sample philosophy
-- ✅ Privacy gaps #1-#8 must close before launch
-
-### Phase 1 — Spike: OpenSSL HTTPS → existing pipeline (timebox: 2 weeks)
-
-**Goal:** end-to-end decrypted HTTP/1.1 from an OpenSSL process reaches `trace.Collector.Process()` as an `akinet.HTTPRequest`.
-
-**Deliverables:**
-- `ebpf/programs/libssl.bpf.c` — adapted from OBI `bpf/generictracer/libssl.c`.
-- `ebpf/loader/` — minimal `cilium/ebpf` loader (open .bpf.o, attach uprobes, read ringbuf).
-- `ebpf/events/adapter.go` — convert `(pid, fd, dir, bytes)` events into the existing `akinet.HTTPRequest`/`HTTPResponse` types by feeding them into the existing `akihttp` parsers.
-- `cmd/internal/apidump-ebpf/` — standalone command for spike testing (never registered; since removed, the production path is `apidump --enable-https-capture`).
-
-**Validation:**
-- ✅ curl → nginx (HTTPS): see at least one decrypted request/response in `trace.Collector`.
-- ✅ Python `requests` HTTPS GET: same.
-- ✅ Node.js HTTPS GET: same.
-- ✅ CPU overhead < 5% at 1000 RPS on a 4-core box.
-
-**Exit criteria:** demoable HTTPS capture for the three workloads above. CPU within budget. Architectural confidence to commit to Phase 2.
-
-### Phase 2 — Production integration (timebox: 3 weeks)
-
-**Goal:** `--enable-https-capture` flag works on the real `apidump` command, with proper lifecycle, telemetry, and the DaemonSet manifest updated.
-
-**Deliverables:**
-- Full `ebpf/` package as described in §5.3, behind a Linux build tag.
-- `ebpf.Collect()` integrated into `apidump/apidump.go` collector setup.
-- BPF filter exclusion for port 443 when eBPF is active.
-- New CLI flags (§5.5).
-- Sampling layers 1, 2, 5 (§6.2).
-- DaemonSet manifest updates for `CAP_BPF`, `CAP_PERFMON`, `hostPID`, volume mounts.
-- Telemetry: probes-attached, events-received, bytes-captured, drops, CPU%.
-- Process discovery via existing `integrations/cri_apis` + `integrations/kube_apis`.
-- Self-tracing exclusion (skip the agent's own PID).
-
-**Validation:**
-- ✅ Single-binary install on a real test cluster.
-- ✅ Captures HTTPS traffic from three microservices simultaneously.
-- ✅ Graceful detach on pod exit, reattach on pod restart.
-- ✅ Drops < 0.1% under steady-state load.
-
-### Phase 3 — Go support via OBI gotracer (timebox: 4 weeks)
-
-**Deliverables:**
-- `ebpf/programs/go_nethttp.bpf.c`, `go_tls.bpf.c`, `go_net.bpf.c` — adapted from OBI `bpf/gotracer/`.
-- `ebpf/goexec/` — DWARF inspector adapted from OBI `pkg/internal/goexec/`.
-- `ebpf/uprobes/gotls.go` — Go binary detection + offset injection at probe load time.
-- Userspace deduplication for events arriving from multiple probe layers on the same connection.
-
-**Validation:**
-- ✅ Go service using `net/http` (Gin, stdlib, echo): HTTPS captured.
-- ✅ Go service using `google.golang.org/grpc` with TLS: captured.
-- ✅ Works across Go 1.17 through current Go release.
-
-### Phase 4 — Privacy & redaction parity (timebox: 2 weeks)
-
-**Deliverables:**
-- All 8 privacy gaps (§7.3) closed.
-- `docs/https-data-flow.md`, `docs/security-permissions.md`, `docs/redaction-defaults.md`.
-- `--privacy-mode=dry-run` mode working.
-- Default sensitive-headers list extended.
-- HIPAA preset implemented.
-
-**Validation:**
-- ✅ External security review against a known sensitive-data corpus.
-- ✅ Dry-run mode produces a "would-have-captured" report for security review.
-
-### Phase 5 — Java via agent + ioctl bridge (timebox: 6 weeks)
-
-**Deliverables:**
-- `java-agent/` — Gradle project building `postman-insights-java-agent.jar`. Adapted from OBI `pkg/internal/java/agent/`.
-- `ebpf/programs/java_tls.bpf.c` — adapted from OBI `bpf/generictracer/java_tls.c`.
-- `cmd/internal/kube-webhook/` — mutating webhook adding `JAVA_TOOL_OPTIONS` to opted-in Pods.
-- DaemonSet manifest updates for webhook registration.
-
-**Validation:**
-- ✅ Spring Boot HTTPS service: captured.
-- ✅ gRPC-Java service: captured.
-- ✅ Tomcat/Jetty serving HTTPS: captured.
-- ✅ OpenJDK 8, 11, 17, 21 all work.
-
----
-
-## 10. Open questions
-
-These need decisions before / during implementation:
-
-1. **Vendor vs. fork vs. depend on OBI.** OBI is Apache-2.0 so all three are legal. Vendoring (copying the `.bpf.c` files into our repo) gives us control but means we miss upstream fixes. Forking lets us track upstream. Depending (as a Go module) ties us to their release cadence. **Recommendation:** vendor the `.bpf.c` files (small, stable surface); depend on `cilium/ebpf` as a Go module (already widely used).
-2. **Build pipeline for BPF objects.** Need `clang` + `llvm` in our build container. CO-RE requires `bpf2go` codegen. Update `Makefile` and `build-scripts/Dockerfile`.
-3. **Telemetry from existing cluster deployments.** Do we have data on customer kernel versions? This decides whether the 5.8+ floor is acceptable or whether we need a 4.18 fallback path for non-RHEL.
-4. **Per-customer eBPF object distribution.** Do we ship pre-compiled .bpf.o, or compile on agent startup? Pre-compiled is simpler; on-startup handles weird kernels better. OBI ships pre-compiled.
-5. **Beyla → OBI migration timing.** OBI is still pre-1.0. If we vendor now, we accept some churn. Acceptable risk.
-6. **Customer demo timing.** This document supports a single up-front demo. Phase 1 spike output is the next demo-worthy artifact (~2 weeks).
-
----
-
-## 11. References (in cloned form at `/Users/swamy.hiremath@postman.com/playground/insights-ebpf-research/`)
-
-| Repo | Path | Why we reference it |
-|---|---|---|
-| `obi/` | `bpf/generictracer/libssl.c` | Direct source for Phase 1 libssl uprobes |
-| `obi/` | `bpf/generictracer/java_tls.c` | The ioctl bridge kernel side |
-| `obi/` | `bpf/gotracer/*.c` | Go uprobe set (Phase 3) |
-| `obi/` | `pkg/internal/goexec/` | DWARF offset inspector for Go binaries |
-| `obi/` | `pkg/internal/java/agent/` | Java agent ByteBuddy instrumentation (Phase 5) |
-| `obi/` | `pkg/internal/ebpf/generictracer/` | cilium/ebpf loader pattern in Go |
-| `obi/` | `SUPPORT_MATRIX.md` | Kernel / language version baselines we adopt |
-| `obi/` | `bpf/common/large_buffers.h` | Buffer-cap design |
-| `datadog-agent/` | `pkg/network/go/bininspect/` | Mature reference for Go DWARF inspection |
-| `datadog-agent/` | `pkg/network/usm/ebpf_ssl.go`, `ebpf_gotls.go` | cilium/ebpf usage patterns |
-| `pixie/` | `src/stirling/source_connectors/socket_tracer/bcc_bpf/openssl_trace.c` | Historical reference (BCC-based, do NOT copy directly) |
-| `ecapture/` | (various) | Reference for symbol resolution in stripped/static binaries |
-
----
-
-## 12. Glossary
-
-- **eBPF** — extended Berkeley Packet Filter. Linux kernel facility for running sandboxed programs attached to kernel/user events.
-- **uprobe / uretprobe** — eBPF probe attached to a userspace function's entry / return.
-- **kprobe** — eBPF probe attached to a kernel function.
-- **CO-RE** — Compile Once, Run Everywhere. Modern eBPF pattern using BTF for kernel-version portability.
-- **BTF** — BPF Type Format. Kernel-shipped type information enabling CO-RE.
-- **libbpf** — userspace library for loading eBPF programs (the modern alternative to BCC).
-- **cilium/ebpf** — Go-native eBPF loader, no cgo. What we use.
-- **BCC** — older Python-based eBPF toolkit. Requires kernel headers at runtime. What Pixie uses; what we avoid.
-- **ByteBuddy** — Java library for runtime bytecode generation/instrumentation. Used by the Java agent.
-- **OBI** — OpenTelemetry eBPF Instrumentation. Our reference implementation.
+| Linux 5.8 or newer (RHEL 8 and its rebuilds on 4.18 through Red Hat's eBPF backports) | CO-RE programs, BPF ring buffer |
+| `BPF` and `PERFMON` (or `SYS_ADMIN` on older kernels) | load programs, attach uprobes and tracepoints |
+| `hostPID` and the host's `/proc` at `/host/proc` | see the node's processes, with the PIDs the kernel reports |
+| `/sys/kernel/debug` (read-only) and `/sys/fs/bpf` | tracepoint ids, BPF maps |
+| the CRI socket (DaemonSet) | map containers to their network namespaces |
+| `SYS_PTRACE` (Java) | write the control file of a JVM running as another user, read JVMs' `/proc/<pid>/maps` |
+| `SETUID` and `SETGID` (Java, DaemonSet) | run the attach helper as each JVM's user and group |
+
+Without `SYS_PTRACE` the agent captures OpenSSL only; without `SETUID` and `SETGID`, a DaemonSet still captures JVMs started with `-javaagent`.
+`kube inject`, `kube helm-fragment` and `kube tf-fragment` with `--enable-https-capture` generate the sidecar container with its mounts and `BPF`, `PERFMON` and, with `java`, `SYS_PTRACE` (`SidecarOpts` in `cmd/internal/kube/util.go`).
+They do not change the pod spec: add `hostPID: true` and the hostPath volumes the mounts name (`sys-kernel-debug`, `sys-fs-bpf`, `host-proc`; `HTTPSCaptureVolumes` in the same file) yourself, as the Helm and Terraform fragments' comments say.
+The programs only observe: they never change syscalls or packets, and the kernel verifier checks them before they load.
+
+## 7. Privacy
+
+HTTPS capture lets the agent see east-west traffic between services, which tends to carry service tokens and internal payloads that never crossed the edge as HTTP.
+Captured messages go through the same witness and redaction path as HTTP capture: `Authorization` values are obfuscated, and `data_masks` redacts its sensitive keys and value patterns (`data_masks/redaction_config.yaml`) before anything leaves the host.
+Payloads are capped per read and write (section 5), and plaintext stays on the node until redacted: the BPF ring buffer is readable only by the agent that loaded the programs.
+A headers-only mode and a dry run (`--privacy-mode=strict`, `dry-run`) are not implemented yet.
+
+## 8. Prior art
+
+The libssl path follows OpenTelemetry eBPF Instrumentation (OBI, Apache-2.0, formerly Grafana Beyla): `ebpf/programs/libssl.bpf.c` mirrors the design of OBI's `bpf/generictracer/libssl.c`.
+OBI hands Java plaintext to the kernel through `ioctl` with a magic command; this agent uses a positional write to `/dev/null` instead, and gets Java connections' addresses from the kernel.
+The namespace bridge (containers to network namespaces through the CRI) is the pattern OBI, Datadog's system-probe and Falco use, because cgroup paths read across cgroup namespaces do not name the pod.

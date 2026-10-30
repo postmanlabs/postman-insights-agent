@@ -289,7 +289,7 @@ func httpsBodyCap(args *Args) uint32 {
 // pcapFilters returns the pcap filters to use alongside h: when HTTPS
 // capture runs (h is not nil), without the TLS port, so the libpcap path
 // doesn't double-count handshake bytes already captured via eBPF. See
-// docs/https-capture-design.md §6.1. Otherwise pcap keeps the port.
+// "Pipeline" in docs/https-capture-design.md. Otherwise pcap keeps the port.
 func (h *httpsCapture) pcapFilters(filters map[string]string, tlsPort uint16) map[string]string {
 	if h == nil || tlsPort == 0 {
 		return filters

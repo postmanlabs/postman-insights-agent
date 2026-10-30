@@ -706,11 +706,11 @@ When running the DaemonSet with HTTPS capture enabled, namespace filtering is en
 |---|---|---|---|
 | **1. Pod selection** | `--include-namespaces` / `--exclude-namespaces` on `kube run` | HTTP (pcap) | The DaemonSet only starts an `apidump` process for pods in selected namespaces. pcap is automatically confined to that pod's network namespace by the kernel — no cross-pod leakage is possible. |
 | **2. eBPF pod scoping** | `ContainerNetnsInode` (automatic) or `--https-target-namespaces` (standalone `apidump`) | HTTPS (eBPF) | eBPF uprobes are **not** network-namespace confined — they attach at the process level across the whole node. Layer 1 alone does not limit what eBPF decrypts. In the DaemonSet path the agent reads the container's network-namespace inode from the CRI and restricts eBPF discovery to exactly the processes inside that pod's netns (pod-level precision, no duplicate captures for scaled deployments). When the inode is unavailable the agent falls back to `--https-target-namespaces` (namespace-level, set automatically from the pod's k8s namespace in discovery mode). |
-| **3. Java webhook injection** | `namespaceSelector` in the webhook `MutatingWebhookConfiguration` | Java (ByteBuddy) | Controls which pods receive the Java agent sidecar injected by `kube inject`. Configured separately in the webhook manifest, not by the agent CLI. |
+| **3. Java control files and network namespaces** | Automatic, from layers 1 and 2 | Java (the Java agent) | A Java agent captures only while the Insights agent keeps its control file fresh, which it does, and loads the agent into running JVMs, only for the pods it monitors. The kernel accepts the agent's frames only from those pods' network namespaces. See "Java capture" in [`https-capture-design.md`](https-capture-design.md). |
 
 ### Why can't layer 1 cover eBPF?
 
-libpcap binds to a specific network interface inside a network namespace — it physically cannot see packets from another netns. eBPF uprobes hook into the `SSL_read`/`SSL_write` functions of a process regardless of which netns that process belongs to. A uprobe on `node`'s libssl fires for every TLS read node performs on the whole node. Layers 2 and 3 are therefore required additions, not redundancies.
+libpcap binds to a specific network interface inside a network namespace: it physically cannot see packets from another netns. eBPF uprobes hook into the `SSL_read`/`SSL_write` functions of a process regardless of which netns that process belongs to. A uprobe on `node`'s libssl fires for every TLS read node performs on the whole node, and any process can hand the kernel Java frames. Layers 2 and 3 are therefore required additions, not redundancies.
 
 ### Scaled deployments (horizontal pod autoscaling)
 

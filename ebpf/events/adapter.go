@@ -60,7 +60,7 @@ const MaxPendingPerFlow = 1 * 1024 * 1024
 // set, SrcIP/DstIP/ports are filled from /proc/<pid>/net/tcp via the
 // SSL*→fd map. When neither is available, IPs are left zero and
 // "ebpf-pid-<N>" is stored in the Interface field for traceability.
-// See docs/https-capture-design.md §5.4.
+// See "Pipeline" in docs/https-capture-design.md.
 type Adapter struct {
 	// FactorySelector picks the right parser for a new flow. Pass the same
 	// selector the pcap path uses.

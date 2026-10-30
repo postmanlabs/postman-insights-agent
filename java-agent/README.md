@@ -19,21 +19,14 @@ The bridge to the kernel is pure Java (no JNI, no `Unsafe`), and the agent runs 
   Heap buffers, which Tomcat and the JDK's HTTP server use, are copied without one on every JDK.
   When every buffer is busy, the frame is dropped and counted rather than making the application wait.
 - **Control file:** the agent captures only while `/tmp/.postman-insights/control` is fresh (under 60 s old), has a version it knows and says `enabled=1`; otherwise it is dormant, and the hooks return at once.
-  The Insights Agent writes the file into the container of every JVM in the pods it monitors, and refreshes it every 10 s, so capture stops on its own when the pod is no longer monitored or the Insights Agent is removed.
-  The agent checks it every 5 s, on its own daemon thread (`postman-insights-agent`).
+  The Insights Agent writes and refreshes the file, so capture stops on its own when the pod is no longer monitored or the Insights Agent is removed.
+  The agent checks it every 5 s, on its own daemon thread (`postman-insights-java-agent`).
 - **HEARTBEAT frames:** at start and every 30 s, whether capturing or dormant, the agent sends its version, the JVM's version and vendor, its state and its counters.
   The Insights Agent logs each agent once when it first hears from it and whenever its state changes, and its `ebpf-stats` line shows the agents alive and capturing in each pod (`java_agents_alive`, `java_agents_capturing`).
-- **Connection addresses:** the kernel gives every event of a connection its IP addresses and ports, which it gets in one of two ways.
-  - **Blocking `SSLSocket`:** the agent has the socket, so it sends the socket's local and remote addresses in an ADDRESS frame before the connection's first data frame.
-    The socket's frames are marked `SOCKET`, and the kernel never ties them to a socket by its thread's reads: a read can return plaintext that an earlier read already decrypted, without reading the socket.
-  - **`SSLEngine`:** the agent sees engines, not sockets.
-    The servers and clients it captures unwrap a connection's handshake on the thread that read it, so a connection's first RECV frame comes from the thread whose socket read just returned bytes (`tcp_recvmsg`, hooked with fexit, or kprobe and kretprobe on kernels without BPF trampolines); a read that returned none (`EAGAIN`, the end of the stream) ties nothing.
-    The agent sends an empty RECV frame at each connection's first unwrap that consumed TLS bytes, in the handshake, so the connection is tied to its socket before the first request or response, whichever side sends first.
-    A connection is tied once, so later records unwrapped on another thread than the one that read them keep its addresses: Tomcat reads the handshake's last flight and the first request in one segment on one worker thread, and unwraps the request on another.
-    Clients that read on one thread and unwrap on another (the JDK's `HttpClient`) still write on the thread that wrapped: a wrap's SEND frame, whose bytes are yet to be written (`FLAG_BEFORE_WRITE`), leaves its connection waiting for the thread's next socket write (`tcp_sendmsg`) within 10 ms, and the agent sends an empty one at every wrap that produced TLS bytes without plaintext (the handshake's), so the kernel sees every connection's announcement.
-    A connection unwrapped on another thread than the one that read it stays without addresses rather than getting wrong ones, unless that thread read another TCP socket (a database's, a downstream call's) within 50 ms: then it gets that socket's addresses.
-    So does a connection not yet tied whose wrap is followed, within 10 ms and with no other connection's wrap in between, by the thread's write of another socket: another thread writes the wrap's bytes, or this one first writes another connection's leftover bytes.
-    The `ebpf-stats` line counts frames without addresses (`java_conn_unbound`), and RECV frames of a tied connection on a thread whose last read was another socket's (`java_conn_handoffs`): records another thread read, as Tomcat's, or a wrong tie, so it shows how often a server unwraps on another thread than the one that read, not how many ties are wrong.
+- **Connection addresses:** the kernel gives each connection's events their addresses, and the agent helps it tie connections to sockets.
+  For a blocking `SSLSocket`, it sends the socket's addresses in an ADDRESS frame before the first data frame, and marks the socket's frames `SOCKET`.
+  For an `SSLEngine`, it sends an empty RECV frame at the connection's first unwrap that consumed TLS bytes, and an empty SEND frame (`FLAG_BEFORE_WRITE`) at every wrap that produced TLS bytes without plaintext, so the kernel can tie the connection to a socket: a RECV frame by the socket the thread last read (within 50 ms before), a `FLAG_BEFORE_WRITE` SEND frame by the socket the thread writes next (within 10 ms after).
+  How the kernel ties them, and the limits: "Connection addresses" in [`docs/https-capture-design.md`](../docs/https-capture-design.md).
 - **CLOSE frames:** once a connection can carry no more responses (the server's side closed, or the client's inbound side), the agent sends a CLOSE frame.
   The Insights Agent then completes a response delimited by the close and frees the connection's state at once, instead of after 30 s idle.
   Connections that end without a TLS close_notify are freed when idle.
@@ -97,22 +90,11 @@ For an end-to-end check with the eBPF agent in kind, see `test/kind/deploy-java-
 
 ## Packaging
 
-`build-scripts/Dockerfile.ebpf` builds the jar and puts it at `/opt/postman/postman-insights-java-agent.jar` in the eBPF image, with its SHA-256 in `postman-insights-java-agent.jar.sha256` and the `postman-insights-jvm-attach` helper next to it.
-The build arg `AGENT_VERSION` sets the jar's version.
+`build-scripts/java-capture-files.sh` builds the jar and puts it, with its SHA-256 in `postman-insights-java-agent.jar.sha256` and the `postman-insights-jvm-attach` helper, where the Insights Agent loads them from: `/opt/postman` in the eBPF image (`build-scripts/Dockerfile.ebpf`, and the release image).
+The build arg `AGENT_VERSION` of `Dockerfile.ebpf` sets the jar's version; release images use the Insights Agent's version.
 
-## Status
+## Use with the Insights Agent
 
-Java HTTPS capture is in preview, and on by default with `--enable-https-capture` (on `kube run` and `apidump`).
-`--https-libraries=openssl` turns it off.
-Without `java`, the Insights Agent switches off the agents already running in the JVMs of the pods it monitors, at the next control-file refresh.
-The Insights Agent writes the control file for the JVMs in the pods it monitors (`ebpf/jvm`), so a JVM started with `-javaagent` in a monitored pod captures within seconds.
-As a DaemonSet (`kube run`), it also loads the agent into running JVMs that do not have it, through the `postman-insights-jvm-attach` helper (`cmd/postman-insights-jvm-attach`), which it runs as each JVM's own user.
-It copies the jar into the JVM's container, as `/tmp/.postman-insights/agent-<checksum>/postman-insights-java-agent.jar`, only when the JVM does not run the agent yet.
-Once a JVM in a container runs the agent, it removes the copies that other Insights Agent versions left there, except those a process still has open or mapped: a JVM keeps the jar it loaded for as long as it runs.
-A loaded agent cannot be replaced, so a JVM runs the agent version it loaded until it restarts; when that is not the Insights Agent's own version, the log says so, and the `ebpf-stats` line counts the JVM in `jvms_agent_other_version`.
-Run as a sidecar (`apidump`), it loads nothing: the JVMs need `-javaagent`.
-To write the control file of a JVM running as another user, it needs the `SYS_PTRACE` capability, which the sidecars that `kube inject`, `helm-fragment` and `tf-fragment` generate get with `--https-libraries` including `java`.
-It then captures Java only in its own pod's network namespace, even with `hostPID`, and not at all in a pod on the host network.
-A pod whose network namespace is unknown, or on the host network, is captured without Java in a DaemonSet too, since its namespace does not identify one pod.
-On JDK 21 and newer, the JVM then prints four `WARNING: A Java agent has been loaded dynamically ...` lines to its stderr; they are harmless.
-What happens to each JVM (attached, agent already running, skipped or failed, with the reason) is logged once and counted in the pod's telemetry as `java_jvm_*` events; the `ebpf-stats` line shows the node's totals.
+Java HTTPS capture is in preview, and on by default with `--enable-https-capture` (`--https-libraries=openssl` turns it off).
+As a DaemonSet (`kube run`), the Insights Agent loads the agent into running JVMs; as a sidecar (`apidump`), the JVMs need `-javaagent` with a copy of the jar.
+How the Insights Agent writes the control file, loads the agent, removes other versions' copies and reports each JVM: "Java capture" in [`docs/https-capture-design.md`](../docs/https-capture-design.md).
