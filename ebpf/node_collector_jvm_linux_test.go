@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
@@ -342,6 +343,42 @@ func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector, reportCount
 	}
 }
 
+// subscribeDrained is subscribe for a test that captures more messages than
+// out holds before it reads them. The adapter sends to out holding its lock,
+// which unsubscribe needs too: so out is read from the start into a larger
+// buffer, until the test has unsubscribed, on every path out of the test.
+func subscribeDrained(t *testing.T, ctx context.Context, nc *NodeCollector) <-chan akinet.ParsedNetworkTraffic {
+	t.Helper()
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
+	msgs := make(chan akinet.ParsedNetworkTraffic, 4096)
+	stop, drained := make(chan struct{}), make(chan struct{})
+	var dropped atomic.Uint64
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case pnt := <-out:
+				select {
+				case msgs <- pnt:
+				default:
+					dropped.Add(1)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		unsubscribe()
+		close(stop)
+		<-drained
+		if n := dropped.Load(); n > 0 {
+			t.Errorf("%d messages dropped: more than %d unread", n, cap(msgs))
+		}
+	})
+	return msgs
+}
+
 // expectCaptured sends an HTTPS request to the JVM and waits for the request
 // and response to come out of the subscription, with the connection's
 // addresses: the kernel ties the JVM's connection to its socket.
@@ -621,8 +658,7 @@ func TestNodeCollectorJVMFrameworksBurst(t *testing.T) {
 			if f.javaMajor() < app.minJava {
 				t.Skipf("needs Java %d", app.minJava)
 			}
-			out, unsubscribe := subscribe(t, ctx, nc, nil)
-			defer unsubscribe()
+			out := subscribeDrained(t, ctx, nc)
 			j := f.startApp(t, app.name, "", "-javaagent:"+f.agentJar)
 			j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
 			handoffs, unbound := counter(loader.JavaCounterConnHandoff), counter(loader.JavaCounterConnUnbound)
@@ -656,20 +692,33 @@ func TestNodeCollectorJVMFrameworksBurst(t *testing.T) {
 			if t.Failed() {
 				return
 			}
-			ports := map[int]bool{}
-			for _, port := range portOf {
-				ports[port] = true
-			}
-
+			// The adapter gives a connection's request and response one
+			// StreamID, from the agent's connection id, not from the
+			// addresses: so it pairs each response with its request, and so
+			// with its client's port.
 			srv := mustTCPAddr(t, j.addr)
-			requests, responses := map[int]int{}, map[int]int{}
+			requests := map[string]int{}    // request id to captures
+			clientOf := map[uuid.UUID]int{} // stream to its request's client port
+			responses := map[uuid.UUID][]akinet.ParsedNetworkTraffic{}
+			complete := func() bool {
+				if len(clientOf) < len(portOf) {
+					return false
+				}
+				for stream := range clientOf {
+					if len(responses[stream]) == 0 {
+						return false
+					}
+				}
+				return true
+			}
 			deadline := time.After(15 * time.Second)
-			for len(requests) < len(ports) || len(responses) < len(ports) {
+			for !complete() {
 				select {
 				case pnt := <-out:
 					switch c := pnt.Content.(type) {
 					case akinet.HTTPRequest:
-						port, ok := portOf[c.URL.Query().Get("burst")]
+						id := c.URL.Query().Get("burst")
+						port, ok := portOf[id]
 						if c.URL.Path != "/hello" || !ok {
 							continue // not this test's
 						}
@@ -677,29 +726,36 @@ func TestNodeCollectorJVMFrameworksBurst(t *testing.T) {
 							t.Errorf("request of the client on port %d went from port %d to port %d, want to %d",
 								port, pnt.SrcPort, pnt.DstPort, srv.Port)
 						}
-						requests[port]++
-					case akinet.HTTPResponse:
-						if pnt.SrcPort != srv.Port || !ports[pnt.DstPort] {
-							continue
+						if requests[id]++; requests[id] > 1 {
+							t.Errorf("request %s captured %d times", id, requests[id])
 						}
-						responses[pnt.DstPort]++
+						clientOf[c.StreamID] = port
+					case akinet.HTTPResponse:
+						responses[c.StreamID] = append(responses[c.StreamID], pnt)
 					}
 				case <-deadline:
-					t.Fatalf("captured requests of %d and responses to %d of %d connections",
-						len(requests), len(responses), len(ports))
+					answered := 0
+					for stream := range clientOf {
+						if len(responses[stream]) > 0 {
+							answered++
+						}
+					}
+					t.Fatalf("captured %d of %d requests, %d of them with their response", len(clientOf), len(portOf), answered)
 				}
 			}
-			for port := range ports {
-				if requests[port] != 1 || responses[port] != 1 {
-					t.Errorf("client port %d: %d requests and %d responses, want one each",
-						port, requests[port], responses[port])
+			for stream, port := range clientOf {
+				if rs := responses[stream]; len(rs) != 1 {
+					t.Errorf("client port %d: %d responses, want one", port, len(rs))
+				} else if rs[0].SrcPort != srv.Port || rs[0].DstPort != port {
+					t.Errorf("response to the client on port %d went from port %d to port %d, want from %d",
+						port, rs[0].SrcPort, rs[0].DstPort, srv.Port)
 				}
 			}
 			if got := counter(loader.JavaCounterConnUnbound) - unbound; got != 0 {
 				t.Errorf("conn_unbound grew by %d, want 0", got)
 			}
 			got := counter(loader.JavaCounterConnHandoff) - handoffs
-			t.Logf("conn_handoffs grew by %d over %d connections", got, len(ports))
+			t.Logf("conn_handoffs grew by %d over %d connections", got, len(portOf))
 			// Otherwise the burst did not exercise what it is for.
 			if app.name == "tomcat" && got == 0 {
 				t.Error("conn_handoffs did not grow: Tomcat unwrapped every request on the thread that read it")
