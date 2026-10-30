@@ -240,8 +240,8 @@ type HTTPSCaptureArgs struct {
 	// under load. Useful for e2e demos and debugging.
 	DisableThermostat bool
 
-	// CaptureMode is one of "headers" | "truncated" | "full". Phase 2 wires
-	// only "truncated" (the default, capped by BodySizeCap).
+	// CaptureMode is "truncated", bodies capped by BodySizeCap: the only mode
+	// implemented ("headers" and "full" are planned, and refused until then).
 	CaptureMode string
 
 	// CBPFExcludePort is the TCP port whose packets are removed from the cBPF
@@ -349,7 +349,7 @@ type Args struct {
 	// The number of upload buffers. Anything larger than 1 results in async uploads.
 	MaxWitnessUploadBuffers int
 
-	// --- HTTPS-via-eBPF capture (Phase 2) ---------------------------------
+	// --- HTTPS-via-eBPF capture -----------------------------------------
 	//
 	// When HTTPS.Enabled is true, there is a backend to send to, and the BPF
 	// programs load (prepareHTTPSCapture), the agent additionally runs the
@@ -362,8 +362,8 @@ type Args struct {
 	// Requires a build with the `insights_bpf` tag on Linux. Stubbed elsewhere.
 	HTTPS HTTPSCaptureArgs
 
-	// PrivacyMode is one of "standard" | "strict" | "dry-run". Currently a
-	// passthrough; Phase 4 wires it into data_masks.
+	// PrivacyMode is "standard", the only mode implemented ("strict" and
+	// "dry-run" are planned, and refused until then). Not read yet.
 	PrivacyMode string
 
 	// Discovery mode fields: when DiscoveryMode is true, the agent registers the
@@ -1467,7 +1467,7 @@ func (a *apidump) Run() error {
 		}
 	}
 
-	// ---- HTTPS-via-eBPF capture (Phase 2) -------------------------------
+	// ---- HTTPS-via-eBPF capture -----------------------------------------
 	// Decrypted HTTPS bytes from libssl uprobes are pushed through a dedicated
 	// collector chain that mirrors the matched-filter chain WITHOUT the TLS /
 	// TCP packet trackers (the eBPF path delivers already-decrypted HTTP, not

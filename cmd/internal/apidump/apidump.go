@@ -55,7 +55,7 @@ var (
 	apidumpDiscoveryMode bool
 	apidumpServiceName   string
 
-	// HTTPS-via-eBPF capture flags (Phase 2).
+	// HTTPS-via-eBPF capture flags.
 	enableHTTPSCapture    bool
 	httpsLibraries        []string
 	httpsTargetNamespaces []string
@@ -134,6 +134,10 @@ func apidumpRunWithoutAbnormalExit(cmd *cobra.Command, args []string) error {
 }
 
 func apidumpRunInternal(_ *cobra.Command, _ []string) error {
+	if err := checkImplementedModes(httpsCaptureMode, privacyMode); err != nil {
+		return err
+	}
+
 	applyRandomizedStart()
 
 	traceTags, err := util.ParseTagsAndWarn(tagsFlag)
@@ -539,7 +543,7 @@ func init() {
 		"Override the auto-derived service name (default: namespace/workload-name).",
 	)
 
-	// --- HTTPS-via-eBPF flags (Phase 2) ---
+	// --- HTTPS-via-eBPF flags ---
 	// All gated behind --enable-https-capture; when false, none of the other
 	// HTTPS-* flags have any effect. The agent emits a warning instead of
 	// silently ignoring stray values.
@@ -573,7 +577,7 @@ func init() {
 		&httpsCaptureMode,
 		"https-capture-mode",
 		"truncated",
-		"HTTPS capture mode: 'headers' | 'truncated' | 'full'. Phase 2 implements 'truncated' only.",
+		"HTTPS capture mode. Only 'truncated' (bodies capped by --https-body-size-cap) is implemented; 'headers' and 'full' are planned.",
 	)
 	Cmd.Flags().Uint16Var(
 		&httpsCBPFExcludePort,
@@ -599,7 +603,7 @@ func init() {
 		&privacyMode,
 		"privacy-mode",
 		"standard",
-		"Privacy mode: 'standard' | 'strict' | 'dry-run'. Currently a passthrough; full effect lands in Phase 4.",
+		"Privacy mode. Only 'standard' is implemented; 'strict' and 'dry-run' are planned.",
 	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)

@@ -23,6 +23,12 @@ bin/
 *.idea/**
 *.iml
 
+# Eclipse and VS Code's Java support (project files they generate)
+.project
+.classpath
+.settings/
+.factorypath
+
 # Go mocks
 *.mock.go
 mock_*.go
@@ -36,11 +42,6 @@ mock/
 ebpf/loader/*_bpfel.go
 ebpf/loader/*_bpfeb.go
 ebpf/loader/*.o
-
-# Generated TLS certs for local kind testing (see test/kind/webhook/gen-certs.sh)
-test/kind/webhook/tls.crt
-test/kind/webhook/tls.key
-test/kind/webhook/webhook-deployment-with-certs.yaml
 
 # Build output of the kind test services' Maven projects, which IDEs' Java
 # support builds on its own.
