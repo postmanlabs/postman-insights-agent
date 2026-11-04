@@ -55,14 +55,31 @@ public final class AgentMain {
         start(args, inst, Contract.HEARTBEAT_SOURCE_ATTACH);
     }
 
+    private static void start(String args, Instrumentation inst, String source) {
+        File jarPath;
+        try {
+            jarPath = new File(AgentMain.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+        } catch (Throwable t) {
+            log("cannot find its jar, nothing changed: " + rootCause(t));
+            return;
+        }
+        start(args, inst, source, jarPath);
+    }
+
     /**
-     * Installs the hooks at most once per JVM. The marker property is set only
-     * once they are installed, so it never claims capture that is not running.
-     * A failed start is not retried, because it can leave partial state behind
-     * (the jar on the bootstrap class path, some classes transformed) that a
-     * second install would duplicate; the failed property records why.
+     * Installs the hooks from jarPath at most once per JVM. The marker property
+     * is set only once they are installed, so it never claims capture that is
+     * not running.
+     *
+     * <p>A start that fails once the jar is going onto the bootstrap class path
+     * is not retried, because it can leave partial state behind (the jar on
+     * the bootstrap class path, some classes transformed) that a second
+     * install would duplicate; the failed property records why. A start that
+     * fails before, when the jar cannot be opened (its copy was removed after
+     * the JVM read it), changes nothing and sets nothing, so a later attach
+     * may load the agent again.
      */
-    private static synchronized void start(String args, Instrumentation inst, String source) {
+    static synchronized void start(String args, Instrumentation inst, String source, File jarPath) {
         String loaded = System.getProperty(MARKER_PROPERTY);
         if (loaded != null) {
             log("version " + loaded + " is already loaded in this JVM; not loading again");
@@ -72,16 +89,23 @@ public final class AgentMain {
             log("an earlier start failed in this JVM (" + System.getProperty(FAILED_PROPERTY) + "); not retrying");
             return;
         }
-        attempted = true;
 
         String version = "unknown";
+        JarFile jar = null;
         try {
-            File jarPath = new File(AgentMain.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-            JarFile jar = new JarFile(jarPath, false);
+            jar = new JarFile(jarPath, false);
             String v = jar.getManifest().getMainAttributes().getValue("Implementation-Version");
             if (v != null) {
                 version = v;
             }
+        } catch (Throwable t) {
+            closeQuietly(jar);
+            log("cannot open its jar " + jarPath + ", nothing changed: " + rootCause(t));
+            return;
+        }
+
+        attempted = true;
+        try {
             inst.appendToBootstrapClassLoaderSearch(jar);
             ClassLoader loader = new AgentClassLoader(jarPath);
             Class<?> installer = Class.forName(INSTALLER, true, loader);
@@ -125,6 +149,17 @@ public final class AgentMain {
         }
         return main.startsWith("sun.") || main.startsWith("jdk.") || main.startsWith("java.")
                 || main.startsWith("com.sun.tools.");
+    }
+
+    private static void closeQuietly(JarFile jar) {
+        if (jar == null) {
+            return;
+        }
+        try {
+            jar.close();
+        } catch (Throwable ignored) {
+            // Nothing else to do.
+        }
     }
 
     private static Throwable rootCause(Throwable t) {

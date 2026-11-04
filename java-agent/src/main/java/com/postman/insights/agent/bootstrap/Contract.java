@@ -12,8 +12,10 @@ public final class Contract {
     public static final String MARKER_PROPERTY = "postman.insights.agent.version";
 
     /**
-     * System property set when the agent failed to start; its value is the
-     * version and the reason. The agent does not retry in the same JVM.
+     * System property set when the agent failed to start once it had changed
+     * something in the JVM; its value is the version and the reason. The agent
+     * does not retry in the same JVM. A start that could not open the jar
+     * sets neither this nor the marker.
      */
     public static final String FAILED_PROPERTY = "postman.insights.agent.failed";
 

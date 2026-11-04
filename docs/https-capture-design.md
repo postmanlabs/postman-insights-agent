@@ -70,7 +70,15 @@ It runs the separate `postman-insights-jvm-attach` helper (`cmd/postman-insights
 
 1. The helper probes the JVM: is an agent loaded already (attached earlier, or started with `-javaagent`)?
 2. Only if not, the Insights agent copies the jar into the JVM's container, as `/tmp/.postman-insights/agent-<checksum>/postman-insights-java-agent.jar`, and the helper loads it.
-3. Once a JVM in a container runs the agent, the copies other Insights agent versions left there are removed, except those that a process sharing that directory still has mapped or open (a JVM keeps the jar it loaded mapped for as long as it runs).
+   Every staging, a new copy or a reuse of the one there, sets the jar's modification time.
+   If the load fails as a missing copy would make it fail (the JVM could not load the jar, or the agent could not open it and changed nothing), the jar is staged again and the load retried once, without a signal.
+3. Once an attempt is over (the JVM runs the agent, or the attach failed for good), the copies other Insights agent versions left in the container are removed.
+   When the Insights agent stops tracking a JVM that still runs (its pod is no longer monitored), its own copy goes too.
+   Kept are the copies that a process sharing that directory still has mapped or open (a JVM keeps the jar it loaded mapped for as long as it runs; a process whose mappings cannot be read in full counts as holding every copy), and the copies staged or reused less than 10 minutes ago, which are looked at again once they are older.
+   The 10 minutes keep an attach in progress from losing its copy, also another Insights agent's on the same node, such as the old one during a DaemonSet rollout with `maxSurge` above 0.
+
+Known limits of the cleanup: copies stay when the Insights agent is uninstalled, in a container that outlives its JVMs (nothing left to reach it through), and while a JVM of a pod no longer monitored still runs the agent from its copy.
+Preview builds (v0.42.0-rc2 and rc3) remove other versions' copies however young, so during a rollout with `maxSurge` above 0 from such a build, an attach of the new Insights agent can lose its copy; it then stages it again and retries once.
 
 A loaded agent cannot be replaced, so a JVM runs the version it loaded until it restarts; when that is not the Insights agent's own version, the log names both and the node's `ebpf-stats` line counts the JVM in `jvms_agent_other_version`.
 JVMs that disable attach (`-XX:+DisableAttachMechanism`, `-XX:-EnableDynamicAgentLoading`) and OpenJ9 JVMs are skipped with the reason logged; they can still start with `-javaagent`.

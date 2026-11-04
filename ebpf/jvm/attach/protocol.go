@@ -104,6 +104,11 @@ const (
 	ReasonLoadFailed       = "load_failed"  // the JVM refused to load the agent
 	ReasonAgentFailed      = "agent_failed" // the agent loaded but failed to start
 	ReasonEarlierFailure   = "agent_failed_earlier"
+
+	// ReasonAgentNotStarted: the agent loaded but could not open its jar
+	// (removed after the JVM read it), so it changed nothing and may be
+	// loaded again.
+	ReasonAgentNotStarted = "agent_not_started"
 )
 
 // Result is what the helper reports.

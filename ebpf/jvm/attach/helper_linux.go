@@ -130,7 +130,9 @@ func Run(req Request) Result {
 	if f := property(props, javatls.FailedProperty); f != "" {
 		return failed(ReasonAgentFailed, signalled, "%s", f)
 	}
-	return failed(ReasonProtocol, signalled, "the agent loaded but did not report its state")
+	// The agent sets neither property only when it could not open its jar,
+	// before changing anything.
+	return failed(ReasonAgentNotStarted, signalled, "the agent loaded but did not start: it could not open its jar")
 }
 
 var (
