@@ -86,7 +86,7 @@ POSTMAN_TEST_APPS_DIR=$PWD/java-agent/build/test-apps \
   go test -tags insights_bpf -p 1 -run 'TestNodeCollectorJVM' ./ebpf/
 ```
 
-For an end-to-end check with the eBPF agent in kind, see `test/kind/deploy-java-service.sh`.
+For an end-to-end check with the eBPF agent in kind, see `test/e2e/deploy-java-service.sh`.
 
 ## Packaging
 
