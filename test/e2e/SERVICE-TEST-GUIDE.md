@@ -56,6 +56,26 @@ On any other cluster they build nothing: push the images yourself, to a registry
 
 Then send more traffic by hand (below): gRPC, and requests from your Mac.
 
+On a cluster of several nodes, the scripts read the log of the agent pod on each node that runs a test service, since each node's agent logs only its own pods.
+
+### Shared clusters
+
+The scripts label everything they create (the namespaces `test-apps`, `test-clients` and `postman-insights`, the agent's ClusterRole, ClusterRoleBinding and DaemonSet) with `postman-insights-e2e=true`, and refuse to run where they would collide with something else:
+
+- another Postman Insights agent DaemonSet in the cluster (its image is `postman-insights-agent`, or it runs `kube run`), since two agents on a node would both capture the test services and both attach Java agents;
+- outside kind, any of those resources existing without the label, which the scripts would otherwise take over.
+
+On kind, unlabelled resources of those names are taken to be from an earlier version of the scripts.
+
+### Clean up
+
+```bash
+KUBE_CONTEXT=<context> ./test/e2e/teardown.sh
+```
+
+It removes only the resources labelled `postman-insights-e2e=true`, and everything in the labelled namespaces.
+On kind, `kind delete cluster --name pia-https-test` removes everything.
+
 ---
 
 ## How to test (two terminals per service)

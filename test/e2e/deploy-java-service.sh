@@ -52,7 +52,7 @@ fi
 
 # A fresh JVM every run, so the Insights agent attaches to it anew.
 echo "==> Java service deployments"
-kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+claim_namespace "$NS"
 for svc in $SERVICES; do
   image=$JAVA_IMAGE
   [[ "$svc" == netty-service ]] && image=$NETTY_IMAGE
@@ -110,9 +110,9 @@ else
   grep -E 'Java HTTPS capture' <<<"$LOGS" || true
   fail=1
 fi
-services=$(wc -w <<<"$SERVICES")
+services=$(($(wc -w <<<"$SERVICES"))) # arithmetic drops the padding of macOS wc
 per_service=$((REQUESTS * 3 * 2)) # a request and a response per call
-java_events=$(max_field java_events)
+java_events=$(sum_node_field java_events)
 want=$((services * per_service))
 if [[ "${java_events:-0}" -ge "$want" ]]; then
   echo "  PASS  java_events=${java_events}"
@@ -142,7 +142,8 @@ v=$(max_field java_conn_handoffs)
 echo "  INFO  java_conn_handoffs=${v:-none} (not checked)"
 
 # Each service's Java agent reports itself through HEARTBEAT frames.
-agents=$({ grep -oE 'ebpf: Java agent [^ ]+ in pid [0-9]+ is active' <<<"$LOGS" | grep -oE 'pid [0-9]+' | sort -u | wc -l; } || true)
+# PIDs are per node, so an agent is a PID and a node.
+agents=$({ grep -E 'ebpf: Java agent [^ ]+ in pid [0-9]+ is active' <<<"$LOGS" | sed -E 's/.*(pid [0-9]+) is active.*(\[node=[^]]*\])$/\1 \2/' | sort -u | wc -l; } || true)
 if [[ "${agents// /}" -ge "$services" ]]; then
   echo "  PASS  ${agents// /} Java agents heard from, capturing"
 else
