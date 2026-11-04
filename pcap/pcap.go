@@ -16,9 +16,15 @@ import (
 )
 
 const (
-	// The same default as tcpdump.
+	// The same default as tcpdump (libpcap's MAXIMUM_SNAPLEN).
+	//
+	// Do not lower this to 64 KiB. Snaplen caps the whole captured frame,
+	// including the link-layer header, so a max-size 65,535-byte IP packet is
+	// a 65,549-byte frame. Such frames are common on lo (default MTU 64 KiB)
+	// and with GSO/GRO, and truncating them leaves TCP reassembly gaps.
 	defaultSnapLen = 262144
 	BlockForever   = pcap.BlockForever
+	pcapBufSize    = 32 * 1024 * 1024
 )
 
 type pcapWrapper interface {
@@ -32,7 +38,7 @@ type pcapImpl struct {
 }
 
 func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) (<-chan gopacket.Packet, error) {
-	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, targetNetworkNamespaceOpt)
+	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
 	if err != nil {
 		return nil, err
 	}
