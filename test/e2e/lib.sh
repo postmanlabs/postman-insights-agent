@@ -91,18 +91,25 @@ find_cluster() {
 
 # Runs a kind command that writes the kubeconfig (create cluster, export
 # kubeconfig), then puts the current context back as it was, also when the
-# command fails: kind makes the cluster's context the current one, and the
-# scripts leave the current context alone.
+# command fails or is interrupted: kind makes the cluster's context the
+# current one, and the scripts leave the current context alone.
 kind_keeping_context() {
-  local prev rc=0
-  prev=$(command kubectl config current-context 2>/dev/null || true)
+  local rc=0
+  KIND_PREV_CONTEXT=$(command kubectl config current-context 2>/dev/null || true)
+  trap 'restore_context; exit 130' INT TERM
   kind "$@" || rc=$?
-  if [[ -n "$prev" ]]; then
-    command kubectl config use-context "$prev" >/dev/null
+  trap - INT TERM
+  restore_context
+  return "$rc"
+}
+
+# Makes KIND_PREV_CONTEXT the current context again, or none when it is empty.
+restore_context() {
+  if [[ -n "$KIND_PREV_CONTEXT" ]]; then
+    command kubectl config use-context "$KIND_PREV_CONTEXT" >/dev/null
   else
     command kubectl config unset current-context >/dev/null
   fi
-  return "$rc"
 }
 
 # Finds the cluster of KUBE_CONTEXT, creating it when it is a kind cluster
@@ -124,12 +131,34 @@ use_cluster() {
     echo "==> Not a kind cluster: building nothing, the nodes pull the image refs given"
   fi
   check_cluster_is_free
+  stop_agent
 }
 
-# The value of the E2E_LABEL label on a resource ("" when it has none), or
-# nothing and status 1 when the resource does not exist.
-e2e_label_of() {
-  kubectl get "$@" -o "jsonpath={.metadata.labels.${E2E_LABEL}}" 2>/dev/null
+# Sets OWNER to the E2E_LABEL label of a resource ("" when it has none), or
+# returns 1 when the resource does not exist. Exits on any other error: a
+# lookup that failed must not pass for a resource that does not exist.
+read_owner() {
+  local out
+  if ! out=$(kubectl get "$@" --ignore-not-found -o "jsonpath={.metadata.name}|{.metadata.labels.${E2E_LABEL}}"); then
+    echo "ERROR: could not read $* from the cluster; stopping rather than guess whether it exists." >&2
+    exit 1
+  fi
+  [[ -n "$out" ]] || return 1
+  OWNER=${out#*|}
+}
+
+# Stops the test's agent DaemonSet, if one runs, before the test services are
+# deployed: an agent left by an earlier run may send to another backend (one
+# from before the scripts set POSTMAN_ENV sends to production), and would
+# register the new services there before deploy_agent switches it.
+# deploy_agent starts it again, after the services.
+stop_agent() {
+  read_owner -n "$AGENT_NS" daemonset/postman-insights-agent || return 0
+  echo "==> Stopping the agent of an earlier run until the services are up"
+  kubectl delete daemonset -n "$AGENT_NS" postman-insights-agent --wait=true
+  if [[ -n "$(kubectl get pods -n "$AGENT_NS" -l app=postman-insights-agent -o name)" ]]; then
+    kubectl wait --for=delete pod -n "$AGENT_NS" -l app=postman-insights-agent --timeout=120s
+  fi
 }
 
 # Refuses to run where the test would collide with something it did not
@@ -145,7 +174,7 @@ e2e_label_of() {
 # On kind, unlabelled resources of the scripts' names are taken to be from
 # an earlier version of the scripts, which did not label them.
 check_cluster_is_free() {
-  local daemonsets id label spec others="" res owner foreign=""
+  local daemonsets id label spec others="" res foreign=""
   daemonsets=$(kubectl get daemonsets --all-namespaces -o "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}|{.metadata.labels.${E2E_LABEL}}|{.spec.template.spec.containers[*].image} {.spec.template.spec.containers[*].command} {.spec.template.spec.containers[*].args}{\"\n\"}{end}")
   # Fields are split at "|", not a tab: read joins adjacent tabs, which
   # would shift the fields of a DaemonSet without the label.
@@ -166,12 +195,12 @@ check_cluster_is_free() {
   [[ -n "$KIND_CLUSTER" ]] && return
   for res in "namespace/${NS}" "namespace/${CLIENT_NS}" "namespace/${AGENT_NS}" \
     clusterrole/postman-insights-agent clusterrolebinding/postman-insights-agent; do
-    if owner=$(e2e_label_of "$res") && [[ "$owner" != true ]]; then
+    if read_owner "$res" && [[ "$OWNER" != true ]]; then
       foreign+=" ${res}"
     fi
   done
   # The DaemonSet by its name, whatever it runs: applying would replace it.
-  if owner=$(e2e_label_of -n "$AGENT_NS" daemonset/postman-insights-agent) && [[ "$owner" != true ]]; then
+  if read_owner -n "$AGENT_NS" daemonset/postman-insights-agent && [[ "$OWNER" != true ]]; then
     foreign+=" daemonset/postman-insights-agent (namespace ${AGENT_NS})"
   fi
   if [[ -n "$foreign" ]]; then
@@ -237,10 +266,15 @@ render_manifest() {
     "$file"
 }
 
-# Deploys the production DaemonSet, restarted so that it starts after the
-# services, and waits for it. Call it after the services are up.
+# Deploys the production DaemonSet, so that it starts after the services, and
+# waits for it. Call it after the services are up. use_cluster has stopped
+# the agent of an earlier run, so the DaemonSet is created anew; one that
+# exists anyway is restarted, which a DaemonSet just created must not be: its
+# first pods would still be terminating beside their replacements.
 deploy_agent() {
+  local existed
   echo "==> Agent DaemonSet (kube run --enable-https-capture)"
+  existed=$(kubectl get daemonset -n "$AGENT_NS" postman-insights-agent --ignore-not-found -o name)
   claim_namespace "$AGENT_NS"
   kubectl create secret generic postman-insights-creds \
     --namespace postman-insights \
@@ -253,8 +287,10 @@ deploy_agent() {
     --from-literal=cluster-name="${INSIGHTS_CLUSTER_NAME}" \
     --dry-run=client -o yaml | kubectl apply -f -
   render_manifest "$REPO_ROOT/test/e2e/agent-daemonset-prod.yaml" "$AGENT_IMAGE" | kubectl apply -f -
-  kubectl rollout restart -n postman-insights daemonset/postman-insights-agent
-  kubectl rollout status -n postman-insights daemonset/postman-insights-agent --timeout=180s
+  if [[ -n "$existed" ]]; then
+    kubectl rollout restart -n "$AGENT_NS" daemonset/postman-insights-agent
+  fi
+  kubectl rollout status -n "$AGENT_NS" daemonset/postman-insights-agent --timeout=180s
 }
 
 # Creates the test-apps namespace and the TLS ConfigMap the Node.js and
@@ -311,13 +347,16 @@ collect_logs() {
   nodes=$(kubectl get pods -n "$NS" -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u)
   LOGS=""
   for node in $nodes; do
+    # Newest first is not available, so oldest first and the last one: a
+    # pod replaced by a rollout may still be terminating on the node.
     agents=$(kubectl get pods -n "$AGENT_NS" -l app=postman-insights-agent \
-      --field-selector "spec.nodeName=${node}" -o jsonpath='{.items[*].metadata.name}')
+      --field-selector "spec.nodeName=${node}" --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[*].metadata.name}')
     if [[ -z "$agents" ]]; then
       echo "ERROR: no agent pod on node ${node}, which runs test services." >&2
       exit 1
     fi
-    LOGS+=$(kubectl logs -n "$AGENT_NS" "${agents%% *}" --since=5m | sed "s/\$/ [node=${node}]/")$'\n'
+    LOGS+=$(kubectl logs -n "$AGENT_NS" "${agents##* }" --since=5m | sed "s/\$/ [node=${node}]/")$'\n'
   done
 }
 
