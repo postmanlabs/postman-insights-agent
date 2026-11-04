@@ -53,7 +53,7 @@ sudo ./bin/postman-insights-agent apidump --enable-https-capture ...
   In the dev container: `build-scripts/dev-container.sh run 'make test-ebpf'`.
 - The real-JVM tests (`TestNodeCollectorJVM*`) also need a JDK, the Java agent jar and the test apps; they skip without them.
   See "Building and testing" in [`java-agent/README.md`](../java-agent/README.md).
-- End to end in kind: `test/kind/deploy-java-service.sh` (Java, through the production DaemonSet path) and [`test/kind/SERVICE-TEST-GUIDE.md`](../test/kind/SERVICE-TEST-GUIDE.md) (Node.js and .NET).
+- End to end, in kind by default: `test/e2e/deploy-java-service.sh` (Java, through the production DaemonSet path) and [`test/e2e/SERVICE-TEST-GUIDE.md`](../test/e2e/SERVICE-TEST-GUIDE.md) (Node.js and .NET).
 
 ## Package layout
 

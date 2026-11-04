@@ -2,7 +2,7 @@
 //
 // Minimal client: HTTPS GET /phase5b2 + gRPC SayHello (TLS).
 // Usage:
-//   TLS_DIR=test/kind/certs dotnet run --project test/kind/dotnet-service/Client
+//   TLS_DIR=test/e2e/certs dotnet run --project test/e2e/apps/dotnet-service/Client
 //   dotnet run -- https://127.0.0.1
 
 using System.Net.Security;

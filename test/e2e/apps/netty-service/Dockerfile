@@ -2,7 +2,7 @@
 # Netty HTTPS service on Netty's OpenSSL (BoringSSL) engine, with the Postman
 # Insights Java agent loaded at start through -javaagent, for Java HTTPS
 # capture tests in kind. Build from the repo root:
-#   docker build -f test/kind/Dockerfile.netty-service -t pia-netty-service:test .
+#   docker build -f test/e2e/apps/netty-service/Dockerfile -t pia-netty-service:test .
 
 FROM eclipse-temurin:21-jdk AS agent
 WORKDIR /src/java-agent
@@ -11,9 +11,9 @@ RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon -q agentJar
 
 FROM maven:3-eclipse-temurin-21 AS app
 WORKDIR /src
-COPY test/kind/netty-service/pom.xml ./
+COPY test/e2e/apps/netty-service/pom.xml ./
 RUN --mount=type=cache,target=/root/.m2 mvn -q -B dependency:go-offline
-COPY test/kind/netty-service/src ./src
+COPY test/e2e/apps/netty-service/src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -q -B package
 
 FROM eclipse-temurin:21-jre

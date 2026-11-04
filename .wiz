@@ -27,4 +27,4 @@ ignores:
       mitigating write risk. There is no alternative — eBPF
       programs cannot be attached without access to the kernel debug filesystem.
     resources:
-      - "test/kind/agent-daemonset-prod.yaml"
+      - "test/e2e/agent-daemonset-prod.yaml"

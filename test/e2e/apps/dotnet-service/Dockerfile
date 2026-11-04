@@ -3,13 +3,13 @@
 # Kestrel terminates TLS with PEM certs from /tls — same capture model as the
 # customer's ASP.NET + OpenSSL on :8443 setup.
 #
-#   docker build -f test/kind/Dockerfile.dotnet-service -t pia-dotnet-service:test .
+#   docker build -f test/e2e/apps/dotnet-service/Dockerfile -t pia-dotnet-service:test .
 #   kind load docker-image pia-dotnet-service:test --name pia-https-test
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-COPY test/kind/dotnet-service/ ./dotnet-service/
+COPY test/e2e/apps/dotnet-service/ ./dotnet-service/
 
 WORKDIR /src/dotnet-service
 RUN dotnet restore DotnetService.csproj

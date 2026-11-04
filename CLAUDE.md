@@ -91,7 +91,7 @@ Other:
 - `docs/discovery-mode.md` - important user-facing doc explaining **Discovery Mode** vs **Workspace Mode** onboarding (Kubernetes). Read this before changing onboarding/k8s flows.
 - `docs/https-capture-design.md` - HTTPS capture design as built (pipeline, Java capture, limits, permissions).
 - `java-agent/` - the Postman Insights Java agent (Gradle; see its README), whose frames `ebpf/` reads.
-- `test/kind/` - kind end-to-end tests for HTTPS capture (`deploy-java-service.sh`, `SERVICE-TEST-GUIDE.md`).
+- `test/e2e/` - end-to-end tests for HTTPS capture, in kind or any cluster (`deploy-java-service.sh`, `SERVICE-TEST-GUIDE.md`; test apps in `apps/`).
 - `deployment/` - Go package (`package deployment`) for deployment-environment detection (EC2, ECS, k8s, etc.).
 - `build-scripts/` - Dockerfiles and build helpers: `Dockerfile` (static binary, `golang:1.25-alpine`; Alpine's libpcap has no D-Bus dependency), `Dockerfile.ebpf` (eBPF image with the Java capture files), `Dockerfile.ebpf-bin` (static eBPF binary), `Dockerfile.dev` + `dev-container.sh` (eBPF dev container), `java-capture-files.sh` (builds the Java agent jar and attach helper under the names the agent loads; release images use it too).
 - `ci/` - CI-environment detection (Go package).

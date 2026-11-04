@@ -1,15 +1,15 @@
-# Spring Boot (Tomcat) HTTPS service with the Postman Insights Java agent
-# loaded at start (-javaagent). Image: test/kind/Dockerfile.java-service.
+# Netty HTTPS service (OpenSSL engine) with the Postman Insights Java agent
+# loaded at start (-javaagent). Image: test/e2e/apps/netty-service/Dockerfile.
 # Deployed by deploy-java-service.sh.
 # A Deployment, not a bare Pod: in discovery mode the Insights agent captures
 # only pods of long-running controllers and skips standalone pods.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: java-service
+  name: netty-service
   namespace: test-apps
   labels:
-    app: java-service
+    app: netty-service
 spec:
   replicas: 1
   # The old pod is gone before the new one starts, so the deploy script sees
@@ -18,15 +18,15 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: java-service
+      app: netty-service
   template:
     metadata:
       labels:
-        app: java-service
+        app: netty-service
     spec:
       containers:
-      - name: java-service
-        image: pia-java-service:test
+      - name: netty-service
+        image: pia-netty-service:test
         imagePullPolicy: Never
         ports:
         - containerPort: 8443

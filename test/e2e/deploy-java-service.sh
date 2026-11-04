@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# End-to-end check of Java HTTPS capture in kind, through the production
-# DaemonSet path (kube run --enable-https-capture, agent-daemonset-prod.yaml).
+# End-to-end check of Java HTTPS capture in a cluster (kind by default),
+# through the production DaemonSet path (kube run --enable-https-capture,
+# agent-daemonset-prod.yaml).
 #
 # Deploys three HTTPS services: Spring Boot on Tomcat (the JDK's SSLEngine)
 # and plain Netty (its OpenSSL engine), which load the Postman Insights Java
@@ -8,21 +9,23 @@
 # it, into which the Insights agent attaches the Java agent. Sends each HTTPS
 # requests, and checks the agent's ebpf-stats lines: Java frames reached the
 # kernel programs and were parsed into HTTP messages. Captures also appear in
-# Postman Insights under the cluster "pia-kind-test".
+# Postman Insights under the cluster INSIGHTS_CLUSTER_NAME (pia-kind-test).
 #
-# Prerequisites: Docker Desktop, kind, kubectl, a Postman Insights API key.
+# Prerequisites: docker, kubectl, and kind for a kind cluster; a Postman
+# Insights API key for the backend POSTMAN_ENV names. See lib.sh for the
+# settings (POSTMAN_ENV, KUBE_CONTEXT, INSIGHTS_CLUSTER_NAME).
 #
 # Usage:
-#   export POSTMAN_INSIGHTS_API_KEY=your_key_here
-#   ./test/kind/deploy-java-service.sh              # build images, deploy, check
-#   ./test/kind/deploy-java-service.sh --skip-build # reuse the images in kind
+#   export POSTMAN_ENV=BETA POSTMAN_INSIGHTS_API_KEY="$POSTMAN_API_KEY_BETA"
+#   ./test/e2e/deploy-java-service.sh              # build images, deploy, check
+#   ./test/e2e/deploy-java-service.sh --skip-build # reuse the images on the nodes
 set -euo pipefail
 
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
-JAVA_IMAGE=pia-java-service:test
-NETTY_IMAGE=pia-netty-service:test
+JAVA_IMAGE="${JAVA_IMAGE:-pia-java-service:test}"
+NETTY_IMAGE="${NETTY_IMAGE:-pia-netty-service:test}"
 SERVICES="java-service netty-service java-service-attach"
 SKIP_BUILD=false
 REQUESTS=3 # rounds of 3 requests each
@@ -32,27 +35,28 @@ JAVA_LOG='\[postman-insights(-java)?-agent\]'
 for arg in "$@"; do
   case "$arg" in
     --skip-build) SKIP_BUILD=true ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
 
-require_api_key
+require_backend
 use_cluster
 
-if [[ "$SKIP_BUILD" == "false" ]]; then
+if building_images; then
   build_agent
-  echo "==> Building Java service images ${JAVA_IMAGE} and ${NETTY_IMAGE}"
-  docker build -f "$REPO_ROOT/test/kind/Dockerfile.java-service" -t "$JAVA_IMAGE" "$REPO_ROOT"
-  docker build -f "$REPO_ROOT/test/kind/Dockerfile.netty-service" -t "$NETTY_IMAGE" "$REPO_ROOT"
-  kind load docker-image "$JAVA_IMAGE" "$NETTY_IMAGE" --name "$CLUSTER"
+  build_image "$REPO_ROOT/test/e2e/apps/java-service/Dockerfile" "$JAVA_IMAGE"
+  build_image "$REPO_ROOT/test/e2e/apps/netty-service/Dockerfile" "$NETTY_IMAGE"
+  load_images "$JAVA_IMAGE" "$NETTY_IMAGE"
 fi
 
 # A fresh JVM every run, so the Insights agent attaches to it anew.
 echo "==> Java service deployments"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 for svc in $SERVICES; do
-  deploy_service "$svc"
+  image=$JAVA_IMAGE
+  [[ "$svc" == netty-service ]] && image=$NETTY_IMAGE
+  deploy_service "$svc" "$image"
 done
 # shellcheck disable=SC2086 # SERVICES is a list
 wait_services $SERVICES
@@ -147,4 +151,4 @@ else
 fi
 
 finish_checks
-echo "==> Java HTTPS capture works end to end; check Postman Insights cluster 'pia-kind-test' for the endpoints"
+echo "==> Java HTTPS capture works end to end; check Postman Insights (POSTMAN_ENV=${POSTMAN_ENV}) cluster '${INSIGHTS_CLUSTER_NAME}' for the endpoints"

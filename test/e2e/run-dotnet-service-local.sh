@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Run dotnet-service locally for HTTPS + gRPC smoke tests (no kind).
 #
-#   ./test/kind/run-dotnet-service-local.sh server    # terminal 1
-#   ./test/kind/run-dotnet-service-local.sh test      # terminal 2
+#   ./test/e2e/run-dotnet-service-local.sh server    # terminal 1
+#   ./test/e2e/run-dotnet-service-local.sh test      # terminal 2
 #
-# Kind: ./test/kind/deploy-dotnet-service.sh
+# Kind: ./test/e2e/deploy-dotnet-service.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SERVICE_DIR="$REPO_ROOT/test/kind/dotnet-service"
-CERT_DIR="$REPO_ROOT/test/kind/certs"
+SERVICE_DIR="$REPO_ROOT/test/e2e/apps/dotnet-service"
+CERT_DIR="$REPO_ROOT/test/e2e/certs"
 TLS_DIR="$CERT_DIR"
 CACERT="$CERT_DIR/hello-https-trust.pem"
 HTTPS_PORT="${HTTPS_PORT:-8443}"

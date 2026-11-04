@@ -1,8 +1,8 @@
-# Kind Service Test Guide: HTTPS and gRPC
+# End-to-end Service Test Guide: HTTPS and gRPC
 
-Practical reference for testing HTTPS capture of **Java**, **node-service** and **dotnet-service** in the Kind cluster `pia-https-test`.
+Practical reference for testing HTTPS capture of **Java**, **node-service** and **dotnet-service** in a cluster: by default the kind cluster `pia-https-test`, or any other through `KUBE_CONTEXT`.
 
-The DaemonSet runs `kube run --enable-https-capture` (libssl uprobes, and Java through the Java agent) and ships what it captures to Postman Insights, under the cluster `pia-kind-test`.
+The DaemonSet runs `kube run --enable-https-capture` (libssl uprobes, and Java through the Java agent) and ships what it captures to the Postman backend `POSTMAN_ENV` names, under the cluster `INSIGHTS_CLUSTER_NAME` (`pia-kind-test` on kind).
 It does not log the requests themselves; its log shows what it attached to and, every 30 s, one `ebpf-stats: pod=<pod>` line per monitored pod, with the pod's own counters (`msgs` counts the HTTP messages captured for it), and one `ebpf-stats: node` line with what the node's pods share (the kernel's counters, `java_conn_*` among them):
 
 ```bash
@@ -13,32 +13,45 @@ kubectl logs -n postman-insights daemonset/postman-insights-agent
 
 ## Prerequisites
 
-- Kind cluster: `kind-pia-https-test` (`kubectl config use-context kind-pia-https-test`)
-- Tools on your Mac: `docker`, `kind`, `kubectl`, `curl`, `grpcurl`
-- A Postman Insights API key: `export POSTMAN_INSIGHTS_API_KEY=...`
+- A cluster, named by its kubeconfig context in `KUBE_CONTEXT`.
+  The default, `kind-pia-https-test`, is created from `kind/cluster.yaml` when missing.
+  The scripts pass the context to every `kubectl` call and leave the current context alone; point `kubectl` at the same cluster for the commands below (`kubectl config use-context`, or `--context`).
+- Tools on your Mac: `docker`, `kubectl`, `curl`, `grpcurl`, and `kind` for a kind cluster
+- The backend and its API key; tests use beta:
+
+  ```bash
+  export POSTMAN_ENV=BETA POSTMAN_INSIGHTS_API_KEY="$POSTMAN_API_KEY_BETA"
+  ```
+
+  The scripts refuse an unset `POSTMAN_ENV`, with which the agent would send to production.
 - Repo root:
 
 ```bash
 cd /path/to/postman-insights-agent
-export CACERT=test/kind/certs/hello-https-trust.pem
+export CACERT=test/e2e/certs/hello-https-trust.pem
 ```
 
-The Node.js and ASP.NET certs (`test/kind/certs/gen-java-service-certs.sh`) carry a **SAN** (`DNS:localhost,IP:127.0.0.1`) so **grpcurl** (Go TLS) accepts them. HTTPS curl works with or without SAN; gRPC from Mac requires it.
+The Node.js and ASP.NET certs (`test/e2e/certs/gen-java-service-certs.sh`) carry a **SAN** (`DNS:localhost,IP:127.0.0.1`) so **grpcurl** (Go TLS) accepts them. HTTPS curl works with or without SAN; gRPC from Mac requires it.
 
 ---
 
 ## Deploy and check
 
 Each script builds the agent and its services' images, deploys them with the production DaemonSet (`agent-daemonset-prod.yaml`), sends HTTPS requests from the `test-clients` namespace, and checks the agent's `ebpf-stats` lines; it exits non-zero when a check fails.
-They share their steps through `test/kind/lib.sh`.
+They share their steps through `test/e2e/lib.sh`, whose header lists the settings.
+The services' sources and Dockerfiles are in `test/e2e/apps/<service>/`.
+
+Images are refs given in the environment (`AGENT_IMAGE`, `JAVA_IMAGE`, `NETTY_IMAGE`, `NODE_IMAGE`, `DOTNET_IMAGE`), with local `pia-*:test` defaults.
+On kind the scripts build them under those refs and load them into the cluster.
+On any other cluster they build nothing: push the images yourself, to a registry the nodes can pull from, and pass their refs.
 
 ```bash
-./test/kind/deploy-java-service.sh    # Spring Boot and Netty, -javaagent and attach
-./test/kind/deploy-node-service.sh    # Node.js on the shared libssl (--static: its own BoringSSL)
-./test/kind/deploy-dotnet-service.sh  # ASP.NET Core; run after deploy-node-service.sh to check its outbound calls too
+./test/e2e/deploy-java-service.sh    # Spring Boot and Netty, -javaagent and attach
+./test/e2e/deploy-node-service.sh    # Node.js on the shared libssl (--static: its own BoringSSL)
+./test/e2e/deploy-dotnet-service.sh  # ASP.NET Core; run after deploy-node-service.sh to check its outbound calls too
 
-# Reuse the images already in kind
-./test/kind/deploy-node-service.sh --skip-build
+# Reuse the images already loaded into kind
+./test/e2e/deploy-node-service.sh --skip-build
 ```
 
 Then send more traffic by hand (below): gRPC, and requests from your Mac.
@@ -121,7 +134,7 @@ curl --cacert "$CACERT" https://localhost:8443/phase5b2
 
 ```bash
 grpcurl -cacert "$CACERT" \
-  -import-path test/kind/node-service/proto \
+  -import-path test/e2e/apps/node-service/proto \
   -proto greeter.proto \
   -d '{"name":"mac-node"}' \
   localhost:8446 phase5c2.Greeter/SayHello
@@ -181,7 +194,7 @@ curl --cacert "$CACERT" 'https://localhost:8443/phase5b2/call-external?q=demo'
 
 ```bash
 grpcurl -cacert "$CACERT" \
-  -import-path test/kind/dotnet-service/Protos \
+  -import-path test/e2e/apps/dotnet-service/Protos \
   -proto greeter.proto \
   -d '{"name":"mac-dotnet"}' \
   localhost:8446 phase5c2.Greeter/SayHello
@@ -211,9 +224,9 @@ grpcurl -cacert "$CACERT" \
 | Symptom | What to try |
 |---------|-------------|
 | `address already in use` on 8443/8446 | Stop the previous `port-forward` (Ctrl+C) |
-| `grpcurl: certificate relies on legacy Common Name` | Regenerate certs: `./test/kind/certs/gen-java-service-certs.sh --force` then redeploy (`deploy-node-service.sh --skip-build`) |
+| `grpcurl: certificate relies on legacy Common Name` | Regenerate certs: `./test/e2e/certs/gen-java-service-certs.sh --force` then redeploy (`deploy-node-service.sh --skip-build`) |
 | `curl: (60) SSL certificate problem` | Run from repo root; confirm `$CACERT` exists; use `https://localhost` |
-| `Discovery traffic TTL expired for service "test-apps/<name>"` in the DaemonSet log | In discovery mode the backend stops a service's capture when its discovery period ends: onboard the service in Postman (cluster `pia-kind-test`), or delete it there, then rerun its deploy script |
+| `Discovery traffic TTL expired for service "test-apps/<name>"` in the DaemonSet log | In discovery mode the backend stops a service's capture when its discovery period ends: onboard the service in Postman (in the `POSTMAN_ENV` backend, cluster `INSIGHTS_CLUSTER_NAME`), or delete it there, then rerun its deploy script |
 | `msgs` does not grow | The `ebpf-stats` lines come every 30 s: wait for the next one; use `--since=1m` or `-f` |
 | No capture for Node/dotnet | Look for `attached libssl uprobes` for the pod's process in the DaemonSet log; the pod must belong to a Deployment (discovery mode skips standalone pods); rerun its deploy script |
 | No capture for Java | Look for the JVM's `Java agent ...` line in the DaemonSet log (attached, skipped or failed, with the reason); `--https-libraries` must include `java` (the default) |
@@ -233,10 +246,10 @@ Expected DaemonSet args include: `kube`, `run`, `--enable-https-capture`, `--dis
 ### Regenerate certs (customer-style)
 
 ```bash
-./test/kind/certs/gen-java-service-certs.sh --force
+./test/e2e/certs/gen-java-service-certs.sh --force
 # Then redeploy services so ConfigMap + pods pick up new certs
-./test/kind/deploy-node-service.sh --skip-build
-./test/kind/deploy-dotnet-service.sh --skip-build
+./test/e2e/deploy-node-service.sh --skip-build
+./test/e2e/deploy-dotnet-service.sh --skip-build
 ```
 
 ---
@@ -246,7 +259,7 @@ Expected DaemonSet args include: `kube`, `run`, `--enable-https-capture`, `--dis
 | Doc | Purpose |
 |-----|---------|
 | [`docs/https-capture-design.md`](../../docs/https-capture-design.md) | How HTTPS capture works, its limits and permissions |
-| [`test/kind/deploy-java-service.sh`](deploy-java-service.sh) | Java services, with checks |
-| [`test/kind/deploy-node-service.sh`](deploy-node-service.sh) | Node.js service, with checks |
-| [`test/kind/deploy-dotnet-service.sh`](deploy-dotnet-service.sh) | ASP.NET Core service, with checks |
-| [`test/kind/lib.sh`](lib.sh) | Steps the deploy scripts share |
+| [`test/e2e/deploy-java-service.sh`](deploy-java-service.sh) | Java services, with checks |
+| [`test/e2e/deploy-node-service.sh`](deploy-node-service.sh) | Node.js service, with checks |
+| [`test/e2e/deploy-dotnet-service.sh`](deploy-dotnet-service.sh) | ASP.NET Core service, with checks |
+| [`test/e2e/lib.sh`](lib.sh) | Steps the deploy scripts share |

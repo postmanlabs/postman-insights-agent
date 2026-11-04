@@ -3,14 +3,12 @@
 # This is the production code path. It captures both HTTP and HTTPS traffic and
 # ships to the Postman Insights backend.
 #
-# Required secrets:
-#   kubectl create secret generic postman-insights-creds \
-#     --namespace postman-insights \
-#     --from-literal=api-key=YOUR_KEY
-#
-# Required env vars (set on the DaemonSet or via the secret above):
-#   POSTMAN_INSIGHTS_API_KEY  — DaemonSet-level key for discovery mode
-#   POSTMAN_INSIGHTS_CLUSTER_NAME — cluster identifier shown in Postman
+# Applied by test/e2e/lib.sh (deploy_agent), which first creates:
+#   the secret postman-insights-creds (api-key: POSTMAN_INSIGHTS_API_KEY,
+#     the DaemonSet-level key for discovery mode), and
+#   the ConfigMap postman-insights-e2e (postman-env: POSTMAN_ENV, the backend;
+#     cluster-name: POSTMAN_INSIGHTS_CLUSTER_NAME, the cluster shown in
+#     Postman).
 #
 # Privileges required for HTTPS capture (eBPF uprobes on libssl):
 #   hostPID: true            — so PIDs in /host/proc match BPF-emitted PIDs
@@ -105,8 +103,17 @@ spec:
             secretKeyRef:
               name: postman-insights-creds
               key: api-key
+        # Required: unset, the agent would use the production backend.
+        - name: POSTMAN_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: postman-insights-e2e
+              key: postman-env
         - name: POSTMAN_INSIGHTS_CLUSTER_NAME
-          value: "pia-kind-test"
+          valueFrom:
+            configMapKeyRef:
+              name: postman-insights-e2e
+              key: cluster-name
         - name: POSTMAN_K8S_NODE
           valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
         - name: POSTMAN_INSIGHTS_K8S_NODE
@@ -139,9 +146,8 @@ spec:
         # The node's own /proc, as on a real cluster: the CRI reports
         # container PIDs in the node's PID namespace, and per-pod capture
         # opens /host/proc/<pid>/ns/net with them. In kind the node is a
-        # container, so the Docker VM's /proc (mounted at /linuxkit-proc by
-        # cluster.yaml) has other PIDs, and every pod failed with "no
-        # network interfaces" and Java capture off.
+        # container, so the Docker VM's /proc has other PIDs, and with it
+        # every pod failed with "no network interfaces" and Java capture off.
         # Limit: BPF events carry the VM's PIDs, so in kind the libssl event
         # resolver, which looks sockets up by event PID in /host/proc, can
         # miss a connection's addresses or take another process's; Java

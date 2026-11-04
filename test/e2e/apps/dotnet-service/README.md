@@ -7,24 +7,24 @@ Capture path: `postman-insights-agent` DaemonSet → **libssl uprobes** (same as
 ## Local (requires .NET 8 SDK)
 
 ```bash
-./test/kind/run-dotnet-service-local.sh server   # terminal 1
-./test/kind/run-dotnet-service-local.sh test     # terminal 2
+./test/e2e/run-dotnet-service-local.sh server   # terminal 1
+./test/e2e/run-dotnet-service-local.sh test     # terminal 2
 ```
 
 ## Kind
 
 ```bash
-./test/kind/deploy-dotnet-service.sh
+./test/e2e/deploy-dotnet-service.sh
 kubectl port-forward -n test-apps deployment/dotnet-service 8443:8443 8446:8446
 ```
 
 From Mac:
 
 ```bash
-CACERT=test/kind/certs/hello-https-trust.pem
+CACERT=test/e2e/certs/hello-https-trust.pem
 curl --cacert "$CACERT" https://127.0.0.1:8443/phase5b2
 grpcurl -cacert "$CACERT" \
-  -import-path test/kind/dotnet-service/Protos -proto greeter.proto \
+  -import-path test/e2e/apps/dotnet-service/Protos -proto greeter.proto \
   -d '{"name":"demo"}' localhost:8446 phase5c2.Greeter/SayHello
 ```
 
@@ -44,7 +44,7 @@ kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m \
   | grep -E 'attached libssl uprobes|ebpf-stats: pod=dotnet-service'
 ```
 
-The agent does not log the requests themselves; the endpoints appear in Postman Insights under the cluster `pia-kind-test`.
+The agent does not log the requests themselves; the endpoints appear in Postman Insights under the cluster `INSIGHTS_CLUSTER_NAME` of the deploy script (`pia-kind-test` on kind).
 
 Pod logs (app + kubectl timestamps):
 

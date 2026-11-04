@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Same /phase5b2 endpoint, different query strings — validates eBPF captures
+# Same /phase5b2 endpoint, different query strings - validates eBPF captures
 # the full request line (path + ?params), not just the route path.
 #
 # Usage:
-#   ./test/kind/deploy-dotnet-service.sh   # if not already running
+#   ./test/e2e/deploy-dotnet-service.sh   # if not already running
 #   kubectl port-forward -n test-apps deployment/dotnet-service 8443:8443 &
-#   ./test/kind/test-dotnet-query.sh
+#   ./test/e2e/test-dotnet-query.sh
 #
 # The agent does not log the requests it captures: check the endpoints and
-# their query parameters in Postman Insights (cluster "pia-kind-test"), and
+# their query parameters in Postman Insights (the cluster INSIGHTS_CLUSTER_NAME
+# of the deploy script, pia-kind-test by default), and
 # the pod's msgs counter in the agent's ebpf-stats lines:
 #   kubectl logs -n postman-insights daemonset/postman-insights-agent --since=2m | grep 'ebpf-stats: pod=dotnet-service'
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CA="${ROOT}/test/kind/certs/hello-https-trust.pem"
+CA="${ROOT}/test/e2e/certs/hello-https-trust.pem"
 BASE="${BASE_URL:-https://127.0.0.1:8443}"
 PATH_EP="/phase5b2"
 CURL=(curl -sS --cacert "$CA" -w "\n  -> HTTP %{http_code}\n")
 
 if [[ ! -f "$CA" ]]; then
-  echo "missing trust PEM: $CA (run test/kind/certs/gen-java-service-certs.sh)" >&2
+  echo "missing trust PEM: $CA (run test/e2e/certs/gen-java-service-certs.sh)" >&2
   exit 1
 fi
 
@@ -62,6 +63,6 @@ run "numeric and boolean-like" \
 run "unicode (UTF-8 percent-encoded)" \
   "${BASE}${PATH_EP}?q=caf%C3%A9"
 
-echo "=== Expected in Postman Insights (cluster pia-kind-test): /phase5b2 with these query parameters ==="
+echo "=== Expected in Postman Insights (cluster ${INSIGHTS_CLUSTER_NAME:-pia-kind-test}): /phase5b2 with these query parameters ==="
 echo "The pod's msgs counter in the agent's ebpf-stats lines grows by two per request:"
 echo "  kubectl logs -n postman-insights daemonset/postman-insights-agent --since=3m | grep 'ebpf-stats: pod=dotnet-service'"

@@ -43,6 +43,6 @@ ebpf/loader/*_bpfel.go
 ebpf/loader/*_bpfeb.go
 ebpf/loader/*.o
 
-# Build output of the kind test services' Maven projects, which IDEs' Java
+# Build output of the end-to-end test apps' Maven projects, which IDEs' Java
 # support builds on its own.
-test/kind/*/target/
+test/e2e/apps/*/target/

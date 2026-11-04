@@ -8,8 +8,8 @@
 #   hello-https-trust.pem          the certificate, for clients to trust
 #
 # Usage:
-#   ./test/kind/certs/gen-java-service-certs.sh           # keep existing files
-#   ./test/kind/certs/gen-java-service-certs.sh --force   # regenerate
+#   ./test/e2e/certs/gen-java-service-certs.sh           # keep existing files
+#   ./test/e2e/certs/gen-java-service-certs.sh --force   # regenerate
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

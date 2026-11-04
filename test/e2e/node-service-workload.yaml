@@ -1,6 +1,6 @@
-# Node.js HTTPS (:8443) and gRPC-TLS (:8446) service on the image's shared
-# libssl (test/kind/Dockerfile.node-service-dynamic), captured by the libssl
-# uprobes. Deployed by deploy-node-service.sh (the default variant).
+# Node.js HTTPS (:8443) and gRPC-TLS (:8446) service on the node binary's
+# statically linked BoringSSL (test/e2e/apps/node-service/Dockerfile), captured by
+# the static-OpenSSL uprobes. Deployed by deploy-node-service.sh --static.
 # A Deployment, not a bare Pod: in discovery mode the Insights agent captures
 # only pods of long-running controllers and skips standalone pods.
 apiVersion: apps/v1
@@ -28,7 +28,11 @@ spec:
       - name: app
         image: pia-node-service:test
         imagePullPolicy: Never
-        command: ["node", "server.js"]
+        # Run node as a child of sh (not PID 1). eBPF uprobes on static
+        # BoringSSL fail to fire when node is the container init process
+        # (PID 1); wrapping avoids that while keeping the same image.
+        command: ["sh", "-c"]
+        args: ["node server.js"]
         ports:
         - containerPort: 8443
         - containerPort: 8446
