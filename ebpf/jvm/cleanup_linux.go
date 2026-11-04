@@ -77,14 +77,19 @@ func removeStaleCopiesIn(procRoot string, root int, keep string, youngAfter time
 	if err := unix.Fstat(agentDir, &dirID); err != nil {
 		return res, err
 	}
-	res.held = findHolders(procRoot, dirID, copies)
+	res.held = scanHolders(procRoot, dirID, copies)
 
 	var errs []error
 	for _, c := range copies {
 		if _, ok := res.held[c.name]; ok {
 			continue
 		}
-		if c.modified.After(youngAfter) {
+		// Read again: another Insights agent may have reused or staged
+		// the copy again while the processes were scanned. Between this
+		// check and the unlink, a reuse can still lose its copy; that
+		// agent's attach then fails before loading anything, and it stages
+		// the copy again and retries once.
+		if c.modified.After(youngAfter) || c.changedSince(youngAfter) {
 			res.young = append(res.young, c.name)
 			continue
 		}
@@ -190,6 +195,26 @@ func (c *stagedCopy) identify() error {
 	return nil
 }
 
+// changedSince reports whether the copy's directory, or a file in it now
+// (files may have been added or replaced since identify), was modified after
+// t, or cannot be read.
+func (c *stagedCopy) changedSince(t time.Time) bool {
+	var st unix.Stat_t
+	if unix.Fstat(c.dir, &st) != nil || mtime(&st).After(t) {
+		return true
+	}
+	names, err := readDirNames(c.dir)
+	if err != nil {
+		return true
+	}
+	for _, name := range names {
+		if unix.Fstatat(c.dir, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil || mtime(&st).After(t) {
+			return true
+		}
+	}
+	return false
+}
+
 func mtime(st *unix.Stat_t) time.Time {
 	return time.Unix(st.Mtim.Unix())
 }
@@ -259,6 +284,9 @@ func parseMapsLine(line string) (start, end uint64, id fileID, ok bool) {
 	id.major, id.minor = uint32(maj), uint32(min)
 	return start, end, id, true
 }
+
+// scanHolders is findHolders, replaced in tests to act during the scan.
+var scanHolders = findHolders
 
 // findHolders returns, for each copy a process under procRoot has a file of
 // open or mapped, one such process. Only processes whose agent directory is

@@ -279,6 +279,40 @@ func TestRemoveStaleCopiesGrace(t *testing.T) {
 	assert.Empty(t, entries(t, agentDir))
 }
 
+// A copy another Insights agent reuses while the processes are scanned is
+// kept: its age is read again just before it would be removed.
+func TestRemoveStaleCopiesReusedDuringScan(t *testing.T) {
+	p := startContainer(t)
+	agentDir := filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", agentDirParent, agentDirName)
+	root, err := openRoot(p)
+	require.NoError(t, err)
+	defer unix.Close(root)
+
+	now := time.Now()
+	long := now.Add(-2 * stagingGrace)
+	jar := []byte("PK\x03\x04 reused")
+	_, err = stageIn(root, jar, "agent-reused", long)
+	require.NoError(t, err)
+	require.NoError(t, os.Chtimes(filepath.Join(agentDir, "agent-reused"), long, long))
+
+	orig := scanHolders
+	t.Cleanup(func() { scanHolders = orig })
+	scanned := false
+	scanHolders = func(procRoot string, dir unix.Stat_t, copies []*stagedCopy) map[string]uint32 {
+		scanned = true
+		_, err := stageIn(root, jar, "agent-reused", now) // the other agent reuses it
+		require.NoError(t, err)
+		return orig(procRoot, dir, copies)
+	}
+
+	res, err := removeStaleCopiesIn("/proc", root, "", now.Add(-stagingGrace))
+	require.NoError(t, err)
+	assert.True(t, scanned)
+	assert.Empty(t, res.removed)
+	assert.Equal(t, []string{"agent-reused"}, res.young)
+	assert.Equal(t, []string{"agent-reused"}, entries(t, agentDir))
+}
+
 // stagingGrace covers the longest attach run several times over.
 func TestStagingGrace(t *testing.T) {
 	assert.GreaterOrEqual(t, stagingGrace, 5*attachTimeout)

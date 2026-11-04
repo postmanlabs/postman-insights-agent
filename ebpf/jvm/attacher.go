@@ -467,7 +467,10 @@ func (a *Attacher) try(ctx context.Context, s *attachState) {
 	if err == nil && res.Outcome == attach.NotLoaded {
 		// The jar is copied into the container only now, so a JVM that
 		// runs the agent already gets no copy it would never load.
-		jarPath, err := a.ops.stage(p, a.jar, a.jarDir, a.now())
+		// Assigned, not declared: the attach errors below must reach the
+		// helper-error handling after this block.
+		var jarPath string
+		jarPath, err = a.ops.stage(p, a.jar, a.jarDir, a.now())
 		if err != nil {
 			a.fail(s, FailStage, res.Signalled, err.Error())
 			return

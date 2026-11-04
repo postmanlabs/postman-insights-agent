@@ -33,7 +33,10 @@ type fakeOps struct {
 	probe, result attach.Result
 	results       []attach.Result
 	helper        error
-	requests      []attach.Request
+	// attachErrs are the helper's errors for the OpAttach requests in turn,
+	// then helper for every later one.
+	attachErrs []error
+	requests   []attach.Request
 	// stagedAt records the modification time each stage call set.
 	stagedAt []time.Time
 	staged   int
@@ -61,12 +64,16 @@ func (f *fakeOps) attach(_ context.Context, _ *Process, req attach.Request) (att
 	if req.Op == attach.OpProbe {
 		return f.probe, f.helper
 	}
+	err := f.helper
+	if len(f.attachErrs) > 0 {
+		err, f.attachErrs = f.attachErrs[0], f.attachErrs[1:]
+	}
 	if len(f.results) > 0 {
 		res := f.results[0]
 		f.results = f.results[1:]
-		return res, f.helper
+		return res, err
 	}
-	return f.result, f.helper
+	return f.result, err
 }
 
 func (f *fakeOps) removeStaleCopies(_ *Process, keep string, youngAfter time.Time) (cleanupResult, error) {
@@ -538,6 +545,27 @@ func TestAttacherRetriesOnlyWithoutSignal(t *testing.T) {
 	s = attempt(t, a, hotspot())
 	assert.True(t, s.done)
 	assert.Equal(t, uint64(1), a.Stats().Failed[FailHelper])
+}
+
+// A helper that fails on the attach after the probe, or on the retry after a
+// load_failed, is a helper failure: it may have signalled, so never again.
+func TestAttacherHelperFailsAfterStaging(t *testing.T) {
+	a, ops := newTestAttacher()
+	ops.attachErrs = []error{errors.New("helper timed out")}
+	s := attempt(t, a, hotspot())
+	assert.True(t, s.done)
+	assert.Equal(t, 1, ops.staged)
+	assert.Equal(t, uint64(1), a.Stats().Failed[FailHelper])
+
+	a, ops = newTestAttacher()
+	ops.results = []attach.Result{{Outcome: attach.Failed, Reason: attach.ReasonLoadFailed, Detail: "agent returned 100"}}
+	ops.attachErrs = []error{nil, errors.New("invalid JSON from the helper")}
+	s = attempt(t, a, hotspot())
+	assert.True(t, s.done)
+	assert.Equal(t, 2, ops.staged)
+	assert.Len(t, ops.requests, 3)
+	assert.Equal(t, uint64(1), a.Stats().Failed[FailHelper])
+	assert.Zero(t, a.Stats().Failed[attach.ReasonLoadFailed])
 }
 
 func TestAttacherRetriesStagingAndInspection(t *testing.T) {
