@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -18,18 +19,19 @@ import (
 // agent directory: agent-<the first 16 hex digits of the jar's SHA-256>.
 const stagedPrefix = "agent-"
 
-func (o linuxOps) removeStaleCopies(p *Process, keep string) (cleanupResult, error) {
+func (o linuxOps) removeStaleCopies(p *Process, keep string, youngAfter time.Time) (cleanupResult, error) {
 	root, err := openRoot(p)
 	if err != nil {
 		return cleanupResult{}, err
 	}
 	defer unix.Close(root)
-	return removeStaleCopiesIn(p.ProcRoot, root, keep)
+	return removeStaleCopiesIn(p.ProcRoot, root, keep, youngAfter)
 }
 
-// removeStaleCopiesIn removes the staging directories other than keep from
-// the agent directory of the container whose root is open as root, except
-// those with a file that a process under procRoot has open or mapped.
+// removeStaleCopiesIn removes the staging directories other than keep (all of
+// them when keep is "") from the agent directory of the container whose root
+// is open as root, except those with a file that a process under procRoot has
+// open or mapped, and those modified after youngAfter.
 //
 // Each Insights agent version stages its own jar (4.7 MB), and nothing else
 // removes the copies of earlier versions. A JVM that loaded one keeps it
@@ -44,7 +46,14 @@ func (o linuxOps) removeStaleCopies(p *Process, keep string) (cleanupResult, err
 // may: that directory belongs to the process's user, and the agent has no
 // capability that bypasses file permissions. A holder it misses comes to no
 // harm: an open or mapped file stays readable after its name is removed.
-func removeStaleCopiesIn(procRoot string, root int, keep string) (cleanupResult, error) {
+//
+// A copy is not in use yet between its staging and the moment the JVM maps
+// it, near the end of the agent's start; another Insights agent on the node
+// (the old one during a DaemonSet rollout with maxSurge above 0) may be in
+// that window. Every agent sets its copy's modification time when it stages
+// or reuses it, so a copy modified after youngAfter (stagingGrace ago) is
+// kept, and reported in young for another attempt later.
+func removeStaleCopiesIn(procRoot string, root int, keep string, youngAfter time.Time) (cleanupResult, error) {
 	var res cleanupResult
 	agentDir, err := openAgentDir(root, false)
 	if errors.Is(err, errNoControlDir) {
@@ -75,6 +84,10 @@ func removeStaleCopiesIn(procRoot string, root int, keep string) (cleanupResult,
 		if _, ok := res.held[c.name]; ok {
 			continue
 		}
+		if c.modified.After(youngAfter) {
+			res.young = append(res.young, c.name)
+			continue
+		}
 		if err := c.remove(agentDir); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", c.name, err))
 			continue
@@ -102,6 +115,9 @@ type stagedCopy struct {
 	// opened identifies its files as stat shows them (through
 	// /proc/<pid>/fd), mapped as /proc/<pid>/maps does.
 	opened, mapped map[fileID]bool
+	// modified is the latest modification time of the directory and its
+	// files.
+	modified time.Time
 }
 
 // stagedCopies opens the staging directories in agentDir other than keep. It
@@ -131,8 +147,14 @@ func stagedCopies(agentDir int, keep string) ([]*stagedCopy, error) {
 	return copies, nil
 }
 
-// identify lists the copy's files and how processes would show them.
+// identify lists the copy's files, how processes would show them, and when
+// the copy was last modified.
 func (c *stagedCopy) identify() error {
+	var dirSt unix.Stat_t
+	if err := unix.Fstat(c.dir, &dirSt); err != nil {
+		return err
+	}
+	c.modified = mtime(&dirSt)
 	names, err := readDirNames(c.dir)
 	if err != nil {
 		return err
@@ -148,6 +170,9 @@ func (c *stagedCopy) identify() error {
 			err = fmt.Errorf("%s is not a regular file", name)
 		}
 		if err == nil {
+			if m := mtime(&st); m.After(c.modified) {
+				c.modified = m
+			}
 			c.opened[statID(&st)] = true
 			if st.Size > 0 {
 				var id fileID
@@ -163,6 +188,10 @@ func (c *stagedCopy) identify() error {
 		c.files = append(c.files, name)
 	}
 	return nil
+}
+
+func mtime(st *unix.Stat_t) time.Time {
+	return time.Unix(st.Mtim.Unix())
 }
 
 // remove deletes the copy's files, then the copy.
@@ -197,6 +226,9 @@ func mappedID(fd int) (fileID, error) {
 		if ok && start <= addr && addr < end {
 			return id, nil
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return fileID{}, fmt.Errorf("read /proc/self/maps: %w", err)
 	}
 	return fileID{}, errors.New("the mapping is not in /proc/self/maps")
 }
@@ -262,6 +294,11 @@ func findHolders(procRoot string, agentDir unix.Stat_t, copies []*stagedCopy) ma
 // holdersIn returns the names of the copies the process whose /proc directory
 // is procDir has a file of open or mapped, when its agent directory is
 // agentDir.
+//
+// What it cannot read in full counts as holding every copy, so a failed read
+// never lets a copy in use be removed: the process's maps, unless it has
+// exited, and its open files once their directory opened (it opens only for
+// this agent's own user; see removeStaleCopiesIn).
 func holdersIn(procDir string, agentDir unix.Stat_t, copies []*stagedCopy) []string {
 	dir, err := unix.Open(procDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -272,25 +309,47 @@ func holdersIn(procDir string, agentDir unix.Stat_t, copies []*stagedCopy) []str
 		return nil
 	}
 	found := map[string]bool{}
-	if fd, err := unix.Openat(dir, "maps", unix.O_RDONLY|unix.O_CLOEXEC, 0); err == nil {
-		f := os.NewFile(uintptr(fd), "maps")
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			if _, _, id, ok := parseMapsLine(sc.Text()); ok {
-				for _, c := range copies {
-					if c.mapped[id] {
-						found[c.name] = true
-					}
+	holdsAll := func() []string {
+		names := make([]string, 0, len(copies))
+		for _, c := range copies {
+			names = append(names, c.name)
+		}
+		return names
+	}
+	fd, err := unix.Openat(dir, "maps", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if exited(err) {
+			return nil
+		}
+		return holdsAll()
+	}
+	f := os.NewFile(uintptr(fd), "maps")
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if _, _, id, ok := parseMapsLine(sc.Text()); ok {
+			for _, c := range copies {
+				if c.mapped[id] {
+					found[c.name] = true
 				}
 			}
 		}
-		f.Close()
+	}
+	err = sc.Err()
+	f.Close()
+	if err != nil {
+		// A partial read may have missed a mapping.
+		return holdsAll()
 	}
 	// Readable only for processes of this agent's user (see
 	// removeStaleCopiesIn).
 	if fds, err := unix.Openat(dir, "fd", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); err == nil {
-		names, _ := readDirNames(fds)
+		defer unix.Close(fds)
+		names, err := readDirNames(fds)
+		if err != nil {
+			return holdsAll()
+		}
 		for _, n := range names {
+			// A descriptor closed since the listing holds nothing.
 			var st unix.Stat_t
 			if unix.Fstatat(fds, n, &st, 0) != nil {
 				continue
@@ -301,7 +360,6 @@ func holdersIn(procDir string, agentDir unix.Stat_t, copies []*stagedCopy) []str
 				}
 			}
 		}
-		unix.Close(fds)
 	}
 	var names []string
 	for _, c := range copies {
@@ -310,6 +368,12 @@ func holdersIn(procDir string, agentDir unix.Stat_t, copies []*stagedCopy) []str
 		}
 	}
 	return names
+}
+
+// exited reports whether err, from reading a process's /proc files, means
+// the process has exited.
+func exited(err error) bool {
+	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH)
 }
 
 // sharesAgentDir reports whether the agent directory of the process whose

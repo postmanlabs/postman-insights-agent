@@ -7,8 +7,11 @@ package attach
 import (
 	"encoding/binary"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -159,4 +162,114 @@ func TestRunBadRequests(t *testing.T) {
 func TestRunProbeNeedsNoJar(t *testing.T) {
 	req := Request{Version: RequestVersion1, Op: OpProbe, ProcRoot: t.TempDir(), PID: 1, NSPID: 1}
 	assert.Equal(t, ReasonProcessGone, Run(req).Reason)
+}
+
+// scriptedJVM stands in for a JVM's attach listener at sock: it answers each
+// command with the next reply scripted for it. The returned func lists the
+// commands it got.
+func scriptedJVM(t *testing.T, sock string, replies map[string][]string) func() []string {
+	t.Helper()
+	l, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	t.Cleanup(func() { l.Close() })
+	var mu sync.Mutex
+	var cmds []string
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			// A request is five NUL-terminated fields: the protocol
+			// version, the command and three arguments.
+			var fields []string
+			var field []byte
+			buf := make([]byte, 1)
+			for len(fields) < 5 {
+				if _, err := c.Read(buf); err != nil {
+					break
+				}
+				if buf[0] == 0 {
+					fields = append(fields, string(field))
+					field = nil
+					continue
+				}
+				field = append(field, buf[0])
+			}
+			if len(fields) == 5 {
+				mu.Lock()
+				cmds = append(cmds, fields[1])
+				reply := "1\nunexpected command\n"
+				if r := replies[fields[1]]; len(r) > 0 {
+					reply, replies[fields[1]] = r[0], r[1:]
+				}
+				mu.Unlock()
+				_, _ = io.WriteString(c, reply)
+			}
+			c.Close()
+		}
+	}()
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), cmds...)
+	}
+}
+
+// An attach reports what the agent recorded after the load: running, failed,
+// or nothing at all, when it could not open its jar (agent_not_started), so
+// the Insights agent can stage the jar again and retry.
+func TestRunAttachOutcomes(t *testing.T) {
+	const none = "0\n#Tue Nov 04\njava.version=21\n"
+	for _, tc := range []struct {
+		name    string
+		replies map[string][]string
+		outcome Outcome
+		reason  string
+		cmds    []string
+	}{
+		{
+			name:    "attached",
+			replies: map[string][]string{"properties": {none, "0\npostman.insights.agent.version=1.2.3\n"}, "load": {"0\nreturn code: 0\n"}},
+			outcome: Attached, cmds: []string{"properties", "load", "properties"},
+		},
+		{
+			name:    "agent not started",
+			replies: map[string][]string{"properties": {none, none}, "load": {"0\nreturn code: 0\n"}},
+			outcome: Failed, reason: ReasonAgentNotStarted, cmds: []string{"properties", "load", "properties"},
+		},
+		{
+			name:    "agent failed",
+			replies: map[string][]string{"properties": {none, "0\npostman.insights.agent.failed=1.2.3\\: boom\n"}, "load": {"0\nreturn code: 0\n"}},
+			outcome: Failed, reason: ReasonAgentFailed, cmds: []string{"properties", "load", "properties"},
+		},
+		{
+			name:    "jar not loaded",
+			replies: map[string][]string{"properties": {none}, "load": {"0\nreturn code: 100\n"}},
+			outcome: Failed, reason: ReasonLoadFailed, cmds: []string{"properties", "load"},
+		},
+		{
+			name:    "failed earlier",
+			replies: map[string][]string{"properties": {"0\npostman.insights.agent.failed=1.2.3\\: boom\n"}},
+			outcome: Failed, reason: ReasonEarlierFailure, cmds: []string{"properties"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			procRoot := t.TempDir()
+			procDir := filepath.Join(procRoot, "7")
+			tmp := filepath.Join(procDir, "root", "tmp")
+			require.NoError(t, os.MkdirAll(tmp, 0o755))
+			// Field 22, the start time, is 4200.
+			require.NoError(t, os.WriteFile(filepath.Join(procDir, "stat"),
+				[]byte("7 (java) S 1 7 7 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 4200 0 0\n"), 0o644))
+			cmds := scriptedJVM(t, filepath.Join(tmp, ".java_pid7"), tc.replies)
+
+			res := Run(Request{Version: RequestVersion1, Op: OpAttach, ProcRoot: procRoot, PID: 7, StartTime: 4200, NSPID: 7,
+				JarPath: "/tmp/.postman-insights/agent-0123/postman-insights-java-agent.jar"})
+			assert.Equal(t, tc.outcome, res.Outcome, res.Detail)
+			assert.Equal(t, tc.reason, res.Reason, res.Detail)
+			assert.False(t, res.Signalled)
+			assert.Equal(t, tc.cmds, cmds())
+		})
+	}
 }

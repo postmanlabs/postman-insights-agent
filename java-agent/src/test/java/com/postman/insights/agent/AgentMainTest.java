@@ -6,13 +6,23 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.jar.Attributes;
+import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The start-up bookkeeping the attacher relies on. In unit tests AgentMain is
- * loaded from a class directory, not a jar, so starting fails, which is the
- * case under test. (The success path is covered by the -javaagent tests.)
+ * loaded from a class directory, not a jar, and there is no Instrumentation,
+ * so starting fails, which is the case under test. (The success path is
+ * covered by the -javaagent tests.)
  */
 class AgentMainTest {
     private static final String MARKER = "postman.insights.agent.version";
@@ -51,19 +61,44 @@ class AgentMainTest {
         }
     }
 
+    /**
+     * One test, in order: the start-up state is per JVM (static), as in a real
+     * JVM.
+     */
     @Test
-    void failedStartIsRecordedAndNotRetried() {
+    void failedStartIsRecordedOnlyOnceSomethingChanged(@TempDir Path dir) throws IOException {
+        // This class's own location is a class directory, not a jar, and a
+        // jar whose copy is gone cannot be opened: nothing changed, so
+        // nothing is recorded, and a later start may try again.
         AgentMain.premain("", null);
+        AgentMain.start("", null, "test", dir.resolve("gone.jar").toFile());
+        assertNull(System.getProperty(MARKER), "marker set although the hooks are not installed");
+        assertNull(System.getProperty(FAILED), "a start that changed nothing is recorded as failed");
 
+        // The jar opens, so the start goes on to the bootstrap class path
+        // (here it fails there, with no Instrumentation): recorded.
+        AgentMain.start("", null, "test", jar(dir, "9.9.9"));
         assertNull(System.getProperty(MARKER), "marker set although the hooks are not installed");
         String failed = System.getProperty(FAILED);
         assertNotNull(failed);
-        assertTrue(failed.startsWith("unknown: "), failed);
+        assertTrue(failed.startsWith("9.9.9: "), failed);
 
         // A later attach must not try again or overwrite the first reason.
         System.setProperty(FAILED, "first");
         AgentMain.agentmain("", null);
+        AgentMain.start("", null, "test", jar(dir, "9.9.9"));
         assertNull(System.getProperty(MARKER));
         assertEquals("first", System.getProperty(FAILED));
+    }
+
+    private static File jar(Path dir, String version) throws IOException {
+        Manifest manifest = new Manifest();
+        manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+        manifest.getMainAttributes().put(Attributes.Name.IMPLEMENTATION_VERSION, version);
+        File jar = dir.resolve("agent-" + version + ".jar").toFile();
+        try (JarOutputStream out = new JarOutputStream(new FileOutputStream(jar), manifest)) {
+            out.flush();
+        }
+        return jar;
     }
 }

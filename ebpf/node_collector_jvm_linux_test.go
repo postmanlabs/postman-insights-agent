@@ -1136,7 +1136,8 @@ func attachWithDaemonSetCapabilities(t *testing.T, j *testJVM, helper, jar strin
 // TestNodeCollectorJVMStagedCopies: the jar is copied into a JVM's container
 // only when the JVM does not run the agent, and the copies other Insights
 // agent versions left there are removed, except the one a JVM loaded, which
-// it keeps mapped for as long as it runs. With the DaemonSet's capabilities,
+// it keeps mapped for as long as it runs, and one staged less than 10 minutes
+// ago, which may be about to be loaded. With the DaemonSet's capabilities,
 // the JVM's open files (/proc/<pid>/fd) are not readable, so its mapping must
 // be enough to keep the copy.
 func TestNodeCollectorJVMStagedCopies(t *testing.T) {
@@ -1146,16 +1147,26 @@ func TestNodeCollectorJVMStagedCopies(t *testing.T) {
 	p := j.inspect(t)
 	agentDir := filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", "tmp", ".postman-insights")
 
-	// A copy that an earlier version left and nothing uses.
+	// A copy that an earlier version left long ago and nothing uses, and one
+	// another Insights agent staged just now, for an attach in progress.
 	stale := filepath.Join(agentDir, "agent-0000000000000000")
-	if err := os.MkdirAll(stale, 0o755); err != nil {
-		t.Fatal(err)
+	fresh := filepath.Join(agentDir, "agent-1111111111111111")
+	for _, dir := range []string{stale, fresh} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "postman-insights-java-agent.jar"), []byte("PK\x03\x04"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.Chmod(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stale, "postman-insights-java-agent.jar"), []byte("PK\x03\x04"), 0o644); err != nil {
-		t.Fatal(err)
+	long := time.Now().Add(-time.Hour)
+	for _, path := range []string{filepath.Join(stale, "postman-insights-java-agent.jar"), stale} {
+		if err := os.Chtimes(path, long, long); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	a := f.attacher(t)
@@ -1165,8 +1176,14 @@ func TestNodeCollectorJVMStagedCopies(t *testing.T) {
 	stop()
 	j.waitLog(t, "loaded (attach)", 10*time.Second)
 	loaded := stagingDir(t, f.agentJar)
-	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
-		t.Fatalf("the container's agent directory has %v, want only %s", got, loaded)
+	if got, want := dirNames(t, agentDir), []string{loaded, filepath.Base(fresh)}; !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("the container's agent directory has %v, want %v", got, want)
+	}
+	// The other agent's copy goes once it is old, at the next attempt.
+	for _, path := range []string{filepath.Join(fresh, "postman-insights-java-agent.jar"), fresh} {
+		if err := os.Chtimes(path, long, long); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// An Insights agent with another version of the jar finds the agent

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -192,10 +193,14 @@ func TestOpenRootChecksStartTime(t *testing.T) {
 	assert.ErrorIs(t, writeControl(&Process{ProcRoot: "/proc", PID: pid, StartTime: start + 1}, []byte("x"), true), errExited)
 }
 
+// The jar is staged once per container, and every staging, the first or a
+// reuse, sets its modification time to the time given, so other Insights
+// agents keep it while it is about to be loaded.
 func TestStageJar(t *testing.T) {
 	root, fd := containerRoot(t)
 	jar := []byte("PK\x03\x04 a jar")
-	got, err := stageIn(fd, jar, "agent-0123")
+	first := time.Now().Add(-time.Hour).Truncate(time.Second)
+	got, err := stageIn(fd, jar, "agent-0123", first)
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/.postman-insights/agent-0123/postman-insights-java-agent.jar", got)
 	content, err := os.ReadFile(filepath.Join(root, got))
@@ -204,18 +209,21 @@ func TestStageJar(t *testing.T) {
 	st, err := os.Stat(filepath.Join(root, got))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o644), st.Mode().Perm())
+	assert.True(t, first.Equal(st.ModTime()), "modified at %v, want %v", st.ModTime(), first)
 
-	// A second JVM in the container: staged once.
-	before := st.ModTime()
-	time.Sleep(10 * time.Millisecond)
-	_, err = stageIn(fd, jar, "agent-0123")
+	// A second JVM in the container: staged once, and its time set again.
+	ino := st.Sys().(*syscall.Stat_t).Ino
+	second := first.Add(30 * time.Minute)
+	_, err = stageIn(fd, jar, "agent-0123", second)
 	require.NoError(t, err)
-	st, _ = os.Stat(filepath.Join(root, got))
-	assert.Equal(t, before, st.ModTime())
+	st, err = os.Stat(filepath.Join(root, got))
+	require.NoError(t, err)
+	assert.Equal(t, ino, st.Sys().(*syscall.Stat_t).Ino, "staged again")
+	assert.True(t, second.Equal(st.ModTime()), "modified at %v, want %v", st.ModTime(), second)
 
 	// A truncated copy is replaced.
 	require.NoError(t, os.WriteFile(filepath.Join(root, got), jar[:3], 0o644))
-	_, err = stageIn(fd, jar, "agent-0123")
+	_, err = stageIn(fd, jar, "agent-0123", second)
 	require.NoError(t, err)
 	content, _ = os.ReadFile(filepath.Join(root, got))
 	assert.Equal(t, jar, content)
