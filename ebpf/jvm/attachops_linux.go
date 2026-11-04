@@ -122,8 +122,24 @@ func (o linuxOps) stage(p *Process, jar []byte, dirName string, now time.Time) (
 		return "", err
 	}
 	defer unix.Close(root)
-	return stageIn(root, jar, dirName, now)
+	return stageWithRetry(root, jar, dirName, now)
 }
+
+// stageWithRetry is stageIn, run once more when a file or directory it was
+// using is removed under it (ENOENT): another Insights agent's cleanup may
+// remove an old copy just as this agent reuses it. The second run creates
+// the copy anew, and no cleanup removes a copy that young.
+func stageWithRetry(root int, jar []byte, dirName string, now time.Time) (string, error) {
+	p, err := stageIn(root, jar, dirName, now)
+	if errors.Is(err, unix.ENOENT) {
+		p, err = stageIn(root, jar, dirName, now)
+	}
+	return p, err
+}
+
+// afterCopyCheck, when set, runs in stageIn between its check of an existing
+// copy and its use; tests remove the copy there.
+var afterCopyCheck func()
 
 // stageIn copies jar to /tmp/.postman-insights/<dirName>/ in the container
 // whose root is open as root, and returns its path there. It sets the jar's
@@ -149,6 +165,9 @@ func stageIn(root int, jar []byte, dirName string, now time.Time) (string, error
 		if err := writeFileAtomic(dir, agentJarName, jar); err != nil {
 			return "", err
 		}
+	}
+	if afterCopyCheck != nil {
+		afterCopyCheck()
 	}
 	ts := unix.NsecToTimespec(now.UnixNano())
 	if err := unix.UtimesNanoAt(dir, agentJarName, []unix.Timespec{ts, ts}, unix.AT_SYMLINK_NOFOLLOW); err != nil {

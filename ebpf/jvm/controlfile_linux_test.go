@@ -229,6 +229,37 @@ func TestStageJar(t *testing.T) {
 	assert.Equal(t, jar, content)
 }
 
+// A copy that another Insights agent's cleanup removes between the check of
+// the existing copy and the time update is staged anew, not a failure.
+func TestStageJarRemovedMeanwhile(t *testing.T) {
+	root, fd := containerRoot(t)
+	jar := []byte("PK\x03\x04 a jar")
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	got, err := stageIn(fd, jar, "agent-0123", old)
+	require.NoError(t, err)
+	dir := filepath.Dir(filepath.Join(root, got))
+
+	removals := 0
+	afterCopyCheck = func() {
+		if removals == 0 { // only the first run: the cleanup removes the copy once
+			removals++
+			require.NoError(t, os.RemoveAll(dir))
+		}
+	}
+	t.Cleanup(func() { afterCopyCheck = nil })
+
+	now := old.Add(time.Hour)
+	got, err = stageWithRetry(fd, jar, "agent-0123", now)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removals)
+	content, err := os.ReadFile(filepath.Join(root, got))
+	require.NoError(t, err)
+	assert.Equal(t, jar, content)
+	st, err := os.Stat(filepath.Join(root, got))
+	require.NoError(t, err)
+	assert.True(t, now.Equal(st.ModTime()), "modified at %v, want %v", st.ModTime(), now)
+}
+
 func TestSigQuitCaught(t *testing.T) {
 	assert.True(t, sigQuitCaught([]byte("Name:\tjava\nSigCgt:\t0000000181005ccf\n")))
 	assert.False(t, sigQuitCaught([]byte("Name:\tjava\nSigCgt:\t0000000181005cca\n")), "-Xrs")
