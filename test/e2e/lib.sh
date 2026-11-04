@@ -81,12 +81,28 @@ find_cluster() {
     KIND_CLUSTER="${KUBE_CONTEXT#kind-}"
     kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER" || return 1
     if ! command kubectl config get-contexts -o name | grep -qxF "$KUBE_CONTEXT"; then
-      kind export kubeconfig --name "$KIND_CLUSTER"
+      kind_keeping_context export kubeconfig --name "$KIND_CLUSTER"
     fi
   elif ! command kubectl config get-contexts -o name | grep -qxF "$KUBE_CONTEXT"; then
     echo "ERROR: no context ${KUBE_CONTEXT} in the kubeconfig." >&2
     exit 1
   fi
+}
+
+# Runs a kind command that writes the kubeconfig (create cluster, export
+# kubeconfig), then puts the current context back as it was, also when the
+# command fails: kind makes the cluster's context the current one, and the
+# scripts leave the current context alone.
+kind_keeping_context() {
+  local prev rc=0
+  prev=$(command kubectl config current-context 2>/dev/null || true)
+  kind "$@" || rc=$?
+  if [[ -n "$prev" ]]; then
+    command kubectl config use-context "$prev" >/dev/null
+  else
+    command kubectl config unset current-context >/dev/null
+  fi
+  return "$rc"
 }
 
 # Finds the cluster of KUBE_CONTEXT, creating it when it is a kind cluster
@@ -95,7 +111,7 @@ find_cluster() {
 use_cluster() {
   if ! find_cluster; then
     echo "==> Creating kind cluster ${KIND_CLUSTER}"
-    kind create cluster --name "$KIND_CLUSTER" --config "$REPO_ROOT/test/e2e/kind/cluster.yaml"
+    kind_keeping_context create cluster --name "$KIND_CLUSTER" --config "$REPO_ROOT/test/e2e/kind/cluster.yaml"
   fi
   if [[ -n "$KIND_CLUSTER" ]]; then
     INSIGHTS_CLUSTER_NAME="${INSIGHTS_CLUSTER_NAME:-pia-kind-test}"
@@ -154,6 +170,10 @@ check_cluster_is_free() {
       foreign+=" ${res}"
     fi
   done
+  # The DaemonSet by its name, whatever it runs: applying would replace it.
+  if owner=$(e2e_label_of -n "$AGENT_NS" daemonset/postman-insights-agent) && [[ "$owner" != true ]]; then
+    foreign+=" daemonset/postman-insights-agent (namespace ${AGENT_NS})"
+  fi
   if [[ -n "$foreign" ]]; then
     echo "ERROR: these exist in the cluster but were not created by the end-to-end scripts (no ${E2E_LABEL}=true label):${foreign}." >&2
     echo "       The scripts would take them over, and teardown.sh would delete them. Test in another cluster." >&2
