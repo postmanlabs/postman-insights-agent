@@ -174,7 +174,8 @@ stop_agent() {
 # On kind, unlabelled resources of the scripts' names are taken to be from
 # an earlier version of the scripts, which did not label them.
 check_cluster_is_free() {
-  local daemonsets id label spec others="" res foreign=""
+  local daemonsets id label spec words others="" res foreign=""
+  local kube_run=' (kube|k8s|kubernetes) run '
   daemonsets=$(kubectl get daemonsets --all-namespaces -o "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}|{.metadata.labels.${E2E_LABEL}}|{.spec.template.spec.containers[*].image} {.spec.template.spec.containers[*].command} {.spec.template.spec.containers[*].args}{\"\n\"}{end}")
   # Fields are split at "|", not a tab: read joins adjacent tabs, which
   # would shift the fields of a DaemonSet without the label.
@@ -183,7 +184,11 @@ check_cluster_is_free() {
     if [[ "$id" == "${AGENT_NS}/postman-insights-agent" && ("$label" == true || -n "$KIND_CLUSTER") ]]; then
       continue
     fi
-    if [[ "$spec" == *postman-insights-agent* || "$spec" == *'"kube","run"'* ]]; then
+    # The containers' images, commands and arguments as one list of words, so
+    # `kube run` is found also when split between command and arguments or
+    # inside a shell string, and under kube's aliases (k8s, kubernetes).
+    words=" $(tr '[],"' '    ' <<<"$spec" | tr -s ' ') "
+    if [[ "$words" == *postman-insights-agent* || "$words" =~ $kube_run ]]; then
       others+=" ${id}"
     fi
   done <<<"$daemonsets"
