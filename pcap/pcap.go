@@ -47,6 +47,7 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 	// Creating the packet source takes some time - do it here so the caller can
 	// be confident that pakcets are being watched after this function returns.
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetSource.NoCopy = true
 	pktChan := packetSource.Packets()
 
 	// Watch libpcap's own capture counters, which tell us whether the kernel is
