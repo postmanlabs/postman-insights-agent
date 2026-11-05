@@ -1,0 +1,310 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/nxtcoder17/ivy"
+)
+
+type telemetryRequest struct {
+	Type     string `json:"type,omitempty"`
+	Event    string `json:"event,omitempty"`
+	AgentID  string `json:"agent_id,omitempty"`
+	RunID    string `json:"run_id,omitempty"`
+	Sequence *int64 `json:"sequence,omitempty"`
+	Schema   string `json:"schema_version,omitempty"`
+	Version  string `json:"version,omitempty"`
+	// AgentVersion is the field name the real agent actually sends
+	// (DaemonsetTelemetryRequest.AgentVersion in rest/models.go); Version
+	// above only exists for older/manual test payloads. insert() prefers
+	// AgentVersion so the version column reflects real traffic.
+	AgentVersion string            `json:"agent_version,omitempty"`
+	Cluster      string            `json:"cluster,omitempty"`
+	Environment  string            `json:"environment,omitempty"`
+	K8sCluster   string            `json:"kubernetes_cluster,omitempty"`
+	Targets      []json.RawMessage `json:"targets,omitempty"`
+	TargetID     string            `json:"target_id,omitempty"`
+	Count        uint64            `json:"count,omitempty"`
+
+	// ServiceID/TeamID are a counter/coverage event's own target-scoped
+	// identity (rest.DaemonsetTelemetryRequest.ServiceID/TeamID). Present
+	// only on rows with a TargetID -- agent-scope rows (agent_started,
+	// agent_heartbeat, agent_stopped, agent_failed) never carry these, which
+	// is exactly the split the two dashboard sections below key off of.
+	ServiceID string `json:"service_id,omitempty"`
+	TeamID    string `json:"team_id,omitempty"`
+
+	// Counter-window metadata. Present on `type: events` rows only; a counter
+	// without these cannot be interpreted, so surface them for inspection.
+	CounterType string     `json:"counter_type,omitempty"`
+	WindowStart *time.Time `json:"window_start,omitempty"`
+	WindowEnd   *time.Time `json:"window_end,omitempty"`
+
+	TruncatedTargets uint64 `json:"truncated_targets,omitempty"`
+
+	// Events batches additional, independent events/counters into this same
+	// POST (D1) -- e.g. the interval-delta counters flushed alongside a
+	// heartbeat. Each element omits identity fields (agent_id, cluster,
+	// etc.) on the wire, since they apply to the whole batch; handleTelemetry
+	// inherits them from the parent before storing each one as its own row.
+	Events []json.RawMessage `json:"events,omitempty"`
+}
+
+type telemetryRecord struct {
+	ID          int64           `json:"id"`
+	ReceivedAt  time.Time       `json:"received_at"`
+	AgentID     string          `json:"agent_id"`
+	RunID       string          `json:"run_id,omitempty"`
+	Sequence    *int64          `json:"sequence,omitempty"`
+	Schema      string          `json:"schema_version,omitempty"`
+	Version     string          `json:"version,omitempty"`
+	Cluster     string          `json:"cluster,omitempty"`
+	Environment string          `json:"environment,omitempty"`
+	TargetCount int             `json:"target_count"`
+	Payload     json.RawMessage `json:"payload"`
+}
+
+type store struct{ db *sql.DB }
+
+func openStore(path string) (*store, error) {
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite database: %w", err)
+	}
+	s := &store{db: db}
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS telemetry_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  received_at TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  run_id TEXT,
+  sequence INTEGER,
+  schema_version TEXT,
+  version TEXT,
+  cluster TEXT,
+  environment TEXT,
+  target_count INTEGER NOT NULL DEFAULT 0,
+  payload TEXT NOT NULL,
+  UNIQUE(agent_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS telemetry_events_agent_idx ON telemetry_events(agent_id);`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize sqlite schema: %w", err)
+	}
+	return s, nil
+}
+
+func (s *store) Close() error { return s.db.Close() }
+
+func (s *store) insert(req telemetryRequest, payload []byte) (telemetryRecord, bool, error) {
+	agentID := req.AgentID
+	if agentID == "" {
+		agentID = "legacy:" + req.K8sCluster
+		if req.K8sCluster == "" {
+			agentID = "legacy:unknown"
+		}
+	}
+	cluster := req.Cluster
+	if cluster == "" {
+		cluster = req.K8sCluster
+	}
+	version := req.Version
+	if version == "" {
+		version = req.AgentVersion
+	}
+	result, err := s.db.Exec(`INSERT OR IGNORE INTO telemetry_events
+(received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UTC().Format(time.RFC3339Nano), agentID,
+		req.RunID, req.Sequence, req.Schema, version, cluster, req.Environment, len(req.Targets), string(payload))
+	if err != nil {
+		return telemetryRecord{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return telemetryRecord{}, false, err
+	}
+	duplicate := changed == 0
+	query := `SELECT id, received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload FROM telemetry_events WHERE id = last_insert_rowid()`
+	args := []any{}
+	if duplicate {
+		query = `SELECT id, received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload FROM telemetry_events WHERE agent_id = ? AND sequence = ?`
+		args = []any{agentID, *req.Sequence}
+	}
+	var r telemetryRecord
+	var received string
+	var runID, schema, storedVersion, environment sql.NullString
+	var sequence sql.NullInt64
+	var payloadText string
+	if err := s.db.QueryRow(query, args...).Scan(&r.ID, &received, &r.AgentID, &runID, &sequence, &schema,
+		&storedVersion, &r.Cluster, &environment, &r.TargetCount, &payloadText); err != nil {
+		return telemetryRecord{}, duplicate, err
+	}
+	r.ReceivedAt, err = time.Parse(time.RFC3339Nano, received)
+	if err != nil {
+		return telemetryRecord{}, duplicate, err
+	}
+	r.RunID, r.Schema, r.Version, r.Environment = runID.String, schema.String, storedVersion.String, environment.String
+	r.Payload = json.RawMessage(payloadText)
+	if sequence.Valid {
+		r.Sequence = &sequence.Int64
+	}
+	return r, duplicate, nil
+}
+
+func (s *store) handleTelemetry(c *ivy.Context) error {
+	if token := os.Getenv("TELEMETRY_BACKEND_TOKEN"); token != "" && c.GetHeaders().Get("postman-insights-verification-token") != token {
+		return c.Status(401).JSON(map[string]string{"error": "invalid verification token"})
+	}
+	var payload map[string]any
+	if err := c.BodyParser(&payload); err != nil {
+		return c.Status(400).JSON(map[string]string{"error": "invalid JSON payload"})
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return c.Status(400).JSON(map[string]string{"error": "invalid JSON payload"})
+	}
+	var telemetry telemetryRequest
+	if err := json.Unmarshal(encoded, &telemetry); err != nil {
+		return c.Status(400).JSON(map[string]string{"error": "invalid telemetry payload"})
+	}
+	if telemetry.Schema != "" && telemetry.Schema != "v1" {
+		return c.Status(400).JSON(map[string]string{"error": "unsupported schema_version"})
+	}
+	record, duplicate, err := s.insert(telemetry, encoded)
+	if err != nil {
+		return c.Status(500).JSON(map[string]string{"error": err.Error()})
+	}
+
+	// D1: events batched onto this POST are stored as their own independent
+	// rows, so they stay individually queryable via /inspect/telemetry
+	// exactly as if each had arrived as its own request -- batching is a
+	// transport optimization, not a change in how these events are recorded.
+	// Skipped on a duplicate POST: the events were already flattened and
+	// stored the first time this exact (agent_id, sequence) was received.
+	if !duplicate {
+		s.insertBatchedEvents(telemetry)
+	}
+
+	return c.JSON(map[string]any{"accepted": true, "duplicate": duplicate, "id": record.ID})
+}
+
+// insertBatchedEvents flattens telemetry.Events into independent rows. Each
+// element omits identity fields on the wire (they apply to the whole batch),
+// so they are inherited from the parent before storing. A per-event sequence
+// is synthesized from the parent's own sequence and the event's position in
+// the batch, so each event is still its own dedup-able row under this
+// table's (agent_id, sequence) UNIQUE constraint on a retried POST, without
+// requiring a schema change for this local dev tool. A malformed individual
+// event is logged and skipped rather than failing the whole batch.
+func (s *store) insertBatchedEvents(telemetry telemetryRequest) {
+	for i, raw := range telemetry.Events {
+		var event telemetryRequest
+		if err := json.Unmarshal(raw, &event); err != nil {
+			fmt.Fprintf(os.Stderr, "skipping malformed batched event at index %d: %v\n", i, err)
+			continue
+		}
+		event.AgentID = telemetry.AgentID
+		event.RunID = telemetry.RunID
+		event.Schema = telemetry.Schema
+		event.Cluster = telemetry.Cluster
+		event.K8sCluster = telemetry.K8sCluster
+		event.Environment = telemetry.Environment
+		if telemetry.Sequence != nil {
+			itemSeq := *telemetry.Sequence*1_000_000 + int64(i+1)
+			event.Sequence = &itemSeq
+		}
+		eventPayload, err := json.Marshal(event)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skipping unmarshalable batched event at index %d: %v\n", i, err)
+			continue
+		}
+		if _, _, err := s.insert(event, eventPayload); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to store batched event at index %d: %v\n", i, err)
+		}
+	}
+}
+
+func (s *store) inspectTelemetry(c *ivy.Context) error {
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	query := `SELECT id, received_at, agent_id, run_id, sequence, schema_version, version, cluster, environment, target_count, payload FROM telemetry_events`
+	conditions := []string{}
+	args := []any{}
+	for _, filter := range []struct{ name, expression string }{
+		{"type", "json_extract(payload, '$.type') = ?"},
+		{"event", "json_extract(payload, '$.event') = ?"},
+		{"target_id", "json_extract(payload, '$.target_id') = ?"},
+		{"service_id", "json_extract(payload, '$.service_id') = ?"},
+		{"team_id", "json_extract(payload, '$.team_id') = ?"},
+		{"agent_id", "agent_id = ?"},
+		{"run_id", "run_id = ?"},
+		{"cluster", "cluster = ?"},
+		{"environment", "environment = ?"},
+	} {
+		if value := c.QueryParam(filter.name); value != "" {
+			conditions = append(conditions, filter.expression)
+			args = append(args, value)
+		}
+	}
+	// scope mirrors the two-table split on the real backend
+	// (daemonset_agent_lifecycle_events vs daemonset_agent_counters):
+	// agent-scope rows never carry a target_id, every counter/coverage row
+	// always does. There is no dedicated column for this locally, so it is
+	// derived from the same payload field the target_id filter above reads.
+	switch c.QueryParam("scope") {
+	case "agent":
+		conditions = append(conditions, "(json_extract(payload, '$.target_id') IS NULL OR json_extract(payload, '$.target_id') = '')")
+	case "pod":
+		conditions = append(conditions, "(json_extract(payload, '$.target_id') IS NOT NULL AND json_extract(payload, '$.target_id') != '')")
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return c.Status(500).JSON(map[string]string{"error": err.Error()})
+	}
+	defer rows.Close()
+	// []telemetryRecord{}, not a nil var: a filter with no matches is the
+	// normal case for the per-view raw logs now that scope/team_id/
+	// service_id narrow things down, and the dashboard JS calls
+	// records.length on the result -- a JSON `null` response would throw
+	// there instead of rendering an empty table.
+	records := []telemetryRecord{}
+	for rows.Next() {
+		var record telemetryRecord
+		var received string
+		var runID, schema, version, environment sql.NullString
+		var sequence sql.NullInt64
+		var payloadText string
+		if err := rows.Scan(&record.ID, &received, &record.AgentID, &runID, &sequence, &schema, &version,
+			&record.Cluster, &environment, &record.TargetCount, &payloadText); err != nil {
+			return c.Status(500).JSON(map[string]string{"error": err.Error()})
+		}
+		record.ReceivedAt, err = time.Parse(time.RFC3339Nano, received)
+		if err != nil {
+			return c.Status(500).JSON(map[string]string{"error": err.Error()})
+		}
+		record.RunID, record.Schema, record.Version, record.Environment = runID.String, schema.String, version.String, environment.String
+		record.Payload = json.RawMessage(payloadText)
+		if sequence.Valid {
+			record.Sequence = &sequence.Int64
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return c.Status(500).JSON(map[string]string{"error": err.Error()})
+	}
+	return c.JSON(records)
+}
