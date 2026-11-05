@@ -183,23 +183,15 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 		startTime := time.Now()
 		bufferTimeSum := 0 * time.Second
 		intervalLength := 1 * time.Minute
+
+	Loop:
 		for {
 			select {
 			// packets channel is going to read until EOF or when signalClose is
 			// invoked.
 			case packet, more := <-packets:
 				if !more || packet == nil {
-					// Flushes and closes all remaining connections. This should trigger all
-					// parsers to hit EOF and return. This call will block until the parsers
-					// have returned because tcpStream.ReassemblyComplete waits for
-					// parsers.
-					//
-					// This is not safe to call in a defer, because it will be called on abnormal
-					// exit from FlushCloseOlderThan (like a parser segfault) but assembler might
-					// not be in a safe state to call (like holding a mutex.)
-					assembler.FlushAll()
-
-					return
+					break Loop
 				}
 
 				now := time.Now()
@@ -251,8 +243,19 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				}
 
 				p.reportTelemetryCount("pcap_reassembly_gap_flushed", uint64(flushed))
+			case <-signalClose:
+				break Loop
 			}
 		}
+		// Flushes and closes all remaining connections. This should trigger all
+		// parsers to hit EOF and return. This call will block until the parsers
+		// have returned because tcpStream.ReassemblyComplete waits for
+		// parsers.
+		//
+		// This is not safe to call in a defer, because it will be called on abnormal
+		// exit from FlushCloseOlderThan (like a parser segfault) but assembler might
+		// not be in a safe state to call (like holding a mutex.)
+		assembler.FlushAll()
 	}()
 
 	return out, nil
