@@ -2,7 +2,6 @@ package pcap
 
 import (
 	"net"
-	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/tags"
@@ -59,62 +58,18 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 		pollPcapStats(handle, interfaceName, stats, statsDone, telemetryCountReporter)
 	}()
 
-	// TODO: tune the packet channel buffer
-	wrappedChan := make(chan gopacket.Packet, 10)
 	go func() {
-		// Closing the handle can take a long time, so we close wrappedChan first to
-		// allow the packet consumer to advance with its processing logic while we
-		// wait for the handle to close in this goroutine.
-		defer func() {
-			close(wrappedChan)
+		<-done
 
-			// Wait for the stats poller to return before closing the handle:
-			// pcap_stats dereferences the handle without locking, so a sample in
-			// flight during Close is a use-after-free.
-			close(statsDone)
-			<-statsStopped
+		// Wait for the stats poller to return before closing the handle:
+		// pcap_stats dereferences the handle without locking, so a sample in
+		// flight during Close is a use-after-free.
+		close(statsDone)
+		<-statsStopped
 
-			handle.Close()
-		}()
-
-		startTime := time.Now()
-		firstPacket := true
-		bufferTimeSum := 0 * time.Second
-		intervalLength := 1 * time.Minute
-		for {
-			select {
-			case <-done:
-				return
-			case pkt, ok := <-pktChan:
-				if ok {
-					now := time.Now()
-					if now.Sub(startTime) >= intervalLength {
-						bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-						podName, ok := p.TraceTags[tags.XAkitaKubernetesPod]
-						if !ok {
-							podName = "unknown"
-						}
-						printer.Debugf("Approximate captured-packets buffer length: %v, for svc %v and pod: %v\n", bufferLength, p.ServiceID, podName)
-						bufferTimeSum = 0 * time.Second
-						startTime = now
-					}
-					bufferTimeSum += now.Sub(pkt.Metadata().Timestamp)
-
-					wrappedChan <- pkt
-
-					if firstPacket {
-						firstPacket = false
-						ttfp := time.Since(startTime)
-						printer.Debugf("Time to first packet on %s: %s\n", interfaceName, ttfp)
-					}
-
-				} else {
-					return
-				}
-			}
-		}
+		handle.Close()
 	}()
-	return wrappedChan, nil
+	return pktChan, nil
 }
 
 func (p *pcapImpl) getInterfaceAddrs(interfaceName string) ([]net.IP, error) {
