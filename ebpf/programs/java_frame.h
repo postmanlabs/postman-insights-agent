@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-//
 // Wire format of the frames the Postman Java agent hands to the kernel.
 //
 // The agent, running inside a JVM, copies decrypted TLS bytes into a direct

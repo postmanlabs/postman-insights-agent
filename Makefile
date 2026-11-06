@@ -78,7 +78,7 @@ mock:
 test: mock
 	go test ./...
 
-# Only the BPF sources carry an SPDX line; see the script.
+# No file carries an SPDX line, and the BPF programs declare "GPL"; see the script.
 check-license-headers:
 	build-scripts/check-license-headers.sh
 

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Derived from bpf/generictracer/libssl.c of OpenTelemetry eBPF
 // Instrumentation (https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation),
 // Copyright The OpenTelemetry Authors, licensed under the Apache License,
