@@ -2,11 +2,11 @@
 #
 # Checks the repository's licence rule (see ebpf/programs/README.md):
 #   - The root LICENSE (Apache-2.0) covers every file, so files under it carry
-#     no SPDX line of their own.
-#   - Only the BPF sources (ebpf/programs/*.c and *.h) carry one, because
-#     they are under (GPL-2.0-only OR BSD-2-Clause), except the Apache-2.0
-#     ones listed below, and declare a GPL-compatible licence to the kernel:
-#     "Dual BSD/GPL" for the dual-licensed ones.
+#     no SPDX line of their own, anywhere in the file.
+#   - Only the BPF sources (ebpf/programs/*.c and *.h) carry one, exactly one,
+#     whose expression is exactly (GPL-2.0-only OR BSD-2-Clause), or
+#     Apache-2.0 for the ones listed below, and declare a GPL-compatible
+#     licence to the kernel: "Dual BSD/GPL" for the dual-licensed ones.
 #
 # Usage: build-scripts/check-license-headers.sh
 # Lists the files that break a rule and exits 1, or exits 0.
@@ -14,8 +14,20 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-apache='SPDX-License-Identifier: Apache-2.0'
-dual='SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)'
+apache='Apache-2.0'
+dual='(GPL-2.0-only OR BSD-2-Clause)'
+
+# An SPDX line is a comment: the marker comes after nothing but a comment
+# opener (//, #, /* or *), so mentions in strings and prose do not count.
+spdx_line='^[[:space:]]*(//|#|/\*|\*)[[:space:]]*SPDX-License-Identifier:'
+
+# Prints the licence expression of each SPDX line in a file, one per line,
+# without the comment opener, a closing */ and surrounding whitespace.
+spdx_expressions() {
+  grep -IE -- "$spdx_line" "$1" |
+    sed -E -e 's/^[^S]*SPDX-License-Identifier:[[:space:]]*//' \
+      -e 's/[[:space:]]*(\*\/)?[[:space:]]*$//' || true
+}
 
 # BPF sources under Apache-2.0: libssl.bpf.c follows the design of OBI's
 # Apache-2.0 libssl.c (OpenTelemetry eBPF Instrumentation).
@@ -53,8 +65,9 @@ while IFS= read -r f; do
     ebpf/programs/*.c | ebpf/programs/*.h)
       want=$dual
       is_apache_bpf "$f" && want=$apache
-      if ! head -n 3 "$f" | grep -qF -- "$want"; then
-        echo "$f: want \"$want\" in its first lines"
+      got=$(spdx_expressions "$f")
+      if [[ "$got" != "$want" ]]; then
+        echo "$f: want one SPDX line, \"SPDX-License-Identifier: $want\"; found: ${got:-none}" | paste -sd ';' -
         bad=1
       fi
       if [[ "$f" == *.bpf.c ]]; then
@@ -69,8 +82,8 @@ while IFS= read -r f; do
       fi
       ;;
     *)
-      if head -n 3 "$f" | grep -qF -- "$apache"; then
-        echo "$f: remove the SPDX line; the root LICENSE covers this file"
+      if [[ -n "$(spdx_expressions "$f")" ]]; then
+        echo "$f: remove the SPDX line; only the BPF sources carry one, and the root LICENSE covers this file"
         bad=1
       fi
       ;;

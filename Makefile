@@ -41,10 +41,10 @@ endif
 	go build -tags "$(BUILD_TAGS)" -o bin/postman-insights-agent .
 
 docker-build:
-	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile .
+	docker build --target bin --output type=local,dest=bin --provenance false -f build-scripts/Dockerfile .
 
 docker-build-ebpf:
-	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile.ebpf-bin .
+	docker build --target bin --output type=local,dest=bin --provenance false -f build-scripts/Dockerfile.ebpf-bin .
 
 # --- Dev-container shortcuts for HTTPS-via-eBPF work on macOS. ---
 dev-build:
