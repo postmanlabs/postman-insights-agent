@@ -55,16 +55,14 @@ var (
 	apidumpDiscoveryMode bool
 	apidumpServiceName   string
 
-	// HTTPS-via-eBPF capture flags (Phase 2).
+	// HTTPS-via-eBPF capture flags.
 	enableHTTPSCapture    bool
 	httpsLibraries        []string
 	httpsTargetNamespaces []string
 	httpsBodySizeCap      uint32
-	httpsCaptureMode      string
 	httpsCBPFExcludePort  uint16
 	httpsRateCapPerSec    uint32
 	httpsNoThermostat     bool
-	privacyMode           string
 
 	commonApidumpFlags *CommonApidumpFlags
 )
@@ -346,12 +344,10 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 			Libraries:         httpsLibrarySet,
 			TargetNamespaces:  httpsTargetNamespaces,
 			BodySizeCap:       httpsBodySizeCap,
-			CaptureMode:       httpsCaptureMode,
 			CBPFExcludePort:   httpsCBPFExcludePort,
 			RateCapPerSec:     httpsRateCapPerSec,
 			DisableThermostat: httpsNoThermostat,
 		},
-		PrivacyMode: privacyMode,
 	}
 	if err := apidump.Run(args); err != nil {
 		if rest.IsIngestDisabledError(err) {
@@ -539,7 +535,7 @@ func init() {
 		"Override the auto-derived service name (default: namespace/workload-name).",
 	)
 
-	// --- HTTPS-via-eBPF flags (Phase 2) ---
+	// --- HTTPS-via-eBPF flags ---
 	// All gated behind --enable-https-capture; when false, none of the other
 	// HTTPS-* flags have any effect. The agent emits a warning instead of
 	// silently ignoring stray values.
@@ -569,12 +565,6 @@ func init() {
 		16384,
 		"Maximum plaintext bytes captured per SSL_read/SSL_write event. Larger bodies are truncated.",
 	)
-	Cmd.Flags().StringVar(
-		&httpsCaptureMode,
-		"https-capture-mode",
-		"truncated",
-		"HTTPS capture mode: 'headers' | 'truncated' | 'full'. Phase 2 implements 'truncated' only.",
-	)
 	Cmd.Flags().Uint16Var(
 		&httpsCBPFExcludePort,
 		"https-cbpf-exclude-port",
@@ -594,12 +584,6 @@ func init() {
 		"no-thermostat",
 		false,
 		"Disable the CPU thermostat that lowers max-capture-bytes under load.",
-	)
-	Cmd.Flags().StringVar(
-		&privacyMode,
-		"privacy-mode",
-		"standard",
-		"Privacy mode: 'standard' | 'strict' | 'dry-run'. Currently a passthrough; full effect lands in Phase 4.",
 	)
 
 	commonApidumpFlags = AddCommonApiDumpFlags(Cmd)

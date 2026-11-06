@@ -43,6 +43,7 @@
 package discovery
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,7 +175,7 @@ func (r *KubeNamespaceResolver) refresh() error {
 			continue
 		}
 		for _, cid := range containerIDs {
-			pid, err := r.criClient.GetContainerPID(cid)
+			pid, err := r.criClient.GetContainerPID(context.Background(), cid)
 			if err != nil || pid <= 0 {
 				continue
 			}

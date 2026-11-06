@@ -103,6 +103,10 @@ func doInit() {
 		trackingUser:    &TrackingUser{},
 		rateLimitMap:    &globalRateLimitMap,
 	}
+	// The client is chosen below, and the root tracker was made with the
+	// placeholder: give it the one chosen, on every return path, or Default()
+	// and the package-level functions send nothing.
+	defer func() { rootTracker.analyticsClient = sharedAnalyticsClient }()
 
 	// Initialize the base API error handler
 	rest.BaseAPIErrorHandler = rootTracker.APIError
@@ -116,9 +120,6 @@ func doInit() {
 			return
 		}
 	}
-
-	// If unset, will be "" and we'll use the default
-	amplitudeEndpoint := os.Getenv("POSTMAN_INSIGHTS_AGENT_AMPLITUDE_ENDPOINT")
 
 	// If unset, will use this hard-coded value.
 	amplitudeKey := os.Getenv("POSTMAN_INSIGHTS_AGENT_AMPLITUDE_WRITE_KEY")
@@ -140,8 +141,7 @@ func doInit() {
 			// Enable analytics for Amplitude only
 			IsAmplitudeEnabled: true,
 			AmplitudeConfig: analytics.AmplitudeConfig{
-				AmplitudeAPIKey:   amplitudeKey,
-				AmplitudeEndpoint: amplitudeEndpoint,
+				AmplitudeAPIKey: amplitudeKey,
 				// No output from the Amplitude library
 				IsLoggingEnabled: false,
 			},

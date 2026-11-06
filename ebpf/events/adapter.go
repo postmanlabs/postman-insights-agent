@@ -58,7 +58,7 @@ const MaxPendingPerFlow = 1 * 1024 * 1024
 // set, SrcIP/DstIP/ports are filled from /proc/<pid>/net/tcp via the
 // SSL*→fd map. When neither is available, IPs are left zero and
 // "ebpf-pid-<N>" is stored in the Interface field for traceability.
-// See docs/https-capture-design.md §5.4.
+// See "Pipeline" in docs/https-capture-design.md.
 type Adapter struct {
 	// FactorySelector picks the right parser for a new flow. Pass the same
 	// selector the pcap path uses.
@@ -93,6 +93,11 @@ type Adapter struct {
 	// much H2 traffic we currently cannot decode.
 	H2HPACKDesyncs uint64
 
+	// The data events fed to this adapter (OpenSSL: events and their
+	// captured bytes; Java: events), whatever became of them. A NodeCollector
+	// feeds each pod's adapter only that pod's events, so these are the pod's.
+	eventsFed, bytesFed, javaEventsFed uint64
+
 	// javaAgents holds the last HEARTBEAT of each Java agent, by PID.
 	javaAgents map[uint32]*javaAgent
 
@@ -110,6 +115,11 @@ type Stats struct {
 	MessagesEmitted uint64
 	FlowsDropped    uint64
 	H2HPACKDesyncs  uint64
+	// EventsFed and BytesFed count the OpenSSL data events fed to the adapter
+	// and their captured bytes, JavaEventsFed the Java data events.
+	EventsFed     uint64
+	BytesFed      uint64
+	JavaEventsFed uint64
 	// JavaAgentsAlive counts the Java agents heard from recently (see
 	// javaAgentAliveFor), and JavaAgentsCapturing those of them capturing
 	// (not dormant or switched off).
@@ -248,6 +258,12 @@ func (a *Adapter) Feed(ev *SSLEvent, monoEpoch time.Time) {
 
 	switch ev.Kind {
 	case KindData:
+		if javatls.IsJavaSSLCtx(ev.SSLCtx) {
+			a.javaEventsFed++
+		} else {
+			a.eventsFed++
+			a.bytesFed += uint64(ev.LenCaptured)
+		}
 	case KindJavaHeartbeat:
 		// Agent liveness is judged on the wall clock, like Stats and GC.
 		a.javaHeartbeat(ev, time.Now())
@@ -656,6 +672,9 @@ func (a *Adapter) Stats() Stats {
 		MessagesEmitted: a.MessagesEmitted,
 		FlowsDropped:    a.FlowsDropped,
 		H2HPACKDesyncs:  a.H2HPACKDesyncs,
+		EventsFed:       a.eventsFed,
+		BytesFed:        a.bytesFed,
+		JavaEventsFed:   a.javaEventsFed,
 	}
 	now := time.Now()
 	for _, agent := range a.javaAgents {

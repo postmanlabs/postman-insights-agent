@@ -3,12 +3,11 @@ package injector
 import (
 	"bytes"
 
-	v1 "k8s.io/api/core/v1"
 	kyaml "sigs.k8s.io/yaml"
 )
 
 // Calls the given injector's Inject method and returns the result as a YAML bytes.
-func ToRawYAML(injector Injector, sidecar v1.Container) ([]byte, error) {
+func ToRawYAML(injector Injector, sidecar Sidecar) ([]byte, error) {
 	injectedObjects, err := injector.Inject(sidecar)
 	if err != nil {
 		return nil, err

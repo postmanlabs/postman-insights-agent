@@ -6,19 +6,18 @@ also emits Go bindings in the parent `ebpf/loader/` package.
 
 ## Files
 
-| File | Purpose | Phase |
-|---|---|---|
-| `event.h` | ABI-stable event struct shared with Go. | 1 |
-| `libssl.bpf.c` | Uprobes for `SSL_read`/`SSL_write`/`SSL_read_ex`/`SSL_write_ex`. | 1 |
-| `common.h` | Maps and helpers shared by every object (ring buffer, rate cap, netns). | - |
-| `java_frame.h` | Frame format the Postman Java agent writes (mirrored in `ebpf/javatls` and `java-agent/`). | - |
-| `java_tls.bpf.c` | Syscall tracepoints that read Java agent frames (`pwrite64`, `pwritev2`, `pwritev`). | Java |
-| `go_tls.bpf.c` | Uprobes for `crypto/tls.(*Conn).Read`/`Write` and Go HTTP layer. | 3 (TODO) |
+| File | Purpose |
+|---|---|
+| `event.h` | ABI-stable event struct shared with Go. |
+| `libssl.bpf.c` | Uprobes for `SSL_read`/`SSL_write`/`SSL_read_ex`/`SSL_write_ex`. |
+| `common.h` | Maps and helpers shared by every object (ring buffer, rate cap, netns). |
+| `java_frame.h` | Frame format the Postman Java agent writes (mirrored in `ebpf/javatls` and `java-agent/`). |
+| `java_tls.bpf.c` | Syscall tracepoints that read Java agent frames (`pwrite64`, `pwritev2`, `pwritev`), and the `tcp_recvmsg`/`tcp_sendmsg` hooks that give Java connections their addresses. |
 
 ## Build prerequisites
 
 The BPF C files are NOT compiled by `go build`. They are compiled by
-`bpf2go`, which is run by `go generate` against `ebpf/loader/loader.go`.
+`bpf2go`, which `go generate` runs from `ebpf/loader/loader_linux.go` (libssl) and `ebpf/loader/loader_java_linux.go` (Java).
 
 Required on the build host:
 
@@ -41,7 +40,7 @@ Required on the build host:
 
 ### Generating bpf2go output locally (IDE / full eBPF build)
 
-`go generate` emits `ebpf/loader/libssl_*_bpfel.go`, `ebpf/loader/javatls_*_bpfel.go` and `*.o`. These are
+`go generate` emits `ebpf/loader/libssl_<arch>_bpfel.go`, `ebpf/loader/javatls_<arch>_bpfel.go` and their `.o` files. These are
 **gitignored** — CI regenerates them at build time. Without them, VS Code
 may show `undefined: libsslObjects` when gopls type-checks with
 `-tags=insights_bpf` (see `.vscode/settings.json`).
@@ -67,7 +66,7 @@ cd ebpf/loader && go generate -tags insights_bpf ./...
 
 ## How `bpf2go` is invoked
 
-From `ebpf/loader/loader.go`:
+From `ebpf/loader/loader_linux.go` (and the same for `javatls` from `java_tls.bpf.c` in `loader_java_linux.go`):
 
 ```go
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go \
@@ -80,8 +79,8 @@ From `ebpf/loader/loader.go`:
 We use `-target native` (not `-target amd64,arm64`): Debian bookworm ships
 libbpf 1.1, which lacks the synthetic per-arch `pt_regs` structs needed for
 cross-arch codegen, so we build each architecture natively (the release builds
-amd64 and arm64 on separate machines). This produces `libssl_bpfel.go`
-(little-endian) and `libssl_bpfel.o`, embedded into the Go binary via
+amd64 and arm64 on separate machines). This produces `libssl_<arch>_bpfel.go`
+(little-endian) and `libssl_<arch>_bpfel.o`, embedded into the Go binary via
 `go:embed`. These generated files are git-ignored and regenerated in every
 build environment.
 

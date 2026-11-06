@@ -3,7 +3,9 @@
 package ebpf
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -19,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +30,7 @@ import (
 	"time"
 
 	"github.com/akitasoftware/akita-libs/akinet"
+	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 
 	"github.com/postmanlabs/postman-insights-agent/ebpf/discovery"
@@ -340,6 +344,42 @@ func subscribe(t *testing.T, ctx context.Context, nc *NodeCollector, reportCount
 	}
 }
 
+// subscribeDrained is subscribe for a test that captures more messages than
+// out holds before it reads them. The adapter sends to out holding its lock,
+// which unsubscribe needs too: so out is read from the start into a larger
+// buffer, until the test has unsubscribed, on every path out of the test.
+func subscribeDrained(t *testing.T, ctx context.Context, nc *NodeCollector) <-chan akinet.ParsedNetworkTraffic {
+	t.Helper()
+	out, unsubscribe := subscribe(t, ctx, nc, nil)
+	msgs := make(chan akinet.ParsedNetworkTraffic, 4096)
+	stop, drained := make(chan struct{}), make(chan struct{})
+	var dropped atomic.Uint64
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case pnt := <-out:
+				select {
+				case msgs <- pnt:
+				default:
+					dropped.Add(1)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		unsubscribe()
+		close(stop)
+		<-drained
+		if n := dropped.Load(); n > 0 {
+			t.Errorf("%d messages dropped: more than %d unread", n, cap(msgs))
+		}
+	})
+	return msgs
+}
+
 // expectCaptured sends an HTTPS request to the JVM and waits for the request
 // and response to come out of the subscription, with the connection's
 // addresses: the kernel ties the JVM's connection to its socket.
@@ -574,6 +614,153 @@ func TestNodeCollectorJVMFrameworks(t *testing.T) {
 			// Once each: not also through the libssl uprobes (Netty's
 			// BoringSSL is its own library), nor twice through nested hooks.
 			expectCaptured(t, j, out, "from="+app.name)
+		})
+	}
+}
+
+// TestNodeCollectorJVMFrameworksBurst: concurrent curl clients, one request
+// per connection, as the kind end-to-end test sends them. Every request and
+// response carries its own connection's addresses. Tomcat often reads the
+// handshake's last flight and the request on one worker thread and unwraps
+// the request on another, whose last read was another connection's socket:
+// the kernel counts that (java_conn_handoffs), and the connection keeps the
+// addresses its handshake tied it to. (Go's TLS client does not get Tomcat
+// to do that.)
+func TestNodeCollectorJVMFrameworksBurst(t *testing.T) {
+	f := newJVMFixture(t)
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not found")
+	}
+	// Without the libssl uprobes, which would capture curl's side too.
+	nc, ctx := testCollectorWith(t, NodeCollectorConfig{EnableJava: true, DisableOpenSSL: true})
+	if !nc.Loader().JavaEnabled() {
+		t.Fatalf("Java TLS programs did not load: %v", nc.Loader().JavaError())
+	}
+	counter := func(idx uint32) uint64 {
+		t.Helper()
+		v, err := nc.Loader().ReadJavaCounter(idx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	for _, app := range []struct {
+		name    string
+		minJava int
+	}{
+		{"netty-jdk", 8},
+		{"netty-openssl", 8},
+		{"netty-epoll", 8},
+		{"tomcat", 17},
+		{"jetty", 17},
+		{"undertow", 17},
+	} {
+		t.Run(app.name, func(t *testing.T) {
+			if f.javaMajor() < app.minJava {
+				t.Skipf("needs Java %d", app.minJava)
+			}
+			out := subscribeDrained(t, ctx, nc)
+			j := f.startApp(t, app.name, "", "-javaagent:"+f.agentJar)
+			j.waitLog(t, "capturing HTTPS traffic", 15*time.Second)
+			handoffs, unbound := counter(loader.JavaCounterConnHandoff), counter(loader.JavaCounterConnUnbound)
+
+			// Each request has its own id; curl reports the port it sent it
+			// from, the ground truth for the addresses of its connection.
+			const clients, connsPerClient = 8, 9
+			var mu sync.Mutex
+			portOf := map[string]int{} // request id to client port
+			var wg sync.WaitGroup
+			for c := range clients {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := range connsPerClient {
+						id := fmt.Sprintf("%d-%d", c, i)
+						got, err := exec.Command("curl", "-fsSk", "-o", "/dev/null", "-w", "%{local_port}",
+							"https://"+j.addr+"/hello?burst="+id).Output()
+						port, perr := strconv.Atoi(string(got))
+						if err != nil || perr != nil {
+							t.Errorf("curl: %v %q", err, got)
+							return
+						}
+						mu.Lock()
+						portOf[id] = port
+						mu.Unlock()
+					}
+				}()
+			}
+			wg.Wait()
+			if t.Failed() {
+				return
+			}
+			// The adapter gives a connection's request and response one
+			// StreamID, from the agent's connection id, not from the
+			// addresses: so it pairs each response with its request, and so
+			// with its client's port.
+			srv := mustTCPAddr(t, j.addr)
+			requests := map[string]int{}    // request id to captures
+			clientOf := map[uuid.UUID]int{} // stream to its request's client port
+			responses := map[uuid.UUID][]akinet.ParsedNetworkTraffic{}
+			complete := func() bool {
+				if len(clientOf) < len(portOf) {
+					return false
+				}
+				for stream := range clientOf {
+					if len(responses[stream]) == 0 {
+						return false
+					}
+				}
+				return true
+			}
+			deadline := time.After(15 * time.Second)
+			for !complete() {
+				select {
+				case pnt := <-out:
+					switch c := pnt.Content.(type) {
+					case akinet.HTTPRequest:
+						id := c.URL.Query().Get("burst")
+						port, ok := portOf[id]
+						if c.URL.Path != "/hello" || !ok {
+							continue // not this test's
+						}
+						if pnt.SrcPort != port || pnt.DstPort != srv.Port {
+							t.Errorf("request of the client on port %d went from port %d to port %d, want to %d",
+								port, pnt.SrcPort, pnt.DstPort, srv.Port)
+						}
+						if requests[id]++; requests[id] > 1 {
+							t.Errorf("request %s captured %d times", id, requests[id])
+						}
+						clientOf[c.StreamID] = port
+					case akinet.HTTPResponse:
+						responses[c.StreamID] = append(responses[c.StreamID], pnt)
+					}
+				case <-deadline:
+					answered := 0
+					for stream := range clientOf {
+						if len(responses[stream]) > 0 {
+							answered++
+						}
+					}
+					t.Fatalf("captured %d of %d requests, %d of them with their response", len(clientOf), len(portOf), answered)
+				}
+			}
+			for stream, port := range clientOf {
+				if rs := responses[stream]; len(rs) != 1 {
+					t.Errorf("client port %d: %d responses, want one", port, len(rs))
+				} else if rs[0].SrcPort != srv.Port || rs[0].DstPort != port {
+					t.Errorf("response to the client on port %d went from port %d to port %d, want from %d",
+						port, rs[0].SrcPort, rs[0].DstPort, srv.Port)
+				}
+			}
+			if got := counter(loader.JavaCounterConnUnbound) - unbound; got != 0 {
+				t.Errorf("conn_unbound grew by %d, want 0", got)
+			}
+			got := counter(loader.JavaCounterConnHandoff) - handoffs
+			t.Logf("conn_handoffs grew by %d over %d connections", got, len(portOf))
+			// Otherwise the burst did not exercise what it is for.
+			if app.name == "tomcat" && got == 0 {
+				t.Error("conn_handoffs did not grow: Tomcat unwrapped every request on the thread that read it")
+			}
 		})
 	}
 }
@@ -909,31 +1096,205 @@ func TestNodeCollectorJVMAttachDAC(t *testing.T) {
 			if got := len(perfFiles) > 0; got != tc.perfData {
 				t.Fatalf("the JVM publishes perf data: %v, want %v", got, tc.perfData)
 			}
-			cmd := exec.Command("setpriv", "--bounding-set=-all,+"+strings.Join(daemonSetCapabilities, ",+"),
-				"--inh-caps=-all", "--", os.Args[0], "-test.run=^TestAttachChild$", "-test.count=1")
-			cmd.Env = append(os.Environ(),
-				attachChildPID+"="+strconv.Itoa(j.cmd.Process.Pid),
-				attachChildHelper+"="+helper,
-				attachChildJar+"="+f.agentJar)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("attach child: %v\n%s", err, out)
-			}
-			_, line, ok := strings.Cut(string(out), attachChildStats)
-			if !ok {
-				t.Fatalf("attach child printed no stats:\n%s", out)
-			}
-			line, _, _ = strings.Cut(line, "\n")
-			var st jvm.AttachStats
-			if err := json.Unmarshal([]byte(line), &st); err != nil {
-				t.Fatal(err)
-			}
-			if st.Attached != 1 {
+			if st, out := attachWithDaemonSetCapabilities(t, j, helper, f.agentJar); st.Attached != 1 {
 				t.Fatalf("attacher stats %+v\n%s", st, out)
 			}
 			j.waitLog(t, "loaded (attach)", 10*time.Second)
 		})
 	}
+}
+
+// attachWithDaemonSetCapabilities runs TestAttachChild for j in a copy of this
+// test binary with only daemonSetCapabilities, attaching with the given helper
+// and jar, and returns the attacher's stats and the child's output.
+func attachWithDaemonSetCapabilities(t *testing.T, j *testJVM, helper, jar string) (jvm.AttachStats, string) {
+	t.Helper()
+	cmd := exec.Command("setpriv", "--bounding-set=-all,+"+strings.Join(daemonSetCapabilities, ",+"),
+		"--inh-caps=-all", "--", os.Args[0], "-test.run=^TestAttachChild$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		attachChildPID+"="+strconv.Itoa(j.cmd.Process.Pid),
+		attachChildHelper+"="+helper,
+		attachChildJar+"="+jar)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("attach child: %v\n%s", err, out)
+	}
+	_, line, ok := strings.Cut(string(out), attachChildStats)
+	if !ok {
+		t.Fatalf("attach child printed no stats:\n%s", out)
+	}
+	line, _, _ = strings.Cut(line, "\n")
+	var st jvm.AttachStats
+	if err := json.Unmarshal([]byte(line), &st); err != nil {
+		t.Fatal(err)
+	}
+	return st, string(out)
+}
+
+// TestNodeCollectorJVMStagedCopies: the jar is copied into a JVM's container
+// only when the JVM does not run the agent, and the copies other Insights
+// agent versions left there are removed, except the one a JVM loaded, which
+// it keeps mapped for as long as it runs, and one staged less than 10 minutes
+// ago, which may be about to be loaded. With the DaemonSet's capabilities,
+// the JVM's open files (/proc/<pid>/fd) are not readable, so its mapping must
+// be enough to keep the copy.
+func TestNodeCollectorJVMStagedCopies(t *testing.T) {
+	f := newJVMFixture(t)
+	helper := f.helper(t)
+	j := f.start(t, 1000, nil)
+	p := j.inspect(t)
+	agentDir := filepath.Join("/proc", strconv.Itoa(int(p.PID)), "root", "tmp", ".postman-insights")
+
+	// A copy that an earlier version left long ago and nothing uses, and one
+	// another Insights agent staged just now, for an attach in progress.
+	stale := filepath.Join(agentDir, "agent-0000000000000000")
+	fresh := filepath.Join(agentDir, "agent-1111111111111111")
+	for _, dir := range []string{stale, fresh} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "postman-insights-java-agent.jar"), []byte("PK\x03\x04"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	long := time.Now().Add(-time.Hour)
+	for _, path := range []string{filepath.Join(stale, "postman-insights-java-agent.jar"), stale} {
+		if err := os.Chtimes(path, long, long); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a := f.attacher(t)
+	stop := runAttacher(t, a)
+	a.Add(p, nil)
+	waitStats(t, a, func(st jvm.AttachStats) bool { return st.Attached == 1 })
+	stop()
+	j.waitLog(t, "loaded (attach)", 10*time.Second)
+	loaded := stagingDir(t, f.agentJar)
+	if got, want := dirNames(t, agentDir), []string{loaded, filepath.Base(fresh)}; !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("the container's agent directory has %v, want %v", got, want)
+	}
+	// The other agent's copy goes once it is old, at the next attempt.
+	for _, path := range []string{filepath.Join(fresh, "postman-insights-java-agent.jar"), fresh} {
+		if err := os.Chtimes(path, long, long); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An Insights agent with another version of the jar finds the agent
+	// running: it copies nothing, keeps the loaded copy and counts the JVM
+	// as running another version.
+	other := f.otherJar(t, "0.0.0-other")
+	st, out := attachWithDaemonSetCapabilities(t, j, helper, other)
+	if st.AlreadyRunning != 1 || st.OtherVersion != 1 {
+		t.Fatalf("attacher stats %+v\n%s", st, out)
+	}
+	if !strings.Contains(out, "this Insights agent's Java agent 0.0.0-other replaces it only when the JVM restarts") {
+		t.Errorf("the other version is not logged:\n%s", out)
+	}
+	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
+		t.Fatalf("with the DaemonSet's capabilities the container's agent directory has %v, want only %s\n%s", got, loaded, out)
+	}
+	// With every capability, which reads the JVM's open files too.
+	again := newTestAttacher(t, helper, other)
+	stop = runAttacher(t, again)
+	again.Add(p, nil)
+	waitStats(t, again, func(st jvm.AttachStats) bool { return st.AlreadyRunning == 1 && st.OtherVersion == 1 })
+	stop()
+	if got := dirNames(t, agentDir); !slices.Equal(got, []string{loaded}) {
+		t.Fatalf("the container's agent directory has %v, want only %s", got, loaded)
+	}
+	if n := strings.Count(j.stderr.String(), "loaded (attach)"); n != 1 {
+		t.Errorf("agent loaded %d times", n)
+	}
+}
+
+// stagingDir is the directory name the attacher stages jar in.
+func stagingDir(t *testing.T, jar string) string {
+	t.Helper()
+	b, err := os.ReadFile(jar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return "agent-" + hex.EncodeToString(sum[:])[:16]
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// otherJar writes a copy of the agent jar with another Implementation-Version,
+// as another Insights agent release bundles, with its checksum, and returns
+// its path.
+func (f *jvmFixture) otherJar(t *testing.T, version string) string {
+	t.Helper()
+	src, err := zip.OpenReader(f.agentJar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	dir := filepath.Join(f.dir, "other")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "postman-insights-java-agent.jar")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range src.File {
+		if e.Name != "META-INF/MANIFEST.MF" {
+			w, err := zw.CreateRaw(&e.FileHeader)
+			if err == nil && !e.FileInfo().IsDir() {
+				var r io.Reader
+				if r, err = e.OpenRaw(); err == nil {
+					_, err = io.Copy(w, r)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		r, err := e.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest = regexp.MustCompile(`(?m)^Implementation-Version: .*$`).ReplaceAll(manifest, []byte("Implementation-Version: "+version+"\r"))
+		w, err := zw.Create(e.Name)
+		if err == nil {
+			_, err = w.Write(manifest)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".sha256", []byte(hex.EncodeToString(sum[:])+"  postman-insights-java-agent.jar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // TestAttachChild attaches to one JVM and prints the attacher's stats. Only
@@ -957,9 +1318,7 @@ func TestAttachChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go a.Run(ctx)
+	stop := runAttacher(t, a)
 	a.Add(p, nil)
 	// The attacher waits until the JVM has run for 5 s; an inspect failure
 	// is retried after 30 s.
@@ -970,6 +1329,8 @@ func TestAttachChild(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// The attempt removes stale copies after it is counted.
+	stop()
 	b, err := json.Marshal(a.Stats())
 	if err != nil {
 		t.Fatal(err)
@@ -993,6 +1354,22 @@ func effectiveCapability(t *testing.T, status []byte, capability uint) bool {
 }
 
 // waitStats waits until the attacher's counters satisfy ok.
+// runAttacher runs a until the returned stop is called, or the test ends.
+// stop returns once Run has, so the attempt in progress has finished,
+// including its removal of stale copies, which comes after its counters.
+func runAttacher(t *testing.T, a *jvm.Attacher) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Run(ctx)
+	}()
+	var once sync.Once
+	stop = func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(stop)
+	return stop
+}
+
 func waitStats(t *testing.T, a *jvm.Attacher, ok func(jvm.AttachStats) bool) {
 	t.Helper()
 	waitStatsFor(t, a, 30*time.Second, ok)

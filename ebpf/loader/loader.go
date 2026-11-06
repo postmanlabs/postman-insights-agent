@@ -23,7 +23,7 @@
 // .vscode/settings.json enables the insights_bpf tag. Plain `make` / `make test`
 // on macOS do not need this step.
 //
-// See docs/https-capture-design.md §9 (phased delivery plan) for context.
+// See docs/https-capture-design.md for the design.
 package loader
 
 // This file exists only to host the package-level documentation above. The

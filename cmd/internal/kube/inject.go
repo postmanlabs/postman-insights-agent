@@ -140,7 +140,7 @@ var injectCmd = &cobra.Command{
 		}
 
 		apidumpArgs := apidump.ConvertCommonApiDumpFlagsToArgs(apidumpFlags)
-		container := createPostmanSidecar(SidecarOpts{
+		sidecar := injectedSidecar(SidecarOpts{
 			ProjectID:          insightsProjectID,
 			WorkspaceID:        onboardWorkspaceID,
 			SystemEnv:          onboardSystemEnv,
@@ -156,7 +156,7 @@ var injectCmd = &cobra.Command{
 			HTTPSLibraries:     httpsLibraries,
 		})
 
-		rawInjected, err := injector.ToRawYAML(injectr, container)
+		rawInjected, err := injector.ToRawYAML(injectr, sidecar)
 		if err != nil {
 			return cmderr.AkitaErr{Err: errors.Wrap(err, "Failed to inject sidecars")}
 		}

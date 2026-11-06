@@ -114,18 +114,37 @@ func sigQuitCaught(status []byte) bool {
 // agentJarName is the jar's name in the container.
 const agentJarName = "postman-insights-java-agent.jar"
 
-func (o linuxOps) stage(p *Process, jar []byte, dirName string) (string, error) {
+func (o linuxOps) stage(p *Process, jar []byte, dirName string, now time.Time) (string, error) {
 	root, err := openRoot(p)
 	if err != nil {
 		return "", err
 	}
 	defer unix.Close(root)
-	return stageIn(root, jar, dirName)
+	return stageWithRetry(root, jar, dirName, now)
 }
 
+// stageWithRetry is stageIn, run once more when a file or directory it was
+// using is removed under it (ENOENT): another Insights agent's cleanup may
+// remove an old copy just as this agent reuses it. The second run creates
+// the copy anew, and no cleanup removes a copy that young.
+func stageWithRetry(root int, jar []byte, dirName string, now time.Time) (string, error) {
+	p, err := stageIn(root, jar, dirName, now)
+	if errors.Is(err, unix.ENOENT) {
+		p, err = stageIn(root, jar, dirName, now)
+	}
+	return p, err
+}
+
+// afterCopyCheck, when set, runs in stageIn between its check of an existing
+// copy and its use; tests remove the copy there.
+var afterCopyCheck func()
+
 // stageIn copies jar to /tmp/.postman-insights/<dirName>/ in the container
-// whose root is open as root, and returns its path there.
-func stageIn(root int, jar []byte, dirName string) (string, error) {
+// whose root is open as root, and returns its path there. It sets the jar's
+// modification time to now, also when the copy is there already, so other
+// Insights agents leave the copy alone while it is about to be loaded (see
+// removeStaleCopiesIn).
+func stageIn(root int, jar []byte, dirName string, now time.Time) (string, error) {
 	agentDir, err := openAgentDir(root, true)
 	if err != nil {
 		return "", err
@@ -144,6 +163,13 @@ func stageIn(root int, jar []byte, dirName string) (string, error) {
 		if err := writeFileAtomic(dir, agentJarName, jar); err != nil {
 			return "", err
 		}
+	}
+	if afterCopyCheck != nil {
+		afterCopyCheck()
+	}
+	ts := unix.NsecToTimespec(now.UnixNano())
+	if err := unix.UtimesNanoAt(dir, agentJarName, []unix.Timespec{ts, ts}, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return "", fmt.Errorf("set the modification time of %s: %w", agentJarName, err)
 	}
 	return path.Join(agentDirParent, agentDirName, dirName, agentJarName), nil
 }

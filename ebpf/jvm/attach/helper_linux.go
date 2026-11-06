@@ -31,7 +31,7 @@ const staleTriggerAge = 3 * listenerTimeout
 // Run performs req and reports the outcome. It must run as the JVM's user.
 func Run(req Request) Result {
 	if req.Version != RequestVersion1 || req.PID == 0 || req.NSPID == 0 ||
-		(req.Op != OpInspect && req.Op != OpAttach) || (req.Op == OpAttach && req.JarPath == "") {
+		(req.Op != OpInspect && req.Op != OpProbe && req.Op != OpAttach) || (req.Op == OpAttach && req.JarPath == "") {
 		return failed(ReasonBadRequest, false, "unsupported or incomplete request")
 	}
 	procDir := filepath.Join(req.ProcRoot, strconv.FormatUint(uint64(req.PID), 10))
@@ -101,6 +101,9 @@ func Run(req Request) Result {
 	if f := property(props, javatls.FailedProperty); f != "" {
 		return failed(ReasonEarlierFailure, signalled, "%s", f)
 	}
+	if req.Op == OpProbe {
+		return Result{Outcome: NotLoaded, Signalled: signalled}
+	}
 
 	out, err := execute(sock, loadTimeout, "load", "instrument", "false", req.JarPath+"="+req.AgentArgs)
 	if err != nil {
@@ -125,7 +128,9 @@ func Run(req Request) Result {
 	if f := property(props, javatls.FailedProperty); f != "" {
 		return failed(ReasonAgentFailed, signalled, "%s", f)
 	}
-	return failed(ReasonProtocol, signalled, "the agent loaded but did not report its state")
+	// The agent sets neither property only when it could not open its jar,
+	// before changing anything.
+	return failed(ReasonAgentNotStarted, signalled, "the agent loaded but did not start: it could not open its jar")
 }
 
 var (

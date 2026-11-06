@@ -137,7 +137,8 @@ static __always_inline void counter_inc(__u32 idx, __u64 by) {
     }
 }
 
-// Per-PID rate-cap token bucket (sampling layer 2; design doc §6.2).
+// Per-PID rate-cap token bucket (sampling layer 2; "Limits and sampling" in
+// docs/https-capture-design.md).
 // Userspace refills tokens periodically; the BPF probe decrements one token
 // per event and drops the event when the bucket is empty.
 //

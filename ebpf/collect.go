@@ -15,7 +15,7 @@
 //	                                    ↓
 //	                          trace.Collector.Process(...)
 //
-// See docs/https-capture-design.md §5.2 for the architecture diagram.
+// See "Pipeline" in docs/https-capture-design.md for the architecture diagram.
 
 package ebpf
 
@@ -96,7 +96,7 @@ type RunArgs struct {
 	// userspace refiller resets buckets every second.
 	RateCapPerSec uint32
 
-	// DisableThermostat skips the CPU thermostat (§6.2 layer 5). Useful for
+	// DisableThermostat skips the CPU thermostat (sampling layer 5). Useful for
 	// Kind e2e demos where background workloads would otherwise throttle
 	// max_capture_bytes down to 64 and break HTTP parsing.
 	DisableThermostat bool

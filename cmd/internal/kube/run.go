@@ -110,7 +110,7 @@ func init() {
 	)
 	// HTTPS capture flags — require the agent pod to have hostPID:true,
 	// CAP_BPF + CAP_PERFMON, and /host/proc + /sys/fs/bpf volume mounts.
-	// See docs/https-capture-design.md §8.1 for the required pod spec.
+	// See "Permissions" in docs/https-capture-design.md for the required pod spec.
 	runCmd.PersistentFlags().BoolVar(
 		&enableHTTPSCapture,
 		"enable-https-capture",

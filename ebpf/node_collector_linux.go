@@ -262,9 +262,9 @@ func (nc *NodeCollector) releasePID(pid uint32, sub *podSub) (bool, error) {
 }
 
 // allowJavaNetns accepts Java frames from a subscribed pod's netns, when
-// JavaPodSkipReason allows Java for the pod.
+// PodNetnsSkipReason allows capture for the pod.
 func (nc *NodeCollector) allowJavaNetns(netnsInode uint64) bool {
-	if !nc.ldr.JavaEnabled() || JavaPodSkipReason(netnsInode, nc.hostNetns) != "" {
+	if !nc.ldr.JavaEnabled() || PodNetnsSkipReason(netnsInode, nc.hostNetns) != "" {
 		return false
 	}
 	nc.mu.Lock()
@@ -339,13 +339,21 @@ func (nc *NodeCollector) Thermostat() *Thermostat { return nc.therm }
 func (nc *NodeCollector) Manager() *uprobes.Manager { return nc.mgr }
 
 // HostNetns returns the network namespace inode of the node, or 0 when
-// unknown; see JavaPodSkipReason.
+// unknown; see PodNetnsSkipReason.
 func (nc *NodeCollector) HostNetns() uint64 { return nc.hostNetns }
 
 // Libraries returns the TLS libraries nc captures from: those it was
 // configured for, without Java when the Java programs did not load.
 func (nc *NodeCollector) Libraries() Libraries {
 	return Libraries{OpenSSL: nc.openSSL, Java: nc.ldr.JavaEnabled()}
+}
+
+// ProbesFor returns how many processes have libssl probes attached for the
+// subscription whose adapter Subscribe returned, out of the node's.
+func (nc *NodeCollector) ProbesFor(adapter *events.Adapter) int {
+	nc.mu.RLock()
+	defer nc.mu.RUnlock()
+	return nc.pidToSub.keysOf(adapter)
 }
 
 // JVMStats returns what happened to the JVMs of subscribed pods so far, and
@@ -492,7 +500,7 @@ func (nc *NodeCollector) Subscribe(
 	// The JVMs of a pod known by its own netns get control files, also with
 	// Java capture off (to switch earlier agents off). Not when the node's
 	// netns is unknown: the pod's could be it.
-	jvmScope := nc.hostNetns != 0 && JavaPodSkipReason(netnsInode, nc.hostNetns) == ""
+	jvmScope := PodNetnsSkipReason(netnsInode, nc.hostNetns) == ""
 
 	done := make(chan struct{})
 	go func() {

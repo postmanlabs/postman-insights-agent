@@ -16,8 +16,10 @@ const AgentJarPath = "/opt/postman/postman-insights-java-agent.jar"
 const MarkerProperty = "postman.insights.agent.version"
 
 // FailedProperty is the JVM system property the Java agent sets when it failed
-// to start, as "<version>: <reason>". The agent does not retry in the same
-// JVM, so the attacher should not either.
+// to start once it had changed something in the JVM, as "<version>:
+// <reason>". The agent does not retry in the same JVM, so the attacher should
+// not either. A start that could not open the jar sets neither this nor
+// MarkerProperty, and may be retried.
 const FailedProperty = "postman.insights.agent.failed"
 
 // Agent arguments are passed as comma-separated key=value pairs, for example
