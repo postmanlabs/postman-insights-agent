@@ -122,7 +122,7 @@ func setupPairingTestParser(useSyntheticPairing bool, pkts []gopacket.Packet, si
 	p.clock = &fakeClock{testTime}
 	p.useSyntheticPairing = useSyntheticPairing
 
-	rawOut, err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose,
+	err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose,
 		akihttp.NewHTTPRequestParserFactory(pool),
 		akihttp.NewHTTPResponseParserFactory(pool),
 	)
@@ -133,7 +133,7 @@ func setupPairingTestParser(useSyntheticPairing bool, pkts []gopacket.Packet, si
 	out := make(chan akinet.ParsedNetworkTraffic)
 	go func() {
 		defer close(out)
-		for pkt := range rawOut {
+		for pkt := range p.ParsedTraffic() {
 			switch pkt.Content.(type) {
 			case akinet.HTTPRequest, akinet.HTTPResponse:
 				out <- pkt

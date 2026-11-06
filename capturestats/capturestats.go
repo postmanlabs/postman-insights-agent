@@ -181,6 +181,11 @@ type Stats struct {
 	// here does not show up as a postfilter-vs-prefilter gap; it can only be
 	// seen here.
 	WitnessParseFailed uint64
+
+	// ParsedNetworkContent was dropped because the channel was full.
+	// The channel is full if the collectors are not able to keep up
+	// processing the network content.
+	PNTDropped uint64
 }
 
 // New returns a zeroed Stats for one apidump session.
@@ -588,6 +593,13 @@ func (s *Stats) RecordNegativeLatency(latencyMs float32) {
 	}
 }
 
+func (s *Stats) IncrPNTDropped() {
+	if s == nil {
+		return
+	}
+	atomic.AddUint64(&s.PNTDropped, 1)
+}
+
 // Snapshot is a plain-value copy of Stats for safe reading/formatting.
 // It loads each counter atomically to avoid data races with concurrent increments.
 type Snapshot struct {
@@ -631,6 +643,8 @@ type Snapshot struct {
 	NegativeLatencyUnder1ms, NegativeLatencyUnder1s, NegativeLatencyOver1s uint64
 
 	WitnessParseFailed uint64
+
+	PNTDropped uint64
 }
 
 // Snapshot reads every counter with atomic.LoadUint64 and returns the result
@@ -708,5 +722,7 @@ func (s *Stats) Snapshot() Snapshot {
 		NegativeLatencyOver1s:   atomic.LoadUint64(&s.NegativeLatencyOver1s),
 
 		WitnessParseFailed: atomic.LoadUint64(&s.WitnessParseFailed),
+
+		PNTDropped: atomic.LoadUint64(&s.PNTDropped),
 	}
 }

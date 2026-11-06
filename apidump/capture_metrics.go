@@ -95,6 +95,9 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 	// a peer_never_observed.
 	a.reportTelemetryCount(source+"_unmatched_response_stream_pruned", counterDelta(currentStats.UnmatchedResponseStreamPruned, previousStats.UnmatchedResponseStreamPruned))
 	a.reportTelemetryCount(source+"_unmatched_response_stream_capacity_evicted", counterDelta(currentStats.UnmatchedResponseStreamCapacityEvicted, previousStats.UnmatchedResponseStreamCapacityEvicted))
+
+	// Number of parsed network traffic events dropped due to slow collectors
+	a.reportTelemetryCount(source+"_pnt_dropped", counterDelta(currentStats.PNTDropped, previousStats.PNTDropped))
 }
 
 func httpRequests(counts client_telemetry.PacketCounts) uint64 {
