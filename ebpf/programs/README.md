@@ -107,6 +107,11 @@ Only these BPF sources carry an `SPDX-License-Identifier` line, because only
 they need to say which licence applies; files under the root `LICENSE` carry
 none. `build-scripts/check-license-headers.sh` checks these rules in CI.
 
+The agent binary embeds the compiled programs, so the builds in this
+repository ship these licence texts, with the root `LICENSE`, next to it:
+`/usr/share/licenses/postman-insights-agent/` in the `Dockerfile.ebpf` image,
+and `bin/licenses/` from `make docker-build-ebpf`.
+
 ## Verifier hints (debugging)
 
 When the BPF verifier rejects a program at load time, run:
