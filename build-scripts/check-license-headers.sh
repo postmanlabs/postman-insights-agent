@@ -16,6 +16,10 @@ cd "$(git rev-parse --show-toplevel)"
 # opener (//, #, /* or *), so mentions in strings and prose do not count.
 spdx_line='^[[:space:]]*(//|#|/\*|\*)[[:space:]]*SPDX-License-Identifier:'
 
+# The licence a BPF program declares to the kernel, e.g.
+#   char LICENSE[] SEC("license") = "GPL";
+license_decl='^[[:space:]]*char[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\[\][[:space:]]*SEC\("license"\)[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*;'
+
 # Tracked files, and new ones not yet added, so the check also works before
 # a commit.
 files=$(git ls-files --cached --others --exclude-standard | sort -u)
@@ -37,9 +41,11 @@ while IFS= read -r f; do
     bad=1
   fi
   if [[ "$f" == ebpf/programs/*.bpf.c ]]; then
-    declared=$(grep -oE 'SEC\("license"\) = "[^"]*"' "$f" | grep -oE '"[^"]*"$' || true)
+    # Only a declaration at the start of a line counts, so a commented-out
+    # one (// or *) does not.
+    declared=$(grep -E "$license_decl" "$f" | grep -oE '"[^"]*"[[:space:]]*;' | grep -oE '"[^"]*"' || true)
     if [[ "$declared" != '"GPL"' ]]; then
-      echo "$f: declares licence ${declared:-none} to the kernel, want \"GPL\""
+      echo "$f: declares licence ${declared:-none} to the kernel, want one \"GPL\" declaration" | paste -sd ',' -
       bad=1
     fi
   fi
