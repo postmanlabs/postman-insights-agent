@@ -69,5 +69,5 @@ FROM scratch AS bin
 
 COPY --from=build /out/postman-insights-agent /postman-insights-agent
 # The binary embeds the BPF programs, so export their licence texts with the
-# root LICENSE next to it (see ebpf/programs/README.md).
-COPY LICENSE ebpf/programs/LICENSE.BSD-2-Clause ebpf/programs/LICENSE.GPL-2.0-only /licenses/
+# root LICENSE and NOTICE next to it (see ebpf/programs/README.md).
+COPY LICENSE NOTICE ebpf/programs/LICENSE.BSD-2-Clause ebpf/programs/LICENSE.GPL-2.0-only /licenses/

@@ -96,10 +96,11 @@ a program the kernel considers GPL-compatible, which a program declares with
   kernel. The licence texts are `LICENSE.GPL-2.0-only` and
   `LICENSE.BSD-2-Clause` in this directory. A program that includes them
   under BSD-2-Clause, as `libssl.bpf.c` does, keeps its own licence.
-- `libssl.bpf.c` is Apache-2.0 and declares `"GPL"`: it follows the design of
+- `libssl.bpf.c` is Apache-2.0 and declares `"GPL"`: it is derived from
   OBI's Apache-2.0 `bpf/generictracer/libssl.c` (OpenTelemetry eBPF
-  Instrumentation, which declares `"Dual MIT/GPL"` for its programs) and
-  reuses some of its names, so it keeps OBI's licence.
+  Instrumentation, which declares `"Dual MIT/GPL"` for its programs), so it
+  keeps OBI's licence, credits OBI in its header and is listed in the root
+  `NOTICE`.
 - The rest of the repository, including the Go code that loads these
   programs, is Apache-2.0 (the root `LICENSE`).
 
@@ -108,7 +109,7 @@ they need to say which licence applies; files under the root `LICENSE` carry
 none. `build-scripts/check-license-headers.sh` checks these rules in CI.
 
 The agent binary embeds the compiled programs, so the builds in this
-repository ship these licence texts, with the root `LICENSE`, next to it:
+repository ship these licence texts, with the root `LICENSE` and `NOTICE`, next to it:
 `/usr/share/licenses/postman-insights-agent/` in the `Dockerfile.ebpf` image,
 and `bin/licenses/` from `make docker-build-ebpf`.
 
