@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 // node_collector_test.go tests the NodeCollector type across both build
 // configurations:
 //

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Definitions shared by the BPF objects (libssl.bpf.c, java_tls.bpf.c).
 //
 // The ring buffer below exists once at runtime. The libssl object creates it;

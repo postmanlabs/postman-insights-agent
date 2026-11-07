@@ -84,13 +84,27 @@ amd64 and arm64 on separate machines). This produces `libssl_<arch>_bpfel.go`
 `go:embed`. These generated files are git-ignored and regenerated in every
 build environment.
 
-## Why GPL license tag
+## Licensing of the BPF programs
 
-`bpf_probe_read_user()` and several other BPF helpers require the loaded
-program to be GPL-licensed (this is a Linux kernel ABI requirement, not a
-project license decision). The `char LICENSE[] SEC("license") = "GPL"` in
-each `.bpf.c` only affects the BPF object's runtime license metadata. The
-source files themselves are Apache-2.0 (matching this repo and OBI upstream).
+Like the rest of the repository, the BPF programs and headers here are
+Apache-2.0, under the root `LICENSE`.
+
+`bpf_probe_read_user()`, `bpf_get_current_task()` and the kernel reads behind
+`BPF_CORE_READ` can be called only from a program the kernel considers
+GPL-compatible, which a program declares with `char LICENSE[] SEC("license")`
+(a Linux kernel ABI requirement). Both programs use them, so both declare
+`"GPL"`. Other Apache-2.0 eBPF projects, such as OpenTelemetry eBPF
+Instrumentation (OBI) and the Datadog Agent, also declare a GPL licence
+string for their BPF code.
+
+`libssl.bpf.c` is derived from OBI's Apache-2.0 `bpf/generictracer/libssl.c`,
+so it credits OBI in its header and is listed in the root `NOTICE`.
+
+No file carries an `SPDX-License-Identifier` line.
+`build-scripts/check-license-headers.sh` checks both rules in CI.
+The `Dockerfile.ebpf` image ships `LICENSE` and `NOTICE` in
+`/usr/share/licenses/postman-insights-agent/`, and `make docker-build-ebpf`
+exports them to `bin/licenses/`.
 
 ## Verifier hints (debugging)
 

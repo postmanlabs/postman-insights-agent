@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Combined ASP.NET Core test server: REST HTTPS (:8443) + gRPC-TLS (:8446).
 // Capture path: postman-insights-agent DaemonSet → libssl uprobes (OpenSSL on Linux).
 

@@ -71,6 +71,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /out/postman-insights-agent /usr/local/bin/postman-insights-agent
 COPY --from=java-agent /out/opt-postman/ /opt/postman/
 COPY --from=builder /out/opt-postman/ /opt/postman/
+# Licence and attribution notices for the agent (Apache License 2.0 section 4).
+COPY LICENSE NOTICE /usr/share/licenses/postman-insights-agent/
 # Requires privileged + CAP_BPF at runtime.
 # See modules/insights_agent_mns/main.tf for the full capability set.
 USER root
