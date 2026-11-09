@@ -16,11 +16,11 @@ func GetPcapHandle(
 	snaplen int32,
 	promisc bool,
 	timeout time.Duration,
+	bufferSize optionals.Optional[int32],
 	targetNetworkNamespaceOpt optionals.Optional[string],
 ) (*pcap.Handle, error) {
 	var (
 		handle *pcap.Handle
-		err    error
 	)
 
 	if targetNetworkNamespace, exists := targetNetworkNamespaceOpt.Get(); exists {
@@ -35,7 +35,7 @@ func GetPcapHandle(
 		// Open the pcap handle in the target network namespace.
 		err = targetNs.Do(func(host ns.NetNS) error {
 			var err error
-			handle, err = pcap.OpenLive(interfaceName, snaplen, promisc, timeout)
+			handle, err = getPcapHandle(interfaceName, snaplen, promisc, timeout, bufferSize)
 			if err != nil {
 				return errors.Wrapf(err, "failed to open pcap to %s/%s", targetNetworkNamespace, interfaceName)
 			}
@@ -45,12 +45,59 @@ func GetPcapHandle(
 			return nil, err
 		}
 	} else {
-		// Open the pcap handle in the agent's network namespace.
-		handle, err = pcap.OpenLive(interfaceName, snaplen, promisc, timeout)
+		return getPcapHandle(interfaceName, snaplen, promisc, timeout, bufferSize)
+	}
+
+	return handle, nil
+}
+
+func getPcapHandle(
+	interfaceName string,
+	snaplen int32,
+	promisc bool,
+	timeout time.Duration,
+	bufferSize optionals.Optional[int32],
+) (*pcap.Handle, error) {
+	inactive, err := pcap.NewInactiveHandle(interfaceName)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to open inactive pcap to %s", interfaceName)
+	}
+
+	cleanup := true
+	defer func() {
+		if cleanup {
+			inactive.CleanUp()
+		}
+	}()
+
+	err = inactive.SetSnapLen(int(snaplen))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to set snaplen to %d", snaplen)
+	}
+
+	err = inactive.SetPromisc(promisc)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to set promisc to %v", promisc)
+	}
+
+	err = inactive.SetTimeout(timeout)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to set timeout to %v", timeout)
+	}
+
+	if size, ok := bufferSize.Get(); ok {
+		err = inactive.SetBufferSize(int(size))
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to open pcap to %s", interfaceName)
+			return nil, errors.Wrapf(err, "failed to set buffer size to %d", size)
 		}
 	}
+
+	handle, err := inactive.Activate()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to activate pcap handle")
+	}
+
+	cleanup = false
 
 	return handle, nil
 }

@@ -15,6 +15,7 @@ func GetPcapHandle(
 	snaplen int32,
 	promisc bool,
 	timeout time.Duration,
+	_ optionals.Optional[int32],
 	_ optionals.Optional[string],
 ) (*pcap.Handle, error) {
 	handle, err := pcap.OpenLive(interfaceName, snaplen, promisc, timeout)
