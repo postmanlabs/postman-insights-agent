@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -339,6 +340,63 @@ func TestEnqueueReleasesBuffersOfDroppedEvent(t *testing.T) {
 	}
 	if !poolHasRoom(pool, poolSize) {
 		t.Fatal("dropped event did not return its buffers to the pool")
+	}
+}
+
+// Every drop lands in exactly one kind, so the kinds always sum to the total.
+func TestEnqueueCountsDroppedEventsByKind(t *testing.T) {
+	stats := capturestats.New()
+	p := &NetworkTrafficParser{
+		pntCh: make(chan akinet.ParsedNetworkTraffic), // Nobody reads: always full.
+		stats: stats,
+	}
+
+	// Zero-value HTTP messages have no buffer to release, so build real ones.
+	pool, err := buffer_pool.MakeBufferPool(64, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newReq := func() akinet.HTTPRequest {
+		return akinet.FromStdRequest(uuid.New(), 0,
+			&http.Request{Method: "GET", URL: &url.URL{Path: "/"}, Header: http.Header{}},
+			pool.NewBuffer())
+	}
+	resp, _, _ := newPooledResponse(t)
+
+	for _, c := range []akinet.ParsedNetworkContent{
+		newReq(),
+		newReq(),
+		resp,
+		akinet.TCPPacketMetadata{},
+		akinet.TCPPacketMetadata{},
+		akinet.TCPPacketMetadata{},
+		akinet.TCPConnectionMetadata{},
+		akinet.DroppedBytes(10),
+		akinet.TLSClientHello{},
+		akinet.HTTP2ConnectionPreface{},
+	} {
+		p.Enqueue(dummyPNT(c))
+	}
+
+	snap := stats.Snapshot()
+	want := map[capturestats.PNTKind]uint64{
+		capturestats.PNTKindHTTPRequest:           2,
+		capturestats.PNTKindHTTPResponse:          1,
+		capturestats.PNTKindTCPPacketMetadata:     3,
+		capturestats.PNTKindTCPConnectionMetadata: 1,
+		capturestats.PNTKindUnparsedBytes:         1,
+		capturestats.PNTKindTLSHandshake:          1,
+		capturestats.PNTKindOther:                 1,
+	}
+	var sum uint64
+	for k := capturestats.PNTKind(0); k < capturestats.PNTKindCount; k++ {
+		if got := snap.PNTDroppedByKind[k]; got != want[k] {
+			t.Errorf("kind %s = %d, want %d", k.Name(), got, want[k])
+		}
+		sum += snap.PNTDroppedByKind[k]
+	}
+	if sum != snap.PNTDropped || snap.PNTDropped != 10 {
+		t.Fatalf("kinds sum to %d, PNTDropped = %d, want both 10", sum, snap.PNTDropped)
 	}
 }
 

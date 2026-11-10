@@ -358,8 +358,34 @@ func (p *NetworkTrafficParser) Enqueue(t akinet.ParsedNetworkTraffic) {
 	select {
 	case p.pntCh <- t:
 	default:
+		kind := pntKindOf(t.Content)
 		t.Content.ReleaseBuffers()
-		p.stats.IncrPNTDropped()
+		p.stats.IncrPNTDropped(kind)
+	}
+}
+
+// pntKindOf classifies the content of a parsed network item so a dropped item
+// can be counted by what it was. A dropped HTTP request or response is lost
+// traffic; a dropped TCP packet metadata item is not, and the two are very
+// different in volume, so the total alone is not interpretable.
+func pntKindOf(c akinet.ParsedNetworkContent) capturestats.PNTKind {
+	switch c.(type) {
+	case akinet.HTTPRequest, *akinet.HTTPRequest:
+		return capturestats.PNTKindHTTPRequest
+	case akinet.HTTPResponse, *akinet.HTTPResponse:
+		return capturestats.PNTKindHTTPResponse
+	case akinet.TCPPacketMetadata, *akinet.TCPPacketMetadata:
+		return capturestats.PNTKindTCPPacketMetadata
+	case akinet.TCPConnectionMetadata, *akinet.TCPConnectionMetadata:
+		return capturestats.PNTKindTCPConnectionMetadata
+	case akinet.DroppedBytes, *akinet.DroppedBytes:
+		return capturestats.PNTKindUnparsedBytes
+	case akinet.TLSClientHello, *akinet.TLSClientHello,
+		akinet.TLSServerHello, *akinet.TLSServerHello,
+		akinet.TLSHandshakeMetadata, *akinet.TLSHandshakeMetadata:
+		return capturestats.PNTKindTLSHandshake
+	default:
+		return capturestats.PNTKindOther
 	}
 }
 

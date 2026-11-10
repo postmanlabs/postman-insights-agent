@@ -186,6 +186,49 @@ type Stats struct {
 	// The channel is full if the collectors are not able to keep up
 	// processing the network content.
 	PNTDropped uint64
+
+	// PNTDroppedByKind splits PNTDropped by what the dropped item was. Every
+	// drop increments exactly one kind, so the kinds sum to PNTDropped.
+	// The parent alone cannot say whether a drop cost a request, a response
+	// or only per-packet metadata; this can.
+	PNTDroppedByKind [PNTKindCount]uint64
+}
+
+// PNTKind classifies a parsed network item for PNTDropped accounting. The set
+// is closed on purpose: the names become telemetry event suffixes, so adding a
+// kind is a dashboard-visible change.
+type PNTKind int
+
+const (
+	PNTKindHTTPRequest PNTKind = iota
+	PNTKindHTTPResponse
+	PNTKindTCPPacketMetadata
+	PNTKindTCPConnectionMetadata
+	PNTKindUnparsedBytes
+	PNTKindTLSHandshake
+	PNTKindOther
+	// PNTKindCount must stay last.
+	PNTKindCount
+)
+
+// Name is the suffix of the pnt_dropped_<name> telemetry event.
+func (k PNTKind) Name() string {
+	switch k {
+	case PNTKindHTTPRequest:
+		return "http_request"
+	case PNTKindHTTPResponse:
+		return "http_response"
+	case PNTKindTCPPacketMetadata:
+		return "tcp_packet_metadata"
+	case PNTKindTCPConnectionMetadata:
+		return "tcp_connection_metadata"
+	case PNTKindUnparsedBytes:
+		return "unparsed_bytes"
+	case PNTKindTLSHandshake:
+		return "tls_handshake"
+	default:
+		return "other"
+	}
 }
 
 // New returns a zeroed Stats for one apidump session.
@@ -593,11 +636,16 @@ func (s *Stats) RecordNegativeLatency(latencyMs float32) {
 	}
 }
 
-func (s *Stats) IncrPNTDropped() {
+// IncrPNTDropped counts one dropped item, in the total and in its kind.
+func (s *Stats) IncrPNTDropped(kind PNTKind) {
 	if s == nil {
 		return
 	}
+	if kind < 0 || kind >= PNTKindCount {
+		kind = PNTKindOther
+	}
 	atomic.AddUint64(&s.PNTDropped, 1)
+	atomic.AddUint64(&s.PNTDroppedByKind[kind], 1)
 }
 
 // Snapshot is a plain-value copy of Stats for safe reading/formatting.
@@ -644,7 +692,8 @@ type Snapshot struct {
 
 	WitnessParseFailed uint64
 
-	PNTDropped uint64
+	PNTDropped       uint64
+	PNTDroppedByKind [PNTKindCount]uint64
 }
 
 // Snapshot reads every counter with atomic.LoadUint64 and returns the result
@@ -653,7 +702,7 @@ func (s *Stats) Snapshot() Snapshot {
 	if s == nil {
 		return Snapshot{}
 	}
-	return Snapshot{
+	snap := Snapshot{
 		PcapPacketsReceived:  atomic.LoadUint64(&s.PcapPacketsReceived),
 		PcapPacketsDropped:   atomic.LoadUint64(&s.PcapPacketsDropped),
 		PcapPacketsIfDropped: atomic.LoadUint64(&s.PcapPacketsIfDropped),
@@ -725,4 +774,8 @@ func (s *Stats) Snapshot() Snapshot {
 
 		PNTDropped: atomic.LoadUint64(&s.PNTDropped),
 	}
+	for k := range snap.PNTDroppedByKind {
+		snap.PNTDroppedByKind[k] = atomic.LoadUint64(&s.PNTDroppedByKind[k])
+	}
+	return snap
 }

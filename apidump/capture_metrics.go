@@ -98,6 +98,11 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 
 	// Number of parsed network traffic events dropped due to slow collectors
 	a.reportTelemetryCount(source+"_pnt_dropped", counterDelta(currentStats.PNTDropped, previousStats.PNTDropped))
+	// The same drops by what the item was; the kinds sum to the total above.
+	// Zero deltas are not sent, so only kinds that actually dropped appear.
+	for k := capturestats.PNTKind(0); k < capturestats.PNTKindCount; k++ {
+		a.reportTelemetryCount(source+"_pnt_dropped_"+k.Name(), counterDelta(currentStats.PNTDroppedByKind[k], previousStats.PNTDroppedByKind[k]))
+	}
 }
 
 func httpRequests(counts client_telemetry.PacketCounts) uint64 {
