@@ -47,6 +47,10 @@ var MaxBufferedPagesTotal int = 100_000
 // and adjust that way.
 var MaxBufferedPagesPerConnection int = 4_000
 
+// Max number of parsed network traffic messages allowed to be enqueued
+// to the collector
+const MaxPNTEnqueued = 100
+
 // Internal implementation of reassembly.AssemblerContext that include TCP
 // seq and ack numbers.
 type assemblerCtxWithSeq struct {
@@ -62,32 +66,38 @@ func (ctx *assemblerCtxWithSeq) GetCaptureInfo() gopacket.CaptureInfo {
 type tcpStreamFactory struct {
 	clock                  clockWrapper
 	fs                     akinet.TCPParserFactorySelector
-	outChan                chan<- akinet.ParsedNetworkTraffic
+	sink                   ParsedNetworkTrafficSink
 	stats                  *capturestats.Stats
 	useSyntheticPairing    bool
 	directionHint          *DirectionHint
 	telemetryCountReporter func(string, uint64)
+	interfaceName          string
 }
 
-func newTCPStreamFactory(clock clockWrapper, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryCountReporter func(string, uint64)) *tcpStreamFactory {
+func newTCPStreamFactory(clock clockWrapper, sink ParsedNetworkTrafficSink, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryCountReporter func(string, uint64), iface string) *tcpStreamFactory {
 	return &tcpStreamFactory{
 		clock:                  clock,
 		fs:                     fs,
-		outChan:                outChan,
+		sink:                   sink,
 		stats:                  stats,
 		useSyntheticPairing:    useSyntheticPairing,
 		directionHint:          directionHint,
 		telemetryCountReporter: telemetryCountReporter,
+		interfaceName:          iface,
 	}
 }
 
 func (fact *tcpStreamFactory) New(netFlow, tcpFlow gopacket.Flow, _ *layers.TCP, _ reassembly.AssemblerContext) reassembly.Stream {
-	return newTCPStream(fact.clock, netFlow, fact.outChan, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint, fact.telemetryCountReporter)
+	return newTCPStream(fact.clock, netFlow, fact.sink, fact.fs, fact.stats, fact.useSyntheticPairing, fact.directionHint, fact.telemetryCountReporter, fact.interfaceName)
 }
 
 // NetworkTrafficObserver is the callback function type for observing
 // packets as they come in to a NetworkTrafficParser.
 type NetworkTrafficObserver func(gopacket.Packet)
+
+type ParsedNetworkTrafficSink interface {
+	Enqueue(t akinet.ParsedNetworkTraffic)
+}
 
 type NetworkTrafficParser struct {
 	serviceID              akid.ServiceID
@@ -98,6 +108,7 @@ type NetworkTrafficParser struct {
 	telemetryCountReporter func(string, uint64)
 	bufferShare            float32
 	telemetry              telemetry.Tracker
+	pntCh                  chan akinet.ParsedNetworkTraffic
 
 	// Capture-diagnostics counters for this parser's session. One
 	// NetworkTrafficParser is created per apidump.Run() call, so stats being a
@@ -125,6 +136,7 @@ func NewNetworkTrafficParser(serviceID akid.ServiceID, traceTags map[tags.Key]st
 		bufferShare: bufferShare,
 		telemetry:   telemetry,
 		stats:       stats,
+		pntCh:       make(chan akinet.ParsedNetworkTraffic, MaxPNTEnqueued),
 	}
 }
 
@@ -151,16 +163,15 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 	targetNetworkNamespaceOpt optionals.Optional[string],
 	signalClose <-chan struct{},
 	fs ...akinet.TCPParserFactory,
-) (<-chan akinet.ParsedNetworkTraffic, error) {
+) error {
 	// Read in packets, pass to assembler
 	packets, err := p.pcap.capturePackets(signalClose, interfaceName, bpfFilter, targetNetworkNamespaceOpt, p.stats, p.telemetryCountReporter)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed begin capturing packets from %s", interfaceName)
+		return errors.Wrapf(err, "failed begin capturing packets from %s", interfaceName)
 	}
 
 	// Set up assembly
-	out := make(chan akinet.ParsedNetworkTraffic, 100)
-	streamFactory := newTCPStreamFactory(p.clock, out, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint, p.telemetryCountReporter)
+	streamFactory := newTCPStreamFactory(p.clock, p, akinet.TCPParserFactorySelector(fs), p.stats, p.useSyntheticPairing, p.directionHint, p.telemetryCountReporter, interfaceName)
 	streamPool := reassembly.NewStreamPool(streamFactory)
 	assembler := reassembly.NewAssembler(streamPool)
 
@@ -178,7 +189,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 		defer ticker.Stop()
 
 		// Signal caller that we're done on exit
-		defer close(out)
+		defer close(p.pntCh)
 
 		startTime := time.Now()
 		bufferTimeSum := 0 * time.Second
@@ -208,7 +219,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 				bufferTimeSum += now.Sub(packet.Metadata().Timestamp)
 
 				p.observer(packet)
-				p.packetToParsedNetworkTraffic(out, assembler, packet)
+				p.packetToParsedNetworkTraffic(assembler, packet, interfaceName)
 			case <-ticker.C:
 				// The assembler stops reassembly for streams older than streamFlushTimeout.
 				// This means the corresponding tcpFlow readers will return EOF.
@@ -258,7 +269,7 @@ func (p *NetworkTrafficParser) ParseFromInterface(
 		assembler.FlushAll()
 	}()
 
-	return out, nil
+	return nil
 }
 
 func (p *NetworkTrafficParser) reportTelemetryCount(event string, count uint64) {
@@ -267,7 +278,7 @@ func (p *NetworkTrafficParser) reportTelemetryCount(event string, count uint64) 
 	}
 }
 
-func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.ParsedNetworkTraffic, assembler *reassembly.Assembler, packet gopacket.Packet) {
+func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(assembler *reassembly.Assembler, packet gopacket.Packet, intf string) {
 	defer func() {
 		// If we panic during packet handling, do not crash the program. Instead log the error and backtrace.
 		// We can perform selective error-handling based on the type of the object passed to panic(),
@@ -308,12 +319,13 @@ func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.Pa
 	}
 
 	if packet.TransportLayer() == nil {
-		out <- akinet.ParsedNetworkTraffic{
+		p.Enqueue(akinet.ParsedNetworkTraffic{
 			SrcIP:           srcIP,
 			DstIP:           dstIP,
 			Content:         akinet.DroppedBytes(len(packet.NetworkLayer().LayerPayload())),
 			ObservationTime: observationTime,
-		}
+			Interface:       intf,
+		})
 		return
 	}
 
@@ -322,22 +334,37 @@ func (p *NetworkTrafficParser) packetToParsedNetworkTraffic(out chan<- akinet.Pa
 		// Let TCP reassembler do extra magic to parse out higher layer protocols.
 		assembler.AssembleWithContext(packet.NetworkLayer().NetworkFlow(), t, contextFromTCPPacket(packet, t))
 	case *layers.UDP:
-		out <- akinet.ParsedNetworkTraffic{
+		p.Enqueue(akinet.ParsedNetworkTraffic{
 			SrcIP:           srcIP,
 			SrcPort:         int(t.SrcPort),
 			DstIP:           dstIP,
 			DstPort:         int(t.DstPort),
 			Content:         akinet.DroppedBytes(len(t.LayerPayload())),
 			ObservationTime: observationTime,
-		}
+			Interface:       intf,
+		})
 	default:
-		out <- akinet.ParsedNetworkTraffic{
+		p.Enqueue(akinet.ParsedNetworkTraffic{
 			SrcIP:           srcIP,
 			DstIP:           dstIP,
 			Content:         akinet.DroppedBytes(len(t.LayerPayload())),
 			ObservationTime: observationTime,
-		}
+			Interface:       intf,
+		})
 	}
+}
+
+func (p *NetworkTrafficParser) Enqueue(t akinet.ParsedNetworkTraffic) {
+	select {
+	case p.pntCh <- t:
+	default:
+		t.Content.ReleaseBuffers()
+		p.stats.IncrPNTDropped()
+	}
+}
+
+func (p *NetworkTrafficParser) ParsedTraffic() <-chan akinet.ParsedNetworkTraffic {
+	return p.pntCh
 }
 
 func contextFromTCPPacket(p gopacket.Packet, t *layers.TCP) *assemblerCtxWithSeq {

@@ -77,34 +77,29 @@ func Collect(
 	}
 	parser.InstallTelemetryCountReporter(telemetryCountReporter)
 
-	parsedChan, err := parser.ParseFromInterface(intf, bpfFilter, targetNetworkNamespaceOpt, stop, facts...)
+	err := parser.ParseFromInterface(intf, bpfFilter, targetNetworkNamespaceOpt, stop, facts...)
 	if err != nil {
 		return errors.Wrap(err, "couldn't start parsing from interface")
 	}
 
+	return forwardToCollector(parser, proc, serviceID, podName)
+}
+
+func forwardToCollector(parser *NetworkTrafficParser, collector trace.Collector, serviceID akid.ServiceID, podName string) error {
 	startTime := time.Now()
 	bufferTimeSum := 0 * time.Second
 	intervalLength := 1 * time.Minute
-	for t := range parsedChan {
+	for t := range parser.ParsedTraffic() {
 		now := time.Now()
 		if now.Sub(startTime) >= intervalLength {
 			bufferLength := float64(bufferTimeSum.Nanoseconds()) / float64(intervalLength.Nanoseconds())
-			podName, ok := traceTags[tags.XAkitaKubernetesPod]
-			if !ok {
-				podName = "unknown"
-			}
 			printer.Debugf("Approximate parsed-network-traffic buffer length: %v, for svc: %v and pod: %v\n", bufferLength, serviceID, podName)
 			bufferTimeSum = 0 * time.Second
 			startTime = now
 		}
 		bufferTimeSum += now.Sub(t.ObservationTime)
 
-		t.Interface = intf
-		switch t.Content.(type) {
-		case akinet.HTTPRequest, akinet.HTTPResponse:
-			t.TransportSecurity = akinet.TransportSecurityPlaintext
-		}
-		err := proc.Process(t)
+		err := collector.Process(t)
 		t.Content.ReleaseBuffers()
 		if err != nil {
 			return err

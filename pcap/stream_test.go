@@ -3,6 +3,7 @@ package pcap
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -77,6 +78,20 @@ func (sg fakeScatterGather) Stats() reassembly.TCPAssemblyStats {
 	panic("unimplemented")
 }
 
+// chanSink is a ParsedNetworkTrafficSink that blocks on a channel, so tests
+// see every PNT instead of having it dropped when the buffer is full.
+type chanSink chan akinet.ParsedNetworkTraffic
+
+func (c chanSink) Enqueue(t akinet.ParsedNetworkTraffic) {
+	c <- t
+}
+
+func newTestTCPFlow(out chan akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) *tcpFlow {
+	s := newTCPStream(&fakeClock{testTime}, dummyNetFlow, chanSink(out), fs, stats, false, nil, telemetryCountReporter, "")
+	s.bidiID = dummyBidiID
+	return newTCPFlow(s, dummyNetFlow, dummyTCPPacketFlow, nil)
+}
+
 type tcpFlowTestCase struct {
 	name     string
 	inputs   []string
@@ -91,7 +106,7 @@ func runTCPFlowTestCase(c tcpFlowTestCase) error {
 		princeParserFactory{},
 		pineappleParserFactory{},
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, capturestats.New(), nil, nil, nil)
+	f := newTestTCPFlow(out, fs, capturestats.New(), nil)
 
 	for i, input := range c.inputs {
 		sg.data = memview.New([]byte(input))
@@ -229,7 +244,7 @@ func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
 		akihttp.NewHTTPResponseParserFactory(pool),
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string, _ uint64) {
+	f := newTestTCPFlow(out, fs, stats, func(event string, _ uint64) {
 		reported = event
 	})
 	sg := &fakeScatterGather{
@@ -260,7 +275,7 @@ func TestTCPFlowReportsDiscardedRequest(t *testing.T) {
 	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
 		akihttp.NewHTTPRequestParserFactory(pool),
 	})
-	f := newTCPFlow(&fakeClock{testTime}, dummyBidiID, dummyNetFlow, dummyTCPPacketFlow, out, fs, stats, nil, nil, func(event string, _ uint64) {
+	f := newTestTCPFlow(out, fs, stats, func(event string, _ uint64) {
 		reported = event
 	})
 	sg := &fakeScatterGather{
@@ -276,5 +291,74 @@ func TestTCPFlowReportsDiscardedRequest(t *testing.T) {
 	}
 	if reported != "pcap_parser_discarded_request" {
 		t.Fatalf("expected parser discard telemetry, got %q", reported)
+	}
+}
+
+// newPooledResponse returns an HTTP response whose body holds every chunk of a
+// fresh two-chunk pool, along with the pool and its full size in bytes.
+func newPooledResponse(t *testing.T) (akinet.HTTPResponse, buffer_pool.BufferPool, int) {
+	t.Helper()
+
+	const chunkSize = 16
+	const poolSize = 2 * chunkSize
+	pool, err := buffer_pool.MakeBufferPool(poolSize, chunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := pool.NewBuffer()
+	if _, err := body.Write(make([]byte, poolSize)); err != nil {
+		t.Fatalf("filling body: %v", err)
+	}
+	resp := akinet.FromStdResponse(uuid.New(), 0, &http.Response{StatusCode: 200, Header: http.Header{}}, body)
+	return resp, pool, poolSize
+}
+
+// poolHasRoom reports whether n bytes can still be taken from pool.
+func poolHasRoom(pool buffer_pool.BufferPool, n int) bool {
+	probe := pool.NewBuffer()
+	defer probe.Release()
+	_, err := probe.Write(make([]byte, n))
+	return err == nil
+}
+
+// An event dropped because the channel is full must give its body buffers back
+// to the pool, or the pool runs dry and later bodies come out empty.
+func TestEnqueueReleasesBuffersOfDroppedEvent(t *testing.T) {
+	resp, pool, poolSize := newPooledResponse(t)
+	stats := capturestats.New()
+	p := &NetworkTrafficParser{
+		pntCh: make(chan akinet.ParsedNetworkTraffic), // Nobody reads: always full.
+		stats: stats,
+	}
+
+	p.Enqueue(dummyPNT(resp))
+
+	if got := stats.Snapshot().PNTDropped; got != 1 {
+		t.Fatalf("PNTDropped = %d, want 1", got)
+	}
+	if !poolHasRoom(pool, poolSize) {
+		t.Fatal("dropped event did not return its buffers to the pool")
+	}
+}
+
+// A delivered event keeps its buffers: the consumer releases them after use.
+func TestEnqueueKeepsBuffersOfDeliveredEvent(t *testing.T) {
+	resp, pool, _ := newPooledResponse(t)
+	stats := capturestats.New()
+	out := make(chan akinet.ParsedNetworkTraffic, 1)
+	p := &NetworkTrafficParser{pntCh: out, stats: stats}
+
+	p.Enqueue(dummyPNT(resp))
+
+	if got := stats.Snapshot().PNTDropped; got != 0 {
+		t.Fatalf("PNTDropped = %d, want 0", got)
+	}
+	if poolHasRoom(pool, 1) {
+		t.Fatal("delivered event's buffers were released before the consumer saw it")
+	}
+	delivered := <-out
+	if delivered.Content.(akinet.HTTPResponse).Body.Len() == 0 {
+		t.Fatal("delivered event lost its body")
 	}
 }

@@ -22,31 +22,10 @@ import (
 // Writes come from TCP assembler via tcpStream, while reads come from users
 // of this struct.
 type tcpFlow struct {
-	clock clockWrapper // constant
+	stream *tcpStream
 
 	netFlow gopacket.Flow // constant
 	tcpFlow gopacket.Flow // constant
-
-	// Shared with tcpFlow in the opposite direction of this flow.
-	bidiID akinet.TCPBidiID // constant
-
-	outChan chan<- akinet.ParsedNetworkTraffic
-
-	factorySelector akinet.TCPParserFactorySelector
-
-	// Capture-diagnostics counters for the apidump session this flow belongs
-	// to. Shared across every flow in that session (there is one NewCollector
-	// call, and so one capturestats.Stats, per apidump.Run() call), which is
-	// what keeps these numbers scoped to one monitored pod instead of the
-	// whole node -- see capturestats.Stats.
-	stats                  *capturestats.Stats
-	telemetryCountReporter func(string, uint64)
-
-	// Shared with the tcpFlow in the opposite direction of this flow (both
-	// flows of one tcpStream point at the same pairSequencer). Non-nil only
-	// when synthetic TCP pairing is enabled -- see syntheticTCPPairingEnabled
-	// in pairing.go. Nil means use the real TCP seq/ack numbers, as before.
-	pairSeq *pairSequencer
 
 	// Netns-wide locals for Direction (shared across both flows).
 	directionHint *DirectionHint
@@ -70,24 +49,18 @@ type tcpFlow struct {
 	unusedAcceptBuf memview.MemView
 }
 
-func newTCPFlow(clock clockWrapper, bidiID akinet.TCPBidiID, nf, tf gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, pairSeq *pairSequencer, directionHint *DirectionHint, telemetryCountReporter func(string, uint64)) *tcpFlow {
+func newTCPFlow(stream *tcpStream, nf, tf gopacket.Flow, directionHint *DirectionHint) *tcpFlow {
 	return &tcpFlow{
-		clock:                  clock,
-		netFlow:                nf,
-		tcpFlow:                tf,
-		bidiID:                 bidiID,
-		outChan:                outChan,
-		factorySelector:        fs,
-		stats:                  stats,
-		pairSeq:                pairSeq,
-		directionHint:          directionHint,
-		telemetryCountReporter: telemetryCountReporter,
+		stream:        stream,
+		netFlow:       nf,
+		tcpFlow:       tf,
+		directionHint: directionHint,
 	}
 }
 
 func (f *tcpFlow) handleUnparseable(t time.Time, size int64) {
 	if size > 0 {
-		f.outChan <- f.toPNT(t, t, akinet.DroppedBytes(size))
+		f.stream.sink.Enqueue(f.toPNT(t, t, akinet.DroppedBytes(size)))
 	}
 }
 
@@ -107,7 +80,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 
 	if f.currentParser == nil {
 		// Try to create a new parser.
-		fact, decision, discardFront := f.factorySelector.Select(pktData, isEnd)
+		fact, decision, discardFront := f.stream.factorySelector.Select(pktData, isEnd)
 		if discardFront > 0 {
 			printer.V(6).Infof("discarding %d bytes discarded by all parsers\n", discardFront)
 			f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, discardFront)
@@ -139,9 +112,9 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				// that we don't yet understand.
 				// So, track the error count but don't spam the log.
 				if acForFirstByte == nil {
-					f.stats.IncrNilAssemblerContext()
+					f.stream.stats.IncrNilAssemblerContext()
 				} else {
-					f.stats.IncrBadAssemblerContextType()
+					f.stream.stats.IncrBadAssemblerContextType()
 				}
 
 				// Also record which half of the exchange we just threw away. The
@@ -149,7 +122,7 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				// cannot tell us whether we are losing requests or responses --
 				// which is the question, since a lost response leaves a witness with
 				// no response half while a lost request leaves no witness at all.
-				countDiscardedByParserKind(f.stats, fact.Name())
+				countDiscardedByParserKind(f.stream.stats, fact.Name())
 				switch fact.Name() {
 				case httpRequestParserFactoryName:
 					f.reportTelemetryEvent("pcap_parser_discarded_request")
@@ -160,15 +133,15 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
 				return
 			}
-			if f.pairSeq != nil && isHTTPParserFactory(fact) {
+			if f.stream.pairSeq != nil && isHTTPParserFactory(fact) {
 				// Synthetic pairing: ignore real TCP seq/ack; use per-connection
 				// FIFO ordinal (see pairing.go). Scoped to HTTP/1.x only.
-				synthSeq, kind := f.pairSeq.pairSeqForFactory(fact)
-				f.currentParser = fact.CreateParser(f.bidiID, synthSeq, synthSeq)
+				synthSeq, kind := f.stream.pairSeq.pairSeqForFactory(fact)
+				f.currentParser = fact.CreateParser(f.stream.bidiID, synthSeq, synthSeq)
 				f.currentPairSeq = synthSeq
 				f.currentPairKind = kind
 			} else {
-				f.currentParser = fact.CreateParser(f.bidiID, ctx.seq, ctx.ack)
+				f.currentParser = fact.CreateParser(f.stream.bidiID, ctx.seq, ctx.ack)
 				f.currentPairKind = pairAllocNone
 			}
 			f.currentParserCtx = ctx
@@ -203,10 +176,10 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 			// probably be misleading.
 			// TODO: what else can we log here to help identify what's going on?
 			printer.V(6).Infof("AssemblerContext is nil for packet started at %v\n", parseStart)
-			f.stats.IncrNilAssemblerContextAfterParse()
+			f.stream.stats.IncrNilAssemblerContextAfterParse()
 			parseEnd = parseStart
 		}
-		f.outChan <- f.toPNT(parseStart, parseEnd, pnc)
+		f.stream.sink.Enqueue(f.toPNT(parseStart, parseEnd, pnc))
 
 		f.currentPairKind = pairAllocNone
 		f.currentParser = nil
@@ -236,14 +209,14 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 // this package's interval counters (pcap_packets_received): the caller hands us
 // an unprefixed reporter precisely because we name our own metrics.
 func (f *tcpFlow) reportTelemetryEvent(event string) {
-	if f.telemetryCountReporter != nil {
-		f.telemetryCountReporter(event, 1)
+	if f.stream.telemetryCountReporter != nil {
+		f.stream.telemetryCountReporter(event, 1)
 	}
 }
 
 func (f *tcpFlow) rollbackCurrentPairSeq() {
-	if f.pairSeq != nil && f.currentPairKind != pairAllocNone {
-		f.pairSeq.rollbackPairSeq(f.currentPairSeq, f.currentPairKind)
+	if f.stream.pairSeq != nil && f.currentPairKind != pairAllocNone {
+		f.stream.pairSeq.rollbackPairSeq(f.currentPairSeq, f.currentPairKind)
 	}
 	f.currentPairKind = pairAllocNone
 }
@@ -259,7 +232,7 @@ func (f *tcpFlow) reassemblyComplete() {
 			f.rollbackCurrentPairSeq()
 		} else if pnc != nil {
 			printer.V(6).Infof("ReassemblyComplete parsed additional network traffic with ts: %v", t)
-			f.outChan <- f.toPNT(t, t, pnc)
+			f.stream.sink.Enqueue(f.toPNT(t, t, pnc))
 			f.currentPairKind = pairAllocNone
 			f.handleUnparseable(t, unused.Len())
 		} else {
@@ -274,29 +247,33 @@ func (f *tcpFlow) reassemblyComplete() {
 		// We estimate the time with current time instead of tracking a separate
 		// context since unusedAcceptBuf is unlikely to be used and is almost
 		// certainly very small in size.
-		f.outChan <- f.toPNT(f.clock.Now(), f.clock.Now(), akinet.DroppedBytes(f.unusedAcceptBuf.Len()))
+		f.stream.sink.Enqueue(f.toPNT(f.stream.clock.Now(), f.stream.clock.Now(), akinet.DroppedBytes(f.unusedAcceptBuf.Len())))
 	}
 }
 
 func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	c akinet.ParsedNetworkContent,
 ) akinet.ParsedNetworkTraffic {
-	pncType := func() string {
-		switch c.(type) {
-		case akinet.HTTPRequest:
-			return "request"
-		case akinet.HTTPResponse:
-			return "response"
-		case akinet.DroppedBytes:
-			return "dropped_bytes"
-		default:
-			return "unknown"
-		}
+	var pncType string
+	var transportSecurity akinet.TransportSecurity
+
+	switch c.(type) {
+	case akinet.HTTPRequest:
+		pncType = "request"
+		transportSecurity = akinet.TransportSecurityPlaintext
+	case akinet.HTTPResponse:
+		pncType = "response"
+		transportSecurity = akinet.TransportSecurityPlaintext
+	case akinet.DroppedBytes:
+		pncType = "dropped_bytes"
+	default:
+		pncType = "unknown"
 	}
+
 	if firstPacketTime.IsZero() || lastPacketTime.IsZero() {
-		now := f.clock.Now()
-		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. type: %v first: %v last: %v now: %v", pncType(), firstPacketTime, lastPacketTime, now)
-		f.stats.IncrZeroValuePacketTimestamp()
+		now := f.stream.clock.Now()
+		printer.V(6).Infof("ParsedNetworkTraffic with zero value packet timestamps. type: %v first: %v last: %v now: %v", pncType, firstPacketTime, lastPacketTime, now)
+		f.stream.stats.IncrZeroValuePacketTimestamp()
 
 		if firstPacketTime.IsZero() {
 			firstPacketTime = now
@@ -306,8 +283,8 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 		}
 	}
 	if lastPacketTime.Before(firstPacketTime) {
-		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. type: %v first: %v last: %v", pncType(), firstPacketTime, lastPacketTime)
-		f.stats.IncrLastPacketBeforeFirstPacket()
+		printer.V(6).Infof("ParsedNetworkTraffic with last packet before first packet. type: %v first: %v last: %v", pncType, firstPacketTime, lastPacketTime)
+		f.stream.stats.IncrLastPacketBeforeFirstPacket()
 
 		lastPacketTime = firstPacketTime
 	}
@@ -323,14 +300,16 @@ func (f *tcpFlow) toPNT(firstPacketTime time.Time, lastPacketTime time.Time,
 	dstPort := int(binary.BigEndian.Uint16(dstP.Raw()))
 
 	return akinet.ParsedNetworkTraffic{
-		SrcIP:           srcIP,
-		SrcPort:         srcPort,
-		DstIP:           dstIP,
-		DstPort:         dstPort,
-		Content:         c,
-		ObservationTime: firstPacketTime,
-		FinalPacketTime: lastPacketTime,
-		Direction:       classifyHTTPDirection(c, srcIP, dstIP, srcPort, dstPort, f.directionHint),
+		SrcIP:             srcIP,
+		SrcPort:           srcPort,
+		DstIP:             dstIP,
+		DstPort:           dstPort,
+		Content:           c,
+		ObservationTime:   firstPacketTime,
+		FinalPacketTime:   lastPacketTime,
+		Direction:         classifyHTTPDirection(c, srcIP, dstIP, srcPort, dstPort, f.directionHint),
+		Interface:         f.stream.interfaceName,
+		TransportSecurity: transportSecurity,
 	}
 }
 
@@ -348,7 +327,7 @@ type tcpStream struct {
 	flows map[reassembly.TCPFlowDirection]*tcpFlow
 
 	factorySelector        akinet.TCPParserFactorySelector
-	outChan                chan<- akinet.ParsedNetworkTraffic
+	sink                   ParsedNetworkTrafficSink
 	stats                  *capturestats.Stats
 	telemetryCountReporter func(string, uint64)
 
@@ -357,9 +336,11 @@ type tcpStream struct {
 	pairSeq *pairSequencer
 
 	directionHint *DirectionHint
+
+	interfaceName string
 }
 
-func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akinet.ParsedNetworkTraffic, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryCountReporter func(string, uint64)) *tcpStream {
+func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, sink ParsedNetworkTrafficSink, fs akinet.TCPParserFactorySelector, stats *capturestats.Stats, useSyntheticPairing bool, directionHint *DirectionHint, telemetryCountReporter func(string, uint64), iface string) *tcpStream {
 	var pairSeq *pairSequencer
 	if useSyntheticPairing {
 		pairSeq = newPairSequencer()
@@ -369,11 +350,12 @@ func newTCPStream(clock clockWrapper, netFlow gopacket.Flow, outChan chan<- akin
 		bidiID:                 akinet.TCPBidiID(uuid.New()),
 		netFlow:                netFlow,
 		factorySelector:        fs,
-		outChan:                outChan,
+		sink:                   sink,
 		stats:                  stats,
 		pairSeq:                pairSeq,
 		directionHint:          directionHint,
 		telemetryCountReporter: telemetryCountReporter,
+		interfaceName:          iface,
 	}
 }
 
@@ -393,8 +375,8 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 		// data from this tcpStream or it is garbage collected by the assembler
 		// after streamTimeout.
 		tf, _ := gopacket.FlowFromEndpoints(layers.NewTCPPortEndpoint(tcp.SrcPort), layers.NewTCPPortEndpoint(tcp.DstPort))
-		s1 := newTCPFlow(c.clock, c.bidiID, c.netFlow, tf, c.outChan, c.factorySelector, c.stats, c.pairSeq, c.directionHint, c.telemetryCountReporter)
-		s2 := newTCPFlow(c.clock, c.bidiID, c.netFlow.Reverse(), tf.Reverse(), c.outChan, c.factorySelector, c.stats, c.pairSeq, c.directionHint, c.telemetryCountReporter)
+		s1 := newTCPFlow(c, c.netFlow, tf, c.directionHint)
+		s2 := newTCPFlow(c, c.netFlow.Reverse(), tf.Reverse(), c.directionHint)
 		c.flows = map[reassembly.TCPFlowDirection]*tcpFlow{
 			dir:           s1,
 			dir.Reverse(): s2,
@@ -404,7 +386,7 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 	// Output some metadata for the current packet.
 	{
 		srcE, dstE := c.netFlow.Endpoints()
-		c.outChan <- akinet.ParsedNetworkTraffic{
+		c.sink.Enqueue(akinet.ParsedNetworkTraffic{
 			SrcIP:   net.IP(srcE.Raw()),
 			SrcPort: int(tcp.SrcPort),
 			DstIP:   net.IP(dstE.Raw()),
@@ -418,7 +400,8 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 				PayloadLength_bytes: len(tcp.LayerPayload()),
 			},
 			ObservationTime: ac.GetCaptureInfo().Timestamp,
-		}
+			Interface:       c.interfaceName,
+		})
 	}
 
 	// Accept everything, even if the packet might violate the TCP state machine

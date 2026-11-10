@@ -102,16 +102,15 @@ func setupParseFromInterface(pcap pcapWrapper, signalClose <-chan struct{}, fact
 	p := NewNetworkTrafficParser(akid.GenerateServiceID(), map[tags.Key]string{}, 1.0, telemetry.Default(), capturestats.New())
 	p.pcap = pcap
 	p.clock = &fakeClock{testTime}
-	rawOut, err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose, facts...)
-	if err != nil {
-		return rawOut, err
+	if err := p.ParseFromInterface("dummy0", "", optionals.None[string](), signalClose, facts...); err != nil {
+		return nil, err
 	}
 
 	// Filter out TCP packet metadata. The tests calling this were written before
 	// TCP packet metadata was introduced.
 	out := make(chan akinet.ParsedNetworkTraffic)
 	go func() {
-		for pkt := range rawOut {
+		for pkt := range p.ParsedTraffic() {
 			if _, ignore := pkt.Content.(akinet.TCPPacketMetadata); !ignore {
 				out <- pkt
 			}
@@ -140,6 +139,10 @@ func TestTCPSingleDirection(t *testing.T) {
 		t.Errorf("expected protocol prince, got %T", nt.Content)
 	} else if diff := netParseCmp(p, akinet.AkitaPrince("hi how are you this is prince speaking just so you know")); diff != "" {
 		t.Errorf("payload corrupted: %s", diff)
+	}
+
+	if nt.Interface != "dummy0" {
+		t.Errorf("network interface mismatch, got %q", nt.Interface)
 	}
 }
 
@@ -475,11 +478,53 @@ func TestUDP(t *testing.T) {
 			DstPort:         port2,
 			Content:         akinet.DroppedBytes(len(msgData)),
 			ObservationTime: testTime,
+			Interface:       "dummy0",
 		},
 	}
 
 	if diff := netParseCmp(expected, actual); diff != "" {
 		t.Errorf("mismatch: %s", diff)
+	}
+}
+
+func TestTransportSecurityPlaintext(t *testing.T) {
+	pool, err := buffer_pool.MakeBufferPool(1024*1024, 4*1024)
+	if err != nil {
+		t.Fatalf("creating buffer pool: %v", err)
+	}
+
+	req := &testMessage{testEndpoint1, testEndpoint2, []byte("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n")}
+	resp := &testMessage{testEndpoint2, testEndpoint1, []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")}
+
+	closeChan := make(chan struct{})
+	defer close(closeChan)
+	out, err := setupParseFromInterface(fakePcap(makeTCPPackets(1, req, resp)), closeChan,
+		http.NewHTTPRequestParserFactory(pool), http.NewHTTPResponseParserFactory(pool))
+	if err != nil {
+		t.Fatalf("unexpected error setting up listener: %v", err)
+	}
+
+	var sawRequest, sawResponse bool
+	for nt := range out {
+		switch nt.Content.(type) {
+		case akinet.HTTPRequest:
+			sawRequest = true
+		case akinet.HTTPResponse:
+			sawResponse = true
+		default:
+			t.Errorf("unexpected content type %T", nt.Content)
+		}
+		if nt.TransportSecurity != akinet.TransportSecurityPlaintext {
+			t.Errorf("%T: transport security = %q, want %q", nt.Content, nt.TransportSecurity, akinet.TransportSecurityPlaintext)
+		}
+		nt.Content.ReleaseBuffers()
+	}
+
+	if !sawRequest {
+		t.Error("HTTP request was not parsed")
+	}
+	if !sawResponse {
+		t.Error("HTTP response was not parsed")
 	}
 }
 

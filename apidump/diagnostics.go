@@ -111,7 +111,8 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 			"req_rejected=%d req_never=%d req_no_stream=%d req_no_tracker=%d] "+
 			"unmatched_stream_idx[pruned=%d cap_evicted=%d] "+
 			"rl_keys[cap_evicted=%d] "+
-			"neg_latency[sub_ms=%d sub_s=%d over_s=%d]%s\n",
+			"neg_latency[sub_ms=%d sub_s=%d over_s=%d] "+
+			"pnt[drop=%d]%s\n",
 
 		// Identify which apidump session this line came from. A node runs one
 		// per monitored pod, so the logs interleave.
@@ -234,6 +235,8 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 		snap.NegativeLatencyUnder1ms,
 		snap.NegativeLatencyUnder1s,
 		snap.NegativeLatencyOver1s,
+
+		snap.PNTDropped,
 
 		formatFilterCounts(prefilter, postfilter),
 	)

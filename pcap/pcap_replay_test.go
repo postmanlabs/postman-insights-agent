@@ -185,17 +185,30 @@ func readFromPcapFile(file string, pool buffer_pool.BufferPool) ([]akinet.Parsed
 
 	done := make(chan struct{})
 	defer close(done)
-	out, err := p.ParseFromInterface("fake", "", optionals.None[string](), done, akihttp.NewHTTPRequestParserFactory(pool), akihttp.NewHTTPResponseParserFactory(pool))
+	err := p.ParseFromInterface("fake", "", optionals.None[string](), done, akihttp.NewHTTPRequestParserFactory(pool), akihttp.NewHTTPResponseParserFactory(pool))
 	if err != nil {
 		return nil, errors.Wrap(err, "ParseFromInterface failed")
 	}
 
 	collected := []akinet.ParsedNetworkTraffic{}
-	for c := range out {
+	for c := range p.pntCh {
 		// Remove TCP metadata, which was added after this test was written.
 		if _, ignore := c.Content.(akinet.TCPPacketMetadata); ignore {
 			c.Content.ReleaseBuffers()
 			continue
+		}
+
+		if c.Interface != "fake" {
+			return nil, errors.Errorf("expected interface %q, got %q", "fake", c.Interface)
+		}
+		c.Interface = ""
+
+		switch c.Content.(type) {
+		case akinet.HTTPRequest, akinet.HTTPResponse:
+			if c.TransportSecurity != akinet.TransportSecurityPlaintext {
+				return nil, errors.Errorf("expected transport security %v, got %v", akinet.TransportSecurityPlaintext, c.TransportSecurity)
+			}
+			c.TransportSecurity = ""
 		}
 
 		removeNonDeterministicField(&c)
