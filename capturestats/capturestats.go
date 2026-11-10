@@ -191,6 +191,10 @@ type Stats struct {
 	// drop increments exactly one kind, so the kinds sum to PNTDropped.
 	// The parent alone cannot say whether a drop cost a request, a response
 	// or only per-packet metadata; this can.
+	//
+	// A fixed-size array indexed by PNTKind, not a map: every slot exists from
+	// New(), nothing is inserted at runtime, and each slot is only touched with
+	// atomic operations, so no mutex is needed.
 	PNTDroppedByKind [PNTKindCount]uint64
 }
 
