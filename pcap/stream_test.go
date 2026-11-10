@@ -233,6 +233,53 @@ func TestTCPFlow(t *testing.T) {
 	}
 }
 
+// A lost packet leaves a gap that the assembler waits on, queueing everything
+// after it. When the flush finally skips the gap, it hands every queued message
+// to the stream in a single ReassembledSG call. All of them must be parsed
+// then; otherwise the backlog only drains one message per later packet, and
+// this direction falls permanently behind the other one.
+func TestTCPFlowFlushAfterGapParsesAllQueuedMessages(t *testing.T) {
+	out := make(chan akinet.ParsedNetworkTraffic, 100)
+	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{princeParserFactory{}})
+	streamFactory := newTCPStreamFactory(&fakeClock{testTime}, chanSink(out), fs, capturestats.New(), false, nil, nil, "")
+	assembler := reassembly.NewAssembler(reassembly.NewStreamPool(streamFactory))
+
+	ts := testTime
+	assemble := func(payload string, seq uint32) {
+		pkt := CreatePacketWithSeq(ip1, ip2, port1, port2, []byte(payload), seq)
+		pkt.Metadata().CaptureInfo.Timestamp = ts
+		ts = ts.Add(time.Millisecond)
+		tcp := pkt.TransportLayer().(*layers.TCP)
+		assembler.AssembleWithContext(pkt.NetworkLayer().NetworkFlow(), tcp, contextFromTCPPacket(pkt, tcp))
+	}
+
+	// Each message is a packet of its own, as with keep-alive requests.
+	msgs := []string{"prince|one|", "prince|two|", "prince|three|", "prince|four|", "prince|five|"}
+	seq := uint32(100)
+	for i, m := range msgs {
+		// The kernel dropped "two".
+		if i != 1 {
+			assemble(m, seq)
+		}
+		seq += uint32(len(m))
+	}
+
+	// Skip the gap, as ParseFromInterface's ticker does once the queued data is
+	// older than StreamTimeoutSeconds.
+	assembler.FlushWithOptions(reassembly.FlushOptions{T: ts.Add(time.Second)})
+
+	var got []akinet.AkitaPrince
+	for len(out) > 0 {
+		if p, ok := (<-out).Content.(akinet.AkitaPrince); ok {
+			got = append(got, p)
+		}
+	}
+	expected := []akinet.AkitaPrince{"one", "three", "four", "five"}
+	if diff := netParseCmp(expected, got); diff != "" {
+		t.Errorf("messages parsed by the time the gap was flushed:\n%s", diff)
+	}
+}
+
 func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 	pool, err := buffer_pool.MakeBufferPool(1024*1024, 4*1024)
 	if err != nil {
