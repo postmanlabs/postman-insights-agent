@@ -56,3 +56,8 @@ It is opt-in and Linux-only.
   Loading the Java agent into running JVMs (DaemonSet) also needs `CAP_SETUID` and `CAP_SETGID`, to run the `postman-insights-jvm-attach` helper as each JVM's user; without them, JVMs started with `-javaagent` are still captured.
 
 How it works, its limits and why each permission is needed: [`docs/https-capture-design.md`](docs/https-capture-design.md).
+
+## License
+
+Copyright 2021-present Postman, Inc.
+Licensed under the Apache License 2.0; see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
