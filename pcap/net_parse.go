@@ -49,7 +49,7 @@ var MaxBufferedPagesPerConnection int = 4_000
 
 // Max number of parsed network traffic messages allowed to be enqueued
 // to the collector
-const MaxPNTEnqueued = 100
+const MaxPNTEnqueued = 1000
 
 // Internal implementation of reassembly.AssemblerContext that include TCP
 // seq and ack numbers.
