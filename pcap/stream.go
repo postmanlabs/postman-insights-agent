@@ -454,8 +454,12 @@ func (c *tcpStream) ReassembledSG(sg reassembly.ScatterGather, _ reassembly.Asse
 		printer.Errorf("received reassembled TCP stream data before accept, dropping packets\n")
 		return
 	}
-	dir, _, _, _ := sg.Info()
+	dir, _, _, skip := sg.Info()
 	c.flows[dir].reassembled(sg)
+
+	if skip > 0 {
+		c.stats.AddReassemblyGapFlushedBytes(uint64(skip))
+	}
 }
 
 func (c *tcpStream) ReassemblyComplete(_ reassembly.AssemblerContext) bool {
