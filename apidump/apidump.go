@@ -71,6 +71,9 @@ type filterState string
 const (
 	matchedFilter    filterState = "MATCHED"
 	notMatchedFilter filterState = "UNMATCHED"
+
+	// Max amount (in bytes) taken up by HTTP payloads
+	maxHTTPPoolSize = 20 * 1024 * 1024
 )
 
 var (
@@ -1121,7 +1124,7 @@ func (a *apidump) Run() error {
 	lastCheckpoint = "buffer_pool"
 
 	// Create a buffer pool for storing HTTP payloads.
-	pool, err := buffer_pool.MakeBufferPool(20*1024*1024, 4*1024)
+	pool, err := buffer_pool.MakeBufferPool(maxHTTPPoolSize, 4*1024)
 	if err != nil {
 		return errors.Wrapf(err, "Unable to create buffer pool")
 	}
