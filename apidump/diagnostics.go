@@ -99,7 +99,7 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 	printer.Stderr.Infof(
 		"Capture diagnostics: client=%s pod=%s service=%s "+
 			"kernel[recv=%d drop=%d ifdrop=%d] "+
-			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d reassembly_gap_flushed=%d] "+
+			"parse[nil_ctx=%d bad_ctx=%d nil_ctx_after=%d zero_ts=%d ts_inverted=%d reassembly_gap_flushed=%d reassembly_gap_bytes=%d] "+
 			"discarded[req=%d resp=%d other=%d] "+
 			"chain[filtered_req=%d filtered_resp=%d sampled_out_req=%d sampled_out_resp=%d "+
 			"outbound_req=%d outbound_resp=%d resp_no_request=%d] "+
@@ -137,6 +137,7 @@ func LogCaptureDiagnostics(clientID, podName, serviceID string, stats *capturest
 		snap.ZeroValuePacketTimestamp,
 		snap.LastPacketBeforeFirstPacket,
 		snap.ReassemblyGapFlushed,
+		snap.ReassemblyGapBytes,
 
 		// The same nil_ctx/bad_ctx failures, but split by which half we threw
 		// away. This is the pair to read for the "response starts in a later

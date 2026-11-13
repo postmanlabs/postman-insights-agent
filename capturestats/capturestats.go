@@ -48,6 +48,7 @@ type Stats struct {
 	ZeroValuePacketTimestamp      uint64
 	LastPacketBeforeFirstPacket   uint64
 	ReassemblyGapFlushed          uint64
+	ReassemblyGapFlushedBytes     uint64
 
 	// The same NilAssemblerContext/BadAssemblerContextType failures, split by
 	// which half of the exchange was discarded. A discarded response leaves a
@@ -304,6 +305,12 @@ func (s *Stats) AddReassemblyGapFlushed(n uint64) {
 		return
 	}
 	atomic.AddUint64(&s.ReassemblyGapFlushed, n)
+}
+func (s *Stats) AddReassemblyGapFlushedBytes(n uint64) {
+	if s == nil {
+		return
+	}
+	atomic.AddUint64(&s.ReassemblyGapFlushedBytes, n)
 }
 
 func (s *Stats) IncrDiscardedRequests() {
@@ -658,7 +665,8 @@ type Snapshot struct {
 	PcapPacketsReceived, PcapPacketsDropped, PcapPacketsIfDropped uint64
 
 	NilAssemblerContext, BadAssemblerContextType, NilAssemblerContextAfterParse,
-	ZeroValuePacketTimestamp, LastPacketBeforeFirstPacket, ReassemblyGapFlushed uint64
+	ZeroValuePacketTimestamp, LastPacketBeforeFirstPacket,
+	ReassemblyGapFlushed, ReassemblyGapBytes uint64
 
 	DiscardedRequests, DiscardedResponses, DiscardedOther uint64
 
@@ -717,6 +725,7 @@ func (s *Stats) Snapshot() Snapshot {
 		ZeroValuePacketTimestamp:      atomic.LoadUint64(&s.ZeroValuePacketTimestamp),
 		LastPacketBeforeFirstPacket:   atomic.LoadUint64(&s.LastPacketBeforeFirstPacket),
 		ReassemblyGapFlushed:          atomic.LoadUint64(&s.ReassemblyGapFlushed),
+		ReassemblyGapBytes:            atomic.LoadUint64(&s.ReassemblyGapFlushedBytes),
 
 		DiscardedRequests:  atomic.LoadUint64(&s.DiscardedRequests),
 		DiscardedResponses: atomic.LoadUint64(&s.DiscardedResponses),
