@@ -114,7 +114,7 @@ func runTCPFlowTestCase(c tcpFlowTestCase) error {
 		sg.keepFrom = -1
 		sg.isEnd = i == len(c.inputs)-1
 
-		f.reassembled(sg, sg.AssemblerContext(0))
+		f.reassembled(sg)
 
 		// ScatterGather bookkeeping
 		if sg.keepFrom >= 0 {
@@ -233,6 +233,117 @@ func TestTCPFlow(t *testing.T) {
 	}
 }
 
+// A lost packet leaves a gap that the assembler waits on, queueing everything
+// after it. When the flush finally skips the gap, it hands every queued message
+// to the stream in a single ReassembledSG call. All of them must be parsed
+// then; otherwise the backlog only drains one message per later packet, and
+// this direction falls permanently behind the other one.
+func TestTCPFlowFlushAfterGapParsesAllQueuedMessages(t *testing.T) {
+	out := make(chan akinet.ParsedNetworkTraffic, 100)
+	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{princeParserFactory{}})
+	streamFactory := newTCPStreamFactory(&fakeClock{testTime}, chanSink(out), fs, capturestats.New(), false, nil, nil, "")
+	assembler := reassembly.NewAssembler(reassembly.NewStreamPool(streamFactory))
+
+	ts := testTime
+	assemble := func(payload string, seq uint32) {
+		pkt := CreatePacketWithSeq(ip1, ip2, port1, port2, []byte(payload), seq)
+		pkt.Metadata().CaptureInfo.Timestamp = ts
+		ts = ts.Add(time.Millisecond)
+		tcp := pkt.TransportLayer().(*layers.TCP)
+		assembler.AssembleWithContext(pkt.NetworkLayer().NetworkFlow(), tcp, contextFromTCPPacket(pkt, tcp))
+	}
+
+	// Each message is a packet of its own, as with keep-alive requests.
+	msgs := []string{"prince|one|", "prince|two|", "prince|three|", "prince|four|", "prince|five|"}
+	seq := uint32(100)
+	for i, m := range msgs {
+		// The kernel dropped "two".
+		if i != 1 {
+			assemble(m, seq)
+		}
+		seq += uint32(len(m))
+	}
+
+	// Skip the gap, as ParseFromInterface's ticker does once the queued data is
+	// older than StreamTimeoutSeconds.
+	assembler.FlushWithOptions(reassembly.FlushOptions{T: ts.Add(time.Second)})
+
+	var got []akinet.AkitaPrince
+	for len(out) > 0 {
+		if p, ok := (<-out).Content.(akinet.AkitaPrince); ok {
+			got = append(got, p)
+		}
+	}
+	expected := []akinet.AkitaPrince{"one", "three", "four", "five"}
+	if diff := netParseCmp(expected, got); diff != "" {
+		t.Errorf("messages parsed by the time the gap was flushed:\n%s", diff)
+	}
+}
+
+// Accepts only input that starts with "fail^", so it never skips over a prince
+// message the way the prince and pineapple factories skip leading bytes. Its
+// parser always fails, consuming all of its input as the HTTP parser does.
+type failParserFactory struct{}
+
+const failProtoHeader = "fail^"
+
+func (failParserFactory) Name() string {
+	return "FailParserFactory"
+}
+
+func (failParserFactory) Accepts(input memview.MemView, isEnd bool) (akinet.AcceptDecision, int64) {
+	if input.Index(0, []byte(failProtoHeader)) == 0 {
+		return akinet.Accept, 0
+	}
+	return akinet.Reject, 0
+}
+
+func (failParserFactory) CreateParser(id akinet.TCPBidiID, seq, ack reassembly.Sequence) akinet.TCPParser {
+	return failParser{}
+}
+
+type failParser struct{}
+
+func (failParser) Name() string {
+	return "fail!"
+}
+
+func (failParser) Parse(input memview.MemView, isEnd bool) (akinet.ParsedNetworkContent, memview.MemView, int64, error) {
+	return nil, memview.MemView{}, input.Len(), fmt.Errorf("fail parser always fails")
+}
+
+// When one message in a call fails to parse, the messages before it are still
+// emitted. The failed parser consumes the rest of the call's data, so the
+// messages after it are reported as dropped bytes rather than parsed.
+func TestTCPFlowParseFailureMidCall(t *testing.T) {
+	out := make(chan akinet.ParsedNetworkTraffic, 10)
+	fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
+		failParserFactory{},
+		princeParserFactory{},
+	})
+	f := newTestTCPFlow(out, fs, capturestats.New(), nil)
+
+	const rest = failProtoHeader + "bad^prince|three|prince|four|"
+	sg := &fakeScatterGather{
+		data:  memview.New([]byte("prince|one|prince|two|" + rest)),
+		isEnd: false,
+	}
+	f.reassembled(sg)
+
+	var actual []akinet.ParsedNetworkTraffic
+	for len(out) > 0 {
+		actual = append(actual, <-out)
+	}
+	expected := []akinet.ParsedNetworkTraffic{
+		dummyPNT(akinet.AkitaPrince("one")),
+		dummyPNT(akinet.AkitaPrince("two")),
+		dummyPNT(akinet.DroppedBytes(len(rest))),
+	}
+	if diff := netParseCmp(expected, actual); diff != "" {
+		t.Errorf("found diff:\n%s", diff)
+	}
+}
+
 func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 	pool, err := buffer_pool.MakeBufferPool(1024*1024, 4*1024)
 	if err != nil {
@@ -254,7 +365,7 @@ func TestTCPFlowReportsDiscardedResponse(t *testing.T) {
 		nilContext: true,
 	}
 
-	f.reassembled(sg, nil)
+	f.reassembled(sg)
 
 	if got := stats.Snapshot().DiscardedResponses; got != 1 {
 		t.Fatalf("expected one discarded response, got %d", got)
@@ -285,13 +396,71 @@ func TestTCPFlowReportsDiscardedRequest(t *testing.T) {
 		nilContext: true,
 	}
 
-	f.reassembled(sg, nil)
+	f.reassembled(sg)
 
 	if got := stats.Snapshot().DiscardedRequests; got != 1 {
 		t.Fatalf("expected one discarded request, got %d", got)
 	}
 	if reported != "pcap_parser_discarded_request" {
 		t.Fatalf("expected parser discard telemetry, got %q", reported)
+	}
+}
+
+// When the connection closes before the whole response body arrives, the
+// response must still be emitted, carrying every body byte seen so far, and
+// nothing may be reported as dropped.
+func TestTCPFlowConnectionClosedMidResponse(t *testing.T) {
+	const header = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"
+
+	testCases := []struct {
+		name   string
+		inputs []string // The last one is delivered with isEnd set.
+	}{
+		{
+			name:   "close arrives with the last data",
+			inputs: []string{header + "hello", " wor"},
+		},
+		{
+			name:   "close arrives after the last data",
+			inputs: []string{header + "hello", " wor", ""},
+		},
+	}
+
+	for _, c := range testCases {
+		t.Run(c.name, func(t *testing.T) {
+			pool, err := buffer_pool.MakeBufferPool(1024*1024, 4*1024)
+			if err != nil {
+				t.Fatalf("creating buffer pool: %v", err)
+			}
+
+			out := make(chan akinet.ParsedNetworkTraffic, 10)
+			fs := akinet.TCPParserFactorySelector([]akinet.TCPParserFactory{
+				akihttp.NewHTTPResponseParserFactory(pool),
+			})
+			f := newTestTCPFlow(out, fs, capturestats.New(), nil)
+
+			sg := &fakeScatterGather{}
+			for i, input := range c.inputs {
+				sg.data = memview.New([]byte(input))
+				sg.isEnd = i == len(c.inputs)-1
+				f.reassembled(sg)
+			}
+			f.reassemblyComplete()
+
+			if len(out) != 1 {
+				t.Fatalf("expected exactly one PNT, got %d", len(out))
+			}
+			resp, ok := (<-out).Content.(akinet.HTTPResponse)
+			if !ok {
+				t.Fatal("expected an HTTP response")
+			}
+			if resp.StatusCode != 200 {
+				t.Errorf("status code = %d, want 200", resp.StatusCode)
+			}
+			if got := resp.Body.String(); got != "hello wor" {
+				t.Errorf("body = %q, want %q", got, "hello wor")
+			}
+		})
 	}
 }
 

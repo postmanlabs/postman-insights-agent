@@ -17,6 +17,39 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/telemetry"
 )
 
+// A buffer with a cursor that's advanced as data is consumed
+// +-----------------------------------+
+// | advanced  | remaining             |
+// +-----------------------------------+
+// |           ^ cursor
+type parseBuffer struct {
+	buf    memview.MemView
+	cursor int64
+}
+
+func newParseBuffer(buf memview.MemView) parseBuffer {
+	return parseBuffer{
+		buf:    buf,
+		cursor: 0,
+	}
+}
+
+func (b *parseBuffer) buffer() memview.MemView {
+	return b.buf.SubView(b.cursor, b.buf.Len())
+}
+
+func (b *parseBuffer) advance(count int64) {
+	b.cursor += count
+}
+
+func (b *parseBuffer) pos() int64 {
+	return b.cursor
+}
+
+func (b *parseBuffer) remaining() int64 {
+	return b.buf.Len() - b.cursor
+}
+
 // tcpFlow represents a uni-directional flow of TCP segments along with a
 // bidirectional ID that identifies the tcpFlow in the opposite direction.
 // Writes come from TCP assembler via tcpStream, while reads come from users
@@ -33,20 +66,20 @@ type tcpFlow struct {
 	// Non-nil if there is an active parser for this flow.
 	currentParser akinet.TCPParser
 
-	// Context for the FIRST packet that currentParser is processing.
-	currentParserCtx *assemblerCtxWithSeq
+	// Time associated with the first packet of the message being parsed
+	parseStart time.Time
 
 	// Accept-time synthetic pair allocation for currentParser, if any. Rolled
 	// back if the parse fails or is abandoned before a successful emit.
 	currentPairSeq  reassembly.Sequence
 	currentPairKind pairAllocKind
 
-	// Data that was left unused when determining parser, awaiting for more data.
+	// How much data that was left unused when determining parser, awaiting for more data.
 	// This is a hack to flush data when the flow terminates before a parser has
 	// been selected since reassembled does not get invoked on stream end even if
 	// we use KeepFrom to keep data inside ScatterGather in a previous call to
 	// reassembled.
-	unusedAcceptBuf memview.MemView
+	unparsedByteCnt int64
 }
 
 func newTCPFlow(stream *tcpStream, nf, tf gopacket.Flow, directionHint *DirectionHint) *tcpFlow {
@@ -65,108 +98,129 @@ func (f *tcpFlow) handleUnparseable(t time.Time, size int64) {
 }
 
 // Handles reassmbled TCP flow data.
-func (f *tcpFlow) reassembled(sg reassembly.ScatterGather, ac reassembly.AssemblerContext) {
-	f.reassembledWithIgnore(0, sg, ac)
-}
-
-// Ignore leading bytes from sg.
-func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGather, ac reassembly.AssemblerContext) {
+func (f *tcpFlow) reassembled(sg reassembly.ScatterGather) {
 	_, _, isEnd, _ := sg.Info()
-	bytesAvailable, _ := sg.Lengths()
-	// Fetch returns a copy of the packet data.
-	pktData := memview.New(sg.Fetch(bytesAvailable)[ignoreCount:])
 
-	printer.V(6).Infof("reassembled with %d bytes, isEnd=%v\n", bytesAvailable-ignoreCount, isEnd)
+	available, _ := sg.Lengths()
+	mv := memview.New(sg.Fetch(available))
+	buf := newParseBuffer(mv)
 
-	if f.currentParser == nil {
-		// Try to create a new parser.
-		fact, decision, discardFront := f.stream.factorySelector.Select(pktData, isEnd)
-		if discardFront > 0 {
-			printer.V(6).Infof("discarding %d bytes discarded by all parsers\n", discardFront)
-			f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, discardFront)
-			pktData = pktData.SubView(discardFront, pktData.Len())
-		}
+	printer.V(6).Infof("reassembled with %d bytes, isEnd=%v\n", buf.remaining(), isEnd)
 
-		switch decision {
-		case akinet.NeedMoreData:
-			// Keep data for next reassembled call.
-			printer.V(6).Infof("NeedMoreData to determine parser\n")
-			sg.KeepFrom(ignoreCount + int(discardFront))
-			f.unusedAcceptBuf = pktData
-			return
-		case akinet.Reject:
-			printer.V(6).Infof("Reject by all parsers\n")
-			f.unusedAcceptBuf.Clear()
-			return
-		case akinet.Accept:
-			printer.V(6).Infof("Accept by %s\n", fact.Name())
-			f.unusedAcceptBuf.Clear()
-
-			acForFirstByte := sg.AssemblerContext(ignoreCount + int(discardFront))
-			ctx, ok := acForFirstByte.(*assemblerCtxWithSeq)
-			if !ok {
-				// Previously we errored in this case:
-				printer.V(6).Infof("received AssemblerContext %v without TCP seq info, treating %s data as raw bytes\n", acForFirstByte, fact.Name())
-				// but a user ran into quite a lot of them.  One theory is that this occurs when the HTTP response is in the
-				// second (or later) page of a reassembly buffer.  A test validates that, but there might be other causes
-				// that we don't yet understand.
-				// So, track the error count but don't spam the log.
-				if acForFirstByte == nil {
-					f.stream.stats.IncrNilAssemblerContext()
-				} else {
-					f.stream.stats.IncrBadAssemblerContextType()
-				}
-
-				// Also record which half of the exchange we just threw away. The
-				// counters above are shared by both directions, so on their own they
-				// cannot tell us whether we are losing requests or responses --
-				// which is the question, since a lost response leaves a witness with
-				// no response half while a lost request leaves no witness at all.
-				countDiscardedByParserKind(f.stream.stats, fact.Name())
-				switch fact.Name() {
-				case httpRequestParserFactoryName:
-					f.reportTelemetryEvent("pcap_parser_discarded_request")
-				case httpResponseParserFactoryName:
-					f.reportTelemetryEvent("pcap_parser_discarded_response")
-				}
-
-				f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
-				return
-			}
-			if f.stream.pairSeq != nil && isHTTPParserFactory(fact) {
-				// Synthetic pairing: ignore real TCP seq/ack; use per-connection
-				// FIFO ordinal (see pairing.go). Scoped to HTTP/1.x only.
-				synthSeq, kind := f.stream.pairSeq.pairSeqForFactory(fact)
-				f.currentParser = fact.CreateParser(f.stream.bidiID, synthSeq, synthSeq)
-				f.currentPairSeq = synthSeq
-				f.currentPairKind = kind
-			} else {
-				f.currentParser = fact.CreateParser(f.stream.bidiID, ctx.seq, ctx.ack)
-				f.currentPairKind = pairAllocNone
-			}
-			f.currentParserCtx = ctx
-		default:
-			printer.Errorf("unsupported decision type %s, treating data as raw bytes\n", decision)
-			f.handleUnparseable(sg.CaptureInfo(ignoreCount).Timestamp, pktData.Len())
-			return
-		}
+	// Close terminated stream. Finish parsing whatever was in flight.
+	if isEnd && buf.remaining() == 0 && f.currentParser != nil {
+		f.parseNext(&buf, isEnd, sg)
 	}
 
-	pnc, unused, numBytesConsumed, err := f.currentParser.Parse(pktData, isEnd)
+	// One call can carry many messages, e.g. the backlog the assembler releases
+	// all at once when it skips a gap left by a dropped packet. Parse every
+	// complete message now: the next call only comes with this direction's next
+	// packet, so parsing one per call would never catch up on the backlog.
+	for buf.remaining() > 0 {
+		if f.currentParser == nil {
+			if !f.makeParser(sg, &buf, isEnd) {
+				return
+			}
+		}
+
+		f.parseNext(&buf, isEnd, sg)
+	}
+}
+
+func (f *tcpFlow) makeParser(sg reassembly.ScatterGather, buf *parseBuffer, isEnd bool) bool {
+	// Try to create a new parser.
+	fact, decision, discardFront := f.stream.factorySelector.Select(buf.buffer(), isEnd)
+	if discardFront > 0 {
+		printer.V(6).Infof("discarding %d bytes discarded by all parsers\n", discardFront)
+		f.handleUnparseable(sg.CaptureInfo(int(buf.pos())).Timestamp, discardFront)
+		buf.advance(discardFront)
+	}
+
+	switch decision {
+	case akinet.NeedMoreData:
+		// Keep data for next reassembled call.
+		printer.V(6).Infof("NeedMoreData to determine parser\n")
+		sg.KeepFrom(int(buf.pos()))
+		f.unparsedByteCnt = buf.remaining()
+		return false
+	case akinet.Reject:
+		printer.V(6).Infof("Reject by all parsers\n")
+		f.unparsedByteCnt = 0
+		return false
+	case akinet.Accept:
+		printer.V(6).Infof("Accept by %s\n", fact.Name())
+		f.unparsedByteCnt = 0
+
+		acForFirstByte := sg.AssemblerContext(int(buf.pos()))
+		ctx, ok := acForFirstByte.(*assemblerCtxWithSeq)
+		if !ok {
+			// Previously we errored in this case:
+			printer.V(6).Infof("received AssemblerContext %v without TCP seq info, treating %s data as raw bytes\n", acForFirstByte, fact.Name())
+			// but a user ran into quite a lot of them.  One theory is that this occurs when the HTTP response is in the
+			// second (or later) page of a reassembly buffer.  A test validates that, but there might be other causes
+			// that we don't yet understand.
+			// So, track the error count but don't spam the log.
+			if acForFirstByte == nil {
+				f.stream.stats.IncrNilAssemblerContext()
+			} else {
+				f.stream.stats.IncrBadAssemblerContextType()
+			}
+
+			// Also record which half of the exchange we just threw away. The
+			// counters above are shared by both directions, so on their own they
+			// cannot tell us whether we are losing requests or responses --
+			// which is the question, since a lost response leaves a witness with
+			// no response half while a lost request leaves no witness at all.
+			countDiscardedByParserKind(f.stream.stats, fact.Name())
+			switch fact.Name() {
+			case httpRequestParserFactoryName:
+				f.reportTelemetryEvent("pcap_parser_discarded_request")
+			case httpResponseParserFactoryName:
+				f.reportTelemetryEvent("pcap_parser_discarded_response")
+			}
+
+			f.handleUnparseable(sg.CaptureInfo(int(buf.pos())).Timestamp, int64(buf.remaining()))
+			return false
+		}
+		if f.stream.pairSeq != nil && isHTTPParserFactory(fact) {
+			// Synthetic pairing: ignore real TCP seq/ack; use per-connection
+			// FIFO ordinal (see pairing.go). Scoped to HTTP/1.x only.
+			synthSeq, kind := f.stream.pairSeq.pairSeqForFactory(fact)
+			f.currentParser = fact.CreateParser(f.stream.bidiID, synthSeq, synthSeq)
+			f.currentPairSeq = synthSeq
+			f.currentPairKind = kind
+		} else {
+			f.currentParser = fact.CreateParser(f.stream.bidiID, ctx.seq, ctx.ack)
+			f.currentPairKind = pairAllocNone
+		}
+		f.parseStart = ctx.GetCaptureInfo().Timestamp
+		return true
+	default:
+		printer.Errorf("unsupported decision type %s, treating data as raw bytes\n", decision)
+		f.handleUnparseable(sg.CaptureInfo(int(buf.pos())).Timestamp, buf.remaining())
+		return false
+	}
+}
+
+// Parses buf (starting at its current position) to produce the next message.
+// If parse is successful, it enqueues the message to the consumer.
+func (f *tcpFlow) parseNext(buf *parseBuffer, isEnd bool, sg reassembly.ScatterGather) {
+	pnc, unused, numBytesConsumed, err := f.currentParser.Parse(buf.buffer(), isEnd)
+	buf.advance(buf.remaining() - unused.Len())
+
 	if err != nil {
 		// Parser failed, return all the bytes passed to the parser so at least we
 		// can still perform leak detection on the raw bytes.
-		t := f.currentParserCtx.GetCaptureInfo().Timestamp
-		f.handleUnparseable(t, numBytesConsumed)
+		f.handleUnparseable(f.parseStart, numBytesConsumed)
 
 		f.rollbackCurrentPairSeq()
 		f.currentParser = nil
-		f.currentParserCtx = nil
+		f.parseStart = time.Time{}
 
 		telemetry.RateLimitError("parser", err)
 	} else if pnc != nil {
 		// Parsing complete.
-		parseStart := f.currentParserCtx.GetCaptureInfo().Timestamp
+		ac := sg.AssemblerContext(int(buf.pos() - 1))
 		var parseEnd time.Time
 		if ac != nil {
 			parseEnd = ac.GetCaptureInfo().Timestamp
@@ -175,33 +229,15 @@ func (f *tcpFlow) reassembledWithIgnore(ignoreCount int, sg reassembly.ScatterGa
 			// appear when we have called FlushCloseOlderThan, it would
 			// probably be misleading.
 			// TODO: what else can we log here to help identify what's going on?
-			printer.V(6).Infof("AssemblerContext is nil for packet started at %v\n", parseStart)
+			printer.V(6).Infof("AssemblerContext is nil for packet started at %v\n", f.parseStart)
 			f.stream.stats.IncrNilAssemblerContextAfterParse()
-			parseEnd = parseStart
+			parseEnd = f.parseStart
 		}
-		f.stream.sink.Enqueue(f.toPNT(parseStart, parseEnd, pnc))
+		f.stream.sink.Enqueue(f.toPNT(f.parseStart, parseEnd, pnc))
 
 		f.currentPairKind = pairAllocNone
 		f.currentParser = nil
-		f.currentParserCtx = nil
-
-		if unused.Len() > 0 {
-			// Any unused bytes must be from the latest call to Parse, or else Parse
-			// would've returned done in the previous call.
-			if isEnd {
-				// This is the last chance we can parse the unused portion of data.
-				// Don't just treat as RawBytes in case 2 pieces of parsable content
-				// arrived on the same packet.
-				f.reassembledWithIgnore(bytesAvailable-int(unused.Len()), sg, ac)
-				return
-			} else {
-				sg.KeepFrom(bytesAvailable - int(unused.Len()))
-			}
-		}
-	} else {
-		// Parsing not done, resume after new reassembled data becomes available.
-		// No need to call sg.KeepFrom because all the bytes are held by the parser
-		// and returned to us later if the parser runs into an error.
+		f.parseStart = time.Time{}
 	}
 }
 
@@ -226,28 +262,27 @@ func (f *tcpFlow) reassemblyComplete() {
 	if f.currentParser != nil {
 		// We were in the middle of parsing something, give up.
 		pnc, unused, numBytesConsumed, err := f.currentParser.Parse(memview.New(nil), true)
-		t := f.currentParserCtx.GetCaptureInfo().Timestamp
 		if err != nil {
-			f.handleUnparseable(t, numBytesConsumed)
+			f.handleUnparseable(f.parseStart, numBytesConsumed)
 			f.rollbackCurrentPairSeq()
 		} else if pnc != nil {
-			printer.V(6).Infof("ReassemblyComplete parsed additional network traffic with ts: %v", t)
-			f.stream.sink.Enqueue(f.toPNT(t, t, pnc))
+			printer.V(6).Infof("ReassemblyComplete parsed additional network traffic with ts: %v", f.parseStart)
+			f.stream.sink.Enqueue(f.toPNT(f.parseStart, f.parseStart, pnc))
 			f.currentPairKind = pairAllocNone
-			f.handleUnparseable(t, unused.Len())
+			f.handleUnparseable(f.parseStart, unused.Len())
 		} else {
 			// Forced end with no complete message — undo Accept-time allocation.
 			f.rollbackCurrentPairSeq()
 		}
 		f.currentParser = nil
-		f.currentParserCtx = nil
-	} else if f.unusedAcceptBuf.Len() > 0 {
+		f.parseStart = time.Time{}
+	} else if f.unparsedByteCnt > 0 {
 		// The flow terminated before a parser has been selected, flush any bytes
 		// that were buffered waiting for more data to determine parse.
 		// We estimate the time with current time instead of tracking a separate
 		// context since unusedAcceptBuf is unlikely to be used and is almost
 		// certainly very small in size.
-		f.stream.sink.Enqueue(f.toPNT(f.stream.clock.Now(), f.stream.clock.Now(), akinet.DroppedBytes(f.unusedAcceptBuf.Len())))
+		f.stream.sink.Enqueue(f.toPNT(f.stream.clock.Now(), f.stream.clock.Now(), akinet.DroppedBytes(f.unparsedByteCnt)))
 	}
 }
 
@@ -414,13 +449,13 @@ func (c *tcpStream) Accept(tcp *layers.TCP, _ gopacket.CaptureInfo, dir reassemb
 }
 
 // Handles reassmbled TCP stream data.
-func (c *tcpStream) ReassembledSG(sg reassembly.ScatterGather, ac reassembly.AssemblerContext) {
+func (c *tcpStream) ReassembledSG(sg reassembly.ScatterGather, _ reassembly.AssemblerContext) {
 	if c.flows == nil {
 		printer.Errorf("received reassembled TCP stream data before accept, dropping packets\n")
 		return
 	}
 	dir, _, _, _ := sg.Info()
-	c.flows[dir].reassembled(sg, ac)
+	c.flows[dir].reassembled(sg)
 }
 
 func (c *tcpStream) ReassemblyComplete(_ reassembly.AssemblerContext) bool {
