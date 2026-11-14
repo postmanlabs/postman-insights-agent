@@ -120,6 +120,16 @@ val agentJar = tasks.register<Jar>("agentJar") {
         includeEmptyDirs = false
         asClassData()
     }
+    // The Insights agent's own licence and notice go with every copy of the
+    // jar (Apache License 2.0, section 4); Byte Buddy's are under
+    // META-INF/licenses/byte-buddy/.
+    val legalFiles = listOf("LICENSE", "NOTICE").map { layout.projectDirectory.file("../$it").asFile }
+    from(legalFiles) {
+        into("META-INF")
+    }
+    doFirst {
+        legalFiles.forEach { require(it.isFile) { "missing ${it.path}: the jar must carry the repository's LICENSE and NOTICE" } }
+    }
     from(configurations.runtimeClasspath.map { cp -> cp.map { zipTree(it) } }) {
         include("META-INF/LICENSE", "META-INF/NOTICE", "META-INF/licenses/**")
         eachFile { path = path.replaceFirst("META-INF/", "META-INF/licenses/byte-buddy/") }
@@ -133,6 +143,7 @@ val agentJar = tasks.register<Jar>("agentJar") {
             "Can-Retransform-Classes" to "true",
             "Can-Redefine-Classes" to "true",
             "Implementation-Title" to "Postman Insights Java agent",
+            "Implementation-Vendor" to "Postman, Inc.",
             "Implementation-Version" to project.version,
         )
     }

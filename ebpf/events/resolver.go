@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Resolver maps (pid, fd) pairs into 4-tuple socket metadata by inspecting
 // /proc. Adapted from the older origin/feature/capture-https branch
 // (https/resolver.go) with these changes:

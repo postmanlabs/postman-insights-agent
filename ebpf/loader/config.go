@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 package loader
 
 // Config holds load-time configuration for the BPF programs. These values

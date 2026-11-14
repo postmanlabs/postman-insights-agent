@@ -1,4 +1,4 @@
-.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf generate-ebpf
+.PHONY: clean build test mock dev-shell dev-build dev-down docker-build docker-build-ebpf generate-ebpf check-license-headers
 
 .DEFAULT_GOAL := build
 
@@ -41,10 +41,10 @@ endif
 	go build -tags "$(BUILD_TAGS)" -o bin/postman-insights-agent .
 
 docker-build:
-	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile .
+	docker build --target bin --output type=local,dest=bin --provenance false -f build-scripts/Dockerfile .
 
 docker-build-ebpf:
-	docker build --target bin --output type=local,dest=bin,include=/postman-insights-agent --provenance false -f build-scripts/Dockerfile.ebpf-bin .
+	docker build --target bin --output type=local,dest=bin --provenance false -f build-scripts/Dockerfile.ebpf-bin .
 
 # --- Dev-container shortcuts for HTTPS-via-eBPF work on macOS. ---
 dev-build:
@@ -77,6 +77,10 @@ mock:
 
 test: mock
 	go test ./...
+
+# No file carries an SPDX line, and the BPF programs declare "GPL"; see the script.
+check-license-headers:
+	build-scripts/check-license-headers.sh
 
 # eBPF code sits behind the insights_bpf tag, so `make test` never compiles it.
 # Run the tagged tests explicitly. Requires a Linux host with the eBPF toolchain

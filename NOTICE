@@ -1,0 +1,12 @@
+Postman Insights Agent
+Copyright 2021-present Postman, Inc.
+
+This product includes software derived from OpenTelemetry eBPF
+Instrumentation (https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation),
+Copyright The OpenTelemetry Authors, licensed under the Apache License,
+Version 2.0: ebpf/programs/libssl.bpf.c is derived from its
+bpf/generictracer/libssl.c.
+
+The NOTICE of OpenTelemetry eBPF Instrumentation states that parts of it are
+copied from, derived from, or inspired by Grafana Beyla
+(https://github.com/grafana/beyla), Copyright Grafana Labs.
