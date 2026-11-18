@@ -9,7 +9,6 @@ import (
 	"github.com/akitasoftware/go-utils/optionals"
 	"github.com/google/gopacket"
 	_ "github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/pkg/errors"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
 	"github.com/postmanlabs/postman-insights-agent/printer"
@@ -23,20 +22,12 @@ const (
 	// a 65,549-byte frame. Such frames are common on lo (default MTU 64 KiB)
 	// and with GSO/GRO, and truncating them leaves TCP reassembly gaps.
 	defaultSnapLen = 262144
-	BlockForever   = pcap.BlockForever
 	pcapBufSize    = 32 * 1024 * 1024
 
-	// How long a capture read waits for packets before it checks whether the
-	// handle is being closed.
-	//
-	// Do not use BlockForever here. With a negative timeout gopacket leaves the
-	// socket in blocking mode, and a read holds the handle's lock until a packet
-	// arrives. Close waits for that lock, so on an interface that has gone quiet,
-	// such as a deleted pod's, Close never returns and the socket, its
-	// pcapBufSize ring and the pod's network namespace are never freed. A
-	// positive timeout makes gopacket switch the socket to non-blocking mode and
-	// wait at most this long per read.
-	pcapReadTimeout = 100 * time.Millisecond
+	// Not pcap.BlockForever: a blocking read holds the handle's lock until a
+	// packet arrives, so Close hangs on an idle interface (a deleted pod's) and
+	// leaks the socket, its ring and the pod's netns (INS-537).
+	ReadTimeout = 100 * time.Millisecond
 )
 
 type pcapWrapper interface {
@@ -50,7 +41,7 @@ type pcapImpl struct {
 }
 
 func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) (<-chan gopacket.Packet, error) {
-	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, pcapReadTimeout, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
+	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, ReadTimeout, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
 	if err != nil {
 		return nil, err
 	}
