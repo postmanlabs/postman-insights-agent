@@ -21,13 +21,15 @@ import (
 // goes quiet, and a handle that is never closed keeps its socket, its
 // pcapBufSize ring and the pod's network namespace alive (INS-537).
 func TestCapturePacketsReleasesHandleOnIdleInterface(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("needs root to create a network namespace and open a capture socket")
-	}
-
 	// Capture goes through the same path as the DaemonSet: GetPcapHandle
 	// enters the namespace by its path, as it does for a pod.
-	netnsPath := newIdleNetns(t)
+	netnsPath, err := newIdleNetns(t)
+	if errors.Is(err, unix.EPERM) {
+		// Being root is not enough: an unprivileged container lacks
+		// CAP_SYS_ADMIN, which creating and bind-mounting a namespace needs.
+		t.Skipf("not permitted to set up a network namespace: %v", err)
+	}
+	require.NoError(t, err)
 
 	done := make(chan struct{})
 	p := &pcapImpl{}
@@ -55,13 +57,17 @@ func TestCapturePacketsReleasesHandleOnIdleInterface(t *testing.T) {
 
 // newIdleNetns creates a network namespace that holds only lo, brought up and
 // with nothing sending on it, and returns a path that refers to it.
-func newIdleNetns(t *testing.T) string {
+func newIdleNetns(t *testing.T) (string, error) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "netns")
 	f, err := os.Create(path)
-	require.NoError(t, err)
-	require.NoError(t, f.Close())
+	if err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -83,13 +89,15 @@ func newIdleNetns(t *testing.T) string {
 			return nil
 		}()
 	}()
-	require.NoError(t, <-errCh)
+	if err := <-errCh; err != nil {
+		return "", err
+	}
 
 	// Registered after t.TempDir, so it runs before the directory is removed.
 	t.Cleanup(func() {
 		_ = unix.Unmount(path, unix.MNT_DETACH)
 	})
-	return path
+	return path, nil
 }
 
 func setLinkUp(name string) error {
