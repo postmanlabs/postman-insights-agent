@@ -2,6 +2,7 @@ package pcap
 
 import (
 	"net"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/tags"
@@ -24,6 +25,18 @@ const (
 	defaultSnapLen = 262144
 	BlockForever   = pcap.BlockForever
 	pcapBufSize    = 32 * 1024 * 1024
+
+	// How long a capture read waits for packets before it checks whether the
+	// handle is being closed.
+	//
+	// Do not use BlockForever here. With a negative timeout gopacket leaves the
+	// socket in blocking mode, and a read holds the handle's lock until a packet
+	// arrives. Close waits for that lock, so on an interface that has gone quiet,
+	// such as a deleted pod's, Close never returns and the socket, its
+	// pcapBufSize ring and the pod's network namespace are never freed. A
+	// positive timeout makes gopacket switch the socket to non-blocking mode and
+	// wait at most this long per read.
+	pcapReadTimeout = 100 * time.Millisecond
 )
 
 type pcapWrapper interface {
@@ -37,7 +50,7 @@ type pcapImpl struct {
 }
 
 func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) (<-chan gopacket.Packet, error) {
-	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
+	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, pcapReadTimeout, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +87,12 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 		<-statsStopped
 
 		handle.Close()
+
+		// The caller stops reading once done is closed. Drain the channel so
+		// gopacket's reader goroutine is not left blocked on a full channel; it
+		// closes the channel and exits once its next read sees the handle closed.
+		for range pktChan {
+		}
 	}()
 	return pktChan, nil
 }
