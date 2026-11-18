@@ -89,6 +89,13 @@ jobs:
             echo "$sha256  /tmp/test-jdk.tar.gz" | sha256sum -c -
             mkdir -p /tmp/test-jdk
             tar -xzf /tmp/test-jdk.tar.gz -C /tmp/test-jdk --strip-components=1
+            # The image sets JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics, which
+            # every JVM reads. JDK 8 has no Base64 intrinsic and no such flag,
+            # and will not start with it, so the JDK 8 job runs without it.
+            if [ "<< parameters.test-jdk >>" = 8 ]; then
+              echo 'unset JAVA_TOOL_OPTIONS' >> "$BASH_ENV"
+              unset JAVA_TOOL_OPTIONS
+            fi
             /tmp/test-jdk/bin/java -version
       - run:
           name: Build and test the Java agent
