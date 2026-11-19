@@ -57,6 +57,7 @@ type containerConfig struct {
 	dropNginxTraffic        string
 	agentRateLimit          string
 	alwaysCapturePayloads   string
+	recordAll               string
 	serviceName             string // POSTMAN_INSIGHTS_SERVICE_NAME (per-pod override for discovery mode)
 }
 
@@ -443,6 +444,9 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if alwaysCapturePayloads, exists := envVars[POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS]; exists {
 			containerEnvVars.alwaysCapturePayloads = alwaysCapturePayloads
 		}
+		if recordAll, exists := envVars[POSTMAN_INSIGHTS_RECORD_ALL]; exists {
+			containerEnvVars.recordAll = recordAll
+		}
 		if svcName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
 			containerEnvVars.serviceName = svcName
 		}
@@ -546,6 +550,10 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainContainerConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
+	// Capture payloads for successful responses too, not just errors. Only
+	// reached when Repro Mode is on, which record-all requires.
+	podArgs.RecordAll = parseBoolConfig(mainContainerConfig.recordAll, "recordAll", pod.Name, false)
 
 	return nil
 }
@@ -651,6 +659,10 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 	}
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
+	// Capture payloads for successful responses too, not just errors. Only
+	// reached when Repro Mode is on, which record-all requires.
+	podArgs.RecordAll = parseBoolConfig(mainConfig.recordAll, "recordAll", pod.Name, false)
 
 	return nil
 }

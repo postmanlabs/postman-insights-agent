@@ -415,6 +415,49 @@ func TestApplyDiscoveryModeConfig_OptionalConfigsApplied(t *testing.T) {
 	assert.Equal(t, []string{"/health", "/ready"}, podArgs.AlwaysCapturePayloads)
 }
 
+func TestApplyDiscoveryModeConfig_RecordAll(t *testing.T) {
+	newDaemonset := func(reproMode bool) *Daemonset {
+		return &Daemonset{
+			DiscoveryMode:            true,
+			InsightsAPIKey:           "ds-api-key",
+			InsightsReproModeEnabled: reproMode,
+			InsightsRateLimit:        42.0,
+			ClusterName:              "test-cluster",
+		}
+	}
+
+	testCases := []struct {
+		name string
+		// Repro Mode at the DaemonSet level.
+		reproMode bool
+		// POSTMAN_INSIGHTS_RECORD_ALL on the pod.
+		recordAll string
+		expected  bool
+	}{
+		{"unset defaults to off", true, "", false},
+		{"set to true", true, "true", true},
+		{"set to false", true, "false", false},
+		{"unparseable value defaults to off", true, "yes-please", false},
+		// Repro Mode off means the function returns before record-all is
+		// applied, so the pod cannot opt into payloads on its own.
+		{"ignored when repro mode is off at the DaemonSet", false, "true", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := testPod("my-pod", "default")
+			podArgs := NewPodArgs(pod.Name)
+
+			err := newDaemonset(tc.reproMode).applyDiscoveryModeConfig(pod, podArgs, containerConfig{
+				recordAll: tc.recordAll,
+			})
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.expected, podArgs.RecordAll)
+		})
+	}
+}
+
 func TestApplyDiscoveryModeConfig_BothWorkspaceAndProjectID_Error(t *testing.T) {
 	validUUID := "12345678-1234-1234-1234-123456789abc"
 	validServiceID := akid.GenerateServiceID()
