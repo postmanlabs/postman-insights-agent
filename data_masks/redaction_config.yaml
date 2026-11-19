@@ -184,6 +184,7 @@ sensitive_value_regexes:
 - (?i)\bpat[pA-Za-z0-9]{14}\.[A-Za-z0-9]{64}\b
 - (?i)api-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 - \b(xprv|yprv|zprv|dprv|Ltpv)[1-9A-HJ-NP-Za-km-z]{107}\b
+- \b(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}(?:(?:/|%2[Ff])\d{8}(?:/|%2[Ff])[a-z0-9-]+(?:/|%2[Ff])[a-z0-9-]+(?:/|%2[Ff])aws4_request|)\b
 ignored_keys:
 - clientId
 - value
