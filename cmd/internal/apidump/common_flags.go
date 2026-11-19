@@ -18,6 +18,7 @@ type CommonApidumpFlags struct {
 	SendWitnessPayloads   bool
 	EnableReproMode       bool
 	AlwaysCapturePayloads []string
+	RecordAll             bool
 }
 
 func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
@@ -103,6 +104,14 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 	)
 	_ = cmd.PersistentFlags().MarkHidden("always-capture-payloads")
 
+	cmd.PersistentFlags().BoolVar(
+		&flags.RecordAll,
+		"record-all",
+		false,
+		"Send request and response payloads for all responses, not just errors. Implies --repro-mode.",
+	)
+	_ = cmd.PersistentFlags().MarkHidden("record-all")
+
 	return flags
 }
 
@@ -127,6 +136,10 @@ func ConvertCommonApiDumpFlagsToArgs(flags *CommonApidumpFlags) []string {
 
 	if flags.EnableReproMode {
 		commonApidumpArgs = append(commonApidumpArgs, "--repro-mode")
+	}
+
+	if flags.RecordAll {
+		commonApidumpArgs = append(commonApidumpArgs, "--record-all")
 	}
 
 	// Add slice type flags to the entry point.

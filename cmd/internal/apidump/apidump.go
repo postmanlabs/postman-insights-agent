@@ -326,9 +326,12 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 		DropNginxTraffic:        viper.GetBool("drop-nginx-traffic"),
 
 		// TODO: remove the SendWitnessPayloads flag once all existing users are migrated to new flag.
-		ReproMode: commonApidumpFlags.EnableReproMode || commonApidumpFlags.SendWitnessPayloads,
+		// --record-all implies repro mode: without it the collector zeroes every
+		// primitive before upload and record-all would silently do nothing.
+		ReproMode: commonApidumpFlags.EnableReproMode || commonApidumpFlags.SendWitnessPayloads || commonApidumpFlags.RecordAll,
 
 		AlwaysCapturePayloads: commonApidumpFlags.AlwaysCapturePayloads,
+		RecordAll:             commonApidumpFlags.RecordAll,
 
 		DiscoveryMode: apidumpDiscoveryMode,
 		ServiceName:   apidumpServiceName,

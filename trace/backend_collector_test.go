@@ -235,6 +235,7 @@ func TestRedact(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		optionals.None[[]string](),
+		false,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -587,6 +588,7 @@ func TestTiming(t *testing.T) {
 				NewPacketCounter(),
 				false,
 				optionals.None[[]string](),
+				false,
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
@@ -630,6 +632,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		optionals.None[[]string](),
+		false,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -787,6 +790,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		NewPacketCounter(),
 		true,
 		optionals.None[[]string](),
+		false,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -959,6 +963,7 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 		NewPacketCounter(),
 		true,
 		optionals.Some([]string{"/v1/doggos"}),
+		false,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -1039,6 +1044,148 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 	}
 
 	rec.assertExpectedWitnesses(t, expectedWitnesses)
+}
+
+// A successful response's payload only reaches the upload when record-all is
+// set. With repro mode alone the collector zeroes every primitive for a 2xx,
+// which is what TestOnlyRedactNonErrorResponses covers from the other side.
+func TestRecordAllCapturesSuccessfulPayloads(t *testing.T) {
+	testCases := []struct {
+		name string
+		// Whether the collector is built with record-all.
+		recordAll bool
+		// Whether the uploaded witness is expected to keep its payload values.
+		expectPayload bool
+	}{
+		{"record-all keeps a successful response's payload", true, true},
+		{"without record-all a successful response is zeroed", false, false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockClient := mockrest.NewMockLearnClient(ctrl)
+			defer ctrl.Finish()
+
+			rec := newWitnessRecorder()
+			mockClient.
+				EXPECT().
+				AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
+				Do(rec.recordAsyncReportsUpload).
+				AnyTimes().
+				Return(nil)
+
+			mockClient.
+				EXPECT().
+				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+				AnyTimes().
+				Return(kgxapi.NewServiceAgentConfig(), nil)
+
+			streamID := uuid.New()
+			req := akinet.ParsedNetworkTraffic{
+				Content: akinet.HTTPRequest{
+					StreamID: streamID,
+					Seq:      1203,
+					Method:   "POST",
+					URL: &url.URL{
+						Path: "/v1/doggos",
+					},
+					Host: "example.com",
+					Header: map[string][]string{
+						"Content-Type": {"application/json"},
+					},
+					Body: memview.New([]byte(`{"name": "prince", "number": 6119717375543385000}`)),
+				},
+			}
+
+			resp := akinet.ParsedNetworkTraffic{
+				Content: akinet.HTTPResponse{
+					StreamID:   streamID,
+					Seq:        1203,
+					StatusCode: 200,
+					Header: map[string][]string{
+						"Content-Type": {"application/json"},
+					},
+					Body: memview.New([]byte(`{"homes": ["burbank, ca", "jeuno, ak", "versailles"]}`)),
+				},
+			}
+
+			redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
+			assert.NoError(t, err)
+
+			col := NewBackendCollector(
+				fakeSvc,
+				map[tags.Key]string{},
+				fakeLrn,
+				mockClient,
+				redactor,
+				optionals.None[int](),
+				NewPacketCounter(),
+				// record-all implies repro mode; without payloads enabled the
+				// collector zeroes everything regardless of record-all.
+				true,
+				optionals.None[[]string](),
+				tc.recordAll,
+				nil,
+				apispec.DefaultMaxWintessUploadBuffers,
+				telemetry.Default(),
+				TelemetryOptions{Stats: capturestats.New()},
+			)
+			assert.NoError(t, col.Process(req))
+			assert.NoError(t, col.Process(resp))
+			assert.NoError(t, col.Close())
+
+			// The payload values the witness is expected to carry, and the
+			// obfuscation marker the backend reads to tell the two apart.
+			expectedName := spec_util.NewPrimitiveString("")
+			expectedNumber := spec_util.NewPrimitiveInt64(0)
+			expectedHomes := []string{"", "", ""}
+			expectedObfuscation := pb.HTTPMethodMeta_ZERO_VALUE
+			if tc.expectPayload {
+				expectedName = spec_util.NewPrimitiveString("prince")
+				expectedNumber = spec_util.NewPrimitiveInt64(6119717375543385000)
+				expectedHomes = []string{"burbank, ca", "jeuno, ak", "versailles"}
+				expectedObfuscation = pb.HTTPMethodMeta_NONE
+			}
+
+			expectedWitnesses := []*pb.Witness{
+				{
+					Method: &pb.Method{
+						Id: &pb.MethodID{
+							ApiType: pb.ApiType_HTTP_REST,
+						},
+						Args: map[string]*pb.Data{
+							"nxnOc5Qy3D4=": newTestBodySpecFromStruct(0, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+								"name":   dataFromPrimitive(expectedName),
+								"number": dataFromPrimitive(expectedNumber),
+							}),
+						},
+						Responses: map[string]*pb.Data{
+							"AyBUQkT0SHU=": newTestBodySpecFromStruct(200, pb.HTTPBody_JSON, "application/json", map[string]*pb.Data{
+								"homes": dataFromList(
+									dataFromPrimitive(spec_util.NewPrimitiveString(expectedHomes[0])),
+									dataFromPrimitive(spec_util.NewPrimitiveString(expectedHomes[1])),
+									dataFromPrimitive(spec_util.NewPrimitiveString(expectedHomes[2])),
+								),
+							}),
+						},
+						Meta: &pb.MethodMeta{
+							Meta: &pb.MethodMeta_Http{
+								Http: &pb.HTTPMethodMeta{
+									Method:       "POST",
+									PathTemplate: "/v1/doggos",
+									Host:         "example.com",
+									Obfuscation:  expectedObfuscation,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			rec.assertExpectedWitnesses(t, expectedWitnesses)
+		})
+	}
 }
 
 func TestRedactionConfigs(t *testing.T) {
@@ -1781,6 +1928,7 @@ func TestRedactionConfigs(t *testing.T) {
 			NewPacketCounter(),
 			true,
 			optionals.None[[]string](),
+			false,
 			nil,
 			apispec.DefaultMaxWintessUploadBuffers,
 			telemetry.Default(),
@@ -2270,6 +2418,7 @@ func TestEventTimestampsStampedBothArrivalOrders(t *testing.T) {
 				NewPacketCounter(),
 				false,
 				optionals.None[[]string](),
+				false,
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),

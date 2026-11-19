@@ -46,6 +46,7 @@ type PodArgs struct {
 	DropNginxTraffic      bool
 	AgentRateLimit        float64
 	AlwaysCapturePayloads []string
+	RecordAll             bool
 
 	// API Catalog: workspace and system environment (not credentials)
 	WorkspaceID string // Workspace UUID for API Catalog integration

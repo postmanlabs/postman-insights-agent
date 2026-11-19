@@ -330,6 +330,10 @@ type Args struct {
 	// Always capture request and response payloads for the given paths.
 	AlwaysCapturePayloads []string
 
+	// Whether to send payloads for successful responses as well as errors.
+	// Has no effect unless ReproMode is also set.
+	RecordAll bool
+
 	// Whether to drop traffic to/from nginx
 	DropNginxTraffic bool
 
@@ -1314,6 +1318,7 @@ func (a *apidump) Run() error {
 						summary,
 						args.ReproMode,
 						optionals.Some(args.AlwaysCapturePayloads),
+						args.RecordAll,
 						args.Plugins,
 						args.MaxWitnessUploadBuffers,
 						apidumpAmplitudeTelemetry,
@@ -1474,6 +1479,7 @@ func (a *apidump) Run() error {
 			httpsSummary,
 			args.ReproMode,
 			optionals.Some(args.AlwaysCapturePayloads),
+			args.RecordAll,
 			args.Plugins,
 			args.MaxWitnessUploadBuffers,
 			apidumpAmplitudeTelemetry,

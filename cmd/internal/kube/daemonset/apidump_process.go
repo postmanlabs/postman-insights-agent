@@ -167,6 +167,7 @@ func (d *Daemonset) StartApiDumpProcess(podUID types.UID) error {
 			DropNginxTraffic:        podArgs.DropNginxTraffic,
 			MaxWitnessUploadBuffers: apispec.DefaultMaxWintessUploadBuffers,
 			AlwaysCapturePayloads:   podArgs.AlwaysCapturePayloads,
+			RecordAll:               podArgs.RecordAll,
 			WorkspaceID:             podArgs.WorkspaceID,
 			SystemEnv:               podArgs.SystemEnv,
 			DiscoveryMode:           podArgs.DiscoveryMode,
