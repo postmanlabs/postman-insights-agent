@@ -1,7 +1,11 @@
 package pcap
 
 import (
+	"io"
 	"net"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/tags"
@@ -22,8 +26,15 @@ const (
 	// a 65,549-byte frame. Such frames are common on lo (default MTU 64 KiB)
 	// and with GSO/GRO, and truncating them leaves TCP reassembly gaps.
 	defaultSnapLen = 262144
-	BlockForever   = pcap.BlockForever
 	pcapBufSize    = 32 * 1024 * 1024
+
+	// The same as gopacket's PacketSource.Packets().
+	packetChanSize = 1000
+
+	// Not pcap.BlockForever: a blocking read holds the handle's lock until a
+	// packet arrives, so Close hangs on an idle interface (a deleted pod's) and
+	// leaks the socket, its ring and the pod's netns (INS-537).
+	ReadTimeout = 100 * time.Millisecond
 )
 
 type pcapWrapper interface {
@@ -37,7 +48,7 @@ type pcapImpl struct {
 }
 
 func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter string, targetNetworkNamespaceOpt optionals.Optional[string], stats *capturestats.Stats, telemetryCountReporter func(string, uint64)) (<-chan gopacket.Packet, error) {
-	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, BlockForever, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
+	handle, err := GetPcapHandle(interfaceName, defaultSnapLen, true, ReadTimeout, optionals.Some[int32](pcapBufSize), targetNetworkNamespaceOpt)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +64,6 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 	// be confident that pakcets are being watched after this function returns.
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.NoCopy = true
-	pktChan := packetSource.Packets()
 
 	// Watch libpcap's own capture counters, which tell us whether the kernel is
 	// discarding packets before we ever see them. See capture_stats.go.
@@ -64,18 +74,76 @@ func (p *pcapImpl) capturePackets(done <-chan struct{}, interfaceName, bpfFilter
 		pollPcapStats(handle, interfaceName, stats, statsDone, telemetryCountReporter)
 	}()
 
+	// Read packets in our own loop rather than with packetSource.Packets(),
+	// whose goroutine has no stop signal: it blocks on a full channel once the
+	// consumer stops reading, and Close must wait for its read in progress.
+	// Here one goroutine owns the handle and closes it only after its last read.
+	pktChan := make(chan gopacket.Packet, packetChanSize)
 	go func() {
-		<-done
+		defer func() {
+			// Wait for the stats poller to return before closing the handle:
+			// pcap_stats dereferences the handle without locking, so a sample in
+			// flight during Close is a use-after-free.
+			close(statsDone)
+			<-statsStopped
 
-		// Wait for the stats poller to return before closing the handle:
-		// pcap_stats dereferences the handle without locking, so a sample in
-		// flight during Close is a use-after-free.
-		close(statsDone)
-		<-statsStopped
-
-		handle.Close()
+			// No read is in flight, so Close returns at once. Close the channel
+			// after it, so a closed channel means the handle is released.
+			handle.Close()
+			close(pktChan)
+		}()
+		readPackets(done, packetSource, pktChan)
 	}()
 	return pktChan, nil
+}
+
+// readPackets sends the packets read from src to out until done is closed or
+// the source ends. Reads return at least every ReadTimeout, so an idle
+// interface still sees done promptly.
+func readPackets(done <-chan struct{}, src *gopacket.PacketSource, out chan<- gopacket.Packet) {
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+
+		pkt, err := src.NextPacket()
+		switch {
+		case err == nil:
+			select {
+			case out <- pkt:
+			case <-done:
+				return
+			}
+		case err == pcap.NextErrorTimeoutExpired:
+			// No packets within ReadTimeout; check done and read again.
+		case isUnrecoverableReadError(err):
+			return
+		case isTemporaryReadError(err):
+			// Retry at once, as gopacket's own reader does.
+		default:
+			// Retry after a short pause, as gopacket's own reader does.
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+// The errors on which gopacket's own reader stops, such as io.EOF once the
+// handle is closed.
+func isUnrecoverableReadError(err error) bool {
+	return err == io.EOF || err == io.ErrUnexpectedEOF ||
+		err == io.ErrNoProgress || err == io.ErrClosedPipe || err == io.ErrShortBuffer ||
+		err == syscall.EBADF ||
+		strings.Contains(err.Error(), "use of closed file")
+}
+
+// The errors on which gopacket's own reader retries at once.
+func isTemporaryReadError(err error) bool {
+	if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
+		return true
+	}
+	return err == syscall.EAGAIN
 }
 
 func (p *pcapImpl) getInterfaceAddrs(interfaceName string) ([]net.IP, error) {
