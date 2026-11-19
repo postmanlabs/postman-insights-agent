@@ -173,8 +173,94 @@ func TestShouldCapturePayloadWithPostmanTeam(t *testing.T) {
 		},
 	}
 
-	result := shouldCapturePayload(witness, []*regexp.Regexp{regexp.MustCompile("/v1/chat/completions")})
+	result := shouldCapturePayload(witness, []*regexp.Regexp{regexp.MustCompile("/v1/chat/completions")}, false)
 	if !result {
 		t.Errorf("shouldCapturePayload() = false, expected true for Postman internal team")
+	}
+}
+
+// Builds a witness for a plain, non-Cloud-API endpoint with the given response
+// code and no always-capture headers.
+func witnessWithResponseCode(code int32) *pb.Witness {
+	return &pb.Witness{
+		Method: &pb.Method{
+			Meta: &pb.MethodMeta{
+				Meta: &pb.MethodMeta_Http{
+					Http: &pb.HTTPMethodMeta{
+						Method:       "GET",
+						PathTemplate: "/v1/users/{id}",
+						Host:         "api.example.com",
+					},
+				},
+			},
+			Responses: map[string]*pb.Data{
+				"response": {
+					Meta: &pb.DataMeta{
+						Meta: &pb.DataMeta_Http{
+							Http: &pb.HTTPMeta{
+								ResponseCode: code,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestShouldCapturePayloadRecordAll(t *testing.T) {
+	tests := []struct {
+		name      string
+		code      int32
+		recordAll bool
+		expected  bool
+	}{
+		{"success without record-all is not captured", 200, false, false},
+		{"success with record-all is captured", 200, true, true},
+		{"client error is captured without record-all", 404, false, true},
+		{"server error is captured without record-all", 500, false, true},
+		{"client error still captured with record-all", 404, true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := shouldCapturePayload(witnessWithResponseCode(tt.code), nil, tt.recordAll)
+			if result != tt.expected {
+				t.Errorf("shouldCapturePayload() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// record-all must not override the Cloud API exclusions, which exist to keep
+// environment secrets out of Repro Mode entirely.
+func TestShouldCapturePayloadRecordAllRespectsExclusions(t *testing.T) {
+	witness := &pb.Witness{
+		Method: &pb.Method{
+			Meta: &pb.MethodMeta{
+				Meta: &pb.MethodMeta_Http{
+					Http: &pb.HTTPMethodMeta{
+						Method:       "GET",
+						PathTemplate: "/environments/{environment}",
+						Host:         "api.getpostman.com",
+					},
+				},
+			},
+			Responses: map[string]*pb.Data{
+				"response": {
+					Meta: &pb.DataMeta{
+						Meta: &pb.DataMeta_Http{
+							Http: &pb.HTTPMeta{
+								ResponseCode: 200,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if shouldCapturePayload(witness, nil, true) {
+		t.Errorf("shouldCapturePayload() = true, expected false for an excluded Cloud API path even with record-all")
 	}
 }

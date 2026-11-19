@@ -105,20 +105,28 @@ func hasOnlyErrorResponses(method *pb.Method) bool {
 }
 
 // Returns true if the witness payload should be captured.
-func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex []*regexp.Regexp) bool {
+//
+// When recordAll is true, payloads are captured for every response code, not
+// just errors. The Cloud API exclusions in step 1 still apply.
+func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex []*regexp.Regexp, recordAll bool) bool {
 	// Step 1: Check if the witness should be excluded from Repro Mode.
 	if excludeWitnessFromReproMode(witness.GetMethod()) {
 		return false
 	}
 
-	// Step 2: Check if the method path matches the always capture payloads regex.
+	// Step 2: Capture everything that survived the exclusions above.
+	if recordAll {
+		return true
+	}
+
+	// Step 3: Check if the method path matches the always capture payloads regex.
 	// Hack: We are using `alwaysCapturePayloads` arg to always capture payloads for LLM calls.
 	// But, since we are not allowed to do that on Portkey production, we add the postman internal team check.
 	if hasMatchingPath(witness, alwaysCapturePayloadsPathsRegex) {
 		return isPostmanInternalTeam(witness)
 	}
 
-	// Step 3: Check if the method has only error responses.
+	// Step 4: Check if the method has only error responses.
 	if hasOnlyErrorResponses(witness.GetMethod()) {
 		return true
 	}
