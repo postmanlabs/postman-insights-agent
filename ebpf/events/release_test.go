@@ -74,11 +74,16 @@ func TestAdapter_GCForgetsFlowMidBody_NextResponseKeepsBody(t *testing.T) {
 	a := NewAdapter(fs, out)
 
 	feed(t, a, 4848, 0xA, DirEgress, []byte("HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\npartia"))
-	if n := a.GC(time.Unix(0, 0).Add(time.Hour), 30*time.Second); n != 1 {
+	gcAt := time.Unix(0, 0).Add(time.Hour)
+	if n := a.GC(gcAt, 30*time.Second); n != 1 {
 		t.Fatalf("GC forgot %d flows, want 1", n)
 	}
 	for len(out) > 0 {
-		ReleaseBuffers((<-out).Content) // as the pump does
+		m := <-out
+		if !m.FinalPacketTime.Before(gcAt.Add(-30 * time.Second)) {
+			t.Errorf("FinalPacketTime %v is the GC time, want the last packet's time", m.FinalPacketTime)
+		}
+		ReleaseBuffers(m.Content)
 	}
 
 	feed(t, a, 4848, 0xB, DirEgress, []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))

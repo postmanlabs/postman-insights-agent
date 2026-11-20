@@ -575,7 +575,7 @@ func (a *Adapter) GC(now time.Time, maxIdle time.Duration) int {
 	dropped := 0
 	for k, st := range a.flows {
 		if now.Sub(st.lastSeen) > maxIdle {
-			a.finishMessage(k, st, now)
+			a.finishMessage(k, st, st.lastSeen)
 			a.forgetFlow(k, st)
 			dropped++
 		}
