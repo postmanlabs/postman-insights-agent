@@ -565,6 +565,9 @@ func (h *httpsCapture) start(
 			if err := collector.Process(pnt); err != nil {
 				printer.Stderr.Warningf("ebpf: collector.Process: %v\n", err)
 			}
+			// The pod's buffer pool is bounded, and the collectors are done with
+			// the body once Process returns.
+			events.ReleaseBuffers(pnt.Content)
 		}
 	}()
 
