@@ -4,6 +4,7 @@ package events
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -59,4 +60,53 @@ func TestReleaseBuffers_OneChunkPool(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A flow forgotten by GC mid-body (libssl has no close event) must give its
+// pool chunks back, or later responses on other flows lose their bodies.
+func TestAdapter_GCForgetsFlowMidBody_NextResponseKeepsBody(t *testing.T) {
+	pool, err := buffer_pool.MakeBufferPool(4096, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := akinet.TCPParserFactorySelector{akihttp.NewHTTPRequestParserFactory(pool), akihttp.NewHTTPResponseParserFactory(pool)}
+	out := make(chan akinet.ParsedNetworkTraffic, 8)
+	a := NewAdapter(fs, out)
+
+	feed(t, a, 4848, 0xA, DirEgress, []byte("HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\npartia"))
+	if n := a.GC(time.Unix(0, 0).Add(time.Hour), 30*time.Second); n != 1 {
+		t.Fatalf("GC forgot %d flows, want 1", n)
+	}
+	for len(out) > 0 {
+		ReleaseBuffers((<-out).Content) // as the pump does
+	}
+
+	feed(t, a, 4848, 0xB, DirEgress, []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+	select {
+	case m := <-out:
+		if n := m.Content.(akinet.HTTPResponse).Body.Len(); n != 2 {
+			t.Fatalf("next response body length %d, want 2: the forgotten flow kept the pool's only chunk", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("next response not emitted")
+	}
+}
+
+// Close must end a parser left mid-body, whose goroutine would otherwise
+// block on its pipe and hold its pool chunks for the life of the process.
+func TestAdapter_CloseWithFlowMidBody_ParserGoroutineEnds(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	before := runtime.NumGoroutine()
+	feed(t, a, 4848, 0xA, DirEgress, []byte("HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\npartia"))
+	if runtime.NumGoroutine() <= before {
+		t.Fatal("no parser goroutine started")
+	}
+	a.Close()
+	for range 50 {
+		if runtime.NumGoroutine() <= before {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("goroutines %d after Close, want <= %d", runtime.NumGoroutine(), before)
 }

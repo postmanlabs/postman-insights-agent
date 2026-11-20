@@ -575,6 +575,7 @@ func (a *Adapter) GC(now time.Time, maxIdle time.Duration) int {
 	dropped := 0
 	for k, st := range a.flows {
 		if now.Sub(st.lastSeen) > maxIdle {
+			a.finishMessage(k, st, now)
 			a.forgetFlow(k, st)
 			dropped++
 		}
@@ -645,6 +646,17 @@ func (a *Adapter) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.closed = true
+	// An unfinished HTTP/1 parser's goroutine blocks forever holding its body
+	// chunks; end it, but don't emit, since Out may be closed right after.
+	for _, st := range a.flows {
+		if st.parser == nil {
+			continue
+		}
+		if result, _, _, err := st.parser.Parse(memview.New(nil), true); err == nil && result != nil {
+			ReleaseBuffers(result)
+		}
+		st.parser = nil
+	}
 }
 
 // CloseFlow forgets state for one flow.
