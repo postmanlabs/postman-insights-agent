@@ -334,6 +334,20 @@ type Args struct {
 	// Has no effect unless ReproMode is also set.
 	RecordAll bool
 
+	// How long record-all payload capture stays on. Zero means "for as long as
+	// the agent runs", which is only appropriate for a local capture.
+	RecordAllWindow time.Duration
+
+	// How often the record-all window reopens. Zero means one-shot: capture for
+	// RecordAllWindow once, starting at agent start, and never again.
+	RecordAllEvery time.Duration
+
+	// Regexes restricting record-all to specific hosts and request paths. Empty
+	// means "every host" / "every path", so a record-all capture with neither
+	// set captures successful payloads from every service on the interface.
+	RecordAllHosts []string
+	RecordAllPaths []string
+
 	// Whether to drop traffic to/from nginx
 	DropNginxTraffic bool
 
@@ -699,6 +713,36 @@ func (a *apidump) SendTelemetry(req *api_schema.PostClientPacketCaptureStatsRequ
 		printer.Stderr.Errorf("Failed to send telemetry statistics: %s\n", err)
 		apidumpAmplitudeTelemetry.Error("telemetry", err)
 	}
+}
+
+// buildRecordAllPolicy turns the record-all arguments into the policy the
+// collectors consult, or nil when record-all is off.
+//
+// Call this once per capture: the window counts from construction time.
+func (args *Args) buildRecordAllPolicy() *trace.RecordAllPolicy {
+	if !args.RecordAll {
+		return nil
+	}
+
+	window := trace.NewCaptureWindow(args.RecordAllWindow, args.RecordAllEvery)
+	policy := trace.NewRecordAllPolicy(window, args.RecordAllHosts, args.RecordAllPaths)
+
+	printer.Stderr.Infof("Record-all payload capture is ON, %s.\n", window.Describe())
+	if !policy.Scoped() {
+		printer.Stderr.Warningf(
+			"Record-all has no host or path allowlist, so it will capture successful response bodies " +
+				"from every service visible to this capture. Set --record-all-hosts and/or " +
+				"--record-all-paths to restrict it to the endpoints you mean to capture.\n",
+		)
+	}
+	if args.RecordAllWindow == 0 {
+		printer.Stderr.Warningf(
+			"Record-all has no capture window, so it stays on for the lifetime of this agent. " +
+				"Set --capture-window (e.g. 30m) to bound how much payload data is uploaded.\n",
+		)
+	}
+
+	return policy
 }
 
 // Clean up the arguments and warn about any modifications.
@@ -1272,6 +1316,11 @@ func (a *apidump) Run() error {
 	ebpfReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "ebpf")
 	pcapConnectionContext := trace.NewConnectionContextTracker(a.captureStats)
 
+	// Build the record-all policy once, not per collector: the capture window
+	// counts from the moment it is constructed, so one policy per collector
+	// would give each interface its own window phase.
+	recordAllPolicy := args.buildRecordAllPolicy()
+
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
 	for _, filterState := range []filterState{matchedFilter, notMatchedFilter} {
@@ -1318,7 +1367,7 @@ func (a *apidump) Run() error {
 						summary,
 						args.ReproMode,
 						optionals.Some(args.AlwaysCapturePayloads),
-						args.RecordAll,
+						recordAllPolicy,
 						args.Plugins,
 						args.MaxWitnessUploadBuffers,
 						apidumpAmplitudeTelemetry,
@@ -1479,7 +1528,7 @@ func (a *apidump) Run() error {
 			httpsSummary,
 			args.ReproMode,
 			optionals.Some(args.AlwaysCapturePayloads),
-			args.RecordAll,
+			recordAllPolicy,
 			args.Plugins,
 			args.MaxWitnessUploadBuffers,
 			apidumpAmplitudeTelemetry,

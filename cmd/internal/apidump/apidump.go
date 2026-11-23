@@ -332,6 +332,10 @@ func apidumpRunInternal(_ *cobra.Command, _ []string) error {
 
 		AlwaysCapturePayloads: commonApidumpFlags.AlwaysCapturePayloads,
 		RecordAll:             commonApidumpFlags.RecordAll,
+		RecordAllWindow:       commonApidumpFlags.CaptureWindow,
+		RecordAllEvery:        commonApidumpFlags.CaptureEvery,
+		RecordAllHosts:        commonApidumpFlags.RecordAllHosts,
+		RecordAllPaths:        commonApidumpFlags.RecordAllPaths,
 
 		DiscoveryMode: apidumpDiscoveryMode,
 		ServiceName:   apidumpServiceName,

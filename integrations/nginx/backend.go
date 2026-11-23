@@ -195,7 +195,7 @@ func NewNginxBackend(args *Args) (*NginxBackend, error) {
 		b.summary,
 		false,
 		optionals.None[[]string](),
-		false,
+		nil,
 		args.Plugins,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),

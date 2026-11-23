@@ -173,7 +173,7 @@ func TestShouldCapturePayloadWithPostmanTeam(t *testing.T) {
 		},
 	}
 
-	result := shouldCapturePayload(witness, []*regexp.Regexp{regexp.MustCompile("/v1/chat/completions")}, false)
+	result := shouldCapturePayload(witness, []*regexp.Regexp{regexp.MustCompile("/v1/chat/completions")}, nil)
 	if !result {
 		t.Errorf("shouldCapturePayload() = false, expected true for Postman internal team")
 	}
@@ -224,7 +224,7 @@ func TestShouldCapturePayloadRecordAll(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := shouldCapturePayload(witnessWithResponseCode(tt.code), nil, tt.recordAll)
+			result := shouldCapturePayload(witnessWithResponseCode(tt.code), nil, recordAllFromBool(tt.recordAll))
 			if result != tt.expected {
 				t.Errorf("shouldCapturePayload() = %v, expected %v", result, tt.expected)
 			}
@@ -260,7 +260,7 @@ func TestShouldCapturePayloadRecordAllRespectsExclusions(t *testing.T) {
 		},
 	}
 
-	if shouldCapturePayload(witness, nil, true) {
+	if shouldCapturePayload(witness, nil, alwaysRecordAll()) {
 		t.Errorf("shouldCapturePayload() = true, expected false for an excluded Cloud API path even with record-all")
 	}
 }
@@ -316,12 +316,12 @@ func TestShouldCapturePayloadRecordAllRespectsPostmanTeamCheck(t *testing.T) {
 	}
 
 	alwaysCapture := []*regexp.Regexp{regexp.MustCompile("/v1/chat/completions")}
-	if shouldCapturePayload(witness, alwaysCapture, true) {
+	if shouldCapturePayload(witness, alwaysCapture, alwaysRecordAll()) {
 		t.Errorf("shouldCapturePayload() = true, expected false for a non-internal team on an always-capture path even with record-all")
 	}
 
 	// With no always-capture paths configured, record-all captures it as normal.
-	if !shouldCapturePayload(witness, nil, true) {
+	if !shouldCapturePayload(witness, nil, alwaysRecordAll()) {
 		t.Errorf("shouldCapturePayload() = false, expected true with record-all and no always-capture paths")
 	}
 }

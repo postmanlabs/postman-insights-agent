@@ -2,6 +2,7 @@ package daemonset
 
 import (
 	"testing"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
@@ -454,6 +455,112 @@ func TestApplyDiscoveryModeConfig_RecordAll(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.expected, podArgs.RecordAll)
+		})
+	}
+}
+
+// The capture window and the record-all allowlists are read per pod, following
+// POSTMAN_INSIGHTS_RECORD_ALL. An unparseable duration falls back to zero,
+// which for the window means "no window" -- so a typo must be loud in the logs
+// rather than silently producing an unbounded capture.
+func TestApplyDiscoveryModeConfig_CaptureWindow(t *testing.T) {
+	d := &Daemonset{
+		DiscoveryMode:            true,
+		InsightsAPIKey:           "ds-api-key",
+		InsightsReproModeEnabled: true,
+		InsightsRateLimit:        42.0,
+		ClusterName:              "test-cluster",
+	}
+
+	testCases := []struct {
+		name         string
+		config       containerConfig
+		expectWindow time.Duration
+		expectEvery  time.Duration
+		expectHosts  []string
+		expectPaths  []string
+		// Every case here sets recordAll: "true"; only a malformed allowlist
+		// should turn it back off.
+		expectRecordAll bool
+	}{
+		{
+			name:            "unset leaves everything zero",
+			config:          containerConfig{recordAll: "true"},
+			expectRecordAll: true,
+		},
+		{
+			name: "window and period parse",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "30m",
+				captureEvery:  "24h",
+			},
+			expectWindow:    30 * time.Minute,
+			expectEvery:     24 * time.Hour,
+			expectRecordAll: true,
+		},
+		{
+			name: "unparseable duration defaults to zero",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "half an hour",
+			},
+			expectRecordAll: true,
+		},
+		{
+			name: "negative duration defaults to zero",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "-30m",
+			},
+			expectRecordAll: true,
+		},
+		{
+			// parseSliceConfig json.Unmarshals the value, matching
+			// POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS: these env vars take a
+			// JSON array, not a comma-separated list.
+			name: "allowlists parse as JSON arrays",
+			config: containerConfig{
+				recordAll:      "true",
+				captureWindow:  "15m",
+				recordAllHosts: `["mock.internal"]`,
+				recordAllPaths: `["^/v2/mocks(/|$)","^/mocks(/|$)"]`,
+			},
+			expectWindow:    15 * time.Minute,
+			expectHosts:     []string{"mock.internal"},
+			expectPaths:     []string{"^/v2/mocks(/|$)", "^/mocks(/|$)"},
+			expectRecordAll: true,
+		},
+		{
+			// A malformed allowlist must not degrade to "capture everything":
+			// record-all is switched off for the pod instead.
+			name: "a non-JSON allowlist disables record-all",
+			config: containerConfig{
+				recordAll:      "true",
+				captureWindow:  "15m",
+				recordAllPaths: "^/v2/mocks(/|$)",
+			},
+			expectWindow:    15 * time.Minute,
+			expectRecordAll: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := testPod("my-pod", "default")
+			podArgs := NewPodArgs(pod.Name)
+
+			err := d.applyDiscoveryModeConfig(pod, podArgs, tc.config)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.expectRecordAll, podArgs.RecordAll)
+			assert.Equal(t, tc.expectWindow, podArgs.CaptureWindow)
+			assert.Equal(t, tc.expectEvery, podArgs.CaptureEvery)
+			// parseSliceConfig returns an empty slice rather than nil for unset
+			// config, and the allowlists are match-any sets, so compare as
+			// elements rather than exact slice identity.
+			assert.ElementsMatch(t, tc.expectHosts, podArgs.RecordAllHosts)
+			assert.ElementsMatch(t, tc.expectPaths, podArgs.RecordAllPaths)
 		})
 	}
 }

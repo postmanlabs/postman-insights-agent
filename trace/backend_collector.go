@@ -300,9 +300,10 @@ type BackendCollector struct {
 	// Always capture request and response payloads for the given paths.
 	alwaysCapturePayloadsPathsRegex []*regexp.Regexp
 
-	// Whether to capture payloads for successful responses as well as errors.
+	// When non-nil, capture payloads for successful responses as well as
+	// errors, for the endpoints and the capture window this policy admits.
 	// Requires sendWitnessPayloads; on its own it has no effect.
-	recordAll bool
+	recordAll *RecordAllPolicy
 
 	plugins []plugin.AkitaPlugin
 
@@ -356,7 +357,7 @@ func NewBackendCollector(
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
 	alwaysCapturePayloads optionals.Optional[[]string],
-	recordAll bool,
+	recordAll *RecordAllPolicy,
 	plugins []plugin.AkitaPlugin,
 	uploadReportBuffers int,
 	amplitudeTelemetry telemetry.Tracker,

@@ -235,7 +235,7 @@ func TestRedact(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		optionals.None[[]string](),
-		false,
+		nil,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -588,7 +588,7 @@ func TestTiming(t *testing.T) {
 				NewPacketCounter(),
 				false,
 				optionals.None[[]string](),
-				false,
+				nil,
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
@@ -632,7 +632,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		NewPacketCounter(),
 		false,
 		optionals.None[[]string](),
-		false,
+		nil,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -790,7 +790,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		NewPacketCounter(),
 		true,
 		optionals.None[[]string](),
-		false,
+		nil,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -963,7 +963,7 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 		NewPacketCounter(),
 		true,
 		optionals.Some([]string{"/v1/doggos"}),
-		false,
+		nil,
 		nil,
 		apispec.DefaultMaxWintessUploadBuffers,
 		telemetry.Default(),
@@ -1050,15 +1050,30 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 // set. With repro mode alone the collector zeroes every primitive for a 2xx,
 // which is what TestOnlyRedactNonErrorResponses covers from the other side.
 func TestRecordAllCapturesSuccessfulPayloads(t *testing.T) {
+	// A window that opened long enough ago to have closed again, used to prove
+	// the window gates capture and not just the flag.
+	expiredWindow := func() *RecordAllPolicy {
+		return &RecordAllPolicy{
+			window: &CaptureWindow{start: time.Now().Add(-time.Hour), duration: time.Minute},
+		}
+	}
+	// The mock-service PoC shape: record-all restricted to the CRUD paths. The
+	// witness below is POST /v1/doggos, which is outside that allowlist.
+	outsideAllowlist := func() *RecordAllPolicy {
+		return NewRecordAllPolicy(NewCaptureWindow(0, 0), nil, []string{`^/v2/mocks(/|$)`})
+	}
+
 	testCases := []struct {
 		name string
-		// Whether the collector is built with record-all.
-		recordAll bool
+		// The record-all policy the collector is built with; nil means off.
+		policy func() *RecordAllPolicy
 		// Whether the uploaded witness is expected to keep its payload values.
 		expectPayload bool
 	}{
-		{"record-all keeps a successful response's payload", true, true},
-		{"without record-all a successful response is zeroed", false, false},
+		{"record-all keeps a successful response's payload", alwaysRecordAll, true},
+		{"without record-all a successful response is zeroed", func() *RecordAllPolicy { return nil }, false},
+		{"record-all with a closed capture window zeroes the payload", expiredWindow, false},
+		{"record-all outside the path allowlist zeroes the payload", outsideAllowlist, false},
 	}
 
 	for _, tc := range testCases {
@@ -1125,7 +1140,7 @@ func TestRecordAllCapturesSuccessfulPayloads(t *testing.T) {
 				// collector zeroes everything regardless of record-all.
 				true,
 				optionals.None[[]string](),
-				tc.recordAll,
+				tc.policy(),
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
@@ -1928,7 +1943,7 @@ func TestRedactionConfigs(t *testing.T) {
 			NewPacketCounter(),
 			true,
 			optionals.None[[]string](),
-			false,
+			nil,
 			nil,
 			apispec.DefaultMaxWintessUploadBuffers,
 			telemetry.Default(),
@@ -2418,7 +2433,7 @@ func TestEventTimestampsStampedBothArrivalOrders(t *testing.T) {
 				NewPacketCounter(),
 				false,
 				optionals.None[[]string](),
-				false,
+				nil,
 				nil,
 				apispec.DefaultMaxWintessUploadBuffers,
 				telemetry.Default(),
