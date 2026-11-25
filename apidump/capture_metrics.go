@@ -103,6 +103,8 @@ func (a *apidump) reportSourceFunnel(source string, currentStats, previousStats 
 	for k := capturestats.PNTKind(0); k < capturestats.PNTKindCount; k++ {
 		a.reportTelemetryCount(source+"_pnt_dropped_"+k.Name(), counterDelta(currentStats.PNTDroppedByKind[k], previousStats.PNTDroppedByKind[k]))
 	}
+
+	a.reportTelemetryCount(source+"_reassembly_gap_bytes", counterDelta(currentStats.ReassemblyGapBytes, previousStats.ReassemblyGapBytes))
 }
 
 func httpRequests(counts client_telemetry.PacketCounts) uint64 {
