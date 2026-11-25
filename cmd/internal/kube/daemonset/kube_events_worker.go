@@ -696,9 +696,14 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
 
-	// Capture payloads for successful responses too, not just errors. Only
-	// reached when Repro Mode is on, which record-all requires.
-	podArgs.RecordAll = parseBoolConfig(mainConfig.recordAll, "recordAll", pod.Name, false)
+	// Capture payloads for successful responses too, not just errors.
+	//
+	// record-all implies repro mode, so a pod that opted out of repro mode must
+	// not get record-all either -- see the matching guard on the non-discovery
+	// path. Without this the collector zeroes the payloads while the agent logs
+	// "record-all payload capture is ON".
+	podArgs.RecordAll = podArgs.ReproMode &&
+		parseBoolConfig(mainConfig.recordAll, "recordAll", pod.Name, false)
 	podArgs.CaptureWindow = parseDurationConfig(mainConfig.captureWindow, "captureWindow", pod.Name)
 	podArgs.CaptureEvery = parseDurationConfig(mainConfig.captureEvery, "captureEvery", pod.Name)
 	podArgs.RecordAllHosts = parseSliceConfig(mainConfig.recordAllHosts, "recordAllHosts", pod.Name)

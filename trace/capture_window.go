@@ -139,7 +139,13 @@ func NewRecordAllPolicy(window *CaptureWindow, hostPatterns, pathPatterns []stri
 // empty pattern list means "match everything" (see matchesAny), so returning one
 // for a list the operator did supply would turn a typo into the widest possible
 // capture -- the opposite of what they asked for.
-var neverMatches = regexp.MustCompile(`$^`)
+//
+// `[^\s\S]`, not `$^`: the latter matches the empty string, since position 0 of
+// "" is both the start and the end of the text. A witness with no host or path
+// (learn.UnknownHTTPMethodMeta) would then slip through the very allowlist this
+// sentinel exists to enforce. `[^\s\S]` is an empty character class -- it
+// matches no input at all.
+var neverMatches = regexp.MustCompile(`[^\s\S]`)
 
 func compilePatterns(patterns []string, kind string) []*regexp.Regexp {
 	if len(patterns) == 0 {

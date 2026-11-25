@@ -736,10 +736,23 @@ func (args *Args) buildRecordAllPolicy() *trace.RecordAllPolicy {
 		)
 	}
 	if args.RecordAllWindow == 0 {
-		printer.Stderr.Warningf(
-			"Record-all has no capture window, so it stays on for the lifetime of this agent. " +
-				"Set --capture-window (e.g. 30m) to bound how much payload data is uploaded.\n",
-		)
+		if args.RecordAllEvery != 0 {
+			// A period with no duration reads as "capture for a while, every N" but
+			// means the opposite: the window is always open, so --capture-every
+			// silently becomes unbounded capture. Say so rather than letting the
+			// operator believe they bounded it.
+			printer.Stderr.Warningf(
+				"--capture-every %s was set without --capture-window, so record-all stays on "+
+					"continuously rather than for part of each period. Set --capture-window "+
+					"(e.g. 30m) to bound each period.\n",
+				args.RecordAllEvery,
+			)
+		} else {
+			printer.Stderr.Warningf(
+				"Record-all has no capture window, so it stays on for the lifetime of this agent. " +
+					"Set --capture-window (e.g. 30m) to bound how much payload data is uploaded.\n",
+			)
+		}
 	}
 
 	return policy

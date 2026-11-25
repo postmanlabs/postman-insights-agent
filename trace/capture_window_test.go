@@ -221,3 +221,31 @@ func TestRecordAllPolicyEmptyPatternIsIgnored(t *testing.T) {
 		"the empty pattern must not widen the allowlist to everything",
 	)
 }
+
+// A witness with no host and no path -- what learn.UnknownHTTPMethodMeta
+// produces -- must not slip through an allowlist. `$^` as a never-match
+// sentinel matched the empty string, since position 0 of "" is both the start
+// and the end of the text, so exactly these witnesses were captured by an
+// allowlist that was meant to deny everything.
+func TestRecordAllPolicyEmptyHostAndPathAreNotAllowlisted(t *testing.T) {
+	unusable := NewRecordAllPolicy(nil, []string{"^mock\\.internal("}, nil)
+
+	assert.False(
+		t,
+		unusable.Allows(witnessForHostAndPath("", ""), time.Now()),
+		"an unusable host allowlist must not admit a witness with no host",
+	)
+
+	scoped := NewRecordAllPolicy(nil, []string{"^mock\\.internal$"}, []string{"^/v2/mocks(/|$)"})
+
+	assert.False(
+		t,
+		scoped.Allows(witnessForHostAndPath("", ""), time.Now()),
+		"a witness with no host or path matches neither allowlist",
+	)
+	assert.False(
+		t,
+		scoped.Allows(witnessForHostAndPath("mock.internal", ""), time.Now()),
+		"an empty path is not inside the path allowlist",
+	)
+}
