@@ -519,6 +519,19 @@ func TestApplyDiscoveryModeConfig_CaptureWindow(t *testing.T) {
 			expectRecordAll: false,
 		},
 		{
+			// `0s` parses, and zero means continuous capture -- the same thing
+			// the CLI's --capture-window=0 means. It is a deliberate choice, not
+			// a typo, so it must not be lumped in with the unusable values above:
+			// buildRecordAllPolicy warns about the unbounded window instead.
+			name: "an explicit zero window is honoured as continuous capture",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "0s",
+			},
+			expectWindow:    0,
+			expectRecordAll: true,
+		},
+		{
 			// parseSliceConfig json.Unmarshals the value, matching
 			// POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS: these env vars take a
 			// JSON array, not a comma-separated list.

@@ -727,28 +727,49 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 // record-all policy reads as "no restriction". For an allowlist that inverts
 // the operator's intent, so the caller disables record-all rather than
 // capturing payloads from endpoints the allowlist was meant to exclude.
+// unusableDurationConfig reports whether a duration env var was set to something
+// the agent cannot use: unparseable, or negative. An empty value means unset, and
+// an explicit zero means continuous -- neither is an error.
+//
+// parseDurationConfig returns 0 for all three, so the result alone cannot tell
+// them apart; the raw value has to be re-read.
+func unusableDurationConfig(value string) bool {
+	if value == "" {
+		return false
+	}
+
+	parsed, err := time.ParseDuration(value)
+
+	return err != nil || parsed < 0
+}
+
 func recordAllAllowlistsIntact(config containerConfig, podArgs *PodArgs, podName string) bool {
 	intact := true
 
 	// A window that was configured but did not parse comes back as 0, and 0 means
-	// "no window: always open" -- so `15min` instead of `15m` silently removes the
-	// bound and leaves record-all on for the pod's whole lifetime. Treat it the
-	// same as a broken allowlist: the operator asked for a bound, so capture
-	// nothing until they get one.
-	if config.captureWindow != "" && podArgs.CaptureWindow == 0 {
+	// "no window: always open" -- so `15min` instead of `15m` would silently
+	// remove the bound and leave record-all on for the pod's whole lifetime.
+	// Treat that like a broken allowlist: the operator asked for a bound, so
+	// capture nothing until they get one.
+	//
+	// An explicit `0s` is a different thing: it parses, and in the CLI it means
+	// continuous capture. Honour it rather than calling it unusable -- the
+	// unbounded-window warning in buildRecordAllPolicy already says what it does.
+	if unusableDurationConfig(config.captureWindow) {
 		printer.Errorf(
-			"%s was set for pod %s but is not a usable duration, so record-all is disabled for it "+
-				"rather than capturing payloads for the pod's lifetime. Expected a Go duration, e.g. 15m.\n",
-			POSTMAN_INSIGHTS_CAPTURE_WINDOW, podName,
+			"%s was set for pod %s to %q, which is not a usable duration, so record-all is disabled "+
+				"for it rather than capturing payloads for the pod's lifetime. Expected a Go duration, "+
+				"e.g. 15m; use 0s only if you mean continuous capture.\n",
+			POSTMAN_INSIGHTS_CAPTURE_WINDOW, podName, config.captureWindow,
 		)
 		intact = false
 	}
 
-	if config.captureEvery != "" && podArgs.CaptureEvery == 0 {
+	if unusableDurationConfig(config.captureEvery) {
 		printer.Errorf(
-			"%s was set for pod %s but is not a usable duration, so record-all is disabled for it. "+
-				"Expected a Go duration, e.g. 24h.\n",
-			POSTMAN_INSIGHTS_CAPTURE_EVERY, podName,
+			"%s was set for pod %s to %q, which is not a usable duration, so record-all is disabled "+
+				"for it. Expected a Go duration, e.g. 24h.\n",
+			POSTMAN_INSIGHTS_CAPTURE_EVERY, podName, config.captureEvery,
 		)
 		intact = false
 	}
