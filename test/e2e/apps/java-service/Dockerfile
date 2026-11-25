@@ -7,6 +7,8 @@
 FROM eclipse-temurin:21-jdk AS agent
 WORKDIR /src/java-agent
 COPY java-agent/ ./
+# The jar carries the repository's LICENSE and NOTICE.
+COPY LICENSE NOTICE /src/
 RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon -q agentJar
 
 FROM maven:3-eclipse-temurin-21 AS app

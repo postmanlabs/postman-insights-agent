@@ -1,7 +1,8 @@
 # Builds a Linux CLI binary with eBPF support (insights_bpf tag) and exports
 # it to the local bin/ directory via `make docker-build-ebpf`.
 #
-# Produces only the agent binary — no Java agent JARs or test workloads.
+# Produces the agent binary, and LICENSE and NOTICE in bin/licenses/; no Java
+# agent JARs or test workloads.
 # For a full deployment image (DaemonSet), use build-scripts/Dockerfile.ebpf.
 #
 # Uses Alpine + static linking (same approach as build-scripts/Dockerfile) so
@@ -67,3 +68,5 @@ RUN cd ebpf/loader && go generate -tags insights_bpf ./... && cd /src && \
 FROM scratch AS bin
 
 COPY --from=build /out/postman-insights-agent /postman-insights-agent
+# Licence and attribution notices for the agent (Apache License 2.0 section 4).
+COPY LICENSE NOTICE /licenses/

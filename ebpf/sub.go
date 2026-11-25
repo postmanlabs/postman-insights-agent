@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-
 package ebpf
 
 // This file is intentionally build-tag-free so the routing logic (routeSub) is

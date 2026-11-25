@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // kube_linux.go implements ebpf/discovery.NamespaceResolver against a real
 // Kubernetes cluster.
 //

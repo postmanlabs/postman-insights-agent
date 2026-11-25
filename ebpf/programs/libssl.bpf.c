@@ -1,6 +1,11 @@
-// SPDX-License-Identifier: Apache-2.0
+// Derived from bpf/generictracer/libssl.c of OpenTelemetry eBPF
+// Instrumentation (https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation),
+// Copyright The OpenTelemetry Authors, licensed under the Apache License,
+// Version 2.0. Modified by Postman, Inc.: simplified as described below, with
+// its own SSL-to-fd tracking (SSL_set_fd), a per-process rate cap and a pid
+// filter. See the NOTICE file at the root of this repository.
 //
-// libssl uprobes — Phase 1 of HTTPS capture for the Postman Insights Agent.
+// libssl uprobes - Phase 1 of HTTPS capture for the Postman Insights Agent.
 //
 // Architecture (mirrors OBI bpf/generictracer/libssl.c, simplified):
 //

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-//
 // Java TLS capture for the Postman Insights Agent.
 //
 // The Postman Java agent, running inside a JVM, hooks javax.net.ssl.SSLEngine

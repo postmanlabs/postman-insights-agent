@@ -43,7 +43,7 @@ sudo ./bin/postman-insights-agent apidump --enable-https-capture ...
 ### Images
 
 - `build-scripts/Dockerfile.ebpf`: the agent with eBPF and the Java capture files in `/opt/postman` (built by `build-scripts/java-capture-files.sh`), as the DaemonSet runs it; the kind tests use it.
-- `build-scripts/Dockerfile.ebpf-bin`: the static eBPF binary only (`make docker-build-ebpf`).
+- `build-scripts/Dockerfile.ebpf-bin`: the static eBPF binary with `LICENSE` and `NOTICE` (`make docker-build-ebpf`).
 
 ## Testing
 
