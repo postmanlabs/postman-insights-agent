@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/go-utils/maps"
@@ -57,6 +58,11 @@ type containerConfig struct {
 	dropNginxTraffic        string
 	agentRateLimit          string
 	alwaysCapturePayloads   string
+	recordAll               string
+	captureWindow           string
+	captureEvery            string
+	recordAllHosts          string
+	recordAllPaths          string
 	serviceName             string // POSTMAN_INSIGHTS_SERVICE_NAME (per-pod override for discovery mode)
 }
 
@@ -443,6 +449,21 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 		if alwaysCapturePayloads, exists := envVars[POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS]; exists {
 			containerEnvVars.alwaysCapturePayloads = alwaysCapturePayloads
 		}
+		if recordAll, exists := envVars[POSTMAN_INSIGHTS_RECORD_ALL]; exists {
+			containerEnvVars.recordAll = recordAll
+		}
+		if captureWindow, exists := envVars[POSTMAN_INSIGHTS_CAPTURE_WINDOW]; exists {
+			containerEnvVars.captureWindow = captureWindow
+		}
+		if captureEvery, exists := envVars[POSTMAN_INSIGHTS_CAPTURE_EVERY]; exists {
+			containerEnvVars.captureEvery = captureEvery
+		}
+		if recordAllHosts, exists := envVars[POSTMAN_INSIGHTS_RECORD_ALL_HOSTS]; exists {
+			containerEnvVars.recordAllHosts = recordAllHosts
+		}
+		if recordAllPaths, exists := envVars[POSTMAN_INSIGHTS_RECORD_ALL_PATHS]; exists {
+			containerEnvVars.recordAllPaths = recordAllPaths
+		}
 		if svcName, exists := envVars[POSTMAN_INSIGHTS_SERVICE_NAME]; exists {
 			containerEnvVars.serviceName = svcName
 		}
@@ -546,6 +567,29 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 	}
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainContainerConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
+
+	// Capture payloads for successful responses too, not just errors.
+	//
+	// record-all implies repro mode, so a pod that opted out of repro mode
+	// (POSTMAN_INSIGHTS_DISABLE_REPRO_MODE) must not get record-all either. The
+	// collector would zero the payloads anyway, but the agent would log
+	// "record-all payload capture is ON" and warn about capturing every
+	// successful response -- misleading for anyone auditing what a cluster
+	// uploads.
+	podArgs.RecordAll = podArgs.ReproMode &&
+		parseBoolConfig(mainContainerConfig.recordAll, "recordAll", pod.Name, false)
+	podArgs.CaptureWindow = parseDurationConfig(mainContainerConfig.captureWindow, "captureWindow", pod.Name)
+	podArgs.CaptureEvery = parseDurationConfig(mainContainerConfig.captureEvery, "captureEvery", pod.Name)
+	podArgs.RecordAllHosts = parseSliceConfig(mainContainerConfig.recordAllHosts, "recordAllHosts", pod.Name)
+	podArgs.RecordAllPaths = parseSliceConfig(mainContainerConfig.recordAllPaths, "recordAllPaths", pod.Name)
+
+	// An allowlist that was configured but did not parse leaves the list
+	// empty, and an empty list means "every host" / "every path" -- so a
+	// malformed allowlist would widen record-all to the whole capture
+	// instead of narrowing it. Turn record-all off for this pod instead.
+	if !recordAllAllowlistsIntact(mainContainerConfig, podArgs, pod.Name) {
+		podArgs.RecordAll = false
+	}
 
 	return nil
 }
@@ -652,7 +696,134 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
 
+	// Capture payloads for successful responses too, not just errors.
+	//
+	// record-all implies repro mode, so a pod that opted out of repro mode must
+	// not get record-all either -- see the matching guard on the non-discovery
+	// path. Without this the collector zeroes the payloads while the agent logs
+	// "record-all payload capture is ON".
+	podArgs.RecordAll = podArgs.ReproMode &&
+		parseBoolConfig(mainConfig.recordAll, "recordAll", pod.Name, false)
+	podArgs.CaptureWindow = parseDurationConfig(mainConfig.captureWindow, "captureWindow", pod.Name)
+	podArgs.CaptureEvery = parseDurationConfig(mainConfig.captureEvery, "captureEvery", pod.Name)
+	podArgs.RecordAllHosts = parseSliceConfig(mainConfig.recordAllHosts, "recordAllHosts", pod.Name)
+	podArgs.RecordAllPaths = parseSliceConfig(mainConfig.recordAllPaths, "recordAllPaths", pod.Name)
+
+	// An allowlist that was configured but did not parse leaves the list
+	// empty, and an empty list means "every host" / "every path" -- so a
+	// malformed allowlist would widen record-all to the whole capture
+	// instead of narrowing it. Turn record-all off for this pod instead.
+	if !recordAllAllowlistsIntact(mainConfig, podArgs, pod.Name) {
+		podArgs.RecordAll = false
+	}
+
 	return nil
+}
+
+// recordAllAllowlistsIntact reports whether every record-all allowlist that was
+// configured for this pod actually parsed.
+//
+// parseSliceConfig reports a bad value and returns an empty slice, which the
+// record-all policy reads as "no restriction". For an allowlist that inverts
+// the operator's intent, so the caller disables record-all rather than
+// capturing payloads from endpoints the allowlist was meant to exclude.
+// unusableDurationConfig reports whether a duration env var was set to something
+// the agent cannot use: unparseable, or negative. An empty value means unset, and
+// an explicit zero means continuous -- neither is an error.
+//
+// parseDurationConfig returns 0 for all three, so the result alone cannot tell
+// them apart; the raw value has to be re-read.
+func unusableDurationConfig(value string) bool {
+	if value == "" {
+		return false
+	}
+
+	parsed, err := time.ParseDuration(value)
+
+	return err != nil || parsed < 0
+}
+
+func recordAllAllowlistsIntact(config containerConfig, podArgs *PodArgs, podName string) bool {
+	intact := true
+
+	// A window that was configured but did not parse comes back as 0, and 0 means
+	// "no window: always open" -- so `15min` instead of `15m` would silently
+	// remove the bound and leave record-all on for the pod's whole lifetime.
+	// Treat that like a broken allowlist: the operator asked for a bound, so
+	// capture nothing until they get one.
+	//
+	// An explicit `0s` is a different thing: it parses, and in the CLI it means
+	// continuous capture. Honour it rather than calling it unusable -- the
+	// unbounded-window warning in buildRecordAllPolicy already says what it does.
+	if unusableDurationConfig(config.captureWindow) {
+		printer.Errorf(
+			"%s was set for pod %s to %q, which is not a usable duration, so record-all is disabled "+
+				"for it rather than capturing payloads for the pod's lifetime. Expected a Go duration, "+
+				"e.g. 15m; use 0s only if you mean continuous capture.\n",
+			POSTMAN_INSIGHTS_CAPTURE_WINDOW, podName, config.captureWindow,
+		)
+		intact = false
+	}
+
+	if unusableDurationConfig(config.captureEvery) {
+		printer.Errorf(
+			"%s was set for pod %s to %q, which is not a usable duration, so record-all is disabled "+
+				"for it. Expected a Go duration, e.g. 24h.\n",
+			POSTMAN_INSIGHTS_CAPTURE_EVERY, podName, config.captureEvery,
+		)
+		intact = false
+	}
+
+	if config.recordAllHosts != "" && len(podArgs.RecordAllHosts) == 0 {
+		// Covers both an unparseable value and a well-formed but empty array:
+		// either way there is no usable entry, and an empty list reads as "every
+		// host". To mean "no host restriction", leave the variable unset.
+		printer.Errorf(
+			"%s was set for pod %s but yielded no usable entries, so record-all is disabled for it "+
+				"rather than capturing payloads from every host. Expected a non-empty JSON array, "+
+				"e.g. [\"mock.internal\"]; omit the variable entirely for no restriction.\n",
+			POSTMAN_INSIGHTS_RECORD_ALL_HOSTS, podName,
+		)
+		intact = false
+	}
+
+	if config.recordAllPaths != "" && len(podArgs.RecordAllPaths) == 0 {
+		printer.Errorf(
+			"%s was set for pod %s but yielded no usable entries, so record-all is disabled for it "+
+				"rather than capturing payloads from every path. Expected a non-empty JSON array, "+
+				"e.g. [\"^/v2/mocks(/|$)\"]; omit the variable entirely for no restriction.\n",
+			POSTMAN_INSIGHTS_RECORD_ALL_PATHS, podName,
+		)
+		intact = false
+	}
+
+	return intact
+}
+
+// parseDurationConfig parses a Go duration ("15m", "24h"), logging and falling
+// back to zero when the value is unparseable.
+//
+// Zero is the safe fallback for every current caller: for the capture window it
+// means "no window", which is only reached when record-all is already on, and
+// for the capture period it means one-shot.
+func parseDurationConfig(configValue, configName, podName string) time.Duration {
+	if configValue == "" {
+		return 0
+	}
+
+	parsedValue, err := time.ParseDuration(configValue)
+	if err != nil {
+		printer.Errorf("Invalid value for %s in pod %s: %s. Error: %v. Defaulting to 0.\n", configName, podName, configValue, err)
+		return 0
+	}
+
+	if parsedValue < 0 {
+		printer.Errorf("Negative value for %s in pod %s: %s. Defaulting to 0.\n", configName, podName, configValue)
+		return 0
+	}
+
+	printer.Infof("%s is set to %v for pod: %s\n", configName, parsedValue, podName)
+	return parsedValue
 }
 
 // parseBoolConfig parses a boolean configuration value, logs errors if parsing fails,

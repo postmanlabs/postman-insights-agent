@@ -23,6 +23,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/ci"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
@@ -329,6 +330,24 @@ type Args struct {
 
 	// Always capture request and response payloads for the given paths.
 	AlwaysCapturePayloads []string
+
+	// Whether to send payloads for successful responses as well as errors.
+	// Has no effect unless ReproMode is also set.
+	RecordAll bool
+
+	// How long record-all payload capture stays on. Zero means "for as long as
+	// the agent runs", which is only appropriate for a local capture.
+	RecordAllWindow time.Duration
+
+	// How often the record-all window reopens. Zero means one-shot: capture for
+	// RecordAllWindow once, starting at agent start, and never again.
+	RecordAllEvery time.Duration
+
+	// Regexes restricting record-all to specific hosts and request paths. Empty
+	// means "every host" / "every path", so a record-all capture with neither
+	// set captures successful payloads from every service on the interface.
+	RecordAllHosts []string
+	RecordAllPaths []string
 
 	// Whether to drop traffic to/from nginx
 	DropNginxTraffic bool
@@ -695,6 +714,99 @@ func (a *apidump) SendTelemetry(req *api_schema.PostClientPacketCaptureStatsRequ
 		printer.Stderr.Errorf("Failed to send telemetry statistics: %s\n", err)
 		apidumpAmplitudeTelemetry.Error("telemetry", err)
 	}
+}
+
+// recordAllEnvironments are the POSTMAN_ENV values record-all may run in, as
+// cfg.GetPostmanAPIKeyAndEnvironment reports them (upper-cased; empty means
+// production, since that is what rest.DefaultDomain resolves an unset value to).
+// Deliberately just these two: preview and stage carry real customer traffic in
+// some deployments, and nothing needs record-all there yet. Widen it only with a
+// reason, since every entry here is an environment whose successful response
+// bodies may be uploaded.
+var recordAllEnvironments = map[string]bool{
+	"DEV":  true,
+	"BETA": true,
+}
+
+// postmanEnvironment is POSTMAN_ENV as the rest of the agent reads it, or
+// PRODUCTION when unset -- matching rest.DefaultDomain, which sends an agent
+// with no POSTMAN_ENV to the production backend.
+func postmanEnvironment() string {
+	_, env := cfg.GetPostmanAPIKeyAndEnvironment()
+	env = strings.ToUpper(strings.TrimSpace(env))
+	if env == "" {
+		return "PRODUCTION"
+	}
+
+	return env
+}
+
+func recordAllAllowedIn(env string) bool {
+	return recordAllEnvironments[env]
+}
+
+// buildRecordAllPolicy turns the record-all arguments into the policy the
+// collectors consult, or nil when record-all is off.
+//
+// Call this once per capture: the window counts from construction time.
+func (args *Args) buildRecordAllPolicy() *trace.RecordAllPolicy {
+	if !args.RecordAll {
+		return nil
+	}
+
+	// Hard stop outside dev and beta.
+	//
+	// Everything else keeping record-all off in production is a matter of which
+	// file a variable sits in: the env var lives in the beta deployment repo and
+	// not the production one, and reviewers are expected to keep it that way.
+	// That is a review-time guarantee, not a technical one -- a copied manifest
+	// would enable payload capture for every successful response in production,
+	// which is not a mistake anyone should be able to make in one commit.
+	//
+	// Repro mode stays available everywhere: this gates only the extension from
+	// error payloads to all payloads.
+	if env := postmanEnvironment(); !recordAllAllowedIn(env) {
+		printer.Stderr.Errorf(
+			"--record-all is not permitted in the %s environment and has been ignored. "+
+				"It captures successful response bodies, so it is restricted to dev and beta.\n",
+			env,
+		)
+
+		return nil
+	}
+
+	window := trace.NewCaptureWindow(args.RecordAllWindow, args.RecordAllEvery)
+	policy := trace.NewRecordAllPolicy(window, args.RecordAllHosts, args.RecordAllPaths)
+
+	printer.Stderr.Infof("Record-all payload capture is ON, %s.\n", window.Describe())
+	if !policy.Scoped() {
+		printer.Stderr.Warningf(
+			"Record-all has no host or path allowlist, so it will capture successful response bodies " +
+				"from every service visible to this capture. Set --record-all-hosts and/or " +
+				"--record-all-paths to restrict it to the endpoints you mean to capture.\n",
+		)
+	}
+	if args.RecordAllWindow == 0 {
+		if args.RecordAllEvery != 0 {
+			// A period with no duration reads as "capture for a while, every N" but
+			// means the opposite: the window is always open, so --capture-every
+			// silently becomes unbounded capture. Say so rather than letting the
+			// operator believe they bounded it.
+			printer.Stderr.Warningf(
+				"--capture-every %s was set without --capture-window, so record-all stays on "+
+					"continuously rather than for part of each period. Set --capture-window "+
+					"(e.g. 30m) to bound each period.\n",
+				args.RecordAllEvery,
+			)
+		} else {
+			printer.Stderr.Warningf(
+				"Record-all has no capture window, so it stays on for the lifetime of this agent. " +
+					"Set --capture-window (e.g. 30m) to bound how much payload data is uploaded.\n",
+			)
+		}
+	}
+
+	return policy
 }
 
 // Clean up the arguments and warn about any modifications.
@@ -1268,6 +1380,11 @@ func (a *apidump) Run() error {
 	ebpfReportCount := sourceTelemetryCountReporter(reportTelemetryCount, "ebpf")
 	pcapConnectionContext := trace.NewConnectionContextTracker(a.captureStats)
 
+	// Build the record-all policy once, not per collector: the capture window
+	// counts from the moment it is constructed, so one policy per collector
+	// would give each interface its own window phase.
+	recordAllPolicy := args.buildRecordAllPolicy()
+
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
 	for _, filterState := range []filterState{matchedFilter, notMatchedFilter} {
@@ -1314,6 +1431,7 @@ func (a *apidump) Run() error {
 						summary,
 						args.ReproMode,
 						optionals.Some(args.AlwaysCapturePayloads),
+						recordAllPolicy,
 						args.Plugins,
 						args.MaxWitnessUploadBuffers,
 						apidumpAmplitudeTelemetry,
@@ -1474,6 +1592,7 @@ func (a *apidump) Run() error {
 			httpsSummary,
 			args.ReproMode,
 			optionals.Some(args.AlwaysCapturePayloads),
+			recordAllPolicy,
 			args.Plugins,
 			args.MaxWitnessUploadBuffers,
 			apidumpAmplitudeTelemetry,

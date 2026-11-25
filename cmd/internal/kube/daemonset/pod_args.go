@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/akitasoftware/akita-libs/tags"
@@ -46,6 +47,11 @@ type PodArgs struct {
 	DropNginxTraffic      bool
 	AgentRateLimit        float64
 	AlwaysCapturePayloads []string
+	RecordAll             bool
+	CaptureWindow         time.Duration
+	CaptureEvery          time.Duration
+	RecordAllHosts        []string
+	RecordAllPaths        []string
 
 	// API Catalog: workspace and system environment (not credentials)
 	WorkspaceID string // Workspace UUID for API Catalog integration

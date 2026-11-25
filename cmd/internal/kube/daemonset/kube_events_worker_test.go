@@ -2,6 +2,7 @@ package daemonset
 
 import (
 	"testing"
+	"time"
 
 	"github.com/akitasoftware/akita-libs/akid"
 	"github.com/postmanlabs/postman-insights-agent/apispec"
@@ -413,6 +414,171 @@ func TestApplyDiscoveryModeConfig_OptionalConfigsApplied(t *testing.T) {
 	assert.True(t, podArgs.ReproMode)
 	assert.Equal(t, 42.0, podArgs.AgentRateLimit)
 	assert.Equal(t, []string{"/health", "/ready"}, podArgs.AlwaysCapturePayloads)
+}
+
+func TestApplyDiscoveryModeConfig_RecordAll(t *testing.T) {
+	newDaemonset := func(reproMode bool) *Daemonset {
+		return &Daemonset{
+			DiscoveryMode:            true,
+			InsightsAPIKey:           "ds-api-key",
+			InsightsReproModeEnabled: reproMode,
+			InsightsRateLimit:        42.0,
+			ClusterName:              "test-cluster",
+		}
+	}
+
+	testCases := []struct {
+		name string
+		// Repro Mode at the DaemonSet level.
+		reproMode bool
+		// POSTMAN_INSIGHTS_RECORD_ALL on the pod.
+		recordAll string
+		expected  bool
+	}{
+		{"unset defaults to off", true, "", false},
+		{"set to true", true, "true", true},
+		{"set to false", true, "false", false},
+		{"unparseable value defaults to off", true, "yes-please", false},
+		// Repro Mode off means the function returns before record-all is
+		// applied, so the pod cannot opt into payloads on its own.
+		{"ignored when repro mode is off at the DaemonSet", false, "true", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := testPod("my-pod", "default")
+			podArgs := NewPodArgs(pod.Name)
+
+			err := newDaemonset(tc.reproMode).applyDiscoveryModeConfig(pod, podArgs, containerConfig{
+				recordAll: tc.recordAll,
+			})
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.expected, podArgs.RecordAll)
+		})
+	}
+}
+
+// The capture window and the record-all allowlists are read per pod, following
+// POSTMAN_INSIGHTS_RECORD_ALL. An unparseable duration falls back to zero,
+// which for the window means "no window" -- so a typo must be loud in the logs
+// rather than silently producing an unbounded capture.
+func TestApplyDiscoveryModeConfig_CaptureWindow(t *testing.T) {
+	d := &Daemonset{
+		DiscoveryMode:            true,
+		InsightsAPIKey:           "ds-api-key",
+		InsightsReproModeEnabled: true,
+		InsightsRateLimit:        42.0,
+		ClusterName:              "test-cluster",
+	}
+
+	testCases := []struct {
+		name         string
+		config       containerConfig
+		expectWindow time.Duration
+		expectEvery  time.Duration
+		expectHosts  []string
+		expectPaths  []string
+		// Every case here sets recordAll: "true"; only a malformed allowlist
+		// should turn it back off.
+		expectRecordAll bool
+	}{
+		{
+			name:            "unset leaves everything zero",
+			config:          containerConfig{recordAll: "true"},
+			expectRecordAll: true,
+		},
+		{
+			name: "window and period parse",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "30m",
+				captureEvery:  "24h",
+			},
+			expectWindow:    30 * time.Minute,
+			expectEvery:     24 * time.Hour,
+			expectRecordAll: true,
+		},
+		{
+			// A window that does not parse comes back as 0, and 0 means "always
+			// open" -- so leaving record-all on would capture payloads for the
+			// pod's whole lifetime, the opposite of the bound that was asked for.
+			name: "an unparseable duration disables record-all",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "half an hour",
+			},
+			expectRecordAll: false,
+		},
+		{
+			name: "a negative duration disables record-all",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "-30m",
+			},
+			expectRecordAll: false,
+		},
+		{
+			// `0s` parses, and zero means continuous capture -- the same thing
+			// the CLI's --capture-window=0 means. It is a deliberate choice, not
+			// a typo, so it must not be lumped in with the unusable values above:
+			// buildRecordAllPolicy warns about the unbounded window instead.
+			name: "an explicit zero window is honoured as continuous capture",
+			config: containerConfig{
+				recordAll:     "true",
+				captureWindow: "0s",
+			},
+			expectWindow:    0,
+			expectRecordAll: true,
+		},
+		{
+			// parseSliceConfig json.Unmarshals the value, matching
+			// POSTMAN_INSIGHTS_ALWAYS_CAPTURE_PAYLOADS: these env vars take a
+			// JSON array, not a comma-separated list.
+			name: "allowlists parse as JSON arrays",
+			config: containerConfig{
+				recordAll:      "true",
+				captureWindow:  "15m",
+				recordAllHosts: `["mock.internal"]`,
+				recordAllPaths: `["^/v2/mocks(/|$)","^/mocks(/|$)"]`,
+			},
+			expectWindow:    15 * time.Minute,
+			expectHosts:     []string{"mock.internal"},
+			expectPaths:     []string{"^/v2/mocks(/|$)", "^/mocks(/|$)"},
+			expectRecordAll: true,
+		},
+		{
+			// A malformed allowlist must not degrade to "capture everything":
+			// record-all is switched off for the pod instead.
+			name: "a non-JSON allowlist disables record-all",
+			config: containerConfig{
+				recordAll:      "true",
+				captureWindow:  "15m",
+				recordAllPaths: "^/v2/mocks(/|$)",
+			},
+			expectWindow:    15 * time.Minute,
+			expectRecordAll: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := testPod("my-pod", "default")
+			podArgs := NewPodArgs(pod.Name)
+
+			err := d.applyDiscoveryModeConfig(pod, podArgs, tc.config)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.expectRecordAll, podArgs.RecordAll)
+			assert.Equal(t, tc.expectWindow, podArgs.CaptureWindow)
+			assert.Equal(t, tc.expectEvery, podArgs.CaptureEvery)
+			// parseSliceConfig returns an empty slice rather than nil for unset
+			// config, and the allowlists are match-any sets, so compare as
+			// elements rather than exact slice identity.
+			assert.ElementsMatch(t, tc.expectHosts, podArgs.RecordAllHosts)
+			assert.ElementsMatch(t, tc.expectPaths, podArgs.RecordAllPaths)
+		})
+	}
 }
 
 func TestApplyDiscoveryModeConfig_BothWorkspaceAndProjectID_Error(t *testing.T) {

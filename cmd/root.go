@@ -150,6 +150,9 @@ func printFlagsWarning(cmd *cobra.Command) {
 	if enabled, err := cmd.Flags().GetBool("send-witness-payloads"); err == nil && enabled {
 		util.PrintReproModeWarning("--send-witness-payloads")
 	}
+	if enabled, err := cmd.Flags().GetBool("record-all"); err == nil && enabled {
+		util.PrintRecordAllWarning("--record-all")
+	}
 
 	testingFlags := make(map[string]string)
 

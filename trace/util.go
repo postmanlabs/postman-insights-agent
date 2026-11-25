@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/http_rest_methods"
@@ -105,7 +106,14 @@ func hasOnlyErrorResponses(method *pb.Method) bool {
 }
 
 // Returns true if the witness payload should be captured.
-func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex []*regexp.Regexp) bool {
+//
+// A non-nil recordAll captures payloads for every response code, not just
+// errors, for witnesses its window and allowlists admit. It does not override
+// the restrictions above it: the Cloud API exclusions in step 1 and the
+// Postman-internal-team check in step 2 both still decide those witnesses,
+// because both exist to keep payloads out of Repro Mode rather than to select
+// which response codes are interesting.
+func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex []*regexp.Regexp, recordAll *RecordAllPolicy) bool {
 	// Step 1: Check if the witness should be excluded from Repro Mode.
 	if excludeWitnessFromReproMode(witness.GetMethod()) {
 		return false
@@ -118,7 +126,13 @@ func shouldCapturePayload(witness *pb.Witness, alwaysCapturePayloadsPathsRegex [
 		return isPostmanInternalTeam(witness)
 	}
 
-	// Step 3: Check if the method has only error responses.
+	// Step 3: Capture everything that survived the restrictions above, if
+	// record-all admits this witness right now.
+	if recordAll.Allows(witness, time.Now()) {
+		return true
+	}
+
+	// Step 4: Check if the method has only error responses.
 	if hasOnlyErrorResponses(witness.GetMethod()) {
 		return true
 	}

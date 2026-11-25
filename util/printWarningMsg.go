@@ -51,3 +51,18 @@ func PrintReproModeWarning(flag string) {
 		printer.Color.Yellow(flag),
 		printer.Color.Blue("https://learning.postman.com/docs/insights/repro"))
 }
+
+const recordAllMessage = `Turning on the %s flag sends payload data for EVERY captured request and response, including successful ones, not only requests that returned an error.
+
+This is a much larger volume of payload data than repro mode alone, and it will include the body of every successful response your service returns.
+Only the default and user-configured sensitive fields are redacted. Everything else is sent to the Postman cloud as-is.
+For more information, please see: %s.
+
+Do not enable this flag against production traffic or any environment handling real user data unless you have explicit approval to do so.
+`
+
+func PrintRecordAllWarning(flag string) {
+	printer.Warningf(recordAllMessage,
+		printer.Color.Yellow(flag),
+		printer.Color.Blue("https://learning.postman.com/docs/insights/repro"))
+}

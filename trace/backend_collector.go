@@ -300,6 +300,11 @@ type BackendCollector struct {
 	// Always capture request and response payloads for the given paths.
 	alwaysCapturePayloadsPathsRegex []*regexp.Regexp
 
+	// When non-nil, capture payloads for successful responses as well as
+	// errors, for the endpoints and the capture window this policy admits.
+	// Requires sendWitnessPayloads; on its own it has no effect.
+	recordAll *RecordAllPolicy
+
 	plugins []plugin.AkitaPlugin
 
 	redactor *data_masks.Redactor
@@ -352,6 +357,7 @@ func NewBackendCollector(
 	packetCounts PacketCountConsumer,
 	sendWitnessPayloads bool,
 	alwaysCapturePayloads optionals.Optional[[]string],
+	recordAll *RecordAllPolicy,
 	plugins []plugin.AkitaPlugin,
 	uploadReportBuffers int,
 	amplitudeTelemetry telemetry.Tracker,
@@ -380,6 +386,7 @@ func NewBackendCollector(
 		plugins:                         plugins,
 		sendWitnessPayloads:             sendWitnessPayloads,
 		alwaysCapturePayloadsPathsRegex: alwaysCapturePayloadsPathsRegex,
+		recordAll:                       recordAll,
 		redactor:                        redactor,
 		amplitudeTelemetry:              amplitudeTelemetry,
 		stats:                           opts.Stats,
@@ -596,7 +603,7 @@ func (c *BackendCollector) queueUpload(w *witnessWithInfo) {
 	}
 
 	if !c.sendWitnessPayloads ||
-		!shouldCapturePayload(w.witness, c.alwaysCapturePayloadsPathsRegex) {
+		!shouldCapturePayload(w.witness, c.alwaysCapturePayloadsPathsRegex, c.recordAll) {
 		// Obfuscate the original value so type inference engine can use it on the
 		// backend without revealing the actual value.
 		c.redactor.ZeroAllPrimitives(w.witness.GetMethod())
