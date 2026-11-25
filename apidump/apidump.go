@@ -23,6 +23,7 @@ import (
 	"github.com/postmanlabs/postman-insights-agent/apispec"
 	"github.com/postmanlabs/postman-insights-agent/architecture"
 	"github.com/postmanlabs/postman-insights-agent/capturestats"
+	"github.com/postmanlabs/postman-insights-agent/cfg"
 	"github.com/postmanlabs/postman-insights-agent/ci"
 	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	"github.com/postmanlabs/postman-insights-agent/deployment"
@@ -715,12 +716,60 @@ func (a *apidump) SendTelemetry(req *api_schema.PostClientPacketCaptureStatsRequ
 	}
 }
 
+// recordAllEnvironments are the POSTMAN_ENV values record-all may run in, as
+// cfg.GetPostmanAPIKeyAndEnvironment reports them (upper-cased; empty means
+// production, since that is what rest.DefaultDomain resolves an unset value to).
+var recordAllEnvironments = map[string]bool{
+	"DEV":     true,
+	"BETA":    true,
+	"PREVIEW": true,
+	"STAGE":   true,
+}
+
+// postmanEnvironment is POSTMAN_ENV as the rest of the agent reads it, or
+// PRODUCTION when unset -- matching rest.DefaultDomain, which sends an agent
+// with no POSTMAN_ENV to the production backend.
+func postmanEnvironment() string {
+	_, env := cfg.GetPostmanAPIKeyAndEnvironment()
+	env = strings.ToUpper(strings.TrimSpace(env))
+	if env == "" {
+		return "PRODUCTION"
+	}
+
+	return env
+}
+
+func recordAllAllowedIn(env string) bool {
+	return recordAllEnvironments[env]
+}
+
 // buildRecordAllPolicy turns the record-all arguments into the policy the
 // collectors consult, or nil when record-all is off.
 //
 // Call this once per capture: the window counts from construction time.
 func (args *Args) buildRecordAllPolicy() *trace.RecordAllPolicy {
 	if !args.RecordAll {
+		return nil
+	}
+
+	// Hard stop outside the pre-production environments.
+	//
+	// Everything else keeping record-all off in production is a matter of which
+	// file a variable sits in: the env var lives in the beta deployment repo and
+	// not the production one, and reviewers are expected to keep it that way.
+	// That is a review-time guarantee, not a technical one -- a copied manifest
+	// would enable payload capture for every successful response in production,
+	// which is not a mistake anyone should be able to make in one commit.
+	//
+	// Repro mode stays available everywhere: this gates only the extension from
+	// error payloads to all payloads.
+	if env := postmanEnvironment(); !recordAllAllowedIn(env) {
+		printer.Stderr.Errorf(
+			"--record-all is not permitted in the %s environment and has been ignored. "+
+				"It captures successful response bodies, so it is restricted to pre-production.\n",
+			env,
+		)
+
 		return nil
 	}
 

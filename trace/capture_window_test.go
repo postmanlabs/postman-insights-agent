@@ -249,3 +249,21 @@ func TestRecordAllPolicyEmptyHostAndPathAreNotAllowlisted(t *testing.T) {
 		"an empty path is not inside the path allowlist",
 	)
 }
+
+// A response seen without its request carries UnknownHTTPMethodMeta: no method,
+// host or path. With no allowlist configured matchesAny would admit it, so
+// record-all would capture a payload that cannot be shown to be in scope.
+func TestRecordAllPolicyRejectsUnattributableWitness(t *testing.T) {
+	unscoped := NewRecordAllPolicy(nil, nil, nil)
+
+	assert.True(
+		t,
+		unscoped.Allows(witnessForHostAndPath("mock.internal", "/v2/mocks"), time.Now()),
+		"an unscoped policy still admits an ordinary witness",
+	)
+	assert.False(
+		t,
+		unscoped.Allows(witnessForHostAndPath("", ""), time.Now()),
+		"but never one with no request metadata at all",
+	)
+}

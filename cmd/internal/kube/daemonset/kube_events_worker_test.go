@@ -500,20 +500,23 @@ func TestApplyDiscoveryModeConfig_CaptureWindow(t *testing.T) {
 			expectRecordAll: true,
 		},
 		{
-			name: "unparseable duration defaults to zero",
+			// A window that does not parse comes back as 0, and 0 means "always
+			// open" -- so leaving record-all on would capture payloads for the
+			// pod's whole lifetime, the opposite of the bound that was asked for.
+			name: "an unparseable duration disables record-all",
 			config: containerConfig{
 				recordAll:     "true",
 				captureWindow: "half an hour",
 			},
-			expectRecordAll: true,
+			expectRecordAll: false,
 		},
 		{
-			name: "negative duration defaults to zero",
+			name: "a negative duration disables record-all",
 			config: containerConfig{
 				recordAll:     "true",
 				captureWindow: "-30m",
 			},
-			expectRecordAll: true,
+			expectRecordAll: false,
 		},
 		{
 			// parseSliceConfig json.Unmarshals the value, matching

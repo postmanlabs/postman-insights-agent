@@ -206,6 +206,16 @@ func (p *RecordAllPolicy) Allows(witness *pb.Witness, now time.Time) bool {
 		return false
 	}
 
+	// A witness the parser could not attribute to a request carries
+	// UnknownHTTPMethodMeta: no method, host or path (learn/parse_http.go). A
+	// response seen without its request is the common case. With no allowlist
+	// configured, matchesAny would admit it -- capturing a payload that cannot be
+	// shown to be in scope, which is exactly what an allowlist is for. Deny it
+	// regardless of configuration.
+	if httpMeta.GetHost() == "" && httpMeta.GetPathTemplate() == "" {
+		return false
+	}
+
 	if !matchesAny(p.hosts, httpMeta.GetHost()) {
 		return false
 	}

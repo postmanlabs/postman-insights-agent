@@ -730,6 +730,29 @@ func (d *Daemonset) applyDiscoveryModeConfig(pod coreV1.Pod, podArgs *PodArgs, m
 func recordAllAllowlistsIntact(config containerConfig, podArgs *PodArgs, podName string) bool {
 	intact := true
 
+	// A window that was configured but did not parse comes back as 0, and 0 means
+	// "no window: always open" -- so `15min` instead of `15m` silently removes the
+	// bound and leaves record-all on for the pod's whole lifetime. Treat it the
+	// same as a broken allowlist: the operator asked for a bound, so capture
+	// nothing until they get one.
+	if config.captureWindow != "" && podArgs.CaptureWindow == 0 {
+		printer.Errorf(
+			"%s was set for pod %s but is not a usable duration, so record-all is disabled for it "+
+				"rather than capturing payloads for the pod's lifetime. Expected a Go duration, e.g. 15m.\n",
+			POSTMAN_INSIGHTS_CAPTURE_WINDOW, podName,
+		)
+		intact = false
+	}
+
+	if config.captureEvery != "" && podArgs.CaptureEvery == 0 {
+		printer.Errorf(
+			"%s was set for pod %s but is not a usable duration, so record-all is disabled for it. "+
+				"Expected a Go duration, e.g. 24h.\n",
+			POSTMAN_INSIGHTS_CAPTURE_EVERY, podName,
+		)
+		intact = false
+	}
+
 	if config.recordAllHosts != "" && len(podArgs.RecordAllHosts) == 0 {
 		// Covers both an unparseable value and a well-formed but empty array:
 		// either way there is no usable entry, and an empty list reads as "every
