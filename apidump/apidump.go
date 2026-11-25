@@ -719,11 +719,13 @@ func (a *apidump) SendTelemetry(req *api_schema.PostClientPacketCaptureStatsRequ
 // recordAllEnvironments are the POSTMAN_ENV values record-all may run in, as
 // cfg.GetPostmanAPIKeyAndEnvironment reports them (upper-cased; empty means
 // production, since that is what rest.DefaultDomain resolves an unset value to).
+// Deliberately just these two: preview and stage carry real customer traffic in
+// some deployments, and nothing needs record-all there yet. Widen it only with a
+// reason, since every entry here is an environment whose successful response
+// bodies may be uploaded.
 var recordAllEnvironments = map[string]bool{
-	"DEV":     true,
-	"BETA":    true,
-	"PREVIEW": true,
-	"STAGE":   true,
+	"DEV":  true,
+	"BETA": true,
 }
 
 // postmanEnvironment is POSTMAN_ENV as the rest of the agent reads it, or
@@ -752,7 +754,7 @@ func (args *Args) buildRecordAllPolicy() *trace.RecordAllPolicy {
 		return nil
 	}
 
-	// Hard stop outside the pre-production environments.
+	// Hard stop outside dev and beta.
 	//
 	// Everything else keeping record-all off in production is a matter of which
 	// file a variable sits in: the env var lives in the beta deployment repo and
@@ -766,7 +768,7 @@ func (args *Args) buildRecordAllPolicy() *trace.RecordAllPolicy {
 	if env := postmanEnvironment(); !recordAllAllowedIn(env) {
 		printer.Stderr.Errorf(
 			"--record-all is not permitted in the %s environment and has been ignored. "+
-				"It captures successful response bodies, so it is restricted to pre-production.\n",
+				"It captures successful response bodies, so it is restricted to dev and beta.\n",
 			env,
 		)
 
