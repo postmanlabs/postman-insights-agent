@@ -568,9 +568,16 @@ func (d *Daemonset) inspectPodForEnvVars(pod coreV1.Pod, podArgs *PodArgs) error
 
 	podArgs.AlwaysCapturePayloads = parseSliceConfig(mainContainerConfig.alwaysCapturePayloads, "alwaysCapturePayloads", pod.Name)
 
-	// Capture payloads for successful responses too, not just errors. Only
-	// reached when Repro Mode is on, which record-all requires.
-	podArgs.RecordAll = parseBoolConfig(mainContainerConfig.recordAll, "recordAll", pod.Name, false)
+	// Capture payloads for successful responses too, not just errors.
+	//
+	// record-all implies repro mode, so a pod that opted out of repro mode
+	// (POSTMAN_INSIGHTS_DISABLE_REPRO_MODE) must not get record-all either. The
+	// collector would zero the payloads anyway, but the agent would log
+	// "record-all payload capture is ON" and warn about capturing every
+	// successful response -- misleading for anyone auditing what a cluster
+	// uploads.
+	podArgs.RecordAll = podArgs.ReproMode &&
+		parseBoolConfig(mainContainerConfig.recordAll, "recordAll", pod.Name, false)
 	podArgs.CaptureWindow = parseDurationConfig(mainContainerConfig.captureWindow, "captureWindow", pod.Name)
 	podArgs.CaptureEvery = parseDurationConfig(mainContainerConfig.captureEvery, "captureEvery", pod.Name)
 	podArgs.RecordAllHosts = parseSliceConfig(mainContainerConfig.recordAllHosts, "recordAllHosts", pod.Name)
@@ -719,9 +726,13 @@ func recordAllAllowlistsIntact(config containerConfig, podArgs *PodArgs, podName
 	intact := true
 
 	if config.recordAllHosts != "" && len(podArgs.RecordAllHosts) == 0 {
+		// Covers both an unparseable value and a well-formed but empty array:
+		// either way there is no usable entry, and an empty list reads as "every
+		// host". To mean "no host restriction", leave the variable unset.
 		printer.Errorf(
-			"%s was set for pod %s but could not be parsed, so record-all is disabled for it "+
-				"rather than capturing payloads from every host. Expected a JSON array, e.g. [\"mock.internal\"].\n",
+			"%s was set for pod %s but yielded no usable entries, so record-all is disabled for it "+
+				"rather than capturing payloads from every host. Expected a non-empty JSON array, "+
+				"e.g. [\"mock.internal\"]; omit the variable entirely for no restriction.\n",
 			POSTMAN_INSIGHTS_RECORD_ALL_HOSTS, podName,
 		)
 		intact = false
@@ -729,8 +740,9 @@ func recordAllAllowlistsIntact(config containerConfig, podArgs *PodArgs, podName
 
 	if config.recordAllPaths != "" && len(podArgs.RecordAllPaths) == 0 {
 		printer.Errorf(
-			"%s was set for pod %s but could not be parsed, so record-all is disabled for it "+
-				"rather than capturing payloads from every path. Expected a JSON array, e.g. [\"^/v2/mocks(/|$)\"].\n",
+			"%s was set for pod %s but yielded no usable entries, so record-all is disabled for it "+
+				"rather than capturing payloads from every path. Expected a non-empty JSON array, "+
+				"e.g. [\"^/v2/mocks(/|$)\"]; omit the variable entirely for no restriction.\n",
 			POSTMAN_INSIGHTS_RECORD_ALL_PATHS, podName,
 		)
 		intact = false

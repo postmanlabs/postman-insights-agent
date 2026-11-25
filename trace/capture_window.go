@@ -135,6 +135,12 @@ func NewRecordAllPolicy(window *CaptureWindow, hostPatterns, pathPatterns []stri
 	}
 }
 
+// neverMatches stands in for an allowlist whose patterns were all unusable. An
+// empty pattern list means "match everything" (see matchesAny), so returning one
+// for a list the operator did supply would turn a typo into the widest possible
+// capture -- the opposite of what they asked for.
+var neverMatches = regexp.MustCompile(`$^`)
+
 func compilePatterns(patterns []string, kind string) []*regexp.Regexp {
 	if len(patterns) == 0 {
 		return nil
@@ -142,6 +148,17 @@ func compilePatterns(patterns []string, kind string) []*regexp.Regexp {
 
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
+		// An empty pattern compiles happily and matches every string, so it
+		// would silently widen the allowlist to everything. It is never what
+		// someone means; it is a trailing comma or an empty JSON element.
+		if p == "" {
+			printer.Stderr.Errorf(
+				"Ignoring empty record-all %s pattern: an empty pattern matches everything.\n",
+				kind,
+			)
+			continue
+		}
+
 		re, err := regexp.Compile(p)
 		if err != nil {
 			printer.Stderr.Errorf(
@@ -152,6 +169,18 @@ func compilePatterns(patterns []string, kind string) []*regexp.Regexp {
 		}
 		compiled = append(compiled, re)
 	}
+
+	// Patterns were supplied and none survived: fail closed. Capturing nothing
+	// is recoverable by fixing the pattern; capturing everything is not.
+	if len(compiled) == 0 {
+		printer.Stderr.Errorf(
+			"No usable record-all %s patterns: record-all will capture no payloads until one is valid.\n",
+			kind,
+		)
+
+		return []*regexp.Regexp{neverMatches}
+	}
+
 	return compiled
 }
 

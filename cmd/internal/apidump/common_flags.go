@@ -133,7 +133,11 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 	)
 	_ = cmd.PersistentFlags().MarkHidden("capture-every")
 
-	cmd.PersistentFlags().StringSliceVar(
+	// StringArrayVar, not StringSliceVar: pflag runs a slice value through
+	// encoding/csv, which splits a regex on its commas. `[0-9a-f]{8,}` becomes
+	// `[0-9a-f]{8` and `}$` -- both of which compile, neither of which matches
+	// anything, so record-all would report itself as scoped and capture nothing.
+	cmd.PersistentFlags().StringArrayVar(
 		&flags.RecordAllHosts,
 		"record-all-hosts",
 		nil,
@@ -141,7 +145,8 @@ func AddCommonApiDumpFlags(cmd *cobra.Command) *CommonApidumpFlags {
 	)
 	_ = cmd.PersistentFlags().MarkHidden("record-all-hosts")
 
-	cmd.PersistentFlags().StringSliceVar(
+	// StringArrayVar for the same reason as --record-all-hosts above.
+	cmd.PersistentFlags().StringArrayVar(
 		&flags.RecordAllPaths,
 		"record-all-paths",
 		nil,

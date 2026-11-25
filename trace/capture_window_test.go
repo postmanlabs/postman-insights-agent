@@ -181,3 +181,43 @@ func TestRecordAllPolicyRejectsNonHTTP(t *testing.T) {
 	p := NewRecordAllPolicy(NewCaptureWindow(0, 0), nil, nil)
 	assert.False(t, p.Allows(&pb.Witness{Method: &pb.Method{}}, time.Now()))
 }
+
+// An allowlist whose patterns are all unusable must capture nothing, not
+// everything. matchesAny reads an empty pattern list as "match everything", so
+// without the neverMatches sentinel a single missing bracket in a deployment
+// config would turn a narrow allowlist into the widest possible capture.
+func TestRecordAllPolicyAllInvalidPatternsFailClosed(t *testing.T) {
+	// One missing ')' -- a typo of the example the DaemonSet's own error
+	// message documents.
+	policy := NewRecordAllPolicy(nil, nil, []string{"^/v2/mocks(/|$"})
+
+	assert.True(t, policy.Scoped(), "a supplied allowlist still counts as scoped")
+	assert.False(
+		t,
+		policy.Allows(witnessForHostAndPath("mock.internal", "/anything/at/all"), time.Now()),
+		"an unusable allowlist must capture nothing",
+	)
+	assert.False(
+		t,
+		policy.Allows(witnessForHostAndPath("mock.internal", "/v2/mocks"), time.Now()),
+		"not even the path the operator meant, until the pattern is fixed",
+	)
+}
+
+// An empty string compiles and matches every input, so it must be rejected
+// rather than silently widening the allowlist. This is what a trailing comma in
+// a CSV flag or an empty JSON element produces.
+func TestRecordAllPolicyEmptyPatternIsIgnored(t *testing.T) {
+	policy := NewRecordAllPolicy(nil, nil, []string{"^/v2/mocks(/|$)", ""})
+
+	assert.True(
+		t,
+		policy.Allows(witnessForHostAndPath("mock.internal", "/v2/mocks"), time.Now()),
+		"the valid pattern still applies",
+	)
+	assert.False(
+		t,
+		policy.Allows(witnessForHostAndPath("mock.internal", "/v1/users"), time.Now()),
+		"the empty pattern must not widen the allowlist to everything",
+	)
+}
