@@ -1,0 +1,43 @@
+# A runnable agent image WITHOUT eBPF, for POC deployments.
+#
+# build-scripts/Dockerfile produces a bare binary on `scratch` for export to the
+# local machine, so it has no entrypoint and cannot be run by a DaemonSet.
+# Dockerfile.ebpf produces a runnable image but needs the BPF toolchain and bakes
+# a vmlinux.h for the BUILD host's architecture -- cross-building it on Apple
+# Silicon for amd64 compiles x86 register macros against an arm64 vmlinux.h and
+# fails (see the note in Dockerfile.ebpf).
+#
+# Nothing in a record-all capture needs eBPF: that is for decrypting HTTPS at the
+# library boundary, and the POC captures plaintext on the interface. So this
+# image drops it and cross-builds cleanly for both architectures.
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+
+# Alpine's libpcap has no D-Bus dependency, so static linking works cleanly.
+RUN apk add --no-cache libpcap-dev gcc musl-dev
+
+WORKDIR /src
+
+COPY go.* ./
+RUN go mod download
+
+COPY . ./
+
+# CGO is required for libpcap, so this builds under emulation for a foreign
+# TARGETARCH rather than cross-compiling. Slower, and correct.
+ARG TARGETOS
+ARG TARGETARCH
+RUN go build -tags osusergo,netgo \
+    -ldflags "-linkmode external -extldflags '-static'" \
+    -o /out/postman-insights-agent .
+
+FROM alpine:3.21
+
+# ca-certificates for the backend TLS connection; libpcap at runtime even though
+# the binary is static, because the agent dlopens nothing but the image is also
+# used for ad-hoc debugging.
+RUN apk add --no-cache ca-certificates libpcap
+
+COPY --from=build /out/postman-insights-agent /usr/local/bin/postman-insights-agent
+
+ENTRYPOINT ["/usr/local/bin/postman-insights-agent"]
