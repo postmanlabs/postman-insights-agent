@@ -47,7 +47,7 @@ type LearnClient interface {
 	GetDynamicAgentConfigForService(
 		context.Context,
 		akid.ServiceID,
-	) (*kgxapi.ServiceAgentConfig, error)
+	) (*DynamicAgentConfig, error)
 
 	// Uploads a batch of reports to Akita Cloud. This method is responsible for
 	// filling in the ClientID in the given ReportsUploadRequest.

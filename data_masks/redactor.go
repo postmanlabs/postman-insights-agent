@@ -9,7 +9,6 @@ import (
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
 	"github.com/akitasoftware/akita-libs/akid"
-	"github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/spec_util"
 	. "github.com/akitasoftware/akita-libs/visitors"
 	vis "github.com/akitasoftware/akita-libs/visitors/http_rest"
@@ -75,7 +74,7 @@ func NewRedactor(
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to get dynamic agent configuration for %s", serviceID)
 	}
-	activeUserConfig := newUserRedactionConfig(dynamicConfig)
+	activeUserConfig := newUserRedactionConfig(&dynamicConfig.ServiceAgentConfig)
 
 	exitChannel := make(chan struct{})
 
@@ -97,7 +96,7 @@ func NewRedactor(
 				context.Background(),
 				dynamicConfigUpdateInterval/2,
 			)
-			newConfig, err := func() (*api_schema.ServiceAgentConfig, error) {
+			newConfig, err := func() (*rest.DynamicAgentConfig, error) {
 				defer cancel()
 				return learnClient.GetDynamicAgentConfigForService(
 					ctx,
@@ -109,8 +108,9 @@ func NewRedactor(
 				continue
 			}
 
-			// Update with the new configuration.
-			activeUserConfig.update(newConfig)
+			// Update with the new configuration. Only the redaction half is this
+			// type's business; record-all is read off the same endpoint elsewhere.
+			activeUserConfig.update(&newConfig.ServiceAgentConfig)
 		}
 	}()
 

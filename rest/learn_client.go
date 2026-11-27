@@ -82,11 +82,30 @@ func (c *learnClientImpl) CreateLearnSession(ctx context.Context, baseSpecRef *k
 	return resp.ID, nil
 }
 
+// DynamicAgentConfig is the per-service configuration the agent polls for.
+//
+// kgxapi.ServiceAgentConfig is embedded rather than extended so its fields keep
+// their exact JSON shape, and so a field the agent needs can be added here
+// without waiting on an akita-libs release. Fields of an embedded struct are
+// promoted in JSON, so `{"version":…,"fields_to_redact":…,"record_all":true}`
+// unmarshals into this whole.
+type DynamicAgentConfig struct {
+	kgxapi.ServiceAgentConfig
+
+	// Whether this service's agents should capture successful response bodies.
+	//
+	// A pointer so "the server did not answer" is distinguishable from "no". An
+	// older back end omits the key entirely, and an agent must not read a missing
+	// answer as an instruction to turn capture off -- that would disable
+	// record-all for everyone who upgraded the agent ahead of the back end.
+	RecordAll *bool `json:"record_all"`
+}
+
 func (c *learnClientImpl) GetDynamicAgentConfigForService(
 	ctx context.Context,
 	serviceID akid.ServiceID,
-) (*kgxapi.ServiceAgentConfig, error) {
-	var resp kgxapi.ServiceAgentConfig
+) (*DynamicAgentConfig, error) {
+	var resp DynamicAgentConfig
 	p := path.Join("/v2/agent/services", c.serviceID.String(), "settings")
 	err := c.Get(ctx, p, &resp)
 	if err != nil {

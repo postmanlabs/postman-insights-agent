@@ -98,7 +98,7 @@ func TestRedaction(t *testing.T) {
 				EXPECT().
 				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 				AnyTimes().
-				Return(agentConfig, nil)
+				Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *agentConfig}, nil)
 
 			o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
 			assert.NoError(t, err)
@@ -154,7 +154,7 @@ func TestZeroAllPrimitives(t *testing.T) {
 				EXPECT().
 				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 				AnyTimes().
-				Return(agentConfig, nil)
+				Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *agentConfig}, nil)
 
 			o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
 			assert.NoError(t, err)
@@ -180,7 +180,7 @@ func BenchmarkRedaction(b *testing.B) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
 	assert.NoError(b, err)
@@ -203,7 +203,7 @@ func BenchmarkZeroAllPrimitives(b *testing.B) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
 	assert.NoError(b, err)
