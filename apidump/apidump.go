@@ -1385,6 +1385,15 @@ func (a *apidump) Run() error {
 	// would give each interface its own window phase.
 	recordAllPolicy := args.buildRecordAllPolicy()
 
+	// Keep the window in step with the service owner's setting. The product
+	// toggle is the authority on whether successful response bodies may be
+	// collected, so the local window is a ceiling the owner can lower -- and the
+	// answer carries a staleness deadline, so losing contact with the back end
+	// stops capture instead of leaving it on indefinitely.
+	if recordAllPolicy != nil && a.learnClient != nil && (a.backendSvc != akid.ServiceID{}) {
+		trace.PollRecordAllGrant(a.learnClient, a.backendSvc, recordAllPolicy.Window(), stop)
+	}
+
 	// Start collecting -- set up one or two collectors per interface, depending on whether filters are in use
 	numCollectors := 0
 	for _, filterState := range []filterState{matchedFilter, notMatchedFilter} {

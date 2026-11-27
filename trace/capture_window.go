@@ -2,6 +2,7 @@ package trace
 
 import (
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
@@ -29,6 +30,20 @@ type CaptureWindow struct {
 	// How often the window reopens. Zero means one-shot: the window opens at
 	// `start` and never reopens.
 	period time.Duration
+
+	// The service owner's answer, from the back end, as unix nanoseconds:
+	//
+	//	 0  nothing has been heard -- fall back to the local window alone, which
+	//	    is what an older back end (one that does not answer the question) and
+	//	    a capture with no service both produce
+	//	>0  capture permitted, and this is when that answer goes stale
+	//	<0  capture refused, and -value is when THAT answer goes stale
+	//
+	// One atomic rather than a mutex because IsOpen runs once per witness on the
+	// upload path. Packing the answer and its staleness into a single int64
+	// keeps the two from being read a moment apart, which a pair of fields could
+	// not promise without locking.
+	remote atomic.Int64
 }
 
 // NewCaptureWindow builds a window that is open for `duration` out of every
@@ -64,9 +79,73 @@ func NewCaptureWindow(duration, period time.Duration) *CaptureWindow {
 	}
 }
 
+// SetRemoteGrant records the back end's answer about whether this service may
+// capture successful response bodies, and how long that answer may be trusted.
+//
+// `staleAfter` is what makes an unreachable back end safe. The grant it serves
+// expires server-side, so an agent that stops being able to ask -- a network
+// partition, a revoked key, a back end that is down -- would otherwise keep
+// uploading payloads on an answer from an hour ago. Past `staleAfter` the agent
+// stops rather than assuming the grant still stands.
+func (w *CaptureWindow) SetRemoteGrant(permitted bool, staleAfter time.Time) {
+	if w == nil {
+		return
+	}
+
+	magnitude := staleAfter.UnixNano()
+	if magnitude <= 0 {
+		// A zero or negative instant cannot be encoded, and would read as "never
+		// heard". Treat it as an answer already stale.
+		magnitude = 1
+	}
+
+	if permitted {
+		w.remote.Store(magnitude)
+	} else {
+		w.remote.Store(-magnitude)
+	}
+}
+
+// remoteAllows reports the back end's answer at `now`: whether capture is
+// permitted, and whether an answer was available at all.
+func (w *CaptureWindow) remoteAllows(now time.Time) (permitted, answered bool) {
+	raw := w.remote.Load()
+	if raw == 0 {
+		return false, false
+	}
+
+	staleAfter := raw
+	if staleAfter < 0 {
+		staleAfter = -staleAfter
+	}
+
+	if now.UnixNano() >= staleAfter {
+		// The answer has aged out. Deny, and say it was answered: falling back to
+		// the local window here would reopen capture on a grant nobody has
+		// confirmed, which is the whole failure this guards against.
+		return false, true
+	}
+
+	return raw > 0, true
+}
+
 // IsOpen reports whether payload capture is permitted at `now`.
+//
+// The back end's answer, when there is one, decides on its own: the service
+// owner's grant is the authority on whether successful bodies may be collected,
+// and the local window cannot widen it. With no answer -- an older back end, or
+// a capture with no service -- the local window alone decides, which is the
+// behavior before remote grants existed.
 func (w *CaptureWindow) IsOpen(now time.Time) bool {
-	if w == nil || w.duration == 0 {
+	if w == nil {
+		return true
+	}
+
+	if permitted, answered := w.remoteAllows(now); answered {
+		return permitted
+	}
+
+	if w.duration == 0 {
 		// No window configured: always open.
 		return true
 	}
@@ -239,6 +318,16 @@ func matchesAny(patterns []*regexp.Regexp, value string) bool {
 		}
 	}
 	return false
+}
+
+// Window is the policy's capture window, so a caller can keep it in step with
+// the service owner's grant. Nil when record-all is off.
+func (p *RecordAllPolicy) Window() *CaptureWindow {
+	if p == nil {
+		return nil
+	}
+
+	return p.window
 }
 
 // Scoped reports whether this policy restricts capture to specific endpoints,

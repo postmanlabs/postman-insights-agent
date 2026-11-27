@@ -191,7 +191,7 @@ func TestRedact(t *testing.T) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
@@ -573,7 +573,7 @@ func TestTiming(t *testing.T) {
 				EXPECT().
 				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 				AnyTimes().
-				Return(kgxapi.NewServiceAgentConfig(), nil)
+				Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 			redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 			assert.NoError(t, err)
@@ -617,7 +617,7 @@ func TestMultipleInterfaces(t *testing.T) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 	assert.NoError(t, err)
@@ -717,7 +717,7 @@ func TestOnlyRedactNonErrorResponses(t *testing.T) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
@@ -889,7 +889,7 @@ func TestAlwaysCapturePayloads(t *testing.T) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	streamID := uuid.New()
 	reqWithCapturePayloadPath := akinet.ParsedNetworkTraffic{
@@ -1094,7 +1094,7 @@ func TestRecordAllCapturesSuccessfulPayloads(t *testing.T) {
 				EXPECT().
 				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 				AnyTimes().
-				Return(kgxapi.NewServiceAgentConfig(), nil)
+				Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 			streamID := uuid.New()
 			req := akinet.ParsedNetworkTraffic{
@@ -1920,7 +1920,7 @@ func TestRedactionConfigs(t *testing.T) {
 		EXPECT().
 		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 		AnyTimes().
-		Return(kgxapi.NewServiceAgentConfig(), nil)
+		Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 	i := -1
 	for name, testCase := range testCases {
@@ -2418,7 +2418,7 @@ func TestEventTimestampsStampedBothArrivalOrders(t *testing.T) {
 				EXPECT().
 				GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
 				AnyTimes().
-				Return(kgxapi.NewServiceAgentConfig(), nil)
+				Return(&mockrest.DynamicAgentConfig{ServiceAgentConfig: *kgxapi.NewServiceAgentConfig()}, nil)
 
 			redactor, err := data_masks.NewRedactor(fakeSvc, mockClient)
 			assert.NoError(t, err)

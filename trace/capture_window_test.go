@@ -267,3 +267,86 @@ func TestRecordAllPolicyRejectsUnattributableWitness(t *testing.T) {
 		"but never one with no request metadata at all",
 	)
 }
+
+// The service owner's grant, served by the back end, is the authority on
+// whether successful response bodies may be collected. These tests pin the
+// three things that make that safe.
+func TestCaptureWindowRemoteGrant(t *testing.T) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+
+	t.Run("no answer falls back to the local window", func(t *testing.T) {
+		// An older back end does not answer the question, and a capture with no
+		// service never asks. Neither may turn record-all off for everyone who
+		// upgraded the agent first.
+		w := NewCaptureWindow(0, 0)
+
+		assert.True(t, w.IsOpen(now), "an unanswered question is not a refusal")
+
+		bounded := NewCaptureWindow(30*time.Minute, 0)
+		bounded.start = now
+
+		assert.True(t, bounded.IsOpen(now.Add(10*time.Minute)))
+		assert.False(t, bounded.IsOpen(now.Add(31*time.Minute)))
+	})
+
+	t.Run("a refusal closes an otherwise open window", func(t *testing.T) {
+		w := NewCaptureWindow(0, 0)
+		w.SetRemoteGrant(false, now.Add(time.Minute))
+
+		assert.False(t, w.IsOpen(now),
+			"the owner said no; no local configuration may widen that")
+	})
+
+	t.Run("a grant does not widen a local window... it replaces it", func(t *testing.T) {
+		// The grant is the authority, so a service whose owner has switched
+		// capture on collects even where the local window has shut. That is the
+		// point of moving the decision to the product.
+		w := NewCaptureWindow(30*time.Minute, 0)
+		w.start = now
+		w.SetRemoteGrant(true, now.Add(2*time.Hour))
+
+		assert.True(t, w.IsOpen(now.Add(45*time.Minute)))
+	})
+
+	t.Run("a stale answer stops capture rather than assuming it stands", func(t *testing.T) {
+		// The crux. The grant expires server-side, so an agent that can no
+		// longer ask -- partitioned, key revoked, back end down -- would
+		// otherwise keep uploading payloads on an answer from an hour ago.
+		w := NewCaptureWindow(0, 0)
+		w.SetRemoteGrant(true, now.Add(time.Minute))
+
+		assert.True(t, w.IsOpen(now))
+		assert.False(t, w.IsOpen(now.Add(time.Minute)), "exactly at the staleness bound")
+		assert.False(t, w.IsOpen(now.Add(time.Hour)))
+	})
+
+	t.Run("a stale answer does not fall back to the local window", func(t *testing.T) {
+		// Falling back here would reopen capture on a grant nobody has
+		// confirmed, which is the failure the staleness bound exists to prevent.
+		w := NewCaptureWindow(0, 0)
+		w.SetRemoteGrant(true, now.Add(time.Minute))
+
+		assert.False(t, w.IsOpen(now.Add(time.Hour)),
+			"an always-open local window must not resurrect an aged-out grant")
+	})
+
+	t.Run("a later answer replaces an earlier one", func(t *testing.T) {
+		w := NewCaptureWindow(0, 0)
+
+		w.SetRemoteGrant(true, now.Add(time.Hour))
+		assert.True(t, w.IsOpen(now))
+
+		w.SetRemoteGrant(false, now.Add(time.Hour))
+		assert.False(t, w.IsOpen(now), "switching off takes effect on the next witness")
+
+		w.SetRemoteGrant(true, now.Add(time.Hour))
+		assert.True(t, w.IsOpen(now), "and back on again")
+	})
+
+	t.Run("nil window tolerates a grant", func(t *testing.T) {
+		var w *CaptureWindow
+
+		assert.NotPanics(t, func() { w.SetRemoteGrant(true, now) })
+		assert.True(t, w.IsOpen(now))
+	})
+}
